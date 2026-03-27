@@ -1,0 +1,15 @@
+{
+  "name": "crius",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Long-running agent harness with isolated runs, contracts, and evaluator-driven loops",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test",
+    "bootstrap:demo": "node src/cli.js fixtures/demo-run.json"
+  }
+}
+

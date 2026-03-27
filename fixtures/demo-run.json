@@ -1,0 +1,24 @@
+{
+  "goal": "Design an isolated harness for autonomous coding runs.",
+  "workspacePath": "/Users/orkhanrzazade/Projects/scifi/crius",
+  "worktreePath": "/tmp/crius-runs/demo-worktree",
+  "constraints": [
+    "Never reuse live interactive chat state.",
+    "Persist every stage artifact to disk."
+  ],
+  "acceptanceCriteria": [
+    "Each run has a durable contract and state file.",
+    "The lifecycle separates planning, implementation, evaluation, and handoff."
+  ],
+  "deliverables": [
+    "A run contract",
+    "A bootstrap spec artifact",
+    "A durable state file"
+  ],
+  "evaluatorChecks": [
+    "Contract includes acceptance criteria.",
+    "Run artifacts are written to an isolated run directory."
+  ],
+  "branchName": "codex/harness-foundation"
+}
+
