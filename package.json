@@ -9,7 +9,7 @@
   },
   "scripts": {
     "test": "node --test",
-    "bootstrap:demo": "node src/cli.js fixtures/demo-run.json"
+    "bootstrap:demo": "node src/cli.js fixtures/demo-run.json",
+    "improve:demo": "node src/cli.js improve-project /Users/orkhanrzazade/Projects/scifi/agent-scheduler --goal \"Ship one scoped harness-safe improvement\""
   }
 }
-

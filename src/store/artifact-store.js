@@ -45,6 +45,13 @@ export class ArtifactStore {
       currentStage: contract.currentStage,
       status: contract.status,
       revisionCount: contract.revisionCount,
+      attempts: {
+        planning: 0,
+        implementation: 0,
+        evaluation: 0,
+        handoff: 0
+      },
+      lastStageResult: null,
       workspacePath: contract.workspacePath,
       worktreePath: contract.worktreePath,
       updatedAt: contract.updatedAt
@@ -67,4 +74,3 @@ export class ArtifactStore {
     return this.writeJson(runId, "state.json", state);
   }
 }
-
