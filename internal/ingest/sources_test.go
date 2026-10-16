@@ -226,6 +226,27 @@ func TestAChangedParserRedatesStoredLines(t *testing.T) {
 		x.run()
 		eq(t, x.one("select ts from event where text='two'"), good)
 		eq(t, x.counts(), before)
+		// The cursor keeps the parser it read with, so the next run does not read the whole file again.
+		want := store.ParserSum()
+		if source == "bus" {
+			want += typesSum()
+		}
+		eq(t, x.one("select sha from coverage where source=?", source), want)
+	}
+}
+
+// A replaced file whose lines date the same as stored is no disagreement: no warning.
+func TestAReplacedLogWithTheSameDatesIsQuiet(t *testing.T) {
+	x, _, _ := busCase(t)
+	path := filepath.Join(x.home, "bus", "demo.log")
+	testutil.Write(t, path, "09:30 DONE demo:leader -> crius — one\n")
+	x.run()
+	testutil.Write(t, path+".new", "09:30 DONE demo:leader -> crius — one\n")
+	if err := os.Rename(path+".new", path); err != nil {
+		t.Fatal(err)
+	}
+	if w := strings.Join(x.run().Warnings, "\n"); strings.Contains(w, "stored date") {
+		t.Fatal(w)
 	}
 }
 
