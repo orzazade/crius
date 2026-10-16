@@ -180,7 +180,9 @@ Known gaps:
 - A password flag other than `-p` with no user on the line (`redis-cli -a x`) is printed.
 - A key with no operator (SQL `WITH PASSWORD 'x'`, netrc `password x`), a name after `token_` (`GITHUB_TOKEN_PROD=x`;
   `token_count` must stay), Unicode or odd spaces around the operator, and `--password` with its value on the next
-  line are printed (Opus review of 09f817a, P2/P3).
+  line are printed (Opus review of 09f817a, P2/P3). So are a URL password holding `/` or a quote (an `@` in a URL
+  path must not end a credential), `DB_PASS_PROD=`, `||=` and `<-`, a quoted value followed by `,` or `#` that the
+  shell would join to it, and the second line of a multi-line double-quoted YAML value (review of e78ff35, P2/P3).
 - Time: the gitleaks rules make redaction about 13 times slower on long real lines (the 30 longest transcript lines,
   34 MB: 69 s, worst 3.2 s per MB; step 4: 5 s) and up to 57 s for 1 MB of text built to hold every rule keyword.
   Ingest redacts every stored text and `find --deep` its 10 cited messages. Follow-up: run each rule near its

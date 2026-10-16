@@ -101,3 +101,7 @@
 {"src": "opus-final", "in": "postgres://bob:hun@ter2xyz@db/x", "secret": "ter2xyz"}
 {"src": "opus-final", "in": "SECRET_KEY = (\n    \"hunter2xyz\"\n)", "secret": "hunter2xyz"}
 {"src": "opus-final", "in": "password=\"ab\\\" hunter2xyz\" tail", "secret": "hunter2xyz"}
+{"src": "opus-final2", "in": "ftp://me@corp.com:hunter2xyz@ftp.host/x", "secret": "hunter2xyz"}
+{"src": "opus-final2", "in": "openssl enc -aes-256-cbc -pass pass:hunter2xyz -in a", "secret": "hunter2xyz"}
+{"src": "opus-final2", "in": "openssl rsa -passin pass:hunter2xyz -in k.pem", "secret": "hunter2xyz"}
+{"src": "opus-final2", "in": "openssl pkcs12 -passout pass:hunter2xyz", "secret": "hunter2xyz"}

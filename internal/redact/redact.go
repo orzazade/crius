@@ -49,8 +49,11 @@ var blockStart = regexp.MustCompile(`(?i)^(?:![^\s]+[ \t]*)?(?:[|>][-+0-9]*|[(\[
 var secretRes = []*regexp.Regexp{
 	// A long flag and its value, to the end of the line (--password hunter2).
 	regexp.MustCompile(`(?i)--` + secretKey + `[\w-]*[ \t]+[^\s-][^\n]*`),
-	// Credentials in a URL (postgres://user:pass@host, redis://:pass@host), to the last @ before the path.
-	regexp.MustCompile(`\b[A-Za-z][A-Za-z0-9+.-]*://[^/\s:@"']*:[^\s/"']+@`),
+	// Credentials in a URL (postgres://user:pass@host, redis://:pass@host, ftp://me@corp.com:pass@host), to the last @
+	// before the path.
+	regexp.MustCompile(`\b[A-Za-z][A-Za-z0-9+.-]*://[^/\s:"']*:[^\s/"']+@`),
+	// openssl's password argument (-pass pass:x, -passin, -passout).
+	regexp.MustCompile(`(?i)-pass(?:in|out)?[ \t]+pass:\S*`),
 	regexp.MustCompile(`\b(sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{36,}|xox[bpors]-[A-Za-z0-9-]+|AKIA[0-9A-Z]{16})`),
 	regexp.MustCompile(`(?i)\bbearer\s+[A-Za-z0-9._~+/-]{20,}=*`),
 	regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}`),
