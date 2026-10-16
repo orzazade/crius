@@ -95,3 +95,31 @@ func TestVerifiedNeedsACheckerPassNamingARef(t *testing.T) {
 		t.Fatal(got, err)
 	}
 }
+
+// Review of a4908e3: a check about webapi:lead does not name api:lead; "PASS ?", "not yet", a lower-case "failed"
+// are no pass; a word of the check made only of digits is a run id, not a sha.
+func TestVerifiedReviewOfA4908e3(t *testing.T) {
+	db := open(t)
+	at := time.Date(2026, 10, 17, 5, 10, 0, 0, time.Local)
+	line(t, db, at, "crius:lead", "info", "webapi:lead deploy checked PASS")
+	line(t, db, at.Add(time.Minute), "crius:lead", "info", "lead-fe checked PASS for api:lead-fe")
+	named := line(t, db, at.Add(2*time.Minute), "crius:lead", "info", "checked PASS (api:lead, step 2)")
+	line(t, db, at, "crius:lead", "info", "aaa1111 checked PASS ? not sure")
+	line(t, db, at, "crius:lead", "info", "bbb2222 not yet checked PASS")
+	line(t, db, at, "crius:lead", "info", "ccc3333 checked PASS but e2e failed")
+	line(t, db, at, "crius:lead", "info", "checked PASS run 1234567")
+	g := &Goal{Milestones: []Milestone{
+		{State: Done, Text: "a", Refs: "bus 2026-10-17T05:10"},
+		{State: Done, Text: "b", Refs: "bus 2026-10-17T05:11"},
+		{State: Done, Text: "c", Refs: "bus 2026-10-17T05:12"},
+		{State: Done, Text: "d", Refs: "aaa1111, bbb2222, ccc3333"},
+		{State: Done, Text: "e", Refs: "1234567abc"},
+	}}
+	got, err := Verified(db, "api:lead", g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []int64{0, 0, named, 0, 0}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v want %v", got, want)
+	}
+}

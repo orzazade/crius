@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -561,12 +562,26 @@ func digestCmd(home string, now time.Time, write bool, stdout, stderr io.Writer)
 	return 0
 }
 
-// lastSnapshot reads the numbers of the newest saved report; no saved report yet is an empty snapshot, any other
+var reportJSONRe = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}-\d{4}\.json$`)
+
+// lastSnapshot reads the numbers of the newest saved report (YYYY-MM-DD-HHMM.json); no saved report yet is an empty snapshot, any other
 // failure an error.
 func lastSnapshot(dir string) (digest.Snapshot, error) {
-	names, err := filepath.Glob(filepath.Join(dir, "*.json"))
-	if err != nil || len(names) == 0 {
-		return digest.Snapshot{}, err
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return digest.Snapshot{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var names []string // sorted by name, so by time
+	for _, e := range entries {
+		if reportJSONRe.MatchString(e.Name()) {
+			names = append(names, filepath.Join(dir, e.Name()))
+		}
+	}
+	if len(names) == 0 {
+		return digest.Snapshot{}, nil
 	}
 	b, err := os.ReadFile(names[len(names)-1])
 	if err != nil {

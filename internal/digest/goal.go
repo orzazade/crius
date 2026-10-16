@@ -53,7 +53,8 @@ func (u *Unreadable) Error() string {
 
 var (
 	headingRe   = regexp.MustCompile(`^## GOAL \((\d{4}-\d{2}-\d{2} \d{2}:\d{2})\)$`)
-	goalHeadRe  = regexp.MustCompile(`(?i)^\s*#+\s*goal\b`) // any try at the heading; headingRe then checks it
+	goalHeadRe  = regexp.MustCompile(`^\s*#+\s*(GOAL\b|(?i:goal)\s*\()`) // a try at the heading; headingRe checks it
+	fenceRe     = regexp.MustCompile("^(`{3,}|~{3,})")
 	milestoneRe = regexp.MustCompile(`^- \[([x~ ])\] (.+)$`)
 	doneRe      = regexp.MustCompile(`^Done: (\d{1,3})% \((.+)\)$`)
 )
@@ -72,17 +73,25 @@ func ReadGoal(path string) (*Goal, error) {
 	return g, nil
 }
 
-// ParseGoal reads the first GOAL block of a status file outside code fences, in the exact form of RULES 3.1. A
-// heading that is almost right (indented, other case, one #) is an unreadable block, not LOST. Blank lines in the
+// ParseGoal reads the first GOAL block of a status file outside code fences (``` or ~~~, closed by the same mark at
+// least as long), in the exact form of RULES 3.1. A heading that is almost right (indented, one #, "GOAL" with no
+// date, "Goal (" in another case) is an unreadable block, not LOST; a prose heading like "## Goal" is not a try. Blank lines in the
 // block are skipped; the block ends at its "Needs owner:" line.
 func ParseGoal(text string) (*Goal, error) {
 	lines := strings.Split(strings.TrimPrefix(text, "\ufeff"), "\n")
-	at, fence := -1, false
+	at, fence := -1, "" // fence: the open code fence's marker
 	for i, l := range lines {
-		if strings.HasPrefix(strings.TrimSpace(l), "```") {
-			fence = !fence
+		t := strings.TrimSpace(l)
+		if f := fenceRe.FindString(t); f != "" {
+			switch {
+			case fence == "":
+				fence = f
+			case f[0] == fence[0] && len(f) >= len(fence) && t == f:
+				fence = ""
+			}
+			continue
 		}
-		if !fence && goalHeadRe.MatchString(l) {
+		if fence == "" && goalHeadRe.MatchString(l) {
 			at = i
 			break
 		}

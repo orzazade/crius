@@ -33,24 +33,27 @@ type Report struct {
 // Build makes the goal report (RULES 3.4, Crius 10-17 02:29): what needs the owner on top, the first marked; then per
 // lead the claimed % against the verified milestones, the change since the last report, the goal and the next
 // milestone. A lead with no GOAL block is LOST, a block outside the grammar UNREADABLE, a file that cannot be read an
-// ERROR; each is its own line. Over 60 lines, the goal and next lines go first, from the last lead up; lead lines and
+// ERROR, which also makes the report partial; each is its own line, and keeps its last numbers for the next report.
+// Over 60 lines, the goal and next lines go first, from the last lead up; lead lines and
 // owner needs always stay.
 func Build(db *sql.DB, leads []ingest.Lead, prev Snapshot, now time.Time) (*Report, error) {
 	status, reasons, err := recall.Freshness(db, now)
 	if err != nil {
 		return nil, err
 	}
-	r := &Report{Status: status, Snap: Snapshot{}}
-	head := []string{fmt.Sprintf("# Goal report · %s · status %s", now.Format("2006-01-02 15:04"), status)}
-	for _, why := range reasons {
-		head = append(head, "! "+why)
-	}
+	r := &Report{Snap: Snapshot{}}
 	var needs []string
 	type entry struct{ line, goal, next string }
 	var entries []entry
+	cannotRead := 0
 	for _, l := range leads {
 		g, err := ReadGoal(l.StatusFile)
 		var u *Unreadable
+		if err != nil {
+			if p, ok := prev[l.Name]; ok {
+				r.Snap[l.Name] = p // compared with when the lead is readable again
+			}
+		}
 		switch {
 		case errors.Is(err, ErrLost):
 			entries = append(entries, entry{line: fmt.Sprintf("%s: LOST: %s has no GOAL block", l.Name, l.StatusFile)})
@@ -60,6 +63,7 @@ func Build(db *sql.DB, leads []ingest.Lead, prev Snapshot, now time.Time) (*Repo
 			continue
 		case err != nil:
 			entries = append(entries, entry{line: fmt.Sprintf("%s: ERROR: %v", l.Name, err)})
+			cannotRead++
 			continue
 		}
 		checked, err := Verified(db, l.Name, g)
@@ -83,9 +87,18 @@ func Build(db *sql.DB, leads []ingest.Lead, prev Snapshot, now time.Time) (*Repo
 			goal: "  Goal: " + g.Goal,
 			next: "  Next: " + g.Next,
 		})
-		if n := strings.TrimSuffix(strings.TrimSpace(g.NeedsOwner), "."); !strings.EqualFold(n, "nothing") {
+		if n := strings.Trim(strings.TrimSpace(g.NeedsOwner), `".`); !strings.EqualFold(n, "nothing") {
 			needs = append(needs, fmt.Sprintf("%s: %s", l.Name, g.NeedsOwner))
 		}
+	}
+	if cannotRead > 0 {
+		status = "partial"
+		reasons = append(reasons, fmt.Sprintf("%d lead status file cannot be read", cannotRead))
+	}
+	r.Status = status
+	head := []string{fmt.Sprintf("# Goal report · %s · status %s", now.Format("2006-01-02 15:04"), status)}
+	for _, why := range reasons {
+		head = append(head, "! "+why)
 	}
 	body := []string{"", "## Needs the owner"}
 	if len(needs) == 0 {
@@ -126,7 +139,7 @@ func Build(db *sql.DB, leads []ingest.Lead, prev Snapshot, now time.Time) (*Repo
 		}
 	}
 	if cut {
-		body = append(body, fmt.Sprintf("(goal and next lines of %d leads cut to keep 60 lines; see their status files)", short))
+		body = append(body, fmt.Sprintf("(goal and next lines of %d leads cut for length; see their status files)", short))
 	}
 	r.Text = strings.Join(append(head, body...), "\n") + "\n"
 	return r, nil

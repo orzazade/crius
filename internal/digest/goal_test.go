@@ -93,6 +93,14 @@ func TestParseGoalSkipsFencesAndCatchesNearMisses(t *testing.T) {
 	if _, err := ParseGoal("```\n## GOAL (2020-01-01 00:00)\n```\nno block outside the fence\n"); !errors.Is(err, ErrLost) {
 		t.Fatal(err)
 	}
+	// Review of a4908e3: a prose "## Goal" heading is not a try at the block; ~~~ fences and longer fences count.
+	block := good[strings.Index(good, "## GOAL"):]
+	for _, before := range []string{"# S\n## Goal\nship it\n\n", "## Goal and scope\nx\n", "~~~\n## GOAL (2020-01-01 00:00)\nGoal: EXAMPLE\n~~~\n",
+		"````\n```\n## GOAL (2020-01-01 00:00)\nGoal: EXAMPLE\n````\n", "```\n~~~\n## GOAL (2020-01-01 00:00)\nGoal: EXAMPLE\n```\n"} {
+		if g, err := ParseGoal(before + block); err != nil || g.Goal != "Falcon is Crius's senses." {
+			t.Errorf("%q: %v %v", before, g, err)
+		}
+	}
 	for _, h := range []string{"   ## GOAL (2026-10-17 02:40)", "## Goal (2026-10-17 02:40)", "# GOAL — crius:build"} {
 		var u *Unreadable
 		if _, err := ParseGoal(h + "\nGoal: x\n"); !errors.As(err, &u) || u.Line != 1 || u.Why != "heading needs (YYYY-MM-DD HH:MM)" {

@@ -454,6 +454,20 @@ func TestDigestWritesARedactedReportAndComparesWithTheLast(t *testing.T) {
 	if rc, out = run("digest"); rc != 0 || !strings.Contains(out, "· no change since the last report") {
 		t.Fatal(rc, out)
 	}
+	// Review of cbd8517: only report files (YYYY-MM-DD-HHMM.json) are compared with; a folder that cannot be read
+	// fails, never a quiet "first report".
+	testutil.Write(t, filepath.Join(dir, "latest.json"), `{"demo:lead":{"done":55,"verified":0}}`)
+	if rc, out = run("digest"); rc != 0 || !strings.Contains(out, "· no change since the last report") {
+		t.Fatal(rc, out)
+	}
+	if err := os.Chmod(dir, 0); err != nil {
+		t.Fatal(err)
+	}
+	rc, out = run("digest")
+	os.Chmod(dir, 0o700)
+	if rc != exitError || !strings.Contains(out, "permission denied") {
+		t.Fatal(rc, out)
+	}
 	// A store that is not fresh says so and exits partial, like find.
 	db, err := store.Open(home)
 	if err != nil {

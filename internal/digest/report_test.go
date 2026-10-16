@@ -53,7 +53,7 @@ func TestBuildReportsEveryLeadLoudly(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"# Goal report · 2026-10-17 09:00 · status complete",
+		"# Goal report · 2026-10-17 09:00 · status partial\n! 1 lead status file cannot be read\n",
 		"## Needs the owner\n▶ 1. axi:leader: sandbox order needs the owner's tenant OK\n",
 		"axi:leader: 50% claimed · verified 1 of 1 done (2 milestones) · no change since the last report",
 		"crius:build: 50% claimed · verified 0 of 1 done (2 milestones) · +10 since the last report",
@@ -69,9 +69,6 @@ func TestBuildReportsEveryLeadLoudly(t *testing.T) {
 	if strings.Contains(r.Text, "crius:build: nothing") || r.Snap["crius:build"] != (LeadSnap{Done: 50, Verified: 0}) ||
 		r.Snap["axi:leader"] != (LeadSnap{Done: 50, Verified: 1}) {
 		t.Fatalf("%+v", r.Snap)
-	}
-	if _, ok := r.Snap["falcon:lead"]; ok {
-		t.Fatal("a lost lead has no numbers to compare next time")
 	}
 }
 
@@ -108,7 +105,32 @@ func TestBuildKeepsSixtyLines(t *testing.T) {
 	}
 	n := strings.Count(r.Text, "\n")
 	if n > 60 || !strings.Contains(r.Text, "p19:lead: 50% claimed") || !strings.Contains(r.Text, "need 19") ||
-		!strings.Contains(r.Text, "(goal and next lines of 14 leads cut to keep 60 lines; see their status files)") {
+		!strings.Contains(r.Text, "(goal and next lines of 14 leads cut for length; see their status files)") {
 		t.Fatalf("%d lines\n%s", n, r.Text)
+	}
+}
+
+// Review of cbd8517: "nothing" in quotes (the RULES template copied) is nothing; a file that cannot be read makes
+// the report partial so the schedule sees it; a lead that cannot be read keeps its last numbers for the next report.
+func TestBuildReviewOfCbd8517(t *testing.T) {
+	db := open(t)
+	if _, err := db.Exec("insert into source_run (started, finished, status, stats) values (?,?,?,?)",
+		"2026-10-17T06:58:00Z", now.Add(-2*time.Minute).UTC().Format(time.RFC3339), "complete", "{}"); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	leads := []ingest.Lead{{Name: "a:lead", StatusFile: statusFile(t, dir, "a.md", block("2026-10-17 08:30", `"nothing"`, "- [ ] one"))}}
+	r, err := Build(db, leads, nil, now)
+	if err != nil || r.Status != "complete" || !strings.Contains(r.Text, "Nothing needs the owner.") {
+		t.Fatal(err, r.Text)
+	}
+	leads = append(leads, ingest.Lead{Name: "b:lead", StatusFile: filepath.Join(dir, "gone.md")},
+		ingest.Lead{Name: "c:lead", StatusFile: statusFile(t, dir, "c.md", "no block\n")})
+	r, err = Build(db, leads, Snapshot{"b:lead": {Done: 40, Verified: 2}, "c:lead": {Done: 10}}, now)
+	if err != nil || r.Status != "partial" || !strings.Contains(r.Text, "· status partial\n! 1 lead status file cannot be read\n") {
+		t.Fatal(err, r.Text)
+	}
+	if r.Snap["b:lead"] != (LeadSnap{Done: 40, Verified: 2}) || r.Snap["c:lead"] != (LeadSnap{Done: 10}) {
+		t.Fatalf("%+v", r.Snap)
 	}
 }
