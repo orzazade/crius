@@ -164,21 +164,24 @@ titles, headings). Prompt text, tool output and assistant text are never stored:
 pointers, and allowlisted tags (§3d). **Every output sink is redacted** with the secret-scan patterns: stored text,
 CLI output, error messages, logs, digests, alerts, and helper answers. A hit is replaced by `[redacted]` and counted.
 
-**Known redaction gaps (step 4, 1eb7a34 and its review fix).** The patterns are hand-made; six review rounds each found a new edge of
-key = value parsing, so step 4b swaps in a maintained ruleset (gitleaks rules) behind `redact.Redact`, tested on the
-31k real lines and the leak cases of all six rounds. Until then these are known and not fixed:
-- A YAML value on the next line (`password:` then the value below it) is printed.
-- Short flags (`-p hunter2`) are printed; only long flags (`--password x`) are redacted.
-- An unquoted value ends at a comma, space or backtick (`password=a,b` prints `,b`; `password=abc`def` prints
-  `` `def``; a password with a space prints its tail).
-- A plain value that ends in another key and its operator takes that key, and the key's value is printed
-  (`password: hunter2/token: abc` prints `abc`).
-- A backtick with a space after it is read as markdown, not a value (`` token = ` hunter2` `` is printed).
-- Over-redaction: prose with `secret:`/`token:`, code with `==` or `authorization`, the name in
-  `secrets.env: DB_PASSWORD = x`, and in `find --deep` tool input a field named `value`/`val` in the same object
-  as a field whose value is a secret name (`{"filename":"password.txt","value":"x"}`).
+**Redaction since step 4b.** Six review rounds each found a new edge of exact value-end parsing, so the key = value
+path now fails closed (Crius 23:40): after a secret-named key, a value ends early only at a quote or backtick pair
+that closes on the same line with nothing escaped inside; any other value is blanked to the end of its line (or of
+its JSON string or tool-input field). A key with no value, a block scalar (`|`, `>`) or a line that ends at another
+secret key also takes the next line and the lines indented under the key. `-p` is a password after `mysql`,
+`mariadb` and `sshpass`. On top, the gitleaks rules for token formats (vendored v8.30.1 in
+`internal/redact/rules/`, MIT; `bin/refresh-gitleaks-rules <tag>` refreshes them; path rules and allowlists are
+dropped). Every leak case of the six rounds and every gap listed for step 4 is a fixture in
+`internal/redact/testdata/leaks.jsonl`. On the 31k real lines nothing the step-4 redactor caught is printed, 32
+lines change, 0.14% more of the text is blanked, and redaction takes about 340 ms per MB (twice step 4).
+Known gaps:
+- A secret with no key, no known prefix and no known shape (a bare word in prose) is not caught.
+- `-p` after other clients (`redis-cli -a`, a script's own flag) is printed.
 - `find --deep` matches words before redaction, so a guessed secret confirms itself by being found (it is never
-  printed). Only secrets that match a pattern are caught; a secret with no key, prefix or known shape is not.
+  printed).
+- Over-redaction: the rest of the line after any secret-named key (prose such as `password: is required`, review
+  notes that quote secrets), the line under an empty key, and in `find --deep` tool input a field named
+  `value`/`val` next to a field whose value is a secret name.
 
 ### 3d. Provenance and taint
 

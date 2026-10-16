@@ -1,0 +1,23 @@
+#!/bin/bash
+# Refreshes the vendored gitleaks rules behind redact.Redact (step 4b): bin/refresh-gitleaks-rules <tag>, e.g. v8.30.1.
+# Fetches config/gitleaks.toml and LICENSE at that tag's commit into internal/redact/rules/ and regenerates
+# gitleaks.json, which redact embeds. Then: review the diff, run go test ./internal/redact (the leak fixtures and
+# the real-line sample), and commit all three files together. Needs curl and Python 3.11+ (tomllib).
+set -euo pipefail
+finished=0
+trap '[ "$finished" = 1 ] || { echo "refresh-gitleaks-rules: FAILED" >&2; exit 1; }' EXIT
+tag=${1:?usage: refresh-gitleaks-rules <tag>}
+root=$(cd "$(dirname "$0")/.." && pwd)
+dir=$root/internal/redact/rules
+py=
+for p in python3 python3.13 python3.12 python3.11 /opt/homebrew/bin/python3; do
+	if command -v "$p" >/dev/null && "$p" -c 'import tomllib' 2>/dev/null; then py=$(command -v "$p"); break; fi
+done
+[ -n "$py" ] || { echo "refresh-gitleaks-rules: needs Python 3.11+ (tomllib)" >&2; exit 1; }
+commit=$(curl -fsSL "https://api.github.com/repos/gitleaks/gitleaks/commits/$tag" | "$py" -I -c 'import json,sys; print(json.load(sys.stdin)["sha"])')
+curl -fsSL -o "$dir/gitleaks.toml" "https://raw.githubusercontent.com/gitleaks/gitleaks/$commit/config/gitleaks.toml"
+curl -fsSL -o "$dir/LICENSE.gitleaks" "https://raw.githubusercontent.com/gitleaks/gitleaks/$commit/LICENSE"
+"$py" -I "$root/bin/gitleaks-rules-json.py" "$tag" "$commit" "$dir/gitleaks.toml" > "$dir/gitleaks.json.tmp"
+mv "$dir/gitleaks.json.tmp" "$dir/gitleaks.json"
+echo "gitleaks $tag ($commit) -> internal/redact/rules/gitleaks.json"
+finished=1

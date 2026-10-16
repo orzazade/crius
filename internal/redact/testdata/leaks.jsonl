@@ -1,0 +1,75 @@
+{"src": "r1", "in": "token ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "secret": "AAAAAAAAAAAAAAAAAAAA"}
+{"src": "r1", "in": "api_key=aaaaaaaaaaaaaaaaaaaaaaaa", "secret": "aaaaaaaaaaaaaaaaaaaa"}
+{"src": "r1", "in": "\"api_key\": \"abcdefghijklmnopqrstuvwxyz123456\"", "secret": "abcdefghijklmnop"}
+{"src": "r1", "in": "Authorization: Bearer bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "secret": "bbbbbbbbbbbbbbbbbbbb"}
+{"src": "r1", "in": "sk-cccccccccccccccccccccccccccccc", "secret": "cccccccccccccccccccc"}
+{"src": "r1", "in": "x -----BEGIN RSA PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCMIIEvQIBADANBgkqhkiG9w0BAQEFAASCMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n-----END RSA PRIVATE KEY----- y", "secret": "MIIEvQ"}
+{"src": "r1", "in": "cut -----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCMIIEvQIBADANBgkqhkiG9w0BAQEFAASCMIIEvQIBADANBgkqhkiG9w0BAQEFAASC", "secret": "MIIEvQ"}
+{"src": "r2", "in": "password=hunter2", "secret": "hunter2"}
+{"src": "r2", "in": "{\"password\": \"pa ss!\"}", "secret": "pa ss"}
+{"src": "r2", "in": "PASSWD: s3cr3t", "secret": "s3cr3t"}
+{"src": "r2", "in": "api_key='k1'", "secret": "k1"}
+{"src": "r2", "in": "access_token: tok-9", "secret": "tok-9"}
+{"src": "r2", "in": "password=\"abcdefghijklmnop", "secret": "abcdefghijklmnop"}
+{"src": "r2", "in": "api_key: 'abcdefghijklmnop", "secret": "abcdefghijklmnop"}
+{"src": "r3", "in": "export PASSWORD=\\\"hunter2xyz\\\" && echo", "secret": "hunter2"}
+{"src": "r3", "in": "{\\\"api_key\\\": \\\"two words k3y\\\"}", "secret": "k3y"}
+{"src": "r3", "in": "PASSWORD=\\\\\\\"hunter2xyz\\\\\\\"", "secret": "hunter2"}
+{"src": "r3", "in": "secret_key=\\'two words k3y\\'", "secret": "k3y"}
+{"src": "r3", "in": "aws_secret_access_key=hunter2", "secret": "hunter2"}
+{"src": "r3", "in": "client_secret: hunter2", "secret": "hunter2"}
+{"src": "r3", "in": "token=hunter2", "secret": "hunter2"}
+{"src": "r3", "in": "GITHUB_TOKEN=hunter2", "secret": "hunter2"}
+{"src": "r3", "in": "passphrase: hunter2", "secret": "hunter2"}
+{"src": "r4", "in": "password := \"hunter2\"", "secret": "hunter2"}
+{"src": "r4", "in": "'password' => 'hunter2'", "secret": "hunter2"}
+{"src": "r4", "in": "if PASSWORD == \"hunter2\"", "secret": "hunter2"}
+{"src": "r4", "in": "password=\"ab\\\"hunter2\"", "secret": "hunter2"}
+{"src": "r4", "in": "PASSWORD=\\\"ab\\\\\\\"hunter2\\\"", "secret": "hunter2"}
+{"src": "r4", "in": "mysql --password hunter2", "secret": "hunter2"}
+{"src": "r4", "in": "GH_TOKEN_2=hunter2", "secret": "hunter2"}
+{"src": "r4", "in": "tokenValue=hunter2", "secret": "hunter2"}
+{"src": "r4", "in": "password.prod=hunter2", "secret": "hunter2"}
+{"src": "r4", "in": "PASSWORD = `two hunter2`", "secret": "hunter2"}
+{"src": "r4", "in": "postgres://user:hunter2@db/x", "secret": "hunter2"}
+{"src": "r4", "in": "Authorization: Basic dXNlcjpodW50ZXIy", "secret": "dXNlcjpodW50ZXIy"}
+{"src": "r4", "in": "\"authorization\": \"Basic hunter2\"", "secret": "hunter2"}
+{"src": "r5", "in": "config/secrets.yaml:  password: hunter2", "secret": "hunter2"}
+{"src": "r5", "in": "internal/secret.go:\tpassword = \"hunter2\"", "secret": "hunter2"}
+{"src": "r5", "in": "secrets.env: DB_PASSWORD = hunter2", "secret": "hunter2"}
+{"src": "r5", "in": "token.json: api_key: hunter2", "secret": "hunter2"}
+{"src": "r5", "in": "GH_TOKEN_2: password: hunter2", "secret": "hunter2"}
+{"src": "r5", "in": "PASSWORD=\\\"ab\\\\\\\"hunter2\\\" tail", "secret": "hunter2"}
+{"src": "r5", "in": "password=\"ab\\\"hunter2\" tail", "secret": "hunter2"}
+{"src": "r5", "in": "curl -d \"{\\\"password\\\":\\\"hunter2\\\",\\\"user\\\":\\\"bob\\\"}\"", "secret": "hunter2"}
+{"src": "r5", "in": "password=\"cut off\nnext line", "secret": "cut off"}
+{"src": "r6", "in": "password=hunter2secret:", "secret": "hunter2"}
+{"src": "r6", "in": "password=hunter2Token= \nnext", "secret": "hunter2"}
+{"src": "r6", "in": "api_key=Hunter2.secret:,x", "secret": "Hunter2"}
+{"src": "r6", "in": "password=hunter2.secret=x tail", "secret": "hunter2"}
+{"src": "r6", "in": "password=`hunter2", "secret": "hunter2"}
+{"src": "r6", "in": "password = `hunter2\nmore`", "secret": "hunter2"}
+{"src": "r6", "in": "password=hunter2secret: \nnext", "secret": "hunter2"}
+{"src": "r6", "in": "curl -d \"{\\\"password\\\":\\\"hunter2\\\\\\\\\\\"}\" keep", "secret": "hunter2"}
+{"src": "r6", "in": "password=abc\u000bdef tail", "secret": "def"}
+{"src": "r6", "in": "password=hunter2secret:` x", "secret": "hunter2"}
+{"src": "r6", "in": "password=hunter2secret:`", "secret": "hunter2"}
+{"src": "r6", "in": "password=hunter2secret:=` x", "secret": "hunter2"}
+{"src": "r6", "in": "DB_PASSWORD=hunter2token:\t`\tnext", "secret": "hunter2"}
+{"src": "gap", "in": "password:\nhunter2", "secret": "hunter2"}
+{"src": "gap", "in": "secrets.yaml: password:\nhunter2", "secret": "hunter2"}
+{"src": "gap", "in": "db:\n  password:\n    hunter2", "secret": "hunter2"}
+{"src": "gap", "in": "password: |\n  hunter2\n  more", "secret": "hunter2"}
+{"src": "gap", "in": "password: >-\n  hunter2", "secret": "hunter2"}
+{"src": "gap", "in": "mysql -u root -phunter2 db", "secret": "hunter2"}
+{"src": "gap", "in": "sshpass -p hunter2 ssh host", "secret": "hunter2"}
+{"src": "gap", "in": "password=a,hunter2", "secret": "hunter2"}
+{"src": "gap", "in": "password=two hunter2 words", "secret": "hunter2"}
+{"src": "gap", "in": "token = ` hunter2`", "secret": "hunter2"}
+{"src": "gap", "in": "password=abc`hunter2 tail", "secret": "hunter2"}
+{"src": "gap", "in": "password: x/token: hunter2", "secret": "hunter2"}
+{"src": "gap", "in": "token=>password: /token: hunter2", "secret": "hunter2"}
+{"src": "4b", "in": "stripe key sk_live_4eC39HqLyjWDarjtT1zdp7dc in the log", "secret": "4eC39HqLyjWDarjtT1zdp7dc"}
+{"src": "4b", "in": "GITLAB=glpat-Zx8vQ2mN7pL4kR9tY3wB ok", "secret": "Zx8vQ2mN7pL4kR9tY3wB"}
+{"src": "4b", "in": "npm token npm_a8Kd93LmQz7Xw2Pv5Rt1Yb6Nc4Hj0Gf8Se3U ok", "secret": "a8Kd93LmQz7Xw2Pv5Rt1Yb6Nc4Hj0Gf8Se3U"}
+{"src": "4b", "in": "auth_code = 9fK2xQ7pLm4Zr8Tb", "secret": "9fK2xQ7pLm4Zr8Tb"}

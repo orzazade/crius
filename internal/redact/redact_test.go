@@ -75,10 +75,13 @@ func TestJSONRedactsEachStringBeforeEncoding(t *testing.T) {
 	}
 }
 
-// Review 0178403: a key at the end of a line takes nothing from the next line.
-func TestRedactStaysOnItsLine(t *testing.T) {
-	out, _ := Redact("new password:\n2026-10-16 next line")
-	if !strings.Contains(out, "\n2026-10-16 next line") {
+// Review 0178403 kept the line after a key with no value; step 4b fails closed (Crius 23:40): that line may be the
+// value (YAML), so it goes, and the line after it stays.
+func TestRedactTakesTheLineBelowAnEmptyKey(t *testing.T) {
+	if out, _ := Redact("new password:\n2026-10-16 next line\nafter"); out != "new [redacted]\nafter" {
+		t.Fatalf("%q", out)
+	}
+	if out, _ := Redact("db:\n  password: |\n    a\n\n    b\n  user: bob"); out != "db:\n  [redacted]\n  user: bob" {
 		t.Fatalf("%q", out)
 	}
 }
@@ -166,8 +169,8 @@ func TestRedactMoreShapes(t *testing.T) {
 }
 
 // Review 0d2402b: a name followed by a secret key is no key with a value (grep output: "config/secrets.yaml:
-// password: x"); a value ends at the quote that matches its opener, escaped or not; a backtick needs its pair; a
-// URL credential stays inside its JSON string.
+// password: x"); a URL credential stays inside its JSON string. Since step 4b a value ends early only at a clean
+// quote or backtick pair; escaped quotes and a lone backtick run to the end of the line (Crius 23:40).
 func TestRedactValueEnds(t *testing.T) {
 	for _, in := range []string{"config/secrets.yaml:  password: hunter2", "internal/secret.go:\tpassword = \"hunter2\"",
 		"secrets.env: DB_PASSWORD = hunter2", "token.json: api_key: hunter2", "GH_TOKEN_2: password: hunter2",
@@ -177,9 +180,10 @@ func TestRedactValueEnds(t *testing.T) {
 		}
 	}
 	for in, want := range map[string]string{
-		`password: \"abc\" in quota --json output the JSON breaks.`: `[redacted] in quota --json output the JSON breaks.`,
-		`curl -d "{\"password\":\"x\",\"user\":\"bob\"}"`:           `curl -d "{\"[redacted],\"user\":\"bob\"}"`,
-		"The key `api_key:` in config.yaml sets the limit":          "The key `api_key:` in config.yaml sets the limit",
+		`password: \"abc\" in quota --json output the JSON breaks.`: `[redacted]`,
+		`curl -d "{\"password\":\"x\",\"user\":\"bob\"}"`:           `curl -d "{\"[redacted]`,
+		`{"password":"x","user":"bob"}`:                             `{"[redacted],"user":"bob"}`,
+		"The key `api_key:` in config.yaml sets the limit":          "The key `[redacted]",
 		`{"a":"http://h:1","b":"x@y.z","c":"keep"}`:                 `{"a":"http://h:1","b":"x@y.z","c":"keep"}`,
 		"password=\"cut off\nnext line stays":                       "[redacted]\nnext line stays",
 		"PASSWORD = `two hunter2` then more":                        "[redacted] then more",
@@ -200,11 +204,11 @@ func TestRedactValueThatLooksLikeAKey(t *testing.T) {
 			t.Errorf("%q -> %q (%d)", in, out, n)
 		}
 	}
-	if out, _ := Redact("password=hunter2 tail stays, token=x;y"); out != "[redacted] tail stays, [redacted];y" {
+	if out, _ := Redact("password=hunter2 tail too, token=x;y"); out != "[redacted]" {
 		t.Error(out)
 	}
 	in := `curl -d "{\"password\":\"a\\\\\"}" keep this text` + "\nnext line"
-	if out, _ := Redact(in); out != `curl -d "{\"[redacted]}" keep this text`+"\nnext line" {
+	if out, _ := Redact(in); out != `curl -d "{\"[redacted]`+"\nnext line" {
 		t.Errorf("%s -> %s", in, out)
 	}
 }

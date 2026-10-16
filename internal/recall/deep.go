@@ -193,8 +193,11 @@ func keep(best *[]cand, c cand, n int) {
 
 // cite redacts the whole message, then cuts the snippet around the tightest stretch: a secret cut in half by the
 // window would lose the prefix the patterns look for. If redaction took a word away, the snippet starts the text.
+// It redacts the text with its lines (one per block and field), so a value whose end is not certain takes the rest
+// of its field, not of the message (step 4b), and folds the spaces after.
 func (c cand) cite(terms [][]byte) Hit {
 	text, _ := redact.Redact(c.text)
+	text = strings.Join(strings.Fields(text), " ")
 	// strings.ToLower maps rune to rune, so a rune index in lower is the same in text (byte offsets may differ).
 	at, _ := tightest([]rune(strings.ToLower(text)), terms)
 	runes := []rune(text)
@@ -341,12 +344,13 @@ func deepCite(src deepSrc, line []byte, terms [][]byte, from time.Time) (cand, b
 	if err != nil || ts.Before(from) {
 		return cand{}, false
 	}
-	text := strings.Join(strings.Fields(messageText(l.Message.Content)), " ")
+	raw := messageText(l.Message.Content)
+	text := strings.Join(strings.Fields(raw), " ")
 	at, span := tightest([]rune(strings.ToLower(text)), terms)
 	if at < 0 {
 		return cand{}, false
 	}
-	return cand{Hit{Kind: "transcript", ID: l.UUID, TS: l.Timestamp, Match: "deep", Path: src.path}, text, src.rank, span}, true
+	return cand{Hit{Kind: "transcript", ID: l.UUID, TS: l.Timestamp, Match: "deep", Path: src.path}, raw, src.rank, span}, true
 }
 
 // tightest finds the shortest stretch of text that holds every term, in runes (letters): its start and length; at
@@ -397,7 +401,8 @@ func tightest(text []rune, terms [][]byte) (at, span int) {
 	return at, span
 }
 
-// messageText is the readable text of a message: a string, or the text, tool input and tool result of its blocks.
+// messageText is the readable text of a message: a string, or the text, tool input and tool result of its blocks,
+// one per line, as tool input gives one line per field.
 func messageText(raw json.RawMessage) string {
 	var s string
 	if json.Unmarshal(raw, &s) == nil {
@@ -422,7 +427,7 @@ func messageText(raw json.RawMessage) string {
 			parts = append(parts, messageText(b.Content))
 		}
 	}
-	return strings.Join(parts, " ")
+	return strings.Join(parts, "\n")
 }
 
 // toolText is the readable text of a tool input: decoded, not raw JSON, since an escaped quote (\") hides a

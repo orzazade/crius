@@ -1,6 +1,7 @@
 // Package redact is the secret scan for every output sink: stored text, CLI output, error text, logs and alerts
-// (design §3c). Patterns from ~/.claude/hooks/check-secrets.sh plus common formats. It imports only the standard
-// library, so the watchdog can use it without depending on the ingest or the store.
+// (design §3c). Patterns from ~/.claude/hooks/check-secrets.sh plus common formats, a key = value scan that fails
+// closed, and the gitleaks rules for token formats (rules.go). It imports only the standard library, so the watchdog
+// can use it without depending on the ingest or the store.
 //
 // The patterns need context: a key next to its value, quotes unescaped, a secret whole. Redact text before any step
 // that removes context (cutting a snippet, decoding JSON, dropping keys), or carry the context through it as
@@ -29,27 +30,30 @@ func SecretKey(name string) bool { return secretKeyRe.MatchString(name) }
 // match on its first line would leave the rest of the block.
 var blockRe = regexp.MustCompile(`(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)`)
 
-// key = value, also as JSON ("api_key": "..."), with the start of the value as the last group; redactPairs finds
-// its end.
+// key = value, also as JSON ("api_key": "..."); the last group is empty and marks where the value starts.
 // The rest of the name may follow the secret word (secret_access_key, password.prod); the key's quotes may come
 // escaped (code or JSON quoted in a command); the operator may be code's (:=, =>, ==); a scheme may lead the value
 // (Authorization: Basic ...).
 var pairRe = regexp.MustCompile(`(?i)` + secretKey + `[\w.-]*\\*["']?[ \t]*(?::=|=>|==?|:)[ \t]*` +
-	`(?:(?:basic|bearer|digest|token)[ \t]+)?` + "(\\\\*[\"']|`|[^\\s\"',;`])")
+	`(?:(?:basic|bearer|digest|token)[ \t]+)?()`)
 
-// keyStart is a secret-named key and its operator at the start of a text.
-var keyStart = regexp.MustCompile(`(?i)^[\w.-]*?` + secretKey + `[\w.-]*\\*["']?[ \t]*(?::=|=>|==?|:)[ \t]*` +
-	`(?:(?:basic|bearer|digest|token)[ \t]+)?` + "(?:\\\\*[\"']|`|[^\\s\"',;`])")
+// blockStart is a key line's value that continues on the lines below: nothing (YAML), a block scalar (| or >), or
+// a line that ends at another secret-named key and its operator (grep output: secrets.yaml: password:).
+var blockStart = regexp.MustCompile(`(?i)^(?:[|>][-+0-9]*)?$|` + secretKey + `[\w.-]*\\*["']?[ \t]*(?::=|=>|==?|:)$`)
 
 var secretRes = []*regexp.Regexp{
-	// A long flag and its value (--password hunter2); -p is too short to tell.
-	regexp.MustCompile(`(?i)--` + secretKey + `[\w-]*[ \t]+[^\s-]\S*`),
+	// A long flag and its value, to the end of the line (--password hunter2).
+	regexp.MustCompile(`(?i)--` + secretKey + `[\w-]*[ \t]+[^\s-][^\n]*`),
 	// Credentials in a URL (postgres://user:pass@host).
 	regexp.MustCompile(`\b[A-Za-z][A-Za-z0-9+.-]*://[^/\s:@"']+:[^@\s/"']+@`),
 	regexp.MustCompile(`\b(sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{36,}|xox[bpors]-[A-Za-z0-9-]+|AKIA[0-9A-Z]{16})`),
 	regexp.MustCompile(`(?i)\bbearer\s+[A-Za-z0-9._~+/-]{20,}=*`),
 	regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}`),
 }
+
+// shortFlag is -p after a client that takes a password that way (mysql -phunter2, sshpass -p hunter2); -p means
+// something else for most commands. The redaction runs from -p to the end of the line.
+var shortFlag = regexp.MustCompile(`(\b(?i:mysql\w*|mariadb\w*|sshpass)\b[^\n]*?[ \t])-p[^\n]*`)
 
 // Redact returns the text with each secret replaced by [redacted], and the number of secrets replaced.
 func Redact(s string) (string, int) {
@@ -60,71 +64,30 @@ func Redact(s string) (string, int) {
 	for _, re := range secretRes {
 		s = re.ReplaceAllStringFunc(s, func(string) string { hits++; return "[redacted]" })
 	}
-	return s, hits
+	s = shortFlag.ReplaceAllStringFunc(s, func(m string) string { hits++; return shortFlag.FindStringSubmatch(m)[1] + "[redacted]" })
+	s, n = redactRules(s)
+	return s, hits + n
 }
 
-// redactPairs replaces the value of each secret-named key, any length: a short password is still a password. A
-// regexp cannot tell where such a value ends, so the scan does: a quoted value at the quote escaped like its opener
-// (\"a\\\"b\" ends at the last \"), or at the end of the line when cut off; a backtick value at its pair, or at
-// the end of the line; a plain value at a space or a quote. A "value" that is itself a secret-named key with a value
-// (grep output: secrets.yaml: password: x) is scanned again, and the redaction starts at the first value, so no part
-// of it is printed. Each step moves on through the text: the scan is linear.
+// redactPairs replaces the value of each secret-named key, any length: a short password is still a password. It
+// fails closed (Crius 23:40, after six review rounds of value-end parsing): a value ends early only where its end is
+// certain, at the close of a quote or backtick pair on the same line with no backslash inside; any other value runs
+// to the end of the line (or of the JSON string, which JSON redacts alone). A value that continues below its key
+// line (YAML, a block scalar, a line ending at an operator) takes the next line and the lines indented under the
+// key. Over-redacting is accepted; printing part of a secret is not. Each step moves on through the text: linear.
 func redactPairs(s string) (string, int) {
 	var b strings.Builder
 	hits, pos := 0, 0
-	from := -1 // start of a rescanned value: the redaction starts there
 	for {
 		m := pairRe.FindStringSubmatchIndex(s[pos:])
 		if m == nil {
 			break
 		}
-		v, end := pos+m[len(m)-2], pos+m[len(m)-1] // the value is the last group: secretKey has one too
-		if keyStart.MatchString(s[v:]) {
-			if from < 0 {
-				b.WriteString(s[pos:v])
-				from = v
-			}
-			pos = v
-			continue
-		}
-		lo, start, rescan := pos, pos+m[0], from >= 0
-		if rescan {
-			lo, start = from, from // already written up to from
-		}
-		from = -1
-		switch q := s[end-1]; q {
-		case '"', '\'':
-			end = quoteEnd(s, end, q, end-1-v)
-		case '`':
-			e := strings.IndexAny(s[end:], "`\n")
-			if rescan && (end == len(s) || s[end] == ' ' || s[end] == '\t') {
-				break // a rescanned value is redacted whatever ends it: the text before is a value
-			}
-			if end == len(s) || s[end] == ' ' || s[end] == '\t' {
-				b.WriteString(s[lo:end]) // a lone backtick (markdown around the key) is no value
-				pos = end
-				continue
-			}
-			if e < 0 || s[end+e] != '`' {
-				e = strings.IndexByte(s[end:], '\n')
-				if e < 0 {
-					e = len(s) - end
-				}
-				end += e
-				break
-			}
-			end += e + 1
-		default:
-			if e := strings.IndexAny(s[end:], " \t\n\r\f\"',;`"); e < 0 {
-				end = len(s)
-			} else {
-				end += e
-			}
-		}
-		b.WriteString(s[lo:start])
+		start, v := pos+m[0], pos+m[len(m)-2]
+		b.WriteString(s[pos:start])
 		b.WriteString("[redacted]")
 		hits++
-		pos = end
+		pos = valueEnd(s, v)
 	}
 	if hits == 0 {
 		return s, 0
@@ -133,22 +96,38 @@ func redactPairs(s string) (string, int) {
 	return b.String(), hits
 }
 
-// quoteEnd is the end of a value opened by q after n backslashes: the next q after exactly n backslashes (after an
-// even number when n is 0), or the end of the line.
-func quoteEnd(s string, from int, q byte, n int) int {
-	for i := from; i < len(s); i++ {
-		switch s[i] {
-		case '\n':
-			return i
-		case q:
-			k := 0
-			for j := i - 1; j >= from && s[j] == '\\'; j-- {
-				k++
-			}
-			if k%(2*n+2) == n {
-				return i + 1
-			}
+// valueEnd is where the value that starts at v certainly ends (see redactPairs).
+func valueEnd(s string, v int) int {
+	le := len(s)
+	if i := strings.IndexByte(s[v:], '\n'); i >= 0 {
+		le = v + i
+	}
+	// v follows an operator or a space, so an escaped quote (\") starts with its backslash and is no opener here.
+	if q := s[v:min(v+1, le)]; q == `"` || q == "'" || q == "`" {
+		if c := strings.IndexByte(s[v+1:le], q[0]); c >= 0 && !strings.Contains(s[v+1:v+1+c], `\`) {
+			return v + 1 + c + 1
 		}
+	}
+	if !blockStart.MatchString(strings.TrimRight(s[v:le], " \t\r")) || le == len(s) {
+		return le
+	}
+	// The value goes on below: the next line whatever its indent, then each line indented deeper than the key line.
+	ls := strings.LastIndexByte(s[:v], '\n') + 1
+	indent := len(s[ls:v]) - len(strings.TrimLeft(s[ls:v], " \t"))
+	end := lineEnd(s, le+1)
+	for end < len(s) {
+		next := s[end+1 : lineEnd(s, end+1)]
+		if d := len(next) - len(strings.TrimLeft(next, " \t")); d <= indent && strings.TrimSpace(next) != "" {
+			break
+		}
+		end = lineEnd(s, end+1)
+	}
+	return end
+}
+
+func lineEnd(s string, from int) int {
+	if i := strings.IndexByte(s[from:], '\n'); i >= 0 {
+		return from + i
 	}
 	return len(s)
 }
