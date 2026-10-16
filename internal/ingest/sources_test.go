@@ -442,3 +442,25 @@ func TestAPlantedSecretReachesNoColumn(t *testing.T) {
 		}
 	}
 }
+
+// Commit subjects are stored for find; commits read before that get theirs on the next run, once: a commit no
+// longer on the branch gets ” so the repo is not read whole again on every run.
+func TestCommitSubjectsAndBackfill(t *testing.T) {
+	x, repo := gitCase(t)
+	testutil.Write(t, filepath.Join(repo, "a.txt"), "1\n")
+	testutil.Git(t, repo, "add", "-A")
+	testutil.Git(t, repo, "commit", "-q", "-m", "fix(clock): broker time follows DST")
+	sha := gitOut(t, repo, "rev-parse", "HEAD")
+	x.run()
+	eq(t, x.one("select subject from git_commit where sha=?", sha), "fix(clock): broker time follows DST")
+	db, err := store.Open(x.home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("update git_commit set subject=null; insert into git_commit (sha, repo, project) values ('gone', ?, 'demo')", repo); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	x.run()
+	eq(t, x.q("select sha, subject from git_commit order by sha='gone'"), [][]string{{sha, "fix(clock): broker time follows DST"}, {"gone", ""}})
+}

@@ -4,6 +4,7 @@ package store
 
 import (
 	"database/sql"
+	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -41,7 +42,7 @@ create table if not exists decision (
   session text, taint integer not null default 0);
 create table if not exists git_commit (
   sha text primary key, repo text, project text, ts text, session text, files text, is_revert integer not null default 0,
-  reverts_sha text, ci text);
+  reverts_sha text, ci text, subject text);
 create table if not exists evidence (
   id integer primary key, kind text not null, ref text, revision text, ts text, source_key text not null unique);
 create table if not exists artifact (
@@ -89,7 +90,29 @@ func Open(home string) (*sql.DB, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := addColumn(db, "git_commit", "subject", "text"); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return db, nil
+}
+
+// addColumn gives a store made before a column existed that column: the schema only creates missing tables. Two
+// processes opening an old store at once may both try; the column being there afterwards is what counts.
+func addColumn(db *sql.DB, table, column, typ string) error {
+	has := func() (bool, error) {
+		var n int
+		err := db.QueryRow("select count(*) from pragma_table_info(?) where name = ?", table, column).Scan(&n)
+		return n > 0, err
+	}
+	if ok, err := has(); err != nil || ok {
+		return err
+	}
+	_, alterErr := db.Exec("alter table " + table + " add column " + column + " " + typ)
+	if ok, err := has(); err != nil || ok {
+		return err
+	}
+	return fmt.Errorf("adding %s.%s: %w", table, column, alterErr)
 }
 
 // URI escapes the path, so '#', '?' or '%' in a folder name cannot point SQLite at another file.

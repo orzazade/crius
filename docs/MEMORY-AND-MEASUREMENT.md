@@ -260,7 +260,10 @@ first seen long after its last response shows an old reading, so its line is not
 
 **`find` as built (step 4).** Exact ids first (`<project>#<n>`, `<project>-D<n>`, a commit sha prefix, a session id
 prefix, `event:<n>`, and the events whose refs cite them), then FTS5 (porter stemming, best match first) over event
-text, decision titles, item titles + criteria and artifact titles + headings. The index is a temp table built per
+text, decision titles, item titles + criteria and artifact titles + headings, and commit subjects (repo · subject).
+Commits are thousands of terse lines, so a word query shows its best 3 as their own `commits:` block after the other
+hits, never in their place (Crius 10-17); with `--kind commit` they are the hits. A store from before subjects were
+kept gets the column on open, and each repo is read whole once to fill them in. The index is a temp table built per
 query from the durable rows, so it can never be stale (0.1 s on the live store, 2026-10-16). With no query it lists
 newest first: rows with text only, or every row of the `--kind` asked. Status comes from the newest ingest run:
 `complete` only when that run is complete and at most 20 min old (as the watchdog). An unknown `--kind` is refused

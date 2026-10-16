@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -81,11 +82,9 @@ func ask(db *sql.DB, x evalQ, now time.Time) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("%s: asof: %w", x.Q, err)
 	}
+	// The first screen: the top 5 hits and the commit block (Crius 01:02).
 	in5 := func(r *Result) bool {
-		for i, h := range r.Hits {
-			if i == 5 {
-				break
-			}
+		for _, h := range append(slices.Clone(r.Hits[:min(5, len(r.Hits))]), r.Commits...) {
 			if re.MatchString(h.ID + " " + h.Text) {
 				return true
 			}

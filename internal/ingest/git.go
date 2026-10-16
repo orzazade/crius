@@ -79,11 +79,17 @@ func (r *runner) gitRepo(slug, repo string) error {
 		if err != nil {
 			return err
 		}
-		if c.sha == sha {
+		// A commit read before subjects were stored has none: the repo is read whole once to fill them in.
+		var unread bool
+		if err := tx.QueryRow("select exists (select 1 from git_commit where repo = ? and subject is null)", repo).
+			Scan(&unread); err != nil {
+			return err
+		}
+		if c.sha == sha && !unread {
 			return nil
 		}
 		rng := sha
-		if c.sha != "" {
+		if c.sha != "" && !unread {
 			if _, err := gitRun(repo, "merge-base", "--is-ancestor", c.sha, sha); err == nil {
 				rng = c.sha + ".." + sha
 			}
@@ -118,9 +124,13 @@ func (r *runner) gitRepo(slug, repo string) error {
 				reverts = m[1]
 			}
 			isRevert := strings.HasPrefix(subject, `Revert "`) || reverts != nil
-			res, err := tx.Exec("insert or ignore into git_commit (sha, repo, project, ts, files, is_revert, reverts_sha)"+
-				" values (?,?,?,?,?,?,?)", commit, repo, slug, ts, string(fj), isRevert, reverts)
+			res, err := tx.Exec("insert or ignore into git_commit (sha, repo, project, ts, files, is_revert, reverts_sha,"+
+				" subject) values (?,?,?,?,?,?,?,?)", commit, repo, slug, ts, string(fj), isRevert, reverts, r.text(subject))
 			if err != nil {
+				return err
+			}
+			if _, err := tx.Exec("update git_commit set subject = ? where sha = ? and subject is null", r.text(subject),
+				commit); err != nil {
 				return err
 			}
 			k, err := res.RowsAffected()
@@ -130,6 +140,11 @@ func (r *runner) gitRepo(slug, repo string) error {
 			n += int(k)
 			if _, err := tx.Exec("insert or ignore into evidence (kind, ref, revision, ts, source_key)"+
 				" values ('commit', ?, ?, ?, ?)", commit, commit, ts, "git:"+commit); err != nil {
+				return err
+			}
+		}
+		if unread { // a commit no longer on the branch has no subject to read; '' so the repo is not read whole again
+			if _, err := tx.Exec("update git_commit set subject = '' where repo = ? and subject is null", repo); err != nil {
 				return err
 			}
 		}

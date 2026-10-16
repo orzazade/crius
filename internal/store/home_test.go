@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
@@ -250,5 +251,33 @@ func TestInitRefusesAFileWhereAFolderShouldBe(t *testing.T) {
 	testutil.Write(t, filepath.Join(home, "state"), "not a folder")
 	if err := InitLayout(home, crius.ProjectsExample); err == nil {
 		t.Fatal("init accepted a file as the state folder")
+	}
+}
+
+// A store made before git_commit.subject gets the column when it opens (the schema only creates what is missing).
+func TestOpenAddsTheSubjectColumnToAnOldStore(t *testing.T) {
+	_, home := testutil.Temp(t)
+	if err := os.MkdirAll(filepath.Join(home, "state"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	old, err := sql.Open("sqlite", filepath.Join(home, "state", "record.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := old.Exec("create table git_commit (sha text primary key, repo text, project text, ts text, session text," +
+		" files text, is_revert integer not null default 0, reverts_sha text, ci text); insert into git_commit (sha) values ('abc')"); err != nil {
+		t.Fatal(err)
+	}
+	old.Close()
+	for i := 0; i < 2; i++ {
+		db, err := Open(home)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var s sql.NullString
+		if err := db.QueryRow("select subject from git_commit where sha='abc'").Scan(&s); err != nil || s.Valid {
+			t.Fatal(err, s)
+		}
+		db.Close()
 	}
 }

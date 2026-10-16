@@ -260,3 +260,44 @@ func TestFindSessionListSaysMore(t *testing.T) {
 		t.Fatal(r, err)
 	}
 }
+
+// Crius 01:02: commit subjects are searched, but shown as their own block of at most 3 after the other hits, so
+// commits never push an answer down; asked for by --kind commit, they are the hits.
+func TestFindShowsCommitsAsTheirOwnBlock(t *testing.T) {
+	db := open(t)
+	event(t, db, "2026-10-16T10:00:00Z", "trading", "info", "broker clock moved to New York time", "")
+	for i := 0; i < 6; i++ {
+		exec(t, db, "insert into git_commit (sha, repo, project, ts, files, subject) values (?, '/r/synapse', 'trading', ?,"+
+			" '[]', 'fix(clock): broker clock follows DST')", fmt.Sprintf("%07dabc", i), fmt.Sprintf("2026-10-16T1%d:00:00Z", i))
+	}
+	r := find(t, db, Query{Text: "synapse broker clock"})
+	if len(r.Hits) != 1 || r.Hits[0].Kind == "commit" || len(r.Commits) != 3 ||
+		!strings.Contains(r.Commits[0].Text, "synapse · fix(clock): broker clock follows DST") {
+		t.Fatalf("hits %+v commits %+v", r.Hits, r.Commits)
+	}
+	if txt := r.Text(); !strings.Contains(txt, "1 hits") || !strings.Contains(txt, "commits:\n") {
+		t.Fatal(txt)
+	}
+	if r = find(t, db, Query{Text: "broker clock", Kinds: []string{"commit"}}); len(r.Hits) != 6 || len(r.Commits) != 0 {
+		t.Fatalf("hits %d commits %d", len(r.Hits), len(r.Commits))
+	}
+	if r = find(t, db, Query{Text: "dst"}); len(r.Hits) != 0 || len(r.Commits) != 3 || strings.Contains(r.Text(), "no match") {
+		t.Fatalf("%+v %q", r, r.Text())
+	}
+}
+
+// A full list of other hits does not leave the commit block empty, and commits do not mark the answer as cut.
+func TestFindCommitBlockSurvivesAFullList(t *testing.T) {
+	db := open(t)
+	for i := 0; i < maxHits+1; i++ {
+		event(t, db, "2026-10-16T10:00:00Z", "trading", "info", "broker note", "")
+	}
+	exec(t, db, "insert into git_commit (sha, repo, project, ts, files, subject) values ('abcdef1', '/r/synapse', 'trading',"+
+		" '2026-10-16T10:00:00Z', '[]', 'broker fix')")
+	if r := find(t, db, Query{Text: "broker"}); len(r.Hits) != maxHits || !r.More || len(r.Commits) != 1 {
+		t.Fatalf("hits %d more %v commits %d", len(r.Hits), r.More, len(r.Commits))
+	}
+	if r := find(t, db, Query{Text: "fix"}); r.More || len(r.Commits) != 1 {
+		t.Fatalf("more %v commits %d", r.More, len(r.Commits))
+	}
+}

@@ -53,7 +53,11 @@ type Result struct {
 	Scope   string   `json:"scope"`
 	More    bool     `json:"more,omitempty"` // more than maxHits matched
 	Hits    []Hit    `json:"hits"`
+	Commits []Hit    `json:"commits,omitempty"` // a word query's best commits, apart so they never push a hit down
 }
+
+// maxCommits bounds the commit block of a word query (Crius 01:02).
+const maxCommits = 3
 
 // Freshness is the store's status: complete when the newest ingest run is complete and at most maxAge old.
 func Freshness(db *sql.DB, now time.Time) (string, []string, error) {
@@ -106,8 +110,9 @@ insert into temp.doc select 'item', id, project, opened, taint, '', '', 1, '', t
 insert into temp.doc select 'artifact', path, project, mtime, taint, '', '', 1, '',
   coalesce(title,'')||' · '||coalesce(headings,'') from artifact;
 insert into temp.doc select 'commit', sha, project, ts, 0, '', '', 0,
-  replace(repo, rtrim(repo, replace(repo, '/', '')), '')||' · '||coalesce(json_array_length(files),0)||' files', ''
-  from git_commit;
+  replace(repo, rtrim(repo, replace(repo, '/', '')), '')||' · '||coalesce(subject,'')||' · '||
+  coalesce(json_array_length(files),0)||' files',
+  replace(repo, rtrim(repo, replace(repo, '/', '')), '')||' · '||coalesce(subject,'') from git_commit;
 `
 
 // norm makes a day-only ts comparable with full ones.
@@ -284,8 +289,18 @@ func Find(db *sql.DB, q Query, busTypes map[string]bool) (*Result, error) {
 	for _, w := range wordRe.FindAllString(strings.ToLower(words), -1) {
 		terms = append(terms, `"`+w+`"`)
 	}
-	if len(terms) > 0 {
+	if len(terms) > 0 && len(q.Kinds) > 0 {
 		err = add("text", "doc match ?", "rank, "+norm+" desc", strings.Join(terms, " OR "))
+	} else if len(terms) > 0 {
+		// With no kind asked for, commits (thousands, terse) come as their own block after the other hits. They are
+		// read first, so a full list of other hits cannot leave the block empty.
+		n, more := len(res.Hits), res.More
+		err = add("text", "doc match ? and kind = 'commit'", "rank, "+norm+" desc", strings.Join(terms, " OR "))
+		res.Commits = slices.Clone(res.Hits[n:min(len(res.Hits), n+maxCommits)])
+		res.Hits, res.More = res.Hits[:n], more
+		if err == nil {
+			err = add("text", "doc match ? and kind <> 'commit'", "rank, "+norm+" desc", strings.Join(terms, " OR "))
+		}
 	} else if q.Text == "" {
 		cond := "listed"
 		if len(q.Kinds) > 0 {
@@ -455,7 +470,7 @@ func (r *Result) Text() string {
 	if r.Query != "" {
 		fmt.Fprintf(&b, " · find %q", r.Query)
 	}
-	if len(r.Hits) == 0 {
+	if len(r.Hits) == 0 && len(r.Commits) == 0 {
 		b.WriteString(" · no match in " + r.Scope + "\n")
 		return b.String()
 	}
@@ -466,6 +481,12 @@ func (r *Result) Text() string {
 	fmt.Fprintf(&b, " · %s hits in %s\n", n, r.Scope)
 	for _, h := range r.Hits {
 		b.WriteString(h.Line() + "\n")
+	}
+	if len(r.Commits) > 0 {
+		b.WriteString("commits:\n")
+		for _, h := range r.Commits {
+			b.WriteString(h.Line() + "\n")
+		}
 	}
 	return b.String()
 }
