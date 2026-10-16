@@ -10,4 +10,7 @@ Restarted from scratch on 2026-10-16. The March 2026 harness prototype is on bra
 - `STATUS.md` — the running checklist; read this first after any break
 - `PARKED-SESSIONS.md` — closed sessions and how to resume them
 - `research/` — research reports behind decisions
-- `bus/` — one log per project lead (`<project>.log`, not in git)
+- `bus/` — old bus folder (not in git); leads now write to `~/.crius/bus/<project>.log`
+- `criusrec/`, `bin/crius-rec` — the record store (design: `docs/MEMORY-AND-MEASUREMENT.md`). Private state lives in
+  `~/.crius/` (mode 700, outside every git tree); `bin/crius-rec init` creates it, `bin/crius-rec leak-test` checks it
+- `tests/` — `python3 -m unittest discover -s tests -t .` (Python 3.11+, stdlib only; fixtures are synthetic)

@@ -1,0 +1,13 @@
+# Copy to ~/.crius/projects.toml (crius-rec init does this) and edit there. Never commit the real file.
+# accounts: which accounts this project may run on. Only Appxite projects may list "enterprise".
+# cwd: folder prefixes that map a session to this project when it has no launch tag.
+# repos: git checkouts the ingest reads (git log only). team_logs: BUILD-LOG files of active teams.
+# artifact_dirs: folders whose markdown files get a pointer row (path, sha256, title, headings).
+
+[projects.demo]
+persona = "personal"
+accounts = ["max"]
+cwd = ["~/Projects/demo"]
+repos = ["~/Projects/demo"]
+team_logs = []
+artifact_dirs = []
