@@ -1,7 +1,7 @@
 #!/bin/bash
 # Install (or reinstall) the two Crius launchd jobs: the ingest every 10 min and the watchdog every 5 min.
-# Builds both binaries from this checkout into ~/.crius/bin, then prints each installed plist and the job state,
-# so the owner sees exactly what was installed.
+# Builds both binaries, and crius-statusline (the statusLine command), from this checkout into ~/.crius/bin, then
+# prints each installed plist and the job state, so the owner sees exactly what was installed.
 set -euo pipefail
 repo="$(cd "$(dirname "$(realpath "$0")")/.." && pwd -P)"
 bin="$HOME/.crius/bin"
@@ -11,7 +11,7 @@ for p in "$repo" "$HOME"; do
 done
 [ -d "$HOME/.crius/state" ] || { echo "~/.crius is missing; run bin/crius-rec init first" >&2; exit 1; }
 mkdir -p -m 700 "$bin"
-for cmd in crius-ingest crius-watchdog; do
+for cmd in crius-ingest crius-watchdog crius-statusline; do
   GOTOOLCHAIN=local go -C "$repo" build -o "$bin/$cmd" "./cmd/$cmd"
 done
 dest="$HOME/Library/LaunchAgents"

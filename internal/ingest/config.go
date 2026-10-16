@@ -15,8 +15,8 @@ import (
 var defaultRoots = map[string]string{"personal": "~/.claude-personal/projects", "work": "~/.claude-work/projects"}
 
 type project struct {
-	slug                               string
-	cwd, repos, teamLogs, artifactDirs []string
+	slug                                         string
+	accounts, cwd, repos, teamLogs, artifactDirs []string
 }
 
 type root struct{ persona, path string }
@@ -77,11 +77,38 @@ func loadConfig(home string) (*config, error) {
 		if !store.Slug.MatchString(slug) {
 			return nil, fmt.Errorf("%s: bad project name %q", path, slug)
 		}
-		c.projects = append(c.projects, project{slug: slug, cwd: expandAll(p.CWD), repos: expandAll(p.Repos),
+		for _, a := range p.Accounts {
+			if a != "max" && a != "enterprise" {
+				return nil, fmt.Errorf("%s: project %s: unknown account %q", path, slug, a)
+			}
+		}
+		c.projects = append(c.projects, project{slug: slug, accounts: p.Accounts, cwd: expandAll(p.CWD), repos: expandAll(p.Repos),
 			teamLogs: expandAll(p.TeamLogs), artifactDirs: expandAll(p.ArtifactDirs)})
 	}
 	sort.Slice(c.projects, func(i, j int) bool { return c.projects[i].slug < c.projects[j].slug })
 	return c, nil
+}
+
+// enterpriseOK lists the projects that may run on the enterprise account (Appxite API billing).
+func (c *config) enterpriseOK() map[string]bool {
+	ok := map[string]bool{}
+	for _, p := range c.projects {
+		for _, a := range p.accounts {
+			if a == "enterprise" {
+				ok[p.slug] = true
+			}
+		}
+	}
+	return ok
+}
+
+// EnterpriseProjects reads projects.toml in home and lists the projects that may run on the enterprise account.
+func EnterpriseProjects(home string) (map[string]bool, error) {
+	c, err := loadConfig(home)
+	if err != nil {
+		return nil, err
+	}
+	return c.enterpriseOK(), nil
 }
 
 // projectForCwd maps a folder to the project with the longest matching cwd prefix.

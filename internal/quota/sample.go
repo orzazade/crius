@@ -1,0 +1,180 @@
+// Package quota is step 3 (design §5, §9): the statusline sampler that writes spool/quota.jsonl, and the `quota`
+// report built from the store. The sampler never touches the store: it runs on every statusline update.
+package quota
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"syscall"
+	"time"
+)
+
+// Heartbeat: a sample is written at least this often while any session renders its statusline, so a gap means
+// "not measured", not "no use".
+const Heartbeat = 30 * time.Minute
+
+type window struct {
+	Pct   *float64 `json:"used_percentage"`
+	Reset *int64   `json:"resets_at"`
+}
+
+type input struct {
+	SessionID string `json:"session_id"`
+	Cost      struct {
+		USD   float64 `json:"total_cost_usd"`
+		APIms float64 `json:"total_api_duration_ms"`
+	} `json:"cost"`
+	RateLimits *struct {
+		Five  *window `json:"five_hour"`
+		Seven *window `json:"seven_day"`
+	} `json:"rate_limits"`
+}
+
+// Line is one spool record. Kind: `session` (first sight of a session, or its rate_limits came or went),
+// `change` (the session's own values changed), `heartbeat` (no line from any session for Heartbeat).
+// RL says whether the statusline had rate_limits: present only on Pro/Max, so false after a response means an
+// API-billed (enterprise) session.
+type Line struct {
+	TS         string   `json:"ts"`
+	Kind       string   `json:"kind"`
+	Session    string   `json:"session"`
+	Persona    string   `json:"persona"`
+	RL         bool     `json:"rl"`
+	FivePct    *float64 `json:"five_pct,omitempty"`
+	FiveReset  *int64   `json:"five_reset,omitempty"`
+	SevenPct   *float64 `json:"seven_pct,omitempty"`
+	SevenReset *int64   `json:"seven_reset,omitempty"`
+}
+
+type seen struct {
+	TS   string `json:"ts"`
+	RL   bool   `json:"rl"`
+	Vals string `json:"vals"`
+}
+
+type state struct {
+	Last     string          `json:"last"` // newest line with rate_limits
+	Sessions map[string]seen `json:"sessions"`
+}
+
+const tsFormat = "2006-01-02T15:04:05Z"
+
+// Sample records what one statusline update shows and returns the text to display. It writes a line only when
+// something is new (see Line), so the spool grows with changes, not with renders.
+func Sample(home, persona string, in []byte, now time.Time) (string, error) {
+	var d input
+	if err := json.Unmarshal(in, &d); err != nil {
+		return "", fmt.Errorf("statusline input: %w", err)
+	}
+	if d.SessionID == "" {
+		return "", errors.New("statusline input has no session_id")
+	}
+	rl := d.RateLimits != nil
+	if !rl && d.Cost.USD == 0 && d.Cost.APIms == 0 {
+		return "quota: no response yet", nil // rate_limits come with the first response; absence says nothing yet
+	}
+	l := Line{TS: now.UTC().Format(tsFormat), Session: d.SessionID, Persona: persona, RL: rl}
+	if rl {
+		if w := d.RateLimits.Five; w != nil {
+			l.FivePct, l.FiveReset = w.Pct, w.Reset
+		}
+		if w := d.RateLimits.Seven; w != nil {
+			l.SevenPct, l.SevenReset = w.Pct, w.Reset
+		}
+	}
+	vals := fmt.Sprintf("%v/%v/%v/%v", deref(l.FivePct), deref(l.FiveReset), deref(l.SevenPct), deref(l.SevenReset))
+
+	spool := filepath.Join(home, "spool")
+	lock, err := os.OpenFile(filepath.Join(spool, "quota.lock"), os.O_WRONLY|os.O_CREATE, 0o600)
+	if err != nil {
+		return "", err
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		return "", err
+	}
+	statePath := filepath.Join(spool, "quota.state.json")
+	st := state{Sessions: map[string]seen{}}
+	if b, err := os.ReadFile(statePath); err == nil {
+		if err := json.Unmarshal(b, &st); err != nil {
+			return "", fmt.Errorf("%s: %w", statePath, err)
+		}
+		if st.Sessions == nil {
+			st.Sessions = map[string]seen{}
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	s, known := st.Sessions[d.SessionID]
+	last, _ := time.Parse(tsFormat, st.Last)
+	switch {
+	case !known || s.RL != rl:
+		l.Kind = "session"
+	case rl && s.Vals != vals:
+		l.Kind = "change"
+	case rl && now.Sub(last) >= Heartbeat:
+		l.Kind = "heartbeat"
+	}
+	if l.Kind != "" {
+		b, err := json.Marshal(l)
+		if err != nil {
+			return "", err
+		}
+		f, err := os.OpenFile(filepath.Join(spool, "quota.jsonl"), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+		if err != nil {
+			return "", err
+		}
+		_, err = f.Write(append(b, '\n'))
+		if err := errors.Join(err, f.Close()); err != nil {
+			return "", err
+		}
+		st.Sessions[d.SessionID] = seen{TS: l.TS, RL: rl, Vals: vals}
+		if rl {
+			st.Last = l.TS
+		}
+		for id, v := range st.Sessions { // a week without a line: the session is gone
+			if t, err := time.Parse(tsFormat, v.TS); err != nil || now.Sub(t) > 7*24*time.Hour {
+				delete(st.Sessions, id)
+			}
+		}
+		b, err = json.Marshal(st)
+		if err != nil {
+			return "", err
+		}
+		tmp := statePath + ".tmp"
+		if err := os.WriteFile(tmp, b, 0o600); err != nil {
+			return "", err
+		}
+		if err := os.Rename(tmp, statePath); err != nil {
+			return "", err
+		}
+	}
+	return display(l), nil
+}
+
+func deref[T any](p *T) any {
+	if p == nil {
+		return nil
+	}
+	return *p
+}
+
+func display(l Line) string {
+	if !l.RL {
+		return "quota: no plan limits (API-billed account)"
+	}
+	out := "quota:"
+	if l.FivePct != nil {
+		out += fmt.Sprintf(" 5h %.0f%%", *l.FivePct)
+	}
+	if l.SevenPct != nil {
+		out += fmt.Sprintf(" · 7d %.0f%%", *l.SevenPct)
+		if l.SevenReset != nil {
+			out += " (resets " + time.Unix(*l.SevenReset, 0).Local().Format("Mon 15:04") + ")"
+		}
+	}
+	return out
+}

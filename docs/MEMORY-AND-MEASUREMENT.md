@@ -134,7 +134,8 @@ finds no `<project>-D<n>` or `<project>#<n>` id that exists only in private file
 | `session` | id, account (`max` = the one subscription, `enterprise` = Appxite API billing, `unknown`), persona, project, role, parent_id, item, each with `attrib_source` (`registered`, `cwd`, `unknown`), title, model_main, started, ended, end_reason, peak_ctx, compactions, human_prompts, peer_prompts, interrupts, hook_blocks, hook_errors, taint |
 | `assignment` | session, item, role, from_ts, to_ts, source (launch or task switch) |
 | `wait` | wait_id, session, kind, request_ref (notification or tool_use_id), opened, resolution_ref, resolved, resolved_by (`human/peer/timeout/none`), state `open/resolved` |
-| `quota` | ts, account, epoch (`resets_at`), five_hour_pct, seven_day_pct, sample_kind `change/heartbeat` |
+| `quota` | ts, account, session, persona, epoch (seven-day `resets_at`), five_hour_pct, five_reset, seven_day_pct, sample_kind `session/change/heartbeat` |
+| `account_seen` | session, persona, rl (statusline showed `rate_limits` at least once = Max; only after-response renders without them = enterprise), first_ts, last_ts |
 | `item` | id `<project>#<n>`, parent (owner outcome), kind `code/research/falcon/other`, title, criteria (set at open), opened, state, taint |
 | `acceptance` | item, revision (sha or artifact sha256), checks (refs + results), reviewer + review_ref, accepted_by, ts, state `accepted/revoked`, revoked_ts, revoked_by, revoke_reason, defect, fix_item |
 | `evidence` | id, kind (`commit/ci/gate/review/artifact/bus`), ref, revision, ts, source_key |
@@ -239,7 +240,11 @@ Enterprise $ is list price from tokens (ESTIMATE of the employer's bill; no bill
 
 **Instrumentation order** (each only when its need is real):
 1. **Ingest + quota sampling**: a sample on each change plus a **heartbeat sample every 30 min** while a session is
-   open, so "no sample" means "not measured", not "no use".
+   open, so "no sample" means "not measured", not "no use". `crius-statusline --persona P` is the statusLine command
+   (`refreshInterval` 300 s, so idle sessions re-run it): it writes a line when a session is first seen after a
+   response, when that session's own 5h/7d values change, and a heartbeat when no line came for 30 min; an idle
+   session repeating older values writes nothing. It never touches the store, and on an error it prints `FAILED` in
+   the statusline (exit 0: Claude Code hides the output of a non-zero exit).
 2. **Minimal hooks** (Notification, Stop, SessionStart/End) only for live waits; until then waits come from transcripts.
 3. **OTel** only if permission-wait precision or hook diagnostics justify it: local collector, attribute allowlist
    (drop `user.email`, account ids, prompts, tool details), files kept 7 days.
@@ -338,7 +343,8 @@ tasks, which are not counted. Code, research and Falcon outcomes are reported ap
 | # | Metric | Definition | Source |
 |---|---|---|---|
 | M1 | Accepted outcomes | count per quota week, split code / research / Falcon, by project | `acceptance` |
-| M2 | Observed subscription quota | the one Max account (both personas), per reset epoch: sum of positive `seven_day_pct` deltas between samples; plus **uncovered usage** = list-price $ of `max` requests with no sample on either side within 45 min | `quota`, `request` |
+| M2 | Observed subscription quota | the one Max account (both personas), per reset epoch: the highest `seven_day_pct` sampled in the epoch (it only grows within an epoch, and an idle
+session's statusline can repeat an older value, so neither the newest value nor a sum of deltas is safe); plus **uncovered usage** = list-price $ of `max` requests with no sample on either side within 45 min | `quota`, `request` |
 | M2e | Enterprise $ | Appxite enterprise account: list-price $ per day and week, by project; non-Appxite sessions on it listed as violations. Real employer money, never merged with M2 | `request`, `session.account` |
 | M2b | Project share (separate) | each project's share of list-price $ per account and epoch. Never merged into M2 | `usage_day` |
 | M2c | Quota per outcome (**experimental**) | M2 x M2b share / M1 for that project and kind. **Undefined when M1 = 0** | derived |

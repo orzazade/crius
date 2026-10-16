@@ -1,4 +1,5 @@
-// Package cli is crius-rec, the door to the record store. Step 1 commands: init, leak-test, record bus|decision|item.
+// Package cli is crius-rec, the door to the record store. Commands: init, leak-test, record bus|decision|item (step 1),
+// quota (step 3).
 package cli
 
 import (
@@ -12,6 +13,8 @@ import (
 	"time"
 
 	"github.com/orzazade/crius"
+	"github.com/orzazade/crius/internal/ingest"
+	"github.com/orzazade/crius/internal/quota"
 	"github.com/orzazade/crius/internal/store"
 )
 
@@ -27,6 +30,7 @@ const usage = `usage: crius-rec init
        crius-rec record bus --project P --role R --type T --text TEXT
        crius-rec record decision --project P --title T --why W --by "owner|crius|lead [ref]" [--supersedes ID --reason R] [--refs R] [--taint]
        crius-rec record item --project P --title T --kind code|research|falcon|other --criteria C [--criteria C ...] [--parent ID] [--taint]
+       crius-rec quota
 `
 
 type multi []string
@@ -77,6 +81,13 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return exitUnavailable
 	case "record":
 		return record(home, args, stdout, stderr)
+	case "quota":
+		fs := flag.NewFlagSet("quota", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		if fs.Parse(args) != nil || fs.NArg() > 0 {
+			return exitUsage
+		}
+		return quotaCmd(home, time.Now(), stdout, stderr)
 	}
 	fmt.Fprint(stderr, usage)
 	return exitUsage
@@ -170,4 +181,34 @@ func recordItem(home, project, title, kind string, criteria []string, parent str
 	}
 	id, err := store.RecordItem(db, project, title, kind, criteria, parent, taint)
 	return id, errors.Join(err, db.Close())
+}
+
+// quotaCmd prints the two quota blocks. A stale or missing sample is said in the output and exits partial.
+func quotaCmd(home string, now time.Time, stdout, stderr io.Writer) int {
+	if fi, err := os.Stat(filepath.Join(home, "state")); err != nil || !fi.IsDir() {
+		fmt.Fprintf(stderr, "unavailable: %s is missing; run crius-rec init\n", home)
+		return exitUnavailable
+	}
+	ok, err := ingest.EnterpriseProjects(home)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return exitError
+	}
+	db, err := store.Open(home)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return exitError
+	}
+	defer db.Close()
+	rep, err := quota.Build(db, ok, now)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return exitError
+	}
+	text, _ := ingest.Redact(rep.Text())
+	fmt.Fprint(stdout, text)
+	if rep.Status != "complete" {
+		return exitPartial
+	}
+	return 0
 }

@@ -257,6 +257,7 @@ func Run(home string) (*Stats, error) {
 	r.ingestGit()
 	r.ingestLogs()
 	r.ingestFiles()
+	r.ingestQuota()
 	r.flushAlerts()
 	var unpriced int
 	if err := db.QueryRow("select count(*) from request where cost_list_usd is null").Scan(&unpriced); err != nil {

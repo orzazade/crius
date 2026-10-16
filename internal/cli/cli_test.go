@@ -115,3 +115,14 @@ func TestEmptyBusTextIsAccepted(t *testing.T) {
 		t.Fatal(rc, out)
 	}
 }
+
+// With no sample the quota answer says so and exits partial, never a quiet 0%.
+func TestQuotaWithNoSampleSaysSoAndExitsPartial(t *testing.T) {
+	testutil.Temp(t)
+	run("init")
+	rc, out := run("quota")
+	if rc != exitPartial || !strings.Contains(out, "status none · no quota sample yet") ||
+		!strings.Contains(out, "Enterprise (Appxite API billing") {
+		t.Fatal(rc, out)
+	}
+}
