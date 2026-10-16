@@ -14,9 +14,11 @@ import (
 	"unicode/utf8"
 )
 
-// Types are the lead types (cmux-team §6) plus ALERT, which only Crius's own scripts write.
+// Types are the Crius-bus types. The one written list is the "- Types" line in docs/MEMORY-AND-MEASUREMENT.md §6;
+// a test keeps the two equal. Any other type stays malformed (a loud warning), on purpose.
 var Types = map[string]bool{"DONE": true, "BLOCKED": true, "NEED-OWNER": true, "PAUSED": true, "LIMIT": true,
-	"ITEM": true, "DECISION": true, "RESUMED": true, "ALERT": true}
+	"ITEM": true, "DECISION": true, "RESUMED": true, "ALERT": true, "INFO": true, "NEED": true, "WAIT": true,
+	"PARKED": true}
 
 const MaxLen = 300
 

@@ -266,13 +266,17 @@ more than a late one.
 
 ## 6. Reporting standard for teams
 
-**Bus line grammar** (cmux-team §6 with three changes: a date, the `~/.crius/bus/` path, three new types):
+**Bus line grammar** (cmux-team §6 with three changes: a date, the `~/.crius/bus/` path, more types):
 ```
 2026-10-16T09:20 DONE quotes:leader -> crius — item=quotes#41 sha=abc1234 Inc 4 QA-verified; evidence docs/build/STATUS.md
 ```
 - `<YYYY-MM-DDTHH:MM> TYPE <project>:<role> -> crius — text [refs]`, from `$(date +%FT%H:%M)`, ≤ 300 chars, append
   with `>>` (or `crius-rec record bus`). Old `HH:MM` lines still parse (date from file order and mtime).
-- Types: `DONE`, `BLOCKED`, `NEED-OWNER`, `PAUSED`, `LIMIT` + `ITEM`, `DECISION`, `RESUMED`.
+- Types (the one list; `internal/store` tests check the Go list equals it): `DONE`, `BLOCKED`, `NEED-OWNER`,
+  `PAUSED`, `LIMIT`, `ITEM`, `DECISION`, `RESUMED`, `ALERT`, `INFO`, `NEED`, `WAIT`, `PARKED`.
+- Who writes them: ALERT only Crius's own scripts (ingest, watchdog), WAIT the wait detector, PARKED the park mod
+  (via the leader). Team-only types (ACK, CLEAR-READY, QUEUE) never go on the Crius bus; any type not in the list
+  above is malformed.
 - Refs: `item=`, `sha=`, `pr=`, `path=`, `<project>-D<n>`. A `DONE` without `item=` and one evidence ref is a claim.
 
 **LEAD.md** — the only hand-written state, four fields, changed only when they change:
@@ -306,7 +310,7 @@ Supersession is read from the newer entry only. A correction is a new entry that
 
 | Lead writes (manual) | Derived (no one writes) |
 |---|---|
-| bus lines at DONE / BLOCKED / NEED-OWNER / PAUSED / LIMIT / ITEM / DECISION / RESUMED | commits, CI, reviews, waits, requests, sessions, quota, STATE.md, links |
+| bus lines, one per event, in the §6 types (not ALERT or WAIT: scripts write those) | commits, CI, reviews, waits, requests, sessions, quota, STATE.md, links |
 | LEAD.md when goal, next, owner-wait or risks change | "lead silent", "stale hand fields", "claim not verified", attribution gaps |
 | decisions that outlive the task; acceptance criteria when opening an item | acceptance checks against the criteria |
 

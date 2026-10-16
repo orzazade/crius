@@ -1,9 +1,11 @@
 package store
 
 import (
+	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -86,12 +88,12 @@ func TestImpossibleDateOrTimeIsMalformedAndKeepsState(t *testing.T) {
 }
 
 func TestUnknownTypeStrictAndLenient(t *testing.T) {
-	line := "09:20 NEED api -> leader — schema?"
+	line := "09:20 ACK api -> leader — schema?"
 	if ParseLine(line, &State{Date: "2026-10-16", Time: "09:00"}, true) != nil {
 		t.Fatal("strict parse took an unknown type")
 	}
 	p := ParseLine(line, &State{Date: "2026-10-16", Time: "09:00"}, false)
-	if p == nil || p.Type != "NEED" || p.Project != "" || p.Role != "api" {
+	if p == nil || p.Type != "ACK" || p.Project != "" || p.Role != "api" {
 		t.Fatalf("%+v", p)
 	}
 }
@@ -150,5 +152,57 @@ func TestAppendLineGoesToProjectLog(t *testing.T) {
 	}
 	if !regexp.MustCompile(`^\d{4}-\d\d-\d\dT\d\d:\d\d DONE `).MatchString(line) {
 		t.Fatal(line)
+	}
+}
+
+// Real ~/.crius/bus lines (INFO, NEED, WAIT) were warned as malformed: the Go list and the written list drifted.
+func TestEveryCriusBusTypeParsesStrict(t *testing.T) {
+	for _, typ := range []string{"DONE", "BLOCKED", "NEED-OWNER", "PAUSED", "LIMIT", "ITEM", "DECISION", "RESUMED",
+		"ALERT", "INFO", "NEED", "WAIT", "PARKED"} {
+		if ParseLine("2026-10-16T09:20 "+typ+" demo:leader -> crius — x", nil, true) == nil {
+			t.Error(typ)
+		}
+	}
+	for _, typ := range []string{"ACK", "CLEAR-READY", "QUEUE"} { // team-only: stay loud on the Crius bus
+		if ParseLine("2026-10-16T09:20 "+typ+" demo:leader -> crius — x", nil, true) != nil {
+			t.Error("team-only type parsed strict:", typ)
+		}
+	}
+}
+
+// The design doc's "- Types:" line is the one written list; the Go list must equal it.
+func TestTypesEqualTheDesignDocList(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join(testutil.RepoRoot(t), "docs", "MEMORY-AND-MEASUREMENT.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The bullet and its indented continuation lines.
+	var bullets []string
+	in := false
+	for _, l := range strings.Split(string(b), "\n") {
+		switch {
+		case strings.HasPrefix(l, "- Types"):
+			bullets, in = append(bullets, l), true
+		case in && strings.HasPrefix(l, "  "):
+			bullets[len(bullets)-1] += " " + l
+		default:
+			in = false
+		}
+	}
+	if len(bullets) != 1 {
+		t.Fatalf("want one \"- Types\" bullet in the doc, got %d", len(bullets))
+	}
+	var doc []string
+	for _, m := range regexp.MustCompile("`([A-Z][A-Z-]*)`").FindAllStringSubmatch(bullets[0], -1) {
+		doc = append(doc, m[1])
+	}
+	var code []string
+	for typ := range Types {
+		code = append(code, typ)
+	}
+	sort.Strings(doc)
+	sort.Strings(code)
+	if !reflect.DeepEqual(doc, code) {
+		t.Fatalf("doc %v\ncode %v", doc, code)
 	}
 }
