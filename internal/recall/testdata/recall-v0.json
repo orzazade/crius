@@ -1,0 +1,22 @@
+[
+{"q": "When did mail stop?", "query": "mail stopped", "project": "falcon", "answer": "09-21", "source": "STATUS.md:39"},
+{"q": "Which commit armed the k3s hooks?", "query": "k3s hooks", "project": "falcon", "answer": "cf62176", "source": "STATUS.md:17"},
+{"q": "Which unbash version is vendored?", "query": "unbash vendored", "project": "falcon", "answer": "5\\.0\\.0", "source": "STATUS.md:17"},
+{"q": "Why did review-pr repo sync fail?", "query": "review-pr sync git username", "project": "falcon", "answer": "username", "source": "STATUS.md:16"},
+{"q": "Which commit was falcon main fast-forwarded to on 10-15?", "query": "fast-forwarded falcon main", "project": "falcon", "answer": "d062c66", "source": "STATUS.md:21"},
+{"q": "What is the Crius MCP server called?", "query": "crius mcp server", "project": "falcon", "answer": "falcon-crius", "source": "STATUS.md:33"},
+{"q": "How many temp dirs did the Falcon tests leak?", "query": "temp dirs falcon tests", "project": "falcon", "answer": "28k|28,?000", "source": "STATUS.md:43"},
+{"q": "Which commit range was the third push?", "query": "third push", "project": "falcon", "answer": "9295399", "source": "STATUS.md:49"},
+{"q": "Which setting limits meeting analysis by age?", "query": "meeting analysis max age days", "project": "falcon", "answer": "FALCON_INSIGHTS_MAX_AGE_DAYS", "source": "STATUS.md:49"},
+{"q": "Why were 33 PRs lost?", "query": "33 PRs lost", "project": "falcon", "answer": "422", "source": "STATUS.md:73"},
+{"q": "How much did the graph sweep fix cut queries?", "query": "graph sweep queries", "project": "falcon", "answer": "5,?800", "source": "STATUS.md:76"},
+{"q": "How fast is topics.suggest after the term index?", "query": "topics suggest term index", "project": "falcon", "answer": "8\\.6 ?s", "source": "STATUS.md:78"},
+{"q": "Which commit fixed the 2 s wall-clock CI test?", "query": "wall-clock test CI", "project": "falcon", "answer": "d62bf8c", "source": "STATUS.md:78"},
+{"q": "What was the catch-up mail window?", "query": "FALCON_MAIL_WINDOW_DAYS", "project": "falcon", "answer": "WINDOW_DAYS=24", "source": "STATUS.md:47"},
+{"q": "Which commit finished step 1?", "query": "step 1 done verified", "project": "crius", "answer": "060610f", "source": "STATUS.md:105"},
+{"q": "Which commit merged the bus types to main?", "query": "bus types merged main", "project": "crius", "answer": "39b3ecd", "source": "STATUS.md:144"},
+{"q": "What is the re-priced review-1016 total?", "query": "review-1016 re-price total", "project": "crius", "answer": "17,?823", "source": "STATUS.md:158"},
+{"q": "When does the quota run out at the last pace?", "query": "quota runs out", "project": "crius", "answer": "10-19", "source": "STATUS.md:166"},
+{"q": "How often does the wait sweep run?", "query": "wait-sweep timer", "project": "crius", "answer": "120 ?s", "source": "STATUS.md:127"},
+{"q": "After how long idle does the park mod act?", "query": "park mod idle", "project": "crius", "answer": "110 ?min", "source": "STATUS.md:111"}
+]
