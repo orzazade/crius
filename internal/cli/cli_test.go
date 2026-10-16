@@ -126,3 +126,18 @@ func TestQuotaWithNoSampleSaysSoAndExitsPartial(t *testing.T) {
 		t.Fatal(rc, out)
 	}
 }
+
+// Codex P2: an error can quote a config value; the quota command redacts it like every other sink.
+func TestQuotaErrorOutputIsRedacted(t *testing.T) {
+	_, home := testutil.Temp(t)
+	run("init")
+	key := "sk-ant-api03-" + strings.Repeat("A", 40)
+	toml := "[projects.demo]\npersona = \"personal\"\naccounts = [\"" + key + "\"]\ncwd = []\nrepos = []\nteam_logs = []\nartifact_dirs = []\n"
+	if err := os.WriteFile(filepath.Join(home, "projects.toml"), []byte(toml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rc, out := run("quota")
+	if rc != exitError || strings.Contains(out, key) || !strings.Contains(out, "unknown account") {
+		t.Fatal(rc, out)
+	}
+}

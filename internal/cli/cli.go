@@ -184,7 +184,9 @@ func recordItem(home, project, title, kind string, criteria []string, parent str
 }
 
 // quotaCmd prints the two quota blocks. A stale or missing sample is said in the output and exits partial.
+// Everything it prints is redacted: errors can quote a config value.
 func quotaCmd(home string, now time.Time, stdout, stderr io.Writer) int {
+	stdout, stderr = ingest.Redacting{W: stdout}, ingest.Redacting{W: stderr}
 	if fi, err := os.Stat(filepath.Join(home, "state")); err != nil || !fi.IsDir() {
 		fmt.Fprintf(stderr, "unavailable: %s is missing; run crius-rec init\n", home)
 		return exitUnavailable
@@ -205,8 +207,7 @@ func quotaCmd(home string, now time.Time, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return exitError
 	}
-	text, _ := ingest.Redact(rep.Text())
-	fmt.Fprint(stdout, text)
+	fmt.Fprint(stdout, rep.Text())
 	if rep.Status != "complete" {
 		return exitPartial
 	}

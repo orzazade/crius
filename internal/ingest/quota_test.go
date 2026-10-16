@@ -258,6 +258,82 @@ func TestQuotaPastEpochIsNotTheCurrentOne(t *testing.T) {
 	}
 }
 
+// Codex P1: a launch tag that says max does not hide what the statusline saw. A scifi session billed to the
+// enterprise account is S1 even when its tag claims Max, and its $ counts as enterprise.
+func TestQuotaMaxTagDoesNotHideEnterpriseBilling(t *testing.T) {
+	x := quotaCase(t)
+	x.session("work", x.sid, "/work/demo", "[crius account=max project=demo role=lead]", qNow.Add(-20*time.Minute))
+	x.spool(quota.Line{TS: iso(qNow.Add(-19 * time.Minute)), Kind: "session", Session: x.sid, Persona: "work"})
+	x.run()
+	if len(grepAlerts(x.alerts(), "S1 personal work on the enterprise account: session 11111111")) != 1 ||
+		len(grepAlerts(x.alerts(), "account mismatch in session 11111111")) != 1 {
+		t.Fatalf("want S1 and mismatch, got %q", x.alerts())
+	}
+	if rep := x.report(); rep.EntWeekUSD == 0 || rep.MaxUSD != 0 {
+		t.Fatalf("enterprise $ %v, max $ %v", rep.EntWeekUSD, rep.MaxUSD)
+	}
+}
+
+// Codex P2: an enterprise session the statusline saw but no transcript gave is still checked.
+func TestQuotaEnterpriseSessionWithoutTranscriptIsChecked(t *testing.T) {
+	x := quotaCase(t)
+	x.spool(quota.Line{TS: iso(qNow.Add(-19 * time.Minute)), Kind: "session", Session: "66666666-x", Persona: "work"})
+	x.run()
+	if len(grepAlerts(x.alerts(), "enterprise session 66666666 has no known project")) != 1 {
+		t.Fatalf("got %q", x.alerts())
+	}
+}
+
+// Codex P2 x2: an idle session repeating the previous epoch (older reset, its own 5h window) does not roll the
+// report back, and the 5h share is the highest for the current window, not the newest line's.
+func TestQuotaIdleSessionRepeatingOldValuesDoesNotRollBack(t *testing.T) {
+	x := quotaCase(t)
+	other := "77777777-2222-3333-4444-555555555555"
+	x.session("personal", x.sid, "/work/demo", "", qNow.Add(-20*time.Minute))
+	cur := sampleAt(x.sid, qNow.Add(-10*time.Minute), 30, qNow.Add(5*24*time.Hour))
+	cur.FivePct = f(80)
+	old := sampleAt(other, qNow.Add(-5*time.Minute), 95, qNow.Add(-2*24*time.Hour))
+	old.Kind, old.FivePct, old.FiveReset = "heartbeat", f(20), cur.FiveReset
+	x.spool(cur, old)
+	x.run()
+	rep := x.report()
+	if !rep.Ended.IsZero() || rep.SevenPct != 30 || rep.FivePct != 80 || rep.Day != 3 {
+		t.Fatalf("ended %v 7d %v 5h %v day %d", rep.Ended, rep.SevenPct, rep.FivePct, rep.Day)
+	}
+}
+
+// Codex P2: a sample with no seven-day share measured nothing: not 0%, not a cover for requests.
+func TestQuotaSampleWithoutShareIsNotZeroPercent(t *testing.T) {
+	x := quotaCase(t)
+	x.session("personal", x.sid, "/work/demo", "", qNow.Add(-20*time.Minute))
+	l := sampleAt(x.sid, qNow.Add(-10*time.Minute), 0, qNow.Add(4*24*time.Hour))
+	l.SevenPct = nil
+	x.spool(l)
+	x.run()
+	if rep := x.report(); rep.Status != "stale" || !rep.LastSample.IsZero() || rep.Uncovered == 0 {
+		t.Fatalf("status %s last %v uncovered %v", rep.Status, rep.LastSample, rep.Uncovered)
+	}
+}
+
+// Codex P2: a request with no list price is missing $, said in the report, never $0 in a complete answer.
+func TestQuotaUnpricedRequestsMakeThePartial(t *testing.T) {
+	x := quotaCase(t)
+	x.session("personal", x.sid, "/work/demo", "", qNow.Add(-20*time.Minute))
+	x.spool(sampleAt(x.sid, qNow.Add(-10*time.Minute), 30, qNow.Add(4*24*time.Hour)))
+	x.run()
+	db, err := store.Open(x.home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("update request set cost_list_usd=null"); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	if rep := x.report(); rep.Status != "partial" || rep.Unpriced != 1 || !strings.Contains(rep.Text(), "unpriced: 1") {
+		t.Fatalf("status %s unpriced %d\n%s", rep.Status, rep.Unpriced, rep.Text())
+	}
+}
+
 func TestQuotaBadSpoolLineIsCountedNotSkippedQuietly(t *testing.T) {
 	x := quotaCase(t)
 	appendFile(t, filepath.Join(x.home, "spool", "quota.jsonl"), "{not json\n")

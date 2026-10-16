@@ -38,6 +38,7 @@ type Report struct {
 	Passed             float64 // share of the epoch's time passed, 0..1
 	MaxUSD, Uncovered  float64 // list $ on the Max account in the epoch, and the part with no sample within Gap
 	UnknownUSD         float64 // list $ of sessions whose account is not known
+	Unpriced           int     // requests in the window with no list price (not in any $ above)
 	Shares             []Share // Max list $ by project, largest first
 	EntWeek, EntToday  []Share
 	EntWeekUSD, EntDay float64
@@ -53,11 +54,14 @@ type Querier interface {
 	Query(query string, args ...any) (*sql.Rows, error)
 }
 
-// accounts gives each session its account: the launch tag, else the statusline (rate_limits present = max,
-// absent after a response = enterprise), else unknown. A tag the statusline contradicts is a mismatch.
+// accounts gives each session the account it is billed to: what the statusline saw (rate_limits present = max,
+// absent after a response = enterprise), else the launch tag, else unknown. A tag the statusline contradicts is a
+// mismatch. A session the statusline saw but no transcript gave (yet) is still checked, with no project.
 func accounts(db Querier, enterpriseOK map[string]bool) (map[string]sess, []Violation, error) {
 	rows, err := db.Query("select s.id, coalesce(s.persona, ''), coalesce(s.project, ''), s.account, a.rl" +
-		" from session s left join account_seen a on a.session = s.id")
+		" from session s left join account_seen a on a.session = s.id" +
+		" union all select a.session, coalesce(a.persona, ''), '', 'unknown', a.rl from account_seen a" +
+		" where a.session not in (select id from session)")
 	if err != nil {
 		return nil, nil, err
 	}
@@ -78,14 +82,14 @@ func accounts(db Querier, enterpriseOK map[string]bool) (map[string]sess, []Viol
 				seen = "max"
 			}
 		}
-		switch {
-		case s.account != "unknown":
+		if s.account != "unknown" {
 			s.source = "tag"
 			if seen != "" && seen != s.account {
 				vs = append(vs, Violation{Session: id, Project: s.project, Kind: "mismatch",
 					Source: "tag " + s.account + ", statusline " + seen})
 			}
-		case seen != "":
+		}
+		if seen != "" {
 			s.account, s.source = seen, "statusline"
 		}
 		if s.account == "enterprise" {
@@ -119,8 +123,10 @@ func Build(db Querier, enterpriseOK map[string]bool, now time.Time) (*Report, er
 	}
 	rep.Violations = vs
 
+	// A line without a seven-day share and reset measured nothing: it neither covers a request nor counts as a
+	// sample (it would read as 0%).
 	rows, err := db.Query("select ts, sample_kind, seven_day_pct, epoch, five_hour_pct, five_reset from quota" +
-		" where account = 'max' order by ts")
+		" where account = 'max' and seven_day_pct is not null and epoch is not null order by ts")
 	if err != nil {
 		return nil, err
 	}
@@ -143,44 +149,45 @@ func Build(db Querier, enterpriseOK map[string]bool, now time.Time) (*Report, er
 		return nil, err
 	}
 
-	// The epoch is the newest sample's seven-day reset. Samples from an idle session can repeat older values, so
-	// the observed share is the highest in the epoch, not the newest.
+	// Resets only move forward, and an idle session's statusline can repeat an older window (older reset, lower
+	// share), so the epoch is the latest reset sampled and the share is the highest sampled for it, never the
+	// newest line's.
 	start := now.Add(-week)
 	if n := len(samples); n > 0 {
 		last := samples[n-1]
 		rep.LastSample, rep.LastKind = last.ts, last.kind
-		for i := n - 1; i >= 0; i-- {
-			if samples[i].reset.Valid {
-				rep.Reset = time.Unix(samples[i].reset.Int64, 0)
-				break
+		var reset, fiveReset int64
+		for _, s := range samples {
+			reset = max(reset, s.reset.Int64)
+			if s.five.Valid {
+				fiveReset = max(fiveReset, s.fiveReset.Int64)
 			}
 		}
-		if !rep.Reset.IsZero() && !rep.Reset.After(now) {
-			rep.Ended, rep.Reset = rep.Reset, time.Time{}
+		for _, s := range samples {
+			if math.Abs(float64(s.reset.Int64-reset)) < 3600 {
+				rep.SevenPct = math.Max(rep.SevenPct, s.seven.Float64)
+			}
+			if s.five.Valid && math.Abs(float64(s.fiveReset.Int64-fiveReset)) < 600 {
+				rep.FivePct = math.Max(rep.FivePct, s.five.Float64)
+			}
 		}
-		if !rep.Reset.IsZero() {
+		rep.Reset = time.Unix(reset, 0)
+		if !rep.Reset.After(now) {
+			rep.Ended, rep.Reset, rep.SevenPct = rep.Reset, time.Time{}, 0
+		} else {
 			start = rep.Reset.Add(-week)
-			for _, s := range samples {
-				if s.reset.Valid && math.Abs(float64(s.reset.Int64-rep.Reset.Unix())) < 3600 && s.seven.Valid &&
-					s.seven.Float64 > rep.SevenPct {
-					rep.SevenPct = s.seven.Float64
-				}
-			}
 			rep.Passed = math.Min(1, math.Max(0, float64(now.Sub(start))/float64(week)))
 			rep.Day = int(now.Sub(start)/(24*time.Hour)) + 1
 		}
-		for i := n - 1; i >= 0; i-- {
-			if s := samples[i]; s.five.Valid && s.fiveReset.Valid {
-				if r := time.Unix(s.fiveReset.Int64, 0); r.After(now) {
-					rep.FivePct, rep.FiveReset = s.five.Float64, r
-				}
-				break
-			}
+		if r := time.Unix(fiveReset, 0); fiveReset > 0 && r.After(now) {
+			rep.FiveReset = r
+		} else {
+			rep.FivePct = 0
 		}
 	}
 
 	// Requests since the epoch start (or the last 7 days when no epoch is known).
-	rows, err = db.Query("select session, coalesce(ts_last, ts_first), coalesce(cost_list_usd, 0) from request"+
+	rows, err = db.Query("select session, coalesce(ts_last, ts_first), cost_list_usd from request"+
 		" where coalesce(ts_last, ts_first) >= ?", start.UTC().Format(time.RFC3339))
 	if err != nil {
 		return nil, err
@@ -191,11 +198,15 @@ func Build(db Querier, enterpriseOK map[string]bool, now time.Time) (*Report, er
 	var newestOpen time.Time // newest request of a session the sampler should cover
 	for rows.Next() {
 		var sid, ts string
-		var usd float64
-		if err := rows.Scan(&sid, &ts, &usd); err != nil {
+		var cost sql.NullFloat64
+		if err := rows.Scan(&sid, &ts, &cost); err != nil {
 			rows.Close()
 			return nil, err
 		}
+		if !cost.Valid {
+			rep.Unpriced++ // a model with no list price: its $ is missing, not 0
+		}
+		usd := cost.Float64
 		t, err := parseTS(ts)
 		if err != nil {
 			rows.Close()
@@ -237,8 +248,8 @@ func Build(db Querier, enterpriseOK map[string]bool, now time.Time) (*Report, er
 	switch {
 	case !newestOpen.IsZero() && now.Sub(newestOpen) <= Gap && now.Sub(rep.LastSample) > Gap:
 		rep.Status = "stale"
-	case !rep.Ended.IsZero():
-		rep.Status = "partial" // the newest sample is from an epoch that ended: the current share is not known
+	case !rep.LastSample.IsZero() && (!rep.Ended.IsZero() || rep.Unpriced > 0):
+		rep.Status = "partial" // the epoch ended with no sample since, or some $ is missing
 	case !rep.LastSample.IsZero():
 		rep.Status = "complete"
 	}
@@ -343,6 +354,9 @@ func (r *Report) Text() string {
 	fmt.Fprintf(&b, "  list price on Max %s · uncovered %s (%.0f%%, no sample within 45 min) · account unknown %s\n",
 		money(r.MaxUSD), money(r.Uncovered), pct, money(r.UnknownUSD))
 	fmt.Fprintf(&b, "  by project: %s\n", list(r.Shares, r.MaxUSD, 6))
+	if r.Unpriced > 0 {
+		fmt.Fprintf(&b, "  unpriced: %d requests have a model with no list price; their $ is missing above\n", r.Unpriced)
+	}
 	fmt.Fprintf(&b, "Enterprise (Appxite API billing, list price): week %s (%s) · today %s (%s)\n",
 		money(r.EntWeekUSD), list(r.EntWeek, 0, 4), money(r.EntDay), list(r.EntToday, 0, 4))
 	if len(r.Violations) == 0 {

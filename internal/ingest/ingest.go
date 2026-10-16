@@ -283,19 +283,19 @@ func Run(home string) (*Stats, error) {
 }
 
 // Main is crius-ingest: leak test, writer lock, one run, the daily backup, and the heartbeat after a complete run.
-// redacting passes each write through Redact: everything Main prints may quote a config value or an error.
-type redacting struct{ w io.Writer }
+// Redacting passes each write through Redact: everything Main prints may quote a config value or an error.
+type Redacting struct{ W io.Writer }
 
-func (r redacting) Write(b []byte) (int, error) {
+func (r Redacting) Write(b []byte) (int, error) {
 	s, _ := Redact(string(b))
-	if _, err := io.WriteString(r.w, s); err != nil {
+	if _, err := io.WriteString(r.W, s); err != nil {
 		return 0, err
 	}
 	return len(b), nil
 }
 
 func Main(args []string, stdout, stderr io.Writer) int {
-	stdout, stderr = redacting{stdout}, redacting{stderr}
+	stdout, stderr = Redacting{stdout}, Redacting{stderr}
 	fs := flag.NewFlagSet("crius-ingest", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	repo := fs.String("repo", os.Getenv("CRIUS_REPO"), "the crius checkout the leak test scans")
