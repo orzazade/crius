@@ -292,6 +292,31 @@ func TestFindCapsTextAt20LinesAndJSONKeepsAll(t *testing.T) {
 	}
 }
 
+// Review of 376393d (P2): the commit block comes last, so the 20-line cap cut it off on most word queries. It keeps
+// its lines inside the cap; the hits give up the room.
+func TestFindKeepsTheCommitBlockInsideTheCap(t *testing.T) {
+	var texts []string
+	for i := 0; i < 30; i++ {
+		texts = append(texts, fmt.Sprint("mail line ", i))
+	}
+	home := findStore(t, texts...)
+	db, err := store.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("insert into git_commit (sha, repo, project, ts, files, subject) values ('abcdef1', '/r/falcon'," +
+		" 'demo', '2026-10-15T10:00:00Z', '[]', 'mail poll fix')"); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	rc, out := run("find", "mail")
+	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+	if rc != 0 || len(lines) != 20 || lines[18] != "commits:" || !strings.Contains(lines[19], "falcon · mail poll fix") ||
+		!strings.Contains(lines[17], "14 more lines (use --json)") {
+		t.Fatal(rc, len(lines), out)
+	}
+}
+
 func TestFindExitCodesAndFlagsAfterTheQuery(t *testing.T) {
 	testutil.Temp(t)
 	if rc, out := run("find", "x"); rc != exitUnavailable || !strings.Contains(out, "unavailable") {

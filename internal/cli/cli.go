@@ -404,7 +404,12 @@ func findCmd(home string, args []string, now time.Time, stdout, stderr io.Writer
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return exitError
 	}
-	return answer(res.Status, res, res.Text(), *asJSON, stdout, stderr)
+	// The commit block ends the text and keeps its lines inside the cap; the hits before it give up the room.
+	text := res.Text()
+	if block := res.Block(); block != "" {
+		text = capLines(strings.TrimSuffix(text, block), maxLines-strings.Count(block, "\n")) + block
+	}
+	return answer(res.Status, res, text, *asJSON, stdout, stderr)
 }
 
 // showCmd prints one thing in full (design §4): item, decision, session, commit, event or project.

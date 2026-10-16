@@ -127,6 +127,10 @@ func Deep(db *sql.DB, q Query, busTypes map[string]bool) (*Result, error) {
 			h.Match = "durable"
 			res.Hits = append(res.Hits, h)
 		}
+		for _, h := range durable.Commits {
+			h.Match = "durable"
+			res.Commits = append(res.Commits, h)
+		}
 		res.More = res.More || durable.More
 		res.Scope += "; durable rows from " + durable.Scope
 	}

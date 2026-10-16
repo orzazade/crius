@@ -482,13 +482,19 @@ func (r *Result) Text() string {
 	for _, h := range r.Hits {
 		b.WriteString(h.Line() + "\n")
 	}
-	if len(r.Commits) > 0 {
-		b.WriteString("commits:\n")
-		for _, h := range r.Commits {
-			b.WriteString(h.Line() + "\n")
-		}
+	return b.String() + r.Block()
+}
+
+// Block is the commit block that ends Text, "" when there is none.
+func (r *Result) Block() string {
+	if len(r.Commits) == 0 {
+		return ""
 	}
-	return b.String()
+	b := "commits:\n"
+	for _, h := range r.Commits {
+		b += h.Line() + "\n"
+	}
+	return b
 }
 
 // Line is one hit on one line.

@@ -124,12 +124,13 @@ func (r *runner) gitRepo(slug, repo string) error {
 				reverts = m[1]
 			}
 			isRevert := strings.HasPrefix(subject, `Revert "`) || reverts != nil
+			stored := r.text(subject)
 			res, err := tx.Exec("insert or ignore into git_commit (sha, repo, project, ts, files, is_revert, reverts_sha,"+
-				" subject) values (?,?,?,?,?,?,?,?)", commit, repo, slug, ts, string(fj), isRevert, reverts, r.text(subject))
+				" subject) values (?,?,?,?,?,?,?,?)", commit, repo, slug, ts, string(fj), isRevert, reverts, stored)
 			if err != nil {
 				return err
 			}
-			if _, err := tx.Exec("update git_commit set subject = ? where sha = ? and subject is null", r.text(subject),
+			if _, err := tx.Exec("update git_commit set subject = ? where sha = ? and subject is null", stored,
 				commit); err != nil {
 				return err
 			}

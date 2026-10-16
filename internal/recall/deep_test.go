@@ -113,8 +113,12 @@ func TestDeepIsBounded(t *testing.T) {
 func TestDeepPastRetentionIsExpiredWithTheDurableRows(t *testing.T) {
 	db := open(t)
 	event(t, db, "2026-09-05T10:00:00Z", "falcon", "info", "mail stopped 09-21", "")
+	// Review of 376393d (P3): the durable rows include the commit block.
+	exec(t, db, "insert into git_commit (sha, repo, project, ts, files, subject) values ('abcdef1', '/r/falcon', 'falcon',"+
+		" '2026-09-05T11:00:00Z', '[]', 'mail stopped: poll fix')")
 	r := deep(t, db, Query{Text: "mail stopped", Project: "falcon", Since: now.AddDate(0, 0, -45)})
-	if r.Status != "expired" || len(r.Hits) != 1 || r.Hits[0].Match != "durable" || !strings.Contains(r.Text(), "older than 30 days") {
+	if r.Status != "expired" || len(r.Hits) != 1 || r.Hits[0].Match != "durable" || !strings.Contains(r.Text(), "older than 30 days") ||
+		len(r.Commits) != 1 || r.Commits[0].Match != "durable" {
 		t.Fatal(r.Text())
 	}
 }

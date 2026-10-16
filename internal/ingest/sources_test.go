@@ -453,6 +453,11 @@ func TestCommitSubjectsAndBackfill(t *testing.T) {
 	sha := gitOut(t, repo, "rev-parse", "HEAD")
 	x.run()
 	eq(t, x.one("select subject from git_commit where sha=?", sha), "fix(clock): broker time follows DST")
+	// Review of 376393d (P3): a redacted subject counts once.
+	testutil.Write(t, filepath.Join(repo, "b.txt"), "1\n")
+	testutil.Git(t, repo, "add", "-A")
+	testutil.Git(t, repo, "commit", "-q", "-m", "set password=hunter22x for the test")
+	eq(t, x.run().Redactions, 1)
 	db, err := store.Open(x.home)
 	if err != nil {
 		t.Fatal(err)
@@ -462,5 +467,5 @@ func TestCommitSubjectsAndBackfill(t *testing.T) {
 	}
 	db.Close()
 	x.run()
-	eq(t, x.q("select sha, subject from git_commit order by sha='gone'"), [][]string{{sha, "fix(clock): broker time follows DST"}, {"gone", ""}})
+	eq(t, x.q("select sha, subject from git_commit where sha in (?, 'gone') order by sha='gone'", sha), [][]string{{sha, "fix(clock): broker time follows DST"}, {"gone", ""}})
 }
