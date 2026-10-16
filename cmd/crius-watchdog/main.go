@@ -13,6 +13,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/orzazade/crius/internal/redact"
 	"github.com/orzazade/crius/internal/watchdog"
 )
 
@@ -38,6 +39,7 @@ func main() {
 
 // run checks once. wakeErr is a failure to read the wake time; the check then counts from the stamp only.
 func run(home string, now, wake time.Time, wakeErr error, stderr io.Writer) int {
+	stderr = redact.Writer{W: stderr}
 	last := filepath.Join(home, "watchdog.error")
 	err := watchdog.Check(home, now, wake, maxAge)
 	if err == nil && wakeErr != nil {
@@ -48,7 +50,7 @@ func run(home string, now, wake time.Time, wakeErr error, stderr io.Writer) int 
 			return 0
 		}
 	}
-	msg := err.Error()
+	msg, _ := redact.Redact(err.Error()) // also kept in watchdog.error
 	fmt.Fprintf(stderr, "%s crius-watchdog: %s\n", now.Format(time.RFC3339), msg)
 	if b, rerr := os.ReadFile(last); rerr != nil || strings.TrimSpace(string(b)) != msg {
 		if perr := watchdog.Post(home, now, "watchdog cannot check the ingest: "+msg); perr != nil {

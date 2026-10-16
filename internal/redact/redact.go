@@ -1,8 +1,12 @@
-package ingest
+// Package redact is the secret scan for every output sink: stored text, CLI output, error text, logs and alerts
+// (design §3c). Patterns from ~/.claude/hooks/check-secrets.sh plus common formats. It imports only the standard
+// library, so the watchdog can use it without depending on the ingest or the store.
+package redact
 
-// Secret scan for every text the store keeps (patterns from ~/.claude/hooks/check-secrets.sh plus common formats).
-
-import "regexp"
+import (
+	"io"
+	"regexp"
+)
 
 var secretRes = []*regexp.Regexp{
 	// A whole private key block; a cut-off block is removed up to the end of the text.
@@ -23,4 +27,15 @@ func Redact(s string) (string, int) {
 		s = re.ReplaceAllStringFunc(s, func(string) string { hits++; return "[redacted]" })
 	}
 	return s, hits
+}
+
+// Writer passes each write through Redact: output may quote a config value, an argument or an error.
+type Writer struct{ W io.Writer }
+
+func (r Writer) Write(b []byte) (int, error) {
+	s, _ := Redact(string(b))
+	if _, err := io.WriteString(r.W, s); err != nil {
+		return 0, err
+	}
+	return len(b), nil
 }

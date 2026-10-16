@@ -1,6 +1,6 @@
 // Package watchdog alerts when the ingest heartbeat is stale while transcripts keep growing (design §5).
 // It runs as its own launchd job and imports nothing from the ingest or the store on purpose: a bug there must
-// not silence the check on it.
+// not silence the check on it. It imports only internal/redact, which uses only the standard library.
 //
 // Stale = older than maxAge, counted from the later of the last stamp and the last wake from sleep, so a Mac
 // that just woke does not alert before the ingest catches up. One ALERT line per stale episode goes to
@@ -19,6 +19,8 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/orzazade/crius/internal/redact"
 )
 
 // The ingest's defaults when projects.toml has no [transcripts] table.
@@ -166,8 +168,9 @@ func Check(home string, now, wake time.Time, maxAge time.Duration) error {
 	return os.WriteFile(seen, []byte(key+"\n"), 0o600)
 }
 
-// Post appends one ALERT line from the watchdog to Crius's bus.
+// Post appends one ALERT line from the watchdog to Crius's bus, redacted (an error can quote a config value).
 func Post(home string, now time.Time, text string) error {
+	text, _ = redact.Redact(text)
 	text = strings.Join(strings.Fields(text), " ")
 	if r := []rune(text); len(r) > 300 {
 		text = string(r[:300])

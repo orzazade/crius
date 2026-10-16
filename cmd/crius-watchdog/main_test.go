@@ -51,3 +51,17 @@ func TestAHealthyCheckExits0AndPostsNothing(t *testing.T) {
 		t.Fatal(rc, busLines(t, home))
 	}
 }
+
+// Step 4 P1: an error can quote a secret; neither stderr nor the ALERT line may carry it.
+func TestAnErrorQuotingASecretIsRedacted(t *testing.T) {
+	home := setup(t)
+	key := "ghp_" + strings.Repeat("C", 36)
+	var errb strings.Builder
+	if rc := run(home, time.Now(), time.Time{}, errors.New("sysctl failed token "+key), &errb); rc != 1 {
+		t.Fatal(rc)
+	}
+	got := strings.Join(busLines(t, home), "\n") + errb.String() + testutil.Read(t, filepath.Join(home, "watchdog.error"))
+	if strings.Contains(got, key) || !strings.Contains(got, "[redacted]") {
+		t.Fatal(got)
+	}
+}

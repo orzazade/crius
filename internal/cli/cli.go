@@ -16,6 +16,7 @@ import (
 	"github.com/orzazade/crius"
 	"github.com/orzazade/crius/internal/ingest"
 	"github.com/orzazade/crius/internal/quota"
+	"github.com/orzazade/crius/internal/redact"
 	"github.com/orzazade/crius/internal/store"
 )
 
@@ -39,8 +40,10 @@ type multi []string
 func (m *multi) String() string     { return strings.Join(*m, ", ") }
 func (m *multi) Set(v string) error { *m = append(*m, v); return nil }
 
-// Run runs one command and returns its exit code.
+// Run runs one command and returns its exit code. Everything it prints is redacted: output and error text can quote
+// an argument, a config value or a stored line (design §3c).
 func Run(args []string, stdout, stderr io.Writer) int {
+	stdout, stderr = redact.Writer{W: stdout}, redact.Writer{W: stderr}
 	home := store.Home()
 	cmd := ""
 	if len(args) > 0 {
@@ -138,6 +141,23 @@ func record(home string, args []string, stdout, stderr io.Writer) int {
 			return exitUsage
 		}
 	}
+	// Every given text is redacted before it is written anywhere: bus, DECISIONS.md, the store (design §3c).
+	hits := 0
+	for _, p := range []*string{project, role, typ, text, title, why, by, supersedes, reason, refs, kind, parent} {
+		if p != nil {
+			var n int
+			*p, n = redact.Redact(*p)
+			hits += n
+		}
+	}
+	for i := range criteria {
+		var n int
+		criteria[i], n = redact.Redact(criteria[i])
+		hits += n
+	}
+	if hits > 0 {
+		fmt.Fprintf(stderr, "redacted %d secret(s) before writing\n", hits)
+	}
 	if fi, err := os.Stat(filepath.Join(home, "state")); err != nil || !fi.IsDir() {
 		fmt.Fprintf(stderr, "unavailable: %s is missing; run crius-rec init\n", home)
 		return exitUnavailable
@@ -187,9 +207,8 @@ func recordItem(home, project, title, kind string, criteria []string, parent str
 }
 
 // quotaCmd prints the two quota blocks (or the report as JSON), starting with the status and its reasons; anything
-// but complete exits partial. Everything it prints is redacted: errors can quote a config value.
+// but complete exits partial.
 func quotaCmd(home string, now time.Time, asJSON, room bool, stdout, stderr io.Writer) int {
-	stdout, stderr = ingest.Redacting{W: stdout}, ingest.Redacting{W: stderr}
 	// fail says why on stderr; with --room every failure is also an "unknown" verdict on stdout, the one line a
 	// launcher reads, with a short reason (the full one is on stderr).
 	fail := func(rc int, reason, msg string) int {

@@ -196,3 +196,35 @@ func TestQuotaRoomUnknownIsLoud(t *testing.T) {
 	}
 	_ = home
 }
+
+// Step 4 P1: a secret given to record never reaches the bus, DECISIONS.md, the store, the output or the error text.
+func TestRecordRedactsEverySink(t *testing.T) {
+	_, home := testutil.Temp(t)
+	run("init")
+	key := "sk-ant-api03-" + strings.Repeat("B", 40)
+	cases := [][]string{
+		{"record", "bus", "--project", "demo", "--role", "leader", "--type", "INFO", "--text", "token " + key},
+		{"record", "decision", "--project", "demo", "--title", "t " + key, "--why", "w " + key, "--by", "crius " + key,
+			"--refs", key},
+		{"record", "item", "--project", "demo", "--title", "t " + key, "--kind", "code", "--criteria", "c " + key},
+		{"record", "bus", "--project", "demo", "--role", "leader", "--type", key, "--text", "x"},
+		{"record", "item", "--project", "demo", "--title", "t", "--kind", key, "--criteria", "c"},
+		{"record", "decision", "--project", "demo", "--title", "t", "--why", "w", "--by", "crius", "--supersedes", key,
+			"--reason", "r"},
+		{"record", "bus", "--project", "demo", "--role", "leader", "--type", "INFO", "--text", key, "--" + key},
+	}
+	for _, c := range cases {
+		if rc, out := run(c...); strings.Contains(out, key) {
+			t.Errorf("%v: exit %d printed the secret: %s", c[1:], rc, out)
+		}
+	}
+	filepath.WalkDir(home, func(p string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && strings.Contains(testutil.Read(t, p), key) {
+			t.Errorf("%s holds the secret", p)
+		}
+		return nil
+	})
+	if log := testutil.Read(t, filepath.Join(home, "bus", "demo.log")); !strings.Contains(log, "[redacted]") {
+		t.Fatal(log)
+	}
+}

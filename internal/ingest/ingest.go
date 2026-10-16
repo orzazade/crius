@@ -24,6 +24,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/orzazade/crius/internal/redact"
 	"github.com/orzazade/crius/internal/store"
 )
 
@@ -52,14 +53,14 @@ type runner struct {
 func utcNow() string { return time.Now().UTC().Format("2006-01-02T15:04:05Z") }
 
 func (r *runner) warn(partial bool, format string, args ...any) {
-	msg, _ := Redact(fmt.Sprintf(format, args...))
+	msg, _ := redact.Redact(fmt.Sprintf(format, args...))
 	r.st.Warnings = append(r.st.Warnings, msg)
 	r.partial = r.partial || partial
 }
 
 // text redacts and shortens a value before it is stored.
 func (r *runner) text(s string) string {
-	s, n := Redact(strings.ToValidUTF8(s, "�"))
+	s, n := redact.Redact(strings.ToValidUTF8(s, "�"))
 	r.st.Redactions += n
 	if utf8.RuneCountInString(s) > store.MaxLen {
 		s = string([]rune(s)[:store.MaxLen])
@@ -283,19 +284,8 @@ func Run(home string) (*Stats, error) {
 }
 
 // Main is crius-ingest: leak test, writer lock, one run, the daily backup, and the heartbeat after a complete run.
-// Redacting passes each write through Redact: everything Main prints may quote a config value or an error.
-type Redacting struct{ W io.Writer }
-
-func (r Redacting) Write(b []byte) (int, error) {
-	s, _ := Redact(string(b))
-	if _, err := io.WriteString(r.W, s); err != nil {
-		return 0, err
-	}
-	return len(b), nil
-}
-
 func Main(args []string, stdout, stderr io.Writer) int {
-	stdout, stderr = Redacting{stdout}, Redacting{stderr}
+	stdout, stderr = redact.Writer{W: stdout}, redact.Writer{W: stderr}
 	fs := flag.NewFlagSet("crius-ingest", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	repo := fs.String("repo", os.Getenv("CRIUS_REPO"), "the crius checkout the leak test scans")
