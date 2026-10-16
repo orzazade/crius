@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -110,6 +111,42 @@ func TestBusLinesKeepTheirRecipient(t *testing.T) {
 		}
 	}
 	eq(t, rows[0][0], "verified")
+}
+
+// Crius 10-17 03:03: bus stamps are local time, UTC ends in Z. A dated line more than an hour behind the newest stamp
+// before it in its file (a writer stamping UTC without Z), or more than 10 minutes ahead of the clock, is loud: one
+// alert per file, writer and day. The line keeps the stamp it was written with; a line flagged ahead does not move
+// the newest stamp, so the good lines after it are not blamed.
+func TestBusClockMistakesAreLoud(t *testing.T) {
+	x, _, _ := busCase(t)
+	now := time.Date(2026, 10, 17, 3, 0, 0, 0, time.Local)
+	clock = func() time.Time { return now }
+	t.Cleanup(func() { clock = time.Now })
+	testutil.Write(t, filepath.Join(x.home, "bus", "falcon.log"),
+		"2026-10-17T02:19 INFO crius:lead -> falcon:lead — go\n"+
+			"2026-10-16T22:23 DONE falcon:lead -> crius:lead — UTC without Z\n"+
+			"2026-10-16T22:30 DONE falcon:lead -> crius:lead — again: the same alert\n"+
+			"2026-10-15T23:00 DONE falcon:lead -> crius:lead — another day: another alert\n"+
+			"2026-10-17T01:20 INFO crius:lead -> falcon:lead — 59 min behind: no alert\n"+
+			"2026-10-17T01:10 INFO axi:lead -> crius — 69 min behind 02:19, the newest; 01:20 does not move it\n"+
+			"2026-10-17T03:15 INFO quotes:lead -> crius — 15 min ahead\n"+
+			"2026-10-17T03:09 INFO crius:lead -> falcon:lead — 9 min ahead: fine\n"+
+			"2026-10-17T02:08 INFO crius:lead -> falcon:lead — 61 min behind 03:09\n")
+	x.run()
+	rows := x.q("select text from alert where key like 'bus-clock:%' order by key")
+	want := []string{"quotes:lead line 2026-10-17T03:15 .* 15m ahead", "axi:lead .* 1h9m behind",
+		"crius:lead .* 1h1m behind", "falcon:lead line 2026-10-15T23:00 .* 27h19m behind",
+		"falcon:lead line 2026-10-16T22:23 .* 3h56m behind the newest stamp before it \\(2026-10-17T02:19\\)"}
+	if len(rows) != len(want) {
+		t.Fatal(rows)
+	}
+	for i, w := range want {
+		if !regexp.MustCompile(w).MatchString(rows[i][0]) {
+			t.Errorf("alert %d: %q does not match %q", i, rows[i][0], w)
+		}
+	}
+	eq(t, x.one("select ts from event where text = 'UTC without Z'"),
+		time.Date(2026, 10, 16, 22, 23, 0, 0, time.Local).UTC().Format("2006-01-02T15:04:05Z"))
 }
 
 func TestBusLinesDatedUndatedMalformedAndRedacted(t *testing.T) {

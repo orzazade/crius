@@ -34,6 +34,25 @@ func TestParseDatedLine(t *testing.T) {
 	}
 }
 
+// Crius 10-17 03:03: a stamp is local time; one ending in Z is UTC and reads as the same moment in local time, so
+// the lines after it date on from there. An undated stamp with Z has no day and is malformed.
+func TestAZStampIsUTC(t *testing.T) {
+	local := time.Local
+	time.Local = time.FixedZone("UTC+4", 4*3600)
+	t.Cleanup(func() { time.Local = local })
+	st := State{}
+	p := ParseLine("2026-10-16T22:23Z DONE falcon:lead -> crius:lead — x", &st, true)
+	if p == nil || p.Date != "2026-10-17" || p.Time != "02:23" || st != (State{Date: "2026-10-17", Time: "02:23"}) {
+		t.Fatalf("%+v %+v", p, st)
+	}
+	if p := ParseLine("02:30 INFO crius:lead -> falcon:lead — y", &st, true); p == nil || p.Date != "2026-10-17" {
+		t.Fatalf("%+v", p)
+	}
+	if ParseLine("22:40Z DONE falcon:lead -> crius — z", &st, true) != nil {
+		t.Fatal("an undated Z stamp parsed")
+	}
+}
+
 func TestUndatedLineStillParses(t *testing.T) {
 	st := &State{Date: "2026-10-15", Time: "08:00"}
 	p := ParseLine("09:20 BLOCKED axi:leader -> crius — waiting on CI", st, true)

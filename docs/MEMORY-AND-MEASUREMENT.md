@@ -408,6 +408,9 @@ more than a late one.
 ```
 - `<YYYY-MM-DDTHH:MM> TYPE <project>:<role> -> crius — text [refs]`, from `$(date +%FT%H:%M)`, ≤ 300 chars, append
   with `>>` (or `crius-rec record bus`). Old `HH:MM` lines still parse (date from file order and mtime).
+- Stamps are local time. A UTC stamp ends in `Z` (`$(date -u +%FT%H:%MZ)`), dated lines only. Ingest never re-dates
+  a line: a dated line more than 1 h behind the newest stamp before it in its file (a clock in UTC without `Z`), or
+  more than 10 min ahead of the clock, raises an ALERT naming the writer, one per file, writer and day.
 - Types (the one list; `internal/store` tests check the Go list equals it): `DONE`, `BLOCKED`, `NEED-OWNER`,
   `PAUSED`, `LIMIT`, `ITEM`, `DECISION`, `RESUMED`, `ALERT`, `INFO`, `NEED`, `WAIT`, `PARKED`, `VERIFIED`.
 - Who writes them: ALERT only Crius's own scripts (ingest, watchdog), WAIT the wait detector, PARKED the park mod

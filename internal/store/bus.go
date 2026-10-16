@@ -31,7 +31,7 @@ const lateWithin = 10
 // Slug is a project or role name. Go's `$` matches only at the very end, so "demo\n" does not pass.
 var Slug = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 
-var lineRe = regexp.MustCompile(`^(?:(\d{4}-\d\d-\d\d)T)?(\d\d:\d\d) ([A-Z][A-Z-]*) (\S+) -> (\S+) — (.*)$`)
+var lineRe = regexp.MustCompile(`^(?:(\d{4}-\d\d-\d\d)T)?(\d\d:\d\d)(Z?) ([A-Z][A-Z-]*) (\S+) -> (\S+) — (.*)$`)
 
 var refRes = []struct {
 	key string
@@ -45,8 +45,9 @@ var refRes = []struct {
 	{"decision", regexp.MustCompile(`(?:^|[^\w-])([a-z0-9][a-z0-9-]*-D\d+)\b`)},
 }
 
-// State dates undated lines: the date and time of the line before.
-type State struct{ Date, Time string }
+// State dates undated lines: the date and time of the line before. Newest is ingest's: the newest dated stamp in the
+// file so far ("2006-01-02T15:04", local), for the clock check.
+type State struct{ Date, Time, Newest string }
 
 type Line struct {
 	Date, Time, Type string
@@ -75,7 +76,7 @@ func ParseLine(line string, st *State, strict bool) *Line {
 	if m == nil {
 		return nil
 	}
-	day, hhmm, typ, sender, to, text := m[1], m[2], m[3], m[4], m[5], m[6]
+	day, hhmm, utc, typ, sender, to, text := m[1], m[2], m[3] == "Z", m[4], m[5], m[6], m[7]
 	if strict && !Types[typ] {
 		return nil
 	}
@@ -92,8 +93,16 @@ func ParseLine(line string, st *State, strict bool) *Line {
 	if check == "" {
 		check = "2000-01-01"
 	}
-	if _, err := time.Parse("2006-01-02T15:04", check+"T"+hhmm); err != nil {
+	at, err := time.Parse("2006-01-02T15:04", check+"T"+hhmm)
+	if err != nil {
 		return nil
+	}
+	if utc { // a stamp is local time; one ending in Z is UTC, read as the same moment in local time
+		if day == "" {
+			return nil
+		}
+		at = at.In(time.Local)
+		day, hhmm = at.Format("2006-01-02"), at.Format("15:04")
 	}
 	guessed, late := day == "", false
 	if guessed {

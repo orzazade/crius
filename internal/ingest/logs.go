@@ -24,7 +24,7 @@ func sha1Hex(b []byte) string {
 // datingVersion names the rules that date a log line (store.ParseLine's undated-line steps and logFile's seeding and
 // anchoring). Raise it by hand when they change: every log is read again, and the undated lines after each file's
 // anchor (its first stored, not late, undated line, which keeps its date) take the new dates.
-const datingVersion = "d2"
+const datingVersion = "d3" // d3: a stamp ending in Z is UTC
 
 func typesSum() string {
 	ts := make([]string, 0, len(store.Types))
@@ -151,6 +151,11 @@ func (r *runner) logFile(path, source string, strict bool, project string) error
 			if err != nil {
 				return err
 			}
+			if !p.DatedByGuess {
+				if err := r.checkClock(tx, path, pathKey, p, t, &st); err != nil {
+					return err
+				}
+			}
 			e := event{ts: t.UTC().Format("2006-01-02T15:04:05Z"), kind: strings.ToLower(p.Type), key: key,
 				project: project, actor: p.Role, text: p.Text, hasText: true}
 			if p.Project != "" {
@@ -192,4 +197,42 @@ func (r *runner) logFile(path, source string, strict bool, project string) error
 		next.state = string(b)
 		return saveCursor(tx, source, path, next, n)
 	})
+}
+
+// checkClock: bus stamps are local time, UTC ends in Z (§6). A dated line more than an hour behind the newest stamp
+// before it in the file (a writer stamping UTC without Z), or more than 10 minutes ahead of the clock, queues an alert,
+// one per file, writer and day; the line keeps its stamp. A line flagged ahead does not move the newest stamp, so the
+// good lines after it are not blamed.
+func (r *runner) checkClock(tx *sql.Tx, path, pathKey string, p *store.Line, t time.Time, st *store.State) error {
+	writer := p.Role
+	if p.Project != "" {
+		writer = p.Project + ":" + p.Role
+	}
+	stamp := p.Date + "T" + p.Time
+	key := func(how string) string { return "bus-clock:" + how + ":" + pathKey + ":" + writer + ":" + p.Date }
+	if ahead := t.Sub(clock()); ahead > 10*time.Minute {
+		return r.queueAlert(tx, key("ahead"), fmt.Sprintf("bus clock: %s line %s in %s is %s ahead of the clock;"+
+			" stamps are local time, UTC ends in Z; it keeps its stamp", writer, stamp, path, span(ahead)))
+	}
+	if st.Newest != "" {
+		newest, err := time.ParseInLocation("2006-01-02T15:04", st.Newest, time.Local)
+		if err != nil {
+			return fmt.Errorf("bad saved newest stamp %q: %v", st.Newest, err)
+		}
+		if behind := newest.Sub(t); behind > time.Hour {
+			return r.queueAlert(tx, key("behind"), fmt.Sprintf("bus clock: %s line %s in %s is %s behind the newest"+
+				" stamp before it (%s); stamps are local time, UTC ends in Z; it keeps its stamp", writer, stamp, path,
+				span(behind), st.Newest))
+		}
+		if !t.After(newest) {
+			return nil
+		}
+	}
+	st.Newest = stamp
+	return nil
+}
+
+// span is a duration in whole minutes: 3h56m, 15m.
+func span(d time.Duration) string {
+	return strings.TrimSuffix(d.Truncate(time.Minute).String(), "0s")
 }

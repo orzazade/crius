@@ -12,7 +12,7 @@ import (
 	"github.com/orzazade/crius/internal/quota"
 )
 
-// clock is the time the quota checks run at; tests set it.
+// clock is the time the quota and bus clock checks run at; tests set it.
 var clock = time.Now
 
 // ingestQuota reads new lines of spool/quota.jsonl (written by crius-statusline) into `quota` and `account_seen`,
