@@ -191,7 +191,7 @@ func quotaCmd(home string, now time.Time, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "unavailable: %s is missing; run crius-rec init\n", home)
 		return exitUnavailable
 	}
-	ok, err := ingest.EnterpriseProjects(home)
+	projects, err := ingest.QuotaProjects(home)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return exitError
@@ -202,7 +202,7 @@ func quotaCmd(home string, now time.Time, stdout, stderr io.Writer) int {
 		return exitError
 	}
 	defer db.Close()
-	rep, err := quota.Build(db, ok, now)
+	rep, err := quota.Build(db, projects, now)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return exitError

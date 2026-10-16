@@ -105,7 +105,11 @@ func (x *ic) report() *quota.Report {
 		x.t.Fatal(err)
 	}
 	defer db.Close()
-	rep, err := quota.Build(db, map[string]bool{"axi": true}, qNow)
+	p, err := QuotaProjects(x.home)
+	if err != nil {
+		x.t.Fatal(err)
+	}
+	rep, err := quota.Build(db, p, qNow)
 	if err != nil {
 		x.t.Fatal(err)
 	}
@@ -125,7 +129,7 @@ func TestQuotaAtSixtyPercentOnDayThreePushesOnce(t *testing.T) {
 		t.Fatalf("want one pace push naming the top burner, got %q", x.alerts())
 	}
 	eq(t, x.one("select count(*) from quota"), "2")
-	eq(t, x.one("select rl from account_seen where session=?", x.sid), "1")
+	eq(t, x.q("select rl from account_seen where session=?", x.sid), [][]string{{"1"}, {"1"}})
 }
 
 // 59% on day 3, and 62% on day 4: no pace push (design §8: >= 60% by day 3).
@@ -409,6 +413,63 @@ func TestQuotaLongPaceAlertIsPostedAndDoesNotBlockTheQueue(t *testing.T) {
 	x.run()
 	if len(grepAlerts(x.alerts(), "S1 personal work")) != 1 {
 		t.Fatalf("the next alert must still go out: %q", x.alerts())
+	}
+}
+
+// Codex round 3 P1: enterprise use is judged against the project active when it happened. A session billed to
+// enterprise on axi that switches to demo (still enterprise) is S1 for demo; one that did axi on enterprise and then
+// demo on Max is not S1.
+func TestQuotaEnterpriseStretchIsCheckedAgainstTheProjectsActiveInIt(t *testing.T) {
+	x := quotaCase(t)
+	bad, good := "c1c1c1c1-2222-3333-4444-555555555555", "c2c2c2c2-2222-3333-4444-555555555555"
+	for _, sid := range []string{bad, good} {
+		recs := []map[string]any{
+			prompt("p1-"+sid, iso(qNow.Add(-60*time.Minute)), "[crius account=enterprise project=axi role=lead]\n", "", "/work/axi"),
+			assistant(A{Req: sid + "-1", TS: iso(qNow.Add(-59 * time.Minute))}),
+			prompt("p2-"+sid, iso(qNow.Add(-30*time.Minute)), "[crius account=max project=demo role=lead]\n", "", "/work/axi"),
+			assistant(A{Req: sid + "-2", TS: iso(qNow.Add(-29 * time.Minute))})}
+		testutil.Write(t, filepath.Join(x.work, "-p", sid+".jsonl"), lines(recs...))
+	}
+	x.spool(quota.Line{TS: iso(qNow.Add(-58 * time.Minute)), Kind: "session", Session: bad, Persona: "work"},
+		quota.Line{TS: iso(qNow.Add(-58 * time.Minute)), Kind: "session", Session: good, Persona: "work"},
+		sampleAt(good, qNow.Add(-28*time.Minute), 20, qNow.Add(4*24*time.Hour)))
+	x.run()
+	s1 := grepAlerts(x.alerts(), "S1 personal work")
+	if len(s1) != 1 || !strings.Contains(s1[0], "session c1c1c1c1, project demo (account from statusline)") {
+		t.Fatalf("want S1 only for the session that stayed on enterprise into demo, got %q", x.alerts())
+	}
+	if len(grepAlerts(x.alerts(), "account mismatch in session c1c1c1c1")) != 1 {
+		t.Fatalf("tag max with an enterprise statusline is a mismatch: %q", x.alerts())
+	}
+	rep := x.report()
+	ent := map[string]float64{}
+	for _, sh := range rep.EntWeek {
+		ent[sh.Project] = sh.USD
+	}
+	if ent["axi"] == 0 || ent["demo"] == 0 || rep.MaxUSD == 0 {
+		t.Fatalf("enterprise by project %v, max $ %v", ent, rep.MaxUSD)
+	}
+}
+
+// Codex round 3 P2: an unpriced enterprise request today, before the Max epoch began, is still said missing.
+func TestQuotaUnpricedEnterpriseTodayBeforeTheEpochIsSaid(t *testing.T) {
+	x := quotaCase(t)
+	ent := "aaaaaaaa-2222-3333-4444-555555555555"
+	morning := time.Date(qNow.Year(), qNow.Month(), qNow.Day(), 0, 30, 0, 0, time.Local)
+	x.session("work", ent, "/work/axi", "", morning)
+	x.spool(quota.Line{TS: iso(morning.Add(time.Minute)), Kind: "session", Session: ent, Persona: "work"},
+		sampleAt(x.sid, qNow.Add(-time.Minute), 1, morning.Add(30*time.Minute+7*24*time.Hour)))
+	x.run()
+	db, err := store.Open(x.home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("update request set cost_list_usd=null"); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	if rep := x.report(); rep.Unpriced != 1 || rep.Status != "partial" {
+		t.Fatalf("unpriced %d status %s", rep.Unpriced, rep.Status)
 	}
 }
 

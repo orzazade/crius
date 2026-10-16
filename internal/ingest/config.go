@@ -9,6 +9,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
+	"github.com/orzazade/crius/internal/quota"
 	"github.com/orzazade/crius/internal/store"
 )
 
@@ -102,13 +103,17 @@ func (c *config) enterpriseOK() map[string]bool {
 	return ok
 }
 
-// EnterpriseProjects reads projects.toml in home and lists the projects that may run on the enterprise account.
-func EnterpriseProjects(home string) (map[string]bool, error) {
+func (c *config) quotaProjects() quota.Projects {
+	return quota.Projects{EnterpriseOK: c.enterpriseOK(), ForCwd: c.projectForCwd}
+}
+
+// QuotaProjects reads projects.toml in home: which projects may use the enterprise account, and folder -> project.
+func QuotaProjects(home string) (quota.Projects, error) {
 	c, err := loadConfig(home)
 	if err != nil {
-		return nil, err
+		return quota.Projects{}, err
 	}
-	return c.enterpriseOK(), nil
+	return c.quotaProjects(), nil
 }
 
 // projectForCwd maps a folder to the project with the longest matching cwd prefix.

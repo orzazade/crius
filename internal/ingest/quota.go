@@ -49,9 +49,9 @@ func (r *runner) quotaFile(tx *sql.Tx, path string) error {
 			return nil
 		}
 		rl := 0
+		key := fmt.Sprintf("quota:%d:%s", pos, sha1Hex(raw)[:12])
 		if l.RL {
 			rl = 1
-			key := fmt.Sprintf("quota:%d:%s", pos, sha1Hex(raw)[:12])
 			if _, err := tx.Exec("insert or ignore into quota (source_key, ts, account, session, persona, epoch,"+
 				" five_hour_pct, five_reset, seven_day_pct, sample_kind) values (?,?,'max',?,?,?,?,?,?,?)", key, l.TS,
 				r.text(l.Session), r.text(l.Persona), l.SevenReset, l.FivePct, l.FiveReset, l.SevenPct,
@@ -59,12 +59,8 @@ func (r *runner) quotaFile(tx *sql.Tx, path string) error {
 				return err
 			}
 		}
-		// The latest line says which account the session bills to now; one enterprise line is enough for the guard
-		// (the sampler writes rl=false only after a response that came without rate_limits).
-		_, err := tx.Exec("insert into account_seen (session, persona, rl, ent, first_ts, last_ts) values (?,?,?,?,?,?)"+
-			" on conflict(session) do update set rl=case when excluded.last_ts >= last_ts then excluded.rl else rl end,"+
-			" ent=max(ent, excluded.ent), first_ts=min(first_ts, excluded.first_ts),"+
-			" last_ts=max(last_ts, excluded.last_ts)", r.text(l.Session), r.text(l.Persona), rl, 1-rl, l.TS, l.TS)
+		_, err := tx.Exec("insert or ignore into account_seen (source_key, session, persona, ts, rl) values (?,?,?,?,?)",
+			key, r.text(l.Session), r.text(l.Persona), l.TS, rl)
 		return err
 	})
 	if err != nil {
@@ -79,7 +75,7 @@ func (r *runner) quotaFile(tx *sql.Tx, path string) error {
 // quotaChecks queues the alerts of design §5 and §8: the account guard (S1), a stale sampler, and the pace and
 // used-up pushes. Each key is alerted once.
 func (r *runner) quotaChecks(tx *sql.Tx) error {
-	rep, err := quota.Build(tx, r.cfg.enterpriseOK(), clock())
+	rep, err := quota.Build(tx, r.cfg.quotaProjects(), clock())
 	if err != nil {
 		return err
 	}

@@ -45,69 +45,220 @@ type Report struct {
 	Violations         []Violation
 }
 
-type sess struct {
-	persona, project, account, source string
-}
-
 // Querier is a *sql.DB or a *sql.Tx.
 type Querier interface {
 	Query(query string, args ...any) (*sql.Rows, error)
 }
 
-// accounts gives each session the account it bills to now: the statusline's latest observation (rate_limits present
-// = max, absent after a response = enterprise), else the launch tag, else unknown. The guard checks every session
-// that was ever on the enterprise account, by either source. A tag the statusline contradicts is a mismatch. A
-// session the statusline saw but no transcript gave (yet) is still checked, with no project. sampled lists the
-// personas whose statusline has written a line.
-func accounts(db Querier, enterpriseOK map[string]bool) (out map[string]sess, vs []Violation, sampled map[string]bool,
-	err error) {
-	rows, err := db.Query("select s.id, coalesce(s.persona, ''), coalesce(s.project, ''), s.account, a.rl, a.ent" +
-		" from session s left join account_seen a on a.session = s.id" +
-		" union all select a.session, coalesce(a.persona, ''), '', 'unknown', a.rl, a.ent from account_seen a" +
-		" where a.session not in (select id from session)")
-	if err != nil {
-		return nil, nil, nil, err
+// Projects is what the report needs from projects.toml.
+type Projects struct {
+	EnterpriseOK map[string]bool         // projects that may run on the enterprise account
+	ForCwd       func(cwd string) string // the project of a folder, "" when none
+}
+
+type obs struct {
+	ts time.Time
+	rl bool
+}
+
+type asg struct {
+	from, to         time.Time // to is zero while the assignment is open
+	project, account string
+}
+
+// sess holds what decides a session's account and project at a given time: the statusline lines (obs) and the
+// launch-tag assignments (asg), both sorted by time.
+type sess struct {
+	persona, cwdProject string
+	obs                 []obs
+	asg                 []asg
+}
+
+// Grace: a statusline line is written just after the response it describes, so it applies from this much earlier.
+const Grace = 2 * time.Minute
+
+func (s *sess) assignment(t time.Time) *asg {
+	for i := len(s.asg) - 1; i >= 0; i-- {
+		if a := &s.asg[i]; !a.from.After(t) && (a.to.IsZero() || t.Before(a.to)) {
+			return a
+		}
 	}
-	defer rows.Close()
-	out, sampled = map[string]sess{}, map[string]bool{}
-	for rows.Next() {
-		var id, tag string
-		var s sess
-		var rl, ent sql.NullInt64
-		if err := rows.Scan(&id, &s.persona, &s.project, &tag, &rl, &ent); err != nil {
-			return nil, nil, nil, err
-		}
-		s.account = tag
-		if tag != "unknown" {
-			s.source = "tag"
-		}
-		if rl.Valid {
-			sampled[s.persona] = true
-			seen := map[int64]string{0: "enterprise", 1: "max"}[rl.Int64]
-			if tag != "unknown" && seen != tag {
-				vs = append(vs, Violation{Session: id, Project: s.project, Kind: "mismatch",
-					Source: "tag " + tag + ", statusline " + seen})
+	return nil
+}
+
+func (s *sess) project(t time.Time) string {
+	if a := s.assignment(t); a != nil {
+		return a.project
+	}
+	return s.cwdProject
+}
+
+// account at t: the statusline's newest line by then (a session's first line comes with its first response, so
+// earlier requests take it too), else the launch tag active then, else unknown.
+func (s *sess) account(t time.Time) string {
+	if len(s.obs) > 0 {
+		o := s.obs[0]
+		for _, x := range s.obs {
+			if x.ts.Add(-Grace).After(t) {
+				break
 			}
-			s.account, s.source = seen, "statusline"
+			o = x
 		}
-		via := ""
+		if o.rl {
+			return "max"
+		}
+		return "enterprise"
+	}
+	if a := s.assignment(t); a != nil && a.account != "unknown" {
+		return a.account
+	}
+	return "unknown"
+}
+
+// guard lists the session's violations: every stretch billed to the enterprise account (by a statusline line
+// until the next Max line, or by an enterprise launch tag) is checked against each project active in it, and a tag
+// that a statusline line contradicts is a mismatch.
+func (s *sess) guard(id string, ok map[string]bool) []Violation {
+	var vs []Violation
+	seen := map[string]bool{}
+	check := func(project, via string) {
+		v := Violation{Session: id, Project: project, Kind: "s1", Source: via}
 		switch {
-		case ent.Int64 == 1:
-			via = "statusline"
-		case tag == "enterprise":
-			via = "tag"
+		case project == "":
+			v.Kind = "unmapped"
+		case ok[project]:
+			return
 		}
-		if via != "" {
-			switch {
-			case s.project == "":
-				vs = append(vs, Violation{Session: id, Kind: "unmapped", Source: via})
-			case !enterpriseOK[s.project]:
-				vs = append(vs, Violation{Session: id, Project: s.project, Kind: "s1", Source: via})
+		if k := v.Kind + project + via; !seen[k] {
+			seen[k] = true
+			vs = append(vs, v)
+		}
+	}
+	// A tag is compared with the statusline at each line and at each tag's start.
+	var when []time.Time
+	for _, o := range s.obs {
+		when = append(when, o.ts.Add(-Grace))
+	}
+	for _, a := range s.asg {
+		if len(s.obs) > 0 {
+			when = append(when, a.from)
+		}
+	}
+	for _, t := range when {
+		if a, got := s.assignment(t), s.account(t); a != nil && a.account != "unknown" && a.account != got {
+			v := Violation{Session: id, Project: a.project, Kind: "mismatch", Source: "tag " + a.account + ", statusline " + got}
+			if !seen["mismatch"+v.Source] {
+				seen["mismatch"+v.Source] = true
+				vs = append(vs, v)
 			}
 		}
-		out[id] = s
 	}
-	return out, vs, sampled, rows.Err()
+	for i, o := range s.obs {
+		if o.rl {
+			continue
+		}
+		from, to := o.ts.Add(-Grace), time.Time{}
+		for _, x := range s.obs[i+1:] {
+			if x.rl {
+				to = x.ts.Add(-Grace)
+				break
+			}
+		}
+		check(s.project(from), "statusline")
+		for _, a := range s.asg {
+			if a.from.After(from) && (to.IsZero() || a.from.Before(to)) {
+				check(a.project, "statusline")
+			}
+		}
+	}
+	for _, a := range s.asg {
+		if a.account == "enterprise" {
+			check(a.project, "tag")
+		}
+	}
+	return vs
+}
+
+// sessions loads every session the transcripts or the statusline know, with its lines and assignments; sampled
+// lists the personas whose statusline has written a line.
+func sessions(db Querier, p Projects) (out map[string]*sess, sampled map[string]bool, err error) {
+	out, sampled = map[string]*sess{}, map[string]bool{}
+	get := func(id string) *sess {
+		if out[id] == nil {
+			out[id] = &sess{}
+		}
+		return out[id]
+	}
+	type load struct {
+		q    string
+		scan func(r *sql.Rows) error
+	}
+	loads := []load{
+		{"select id, coalesce(persona, ''), coalesce(cwd, '') from session", func(r *sql.Rows) error {
+			var id, persona, cwd string
+			if err := r.Scan(&id, &persona, &cwd); err != nil {
+				return err
+			}
+			s := get(id)
+			s.persona, s.cwdProject = persona, p.ForCwd(cwd)
+			return nil
+		}},
+		{"select session, coalesce(persona, ''), ts, rl from account_seen order by ts", func(r *sql.Rows) error {
+			var id, persona, ts string
+			var rl bool
+			if err := r.Scan(&id, &persona, &ts, &rl); err != nil {
+				return err
+			}
+			t, err := parseTS(ts)
+			if err != nil {
+				return err
+			}
+			s := get(id)
+			if s.persona == "" {
+				s.persona = persona
+			}
+			sampled[persona] = true
+			s.obs = append(s.obs, obs{t, rl})
+			return nil
+		}},
+		{"select session, from_ts, coalesce(to_ts, ''), coalesce(project, ''), coalesce(account, 'unknown')" +
+			" from assignment order by from_ts", func(r *sql.Rows) error {
+			var id, from, to string
+			var a asg
+			if err := r.Scan(&id, &from, &to, &a.project, &a.account); err != nil {
+				return err
+			}
+			var err error
+			if a.from, err = parseTS(from); err != nil {
+				return err
+			}
+			if to != "" {
+				if a.to, err = parseTS(to); err != nil {
+					return err
+				}
+			}
+			s := get(id)
+			s.asg = append(s.asg, a)
+			return nil
+		}},
+	}
+	for _, l := range loads {
+		rows, err := db.Query(l.q)
+		if err != nil {
+			return nil, nil, err
+		}
+		for rows.Next() {
+			if err := l.scan(rows); err != nil {
+				rows.Close()
+				return nil, nil, err
+			}
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, nil, err
+		}
+	}
+	return out, sampled, nil
 }
 
 type sample struct {
@@ -119,14 +270,21 @@ type sample struct {
 
 func parseTS(s string) (time.Time, error) { return time.Parse(time.RFC3339, s) }
 
-// Build makes the report as of now. enterpriseOK lists the projects that may run on the enterprise account.
-func Build(db Querier, enterpriseOK map[string]bool, now time.Time) (*Report, error) {
+// Build makes the report as of now.
+func Build(db Querier, p Projects, now time.Time) (*Report, error) {
 	rep := &Report{Now: now, Status: "none"}
-	ss, vs, sampled, err := accounts(db, enterpriseOK)
+	ss, sampled, err := sessions(db, p)
 	if err != nil {
 		return nil, err
 	}
-	rep.Violations = vs
+	ids := make([]string, 0, len(ss))
+	for id := range ss {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		rep.Violations = append(rep.Violations, ss[id].guard(id, p.EnterpriseOK)...)
+	}
 
 	// A line without a seven-day share and reset measured nothing: it neither covers a request nor counts as a
 	// sample (it would read as 0%).
@@ -229,21 +387,25 @@ func Build(db Querier, enterpriseOK map[string]bool, now time.Time) (*Report, er
 			return nil, err
 		}
 		s := ss[sid]
-		project := s.project
+		if s == nil {
+			s = &sess{}
+		}
+		project, account := s.project(t), s.account(t)
 		if project == "" {
 			project = "unknown"
 		}
-		if s.account == "enterprise" && !t.Before(today) {
+		entToday := account == "enterprise" && !t.Before(today)
+		if entToday {
 			rep.EntDay += usd
 			entDay[project] += usd
+		}
+		if !cost.Valid && (entToday || !t.Before(start)) {
+			rep.Unpriced++ // a model with no list price: its $ is missing, not 0
 		}
 		if t.Before(start) {
 			continue
 		}
-		if !cost.Valid {
-			rep.Unpriced++ // a model with no list price: its $ is missing, not 0
-		}
-		switch s.account {
+		switch account {
 		case "max":
 			rep.MaxUSD += usd
 			shares[project] += usd
@@ -258,7 +420,7 @@ func Build(db Querier, enterpriseOK map[string]bool, now time.Time) (*Report, er
 		}
 		// Max sessions must have a sample, and so must unknown ones of a persona whose statusline samples (personal
 		// always): a sampler broken before a session's first line leaves its account unknown.
-		if (s.account == "max" || s.account == "unknown" && (s.persona == "personal" || sampled[s.persona])) &&
+		if (account == "max" || account == "unknown" && (s.persona == "personal" || sampled[s.persona])) &&
 			t.After(newestOpen) {
 			newestOpen = t
 		}
