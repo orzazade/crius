@@ -62,15 +62,19 @@ var secretRes = []*regexp.Regexp{
 // A short flag is a password on a command line where the line says so; elsewhere the flag means something else.
 // -p: the line names a user (-u bob, -uroot, --user, --username) or a login, or a client that takes one that way
 // (mysql -phunter2, sshpass -p hunter2). Keyed on the line, not a list of clients (Crius 23:53: docker login -u bob -p
-// x was printed). A -p with a quoted value glued on (-p'x y') is a password on any line (Crius 00:39): no other -p
-// takes one. -a or --pass on a redis-cli line. A line ending in a backslash goes on below, and an argument may be
+// x was printed). A -p with a quoted value glued on (-p'x y', or -p\"x\" in JSON) is a password on any line
+// (Crius 00:39): no other -p takes one. -a or --pass on a redis-cli line. A line ending in a backslash goes on below, and an argument may be
 // quoted (["-p", "x"]). The redaction runs from the first such flag (group 1) to the end of the command line.
 var shortFlags = []struct{ line, flag *regexp.Regexp }{
-	{regexp.MustCompile(`(?i)\b(?:mysql\w*|mariadb\w*|sshpass|login)\b|(?:^|[\s"'\[,])(?:-u|--user(?:name)?\b)`),
-		regexp.MustCompile(`(?:^|[\s"'\[,])(-p)`)},
-	{regexp.MustCompile(``), regexp.MustCompile(`(?:^|[\s"'\[,])(-p)["']`)},
-	{regexp.MustCompile(`(?i)\bredis-cli\b`), regexp.MustCompile(`(?:^|[\s"'\[,])(-a|--pass)(?:[\s"'=,\]]|$)`)},
+	{regexp.MustCompile(`(?i)\b(?:mysql\w*|mariadb\w*|sshpass|login)\b|` + flagStart + `(?:-u|--user(?:name)?\b)`),
+		regexp.MustCompile(flagStart + `(-p)`)},
+	{regexp.MustCompile(``), regexp.MustCompile(flagStart + `(-p)\\?["']`)},
+	{regexp.MustCompile(`(?i)\bredis-cli\b`), regexp.MustCompile(flagStart + `(-a|--pass)(?:[\s"'=,\]\\]|$)`)},
 }
+
+// flagStart is what may come before a flag: a word boundary of a command line, also inside JSON or a bash array or
+// after ; and & (Opus review of 3ca09f5: -p\"x\" in a JSON string and args=(-p'x') were printed).
+const flagStart = `(?:^|[\s"'\[,(;&|])`
 
 func redactShortFlag(s string) (string, int) {
 	var b strings.Builder

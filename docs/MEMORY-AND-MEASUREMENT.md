@@ -181,6 +181,11 @@ Known gaps:
 - A password flag other than `-p` with no user on the line, outside `redis-cli` (e.g. `psql` has none, but other
   clients' own flags), is printed. An unquoted `-p x` with no user or login on the line is printed (`-p` there
   usually means a port or parents).
+- An argv array passed through `redact.JSON` (`["mysql","-p","x"]`, `["redis-cli","-a","x"]`) prints the password:
+  each string is redacted alone. Also `-p$'x'` (bash quoting), curly quotes, `REDISCLI_AUTH=x` before the command,
+  `AUTH x` / `requirepass x` inside redis, and `valkey-cli -a x`.
+- Over-redaction: on a line naming `redis-cli`, any `-a` (`cp -a src dst && redis-cli ping`) hides the rest of the
+  line; `ssh -p'22'` and `mkdir -p"dir"` lose the rest of the line.
 - A key with no operator (SQL `WITH PASSWORD 'x'`, netrc `password x`), a name after `token_` (`GITHUB_TOKEN_PROD=x`;
   `token_count` must stay), Unicode or odd spaces around the operator, and `--password` with its value on the next
   line are printed (Opus review of 09f817a, P2/P3). So are a URL password holding `/` or a quote (an `@` in a URL

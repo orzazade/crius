@@ -114,3 +114,9 @@
 {"src": "c0039", "in": "REDISCLI_X=1 redis-cli -a 'hunter2 xyz' get k", "secret": "hunter2"}
 {"src": "c0039", "in": "redis-cli \\\n  -a hunter2xyz", "secret": "hunter2xyz"}
 {"src": "c0039", "in": "redis-cli --user bob -a hunter2xyz -p 6379", "secret": "hunter2xyz"}
+{"src": "opus-3ca", "in": "\"db\": \"tool --host h -p\\\"hunter2xyz\\\"\"", "secret": "hunter2xyz"}
+{"src": "opus-3ca", "in": "{\"command\":\"cmd -p\\\"hunter2xyz\\\"\"}", "secret": "hunter2xyz"}
+{"src": "opus-3ca", "in": "'tool -p\\'hunter2xyz\\''", "secret": "hunter2xyz"}
+{"src": "opus-3ca", "in": "\"cache\": \"redis-cli -a\\\"hunter2xyz\\\" ping\"", "secret": "hunter2xyz"}
+{"src": "opus-3ca", "in": "args=(-p'hunter2xyz')", "secret": "hunter2xyz"}
+{"src": "opus-3ca", "in": "mysql -u root;-phunter2xyz", "secret": "hunter2xyz"}
