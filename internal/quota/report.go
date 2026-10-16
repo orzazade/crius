@@ -7,7 +7,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-	"unicode/utf8"
 )
 
 // Gap: a sample this far from a request (both sides) leaves the request unmeasured, and open sessions with no sample
@@ -687,22 +686,42 @@ func (r *Report) Text() string {
 	return b.String()
 }
 
-// busLine is the longest alert the bus keeps (store.MaxLen); a longer one is cut at the end.
-const busLine = 300
-
-// fit joins a push's head (names and numbers that can run long) and its tail (what the push must say: the Appxite
-// rule, the enterprise $), shortening the head so the tail is never cut.
-func fit(head, tail string) string {
-	room := busLine - utf8.RuneCountInString(tail) - 1
-	if h := []rune(head); len(h) > room {
-		head = string(h[:max(0, room-1)]) + "…"
+// A push must fit a bus line (300 runes, store.MaxLen; a longer one is cut at the end), so every variable part of it
+// is bounded: a name to 10 runes, a list to two names. Full names and lists are in `crius-rec quota`.
+func short(name string) string {
+	if r := []rune(name); len(r) > 10 {
+		return string(r[:9]) + "…"
 	}
-	return head + " " + tail
+	return name
+}
+
+func names(ps []string) string {
+	var out []string
+	for i, p := range ps {
+		if i == 2 {
+			out = append(out, fmt.Sprintf("+%d more", len(ps)-2))
+			break
+		}
+		out = append(out, short(p))
+	}
+	return strings.Join(out, ", ")
+}
+
+// burners is the top n Max projects with their share of Max $.
+func (r *Report) burners(n int) string {
+	var out []string
+	for _, s := range r.Shares[:min(n, len(r.Shares))] {
+		out = append(out, fmt.Sprintf("%s %.0f%%", short(s.Project), 100*s.USD/r.MaxUSD))
+	}
+	if len(out) == 0 {
+		return "none"
+	}
+	return strings.Join(out, ", ")
 }
 
 // pace is the speed part of the pace and runout pushes.
 func (r *Report) pace() string {
-	t := fmt.Sprintf("7d %.0f%% on day %d of 7 (%.1f%%/day", r.SevenPct, r.Day, r.PerDay())
+	t := fmt.Sprintf("7d %.0f%% on day %d (%.1f%%/day", r.SevenPct, r.Day, r.PerDay())
 	if r.AvgPerDay > 0 && r.PerDay() > r.AvgPerDay {
 		t += fmt.Sprintf(", faster than the 7-day average %.1f%%/day", r.AvgPerDay)
 	}
@@ -713,29 +732,34 @@ func (r *Report) suggestion() string {
 	if len(r.Shares) == 0 {
 		return ""
 	}
-	return " · suggestion: slow " + r.Shares[0].Project + " (fewer parallel sessions, cheaper helpers) until the reset"
+	return " · suggestion: slow " + short(r.Shares[0].Project) + " until the reset"
 }
 
 // PaceText is the pace push (design §8): speed, top burners, one suggestion.
 func (r *Report) PaceText() string {
-	return fit("quota pace high: "+r.pace()+" · top burners: "+list(r.Shares, r.MaxUSD, 2)+r.suggestion()+".",
-		r.entWeek())
+	return "quota pace high: " + r.pace() + " · top burners: " + r.burners(2) + r.suggestion() + ". " + r.entWeek()
 }
 
 // RunoutText is the push when the subscription will be used up before the reset at this pace (design §8). It also
-// carries the pace facts and suggestion, so it can stand for the pace push when both are due in one run.
+// carries the pace facts and suggestion, so it can stand for the pace push when both are due in one run; it is the
+// longest push, so its wording is the shortest.
 func (r *Report) RunoutText(enterpriseOK map[string]bool) string {
-	return fit(fmt.Sprintf("quota runs out ~%s, reset %s: %s · top burner: %s%s.", when(r.Runout()), when(r.Reset),
-		r.pace(), list(r.Shares[:min(1, len(r.Shares))], r.MaxUSD, 1), r.suggestion()),
-		fmt.Sprintf("Then only Appxite work (%s) may continue, on the enterprise account; personal and scifi work"+
-			" waits for the reset. %s", strings.Join(okList(enterpriseOK), ", "), r.entWeek()))
+	t := fmt.Sprintf("quota runs out ~%s: 7d %.0f%% day %d, %.1f%%/day", when(r.Runout()), r.SevenPct, r.Day, r.PerDay())
+	if r.AvgPerDay > 0 && r.PerDay() > r.AvgPerDay {
+		t += fmt.Sprintf(" (7-day avg %.1f)", r.AvgPerDay)
+	}
+	if len(r.Shares) > 0 {
+		t += " · top burner " + r.burners(1) + ", slow it"
+	}
+	return t + fmt.Sprintf(" · only Appxite work (%s) may continue, on enterprise; personal/scifi work waits until %s · %s",
+		names(okList(enterpriseOK)), when(r.Reset), r.entWeek())
 }
 
 // UsedUpText is the push when the subscription is used up (design §8, D1).
 func (r *Report) UsedUpText(enterpriseOK map[string]bool) string {
-	return fit(fmt.Sprintf("quota used up: 7d %.0f%% until %s.", r.SevenPct, when(r.Reset)),
-		fmt.Sprintf("Only Appxite work (%s) may continue, on the Appxite enterprise account; personal and scifi"+
-			" work waits until the reset. %s", strings.Join(okList(enterpriseOK), ", "), r.entWeek()))
+	return fmt.Sprintf("quota used up: 7d %.0f%% until %s. Only Appxite work (%s) may continue, on the Appxite"+
+		" enterprise account; personal and scifi work waits until the reset. %s", r.SevenPct, when(r.Reset),
+		names(okList(enterpriseOK)), r.entWeek())
 }
 
 // entWeek is the enterprise $ of the week for a push (the total: by project is in `crius-rec quota`, and a push must

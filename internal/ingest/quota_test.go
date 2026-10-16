@@ -127,7 +127,7 @@ func TestQuotaAtSixtyPercentOnDayThreePushesOnce(t *testing.T) {
 	x.run()
 	x.run()
 	push := grepAlerts(x.alerts(), "— quota ")
-	if len(push) != 1 || !strings.Contains(push[0], "7d 62% on day 3") || !strings.Contains(push[0], "top burner: demo") || !strings.Contains(push[0], "suggestion: slow demo") ||
+	if len(push) != 1 || !strings.Contains(push[0], "7d 62% day 3") || !strings.Contains(push[0], "top burner demo 100%, slow it") ||
 		!strings.Contains(push[0], "only Appxite work (axi) may continue") || !strings.Contains(push[0], "Enterprise this week") {
 		t.Fatalf("want one whole push naming the top burner and the Appxite rule, got %q", x.alerts())
 	}
