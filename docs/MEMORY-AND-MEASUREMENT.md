@@ -237,6 +237,15 @@ last 30 days. A Haiku helper runs `rg` over the transcript folders of that proje
 files, max 2 minutes), and returns at most 10 citations (transcript path, message uuid, time) with a one-line
 redacted paraphrase each. Older than 30 days -> `expired`. Crius never reads the slices itself.
 
+**`find --deep` as built (step 4).** The CLI does the search itself, in Go, with no `rg` on PATH needed (same
+bounds, one binary). The caller is the Haiku helper (the Explore agent): it runs `crius-rec find QUERY --deep
+--project P [--since …]` and passes the citations on. The search reads the transcripts of the project's sessions
+and their subagent files changed within the window, newest 50 files first, for at most 2 minutes, and cites at most
+10 user or assistant messages whose own text holds every query word: path, message uuid, time, and a one-line
+redacted snippet around the first word. Each cut (files, citations, time) makes the answer `partial` and says so.
+A `--since` before the 30 days gives `expired` (exit 5): the retained part is still searched, and the durable rows
+`find` has for the whole window follow, marked `durable`.
+
 **Generated files, not commands:** digest (`state/digest/`), scorecard (`state/scorecards/`), STATE.md. Each starts
 with a freshness stamp: `built <ts> · status partial · bus 09:20 ok · git 09:30 ok · quota/max STALE 6 h`.
 

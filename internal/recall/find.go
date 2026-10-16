@@ -37,10 +37,11 @@ type Hit struct {
 	Project      string `json:"project,omitempty"`
 	TS           string `json:"ts,omitempty"`
 	Text         string `json:"text,omitempty"`
-	Match        string `json:"match"` // exact, text or list
+	Match        string `json:"match"` // exact, text, list, deep (a transcript citation) or durable (left after expiry)
 	Taint        bool   `json:"taint,omitempty"`
 	SupersededBy string `json:"superseded_by,omitempty"`
 	WaitState    string `json:"wait_state,omitempty"` // open, or unknown when the wait names no session
+	Path         string `json:"path,omitempty"`       // the transcript of a deep citation
 }
 
 type Result struct {
@@ -447,6 +448,9 @@ func (h Hit) Line() string {
 	}
 	if h.Taint {
 		s += " · tainted"
+	}
+	if h.Path != "" {
+		s += " · " + h.Path
 	}
 	return s
 }

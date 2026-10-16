@@ -38,6 +38,7 @@ const usage = `usage: crius-rec init
        crius-rec record item --project P --title T --kind code|research|falcon|other --criteria C [--criteria C ...] [--parent ID] [--taint]
        crius-rec quota [--json | --room]
        crius-rec find [QUERY] [--project P] [--since YYYY-MM-DD|Nd|Nh] [--kind K ...] [--active] [--waiting] [--json]
+       crius-rec find QUERY --deep --project P [--since …] [--json]
        crius-rec show ID|PROJECT [--history] [--json]
        crius-rec health [--json]
 `
@@ -368,6 +369,7 @@ func findCmd(home string, args []string, now time.Time, stdout, stderr io.Writer
 	var kinds multi
 	fs.Var(&kinds, "kind", "")
 	active, waiting, asJSON := fs.Bool("active", false, ""), fs.Bool("waiting", false, ""), fs.Bool("json", false, "")
+	deep := fs.Bool("deep", false, "")
 	words, err := parseAll(fs, args)
 	if err != nil {
 		return exitUsage
@@ -389,7 +391,11 @@ func findCmd(home string, args []string, now time.Time, stdout, stderr io.Writer
 		return rc
 	}
 	defer db.Close()
-	res, err := recall.Find(db, q, store.Types)
+	search := recall.Find
+	if *deep {
+		search = recall.Deep
+	}
+	res, err := search(db, q, store.Types)
 	if err != nil {
 		if errors.Is(err, recall.ErrQuery) {
 			fmt.Fprintf(stderr, "refused: %v\n", err)
