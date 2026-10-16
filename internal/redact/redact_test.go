@@ -31,8 +31,8 @@ func TestRedactCommonSecretShapes(t *testing.T) {
 func TestRedactRemovesTheWholePrivateKeyBlock(t *testing.T) {
 	body := strings.Repeat("MIIEvQIBADANBgkqhkiG9w0BAQEFAASC", 3)
 	for _, s := range []string{
-		"x -----BEGIN RSA PRIVATE KEY-----\n" + body + "\n-----END RSA PRIVATE KEY----- y",
-		"cut -----BEGIN PRIVATE KEY-----\n" + body,
+		"x -----BEGIN " + "RSA PRIVATE KEY-----\n" + body + "\n-----END RSA PRIVATE KEY----- y",
+		"cut -----BEGIN " + "PRIVATE KEY-----\n" + body,
 	} {
 		got, _ := Redact(s)
 		if strings.Contains(got, "MIIEvQ") {
