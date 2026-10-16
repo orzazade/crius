@@ -192,8 +192,40 @@ func TestAReplacedBusFileKeepsItsStoredDates(t *testing.T) {
 			t.Fatal(err)
 		}
 		store.Types["WAIT"] = true
-		x.run()
+		st := x.run()
 		eq(t, x.one("select ts from event where text='one'"), ts)
+		// Crius 01:09: a stored date the re-read disagrees with is kept, but not silently.
+		if w := strings.Join(st.Warnings, "\n"); !strings.Contains(w, "1 lines of "+path+" keep their stored date") {
+			t.Fatalf("%q", w)
+		}
+	}
+}
+
+// Crius 01:09: a line stored with a date an older parser got wrong is re-dated when a changed parser reads the file
+// again (bus and team logs alike), without a manual delete.
+func TestAChangedParserRedatesStoredLines(t *testing.T) {
+	for _, source := range []string{"bus", "team"} {
+		x, _, teamLog := busCase(t)
+		path := teamLog
+		if source == "bus" {
+			path = filepath.Join(x.home, "bus", "demo.log")
+		}
+		testutil.Write(t, path, "17:53 DONE demo:leader -> crius — one\n17:52 DONE demo:leader -> crius — two\n")
+		x.run()
+		good := x.one("select ts from event where text='two'")
+		db, err := store.Open(x.home)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec("update event set ts='2000-01-01T00:00:00Z' where text='two';"+
+			" update coverage set sha='older-parser' where source=?", source); err != nil {
+			t.Fatal(err)
+		}
+		db.Close()
+		before := x.counts()
+		x.run()
+		eq(t, x.one("select ts from event where text='two'"), good)
+		eq(t, x.counts(), before)
 	}
 }
 

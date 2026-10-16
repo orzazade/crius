@@ -3,9 +3,12 @@ package store
 // Bus line grammar (design §6): `<YYYY-MM-DDTHH:MM> TYPE <project>:<role> -> crius — text [refs]`.
 //
 // Old `HH:MM` lines still parse: their date comes from a running state (the previous line's date, plus one day
-// when the clock goes backwards), which the caller seeds from the file.
+// when the clock goes back an hour or more), which the caller seeds from the file.
 
 import (
+	"crypto/sha1"
+	_ "embed"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -21,6 +24,15 @@ var Types = map[string]bool{"DONE": true, "BLOCKED": true, "NEED-OWNER": true, "
 	"PARKED": true}
 
 const MaxLen = 300
+
+//go:embed bus.go
+var parser []byte
+
+// ParserSum changes whenever this file does, so the ingest reads its logs again and stored dates follow the parser.
+func ParserSum() string {
+	s := sha1.Sum(parser)
+	return hex.EncodeToString(s[:6])
+}
 
 // Slug is a project or role name. Go's `$` matches only at the very end, so "demo\n" does not pass.
 var Slug = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
@@ -94,7 +106,9 @@ func ParseLine(line string, st *State, strict bool) *Line {
 			return nil
 		}
 		day = st.Date
-		if hhmm < st.Time {
+		// Two writers can post a few minutes out of order (17:53 then 17:52); that is the same day. The midnights
+		// seen on the bus step back 23 hours or more.
+		if hhmm < st.Time && minutes(st.Time)-minutes(hhmm) >= 60 {
 			d, err := time.Parse("2006-01-02", day)
 			if err != nil {
 				return nil
@@ -107,6 +121,12 @@ func ParseLine(line string, st *State, strict bool) *Line {
 	}
 	return &Line{Date: day, Time: hhmm, Type: typ, Project: project, Role: role, To: to, Text: text,
 		Refs: RefsOf(text), DatedByGuess: guessed}
+}
+
+// minutes is the minute of the day of a checked "HH:MM".
+func minutes(hhmm string) int {
+	t, _ := time.Parse("15:04", hhmm)
+	return t.Hour()*60 + t.Minute()
 }
 
 func FormatLine(typ, project, role, text, to string, now time.Time) (string, error) {

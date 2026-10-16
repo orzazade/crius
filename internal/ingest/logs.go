@@ -81,15 +81,22 @@ func (r *runner) logFile(path, source string, strict bool, project string) error
 		if err != nil {
 			return err
 		}
-		// A bus cursor keeps the type list it was read with; a new list reads the file again from the start.
-		var types string
-		prev, reread := c, false
+		// A cursor keeps the parser (and, for the bus, the type list) it was read with; a new one reads the file
+		// again from the start, so stored lines take the new parse.
+		want := store.ParserSum()
 		if strict {
-			types = typesSum()
-			if c.sha != types {
-				c, reread = cursor{}, true
-			}
+			want += typesSum()
 		}
+		prev, reread := c, false
+		if c.sha != want {
+			c, reread = cursor{}, true
+		}
+		fi, err := os.Stat(path)
+		if err != nil {
+			return err
+		}
+		replaced := prev.inode != 0 && inodeOf(fi) != prev.inode
+		kept := 0         // stored dates the read disagrees with but cannot overrule
 		anchored := false // a dated line came before in this pass, so undated dates do not rest on the birth date
 		fresh := 0        // lines past the old cursor: the re-read part is already in coverage.rows
 		pathKey := sha1Hex([]byte(path))[:12]
@@ -141,23 +148,32 @@ func (r *runner) logFile(path, source string, strict bool, project string) error
 			}
 			if !p.DatedByGuess {
 				anchored = true
-				return nil
 			}
-			if !reread || !anchored {
-				return nil
-			}
-			// A type-list re-read can date an undated line differently (a line before it parses now); the stored
-			// row follows when a dated line anchors it. A date that rests on the birth date stays as stored: a
+			// A line read before keeps its row, and its date follows this read (a newer parser or type list dates
+			// it better). A date that rests on the birth date of a replaced file stays as stored, loudly: a
 			// replaced file's birth is not its lines' date.
-			_, err = tx.Exec("update event set ts=? where source_key=? and ts is not ?", e.ts, key, e.ts)
+			var stored sql.NullString
+			if err := tx.QueryRow("select ts from event where source_key=?", key).Scan(&stored); err != nil {
+				return err
+			}
+			if stored.String == e.ts {
+				return nil
+			}
+			if replaced && !anchored {
+				kept++
+				return nil
+			}
+			_, err = tx.Exec("update event set ts=? where source_key=?", e.ts, key)
 			return err
 		})
 		if err != nil {
 			return err
 		}
-		if strict {
-			next.sha = types
+		if kept > 0 {
+			r.warn(false, "%d lines of %s keep their stored date: the file was replaced, so its birth date does not"+
+				" date them", kept, path)
 		}
+		next.sha = want
 		if reread && next.inode == prev.inode && next.offset >= prev.offset {
 			n = fresh
 		}
