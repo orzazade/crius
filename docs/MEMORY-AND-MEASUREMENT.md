@@ -179,7 +179,7 @@ CLI output, error messages, logs, digests, alerts, and helper answers. A hit is 
 
 ## 4. The interface: five commands
 
-`crius-rec <command>` (Python stdlib + sqlite3). Text by default, `--json` for scripts, output capped (20 lines).
+`crius-rec <command>` (Go; SQLite through modernc.org/sqlite, which has FTS5 built in). Text by default, `--json` for scripts, output capped (20 lines).
 Every answer starts with a status: `complete` (exit 0: all sources for the scope fresh and searched), `partial`
 (exit 3: names the stale or failed sources), `unavailable` (exit 4: DB locked, store missing, leak test failed),
 `expired` (exit 5: evidence past retention; shows the durable rows left). A true "no" is `complete` with
@@ -205,6 +205,18 @@ even when only unmeasured lines show it; the older
 of the 7d and the running 5h share's ages counts. No sample, an ended week, a sample ahead of the clock, no
 5h window sampled, or a failure is unknown, never room. It reads the store, so a sample is up to one ingest run (10 min) older than the spool.  A session
 first seen long after its last response shows an old reading, so its line is not a measurement (Crius 23:11).
+
+**`find` as built (step 4).** Exact ids first (`<project>#<n>`, `<project>-D<n>`, a commit sha prefix, a session id
+prefix, `event:<n>`, and the events whose refs cite them), then FTS5 (porter stemming, best match first) over event
+text, decision titles, item titles + criteria and artifact titles + headings. The index is a temp table built per
+query from the durable rows, so it can never be stale (0.1 s on the live store, 2026-10-16). With no query it lists
+newest first: rows with text only, or every row of the `--kind` asked. Status comes from the newest ingest run:
+`complete` only when that run is complete and at most 20 min old (as the watchdog). An unknown `--kind` is refused
+with the known list, not answered "no match". `--waiting` lists the WAIT lines of the last 24 h (or `--since`) that are
+still open: a wait naming `sid=<8 hex>` closes once that session makes an API call a minute or more after it; one
+naming no session shows as `unknown`. `record` refuses a text that looks like a secret (exit 2) instead of rewriting
+it, so prose that only looks like one is never changed unseen. `--json` is redacted value by value (JSON escaping
+hides quotes from the patterns).
 
 **Bounded transcript search (`find --deep`).** Used only when the store has no answer and the question is about the
 last 30 days. A Haiku helper runs `rg` over the transcript folders of that project and time window only (max 50

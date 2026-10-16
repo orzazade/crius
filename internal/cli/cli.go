@@ -1,8 +1,9 @@
 // Package cli is crius-rec, the door to the record store. Commands: init, leak-test, record bus|decision|item (step 1),
-// quota (step 3).
+// quota (step 3), find (step 4).
 package cli
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -10,12 +11,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/orzazade/crius"
 	"github.com/orzazade/crius/internal/ingest"
 	"github.com/orzazade/crius/internal/quota"
+	"github.com/orzazade/crius/internal/recall"
 	"github.com/orzazade/crius/internal/redact"
 	"github.com/orzazade/crius/internal/store"
 )
@@ -25,6 +28,7 @@ const (
 	exitUsage       = 2 // bad arguments, or input refused before anything was written
 	exitPartial     = 3
 	exitUnavailable = 4
+	exitExpired     = 5 // evidence past retention; the durable rows left are shown
 )
 
 const usage = `usage: crius-rec init
@@ -33,6 +37,7 @@ const usage = `usage: crius-rec init
        crius-rec record decision --project P --title T --why W --by "owner|crius|lead [ref]" [--supersedes ID --reason R] [--refs R] [--taint]
        crius-rec record item --project P --title T --kind code|research|falcon|other --criteria C [--criteria C ...] [--parent ID] [--taint]
        crius-rec quota [--json | --room]
+       crius-rec find [QUERY] [--project P] [--since YYYY-MM-DD|Nd|Nh] [--kind K ...] [--active] [--waiting] [--json]
 `
 
 type multi []string
@@ -94,6 +99,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			return exitUsage
 		}
 		return quotaCmd(home, time.Now(), *asJSON, *room, stdout, stderr)
+	case "find":
+		return findCmd(home, args, time.Now(), stdout, stderr)
 	}
 	fmt.Fprint(stderr, usage)
 	return exitUsage
@@ -141,22 +148,18 @@ func record(home string, args []string, stdout, stderr io.Writer) int {
 			return exitUsage
 		}
 	}
-	// Every given text is redacted before it is written anywhere: bus, DECISIONS.md, the store (design §3c).
-	hits := 0
-	for _, p := range []*string{project, role, typ, text, title, why, by, supersedes, reason, refs, kind, parent} {
-		if p != nil {
-			var n int
-			*p, n = redact.Redact(*p)
-			hits += n
+	// A text that looks like a secret is refused, not rewritten: nothing secret is written to the bus, DECISIONS.md
+	// or the store, and prose that only looks like one ("password: reset by mail") is not changed without the caller
+	// seeing it (design §3c).
+	var secret []string
+	fs.Visit(func(f *flag.Flag) {
+		if _, n := redact.Redact(f.Value.String()); n > 0 {
+			secret = append(secret, "--"+f.Name)
 		}
-	}
-	for i := range criteria {
-		var n int
-		criteria[i], n = redact.Redact(criteria[i])
-		hits += n
-	}
-	if hits > 0 {
-		fmt.Fprintf(stderr, "redacted %d secret(s) before writing\n", hits)
+	})
+	if len(secret) > 0 {
+		fmt.Fprintf(stderr, "refused: %s looks like a secret; remove it or rephrase\n", strings.Join(secret, ", "))
+		return exitUsage
 	}
 	if fi, err := os.Stat(filepath.Join(home, "state")); err != nil || !fi.IsDir() {
 		fmt.Fprintf(stderr, "unavailable: %s is missing; run crius-rec init\n", home)
@@ -248,7 +251,7 @@ func quotaCmd(home string, now time.Time, asJSON, room bool, stdout, stderr io.W
 		return exitUnavailable
 	}
 	if asJSON {
-		b, err := json.MarshalIndent(rep, "", "  ")
+		b, err := redact.JSON(rep)
 		if err != nil {
 			fmt.Fprintf(stderr, "error: %v\n", err)
 			return exitError
@@ -295,4 +298,119 @@ func capLines(s string, n int) string {
 		return s
 	}
 	return strings.Join(lines[:n-1], "") + fmt.Sprintf("... %d more lines (use --json)\n", len(lines)-n+1)
+}
+
+// parseAll parses flags given before, between and after the positional words, and returns the words.
+func parseAll(fs *flag.FlagSet, args []string) ([]string, error) {
+	var words []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			return nil, err
+		}
+		if fs.NArg() == 0 {
+			return words, nil
+		}
+		words, args = append(words, fs.Arg(0)), fs.Args()[1:]
+	}
+}
+
+// parseSince takes YYYY-MM-DD (local midnight), an RFC 3339 time, or N days / hours back from now.
+func parseSince(s string, now time.Time) (time.Time, error) {
+	if s == "" {
+		return time.Time{}, nil
+	}
+	if n, err := strconv.Atoi(strings.TrimSuffix(s, "d")); err == nil && strings.HasSuffix(s, "d") && n >= 0 {
+		return now.AddDate(0, 0, -n), nil
+	}
+	if d, err := time.ParseDuration(s); err == nil && strings.HasSuffix(s, "h") && d >= 0 {
+		return now.Add(-d), nil
+	}
+	if t, err := time.ParseInLocation("2006-01-02", s, time.Local); err == nil {
+		return t, nil
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, nil
+	}
+	return time.Time{}, fmt.Errorf("--since takes YYYY-MM-DD, an RFC 3339 time, Nd or Nh, not %q", s)
+}
+
+// openStore opens the store for reading; a missing home or a store that cannot be opened is unavailable (exit 4).
+func openStore(home string, stderr io.Writer) (*sql.DB, int) {
+	if fi, err := os.Stat(filepath.Join(home, "state", "record.db")); err != nil || !fi.Mode().IsRegular() {
+		fmt.Fprintf(stderr, "unavailable: %s has no record store; run crius-rec init and the ingest\n", home)
+		return nil, exitUnavailable
+	}
+	db, err := store.Open(home)
+	if err != nil {
+		fmt.Fprintf(stderr, "unavailable: %v\n", err)
+		return nil, exitUnavailable
+	}
+	return db, 0
+}
+
+// findCmd searches the store (design §4): exact ids, then full text, or a list with no query.
+func findCmd(home string, args []string, now time.Time, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("find", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	project, since := fs.String("project", "", ""), fs.String("since", "", "")
+	var kinds multi
+	fs.Var(&kinds, "kind", "")
+	active, waiting, asJSON := fs.Bool("active", false, ""), fs.Bool("waiting", false, ""), fs.Bool("json", false, "")
+	words, err := parseAll(fs, args)
+	if err != nil {
+		return exitUsage
+	}
+	q := recall.Query{Text: strings.Join(words, " "), Project: *project, Active: *active, Waiting: *waiting, Now: now}
+	for _, k := range kinds {
+		q.Kinds = append(q.Kinds, strings.Split(k, ",")...)
+	}
+	if q.Since, err = parseSince(*since, now); err != nil {
+		fmt.Fprintf(stderr, "refused: %v\n", err)
+		return exitUsage
+	}
+	if q.Text == "" && q.Project == "" && *since == "" && len(q.Kinds) == 0 && !q.Waiting {
+		fmt.Fprint(stderr, "find needs a query, or --project, --since, --kind or --waiting\n"+usage)
+		return exitUsage
+	}
+	db, rc := openStore(home, stderr)
+	if db == nil {
+		return rc
+	}
+	defer db.Close()
+	res, err := recall.Find(db, q, store.Types)
+	if err != nil {
+		if errors.Is(err, recall.ErrQuery) {
+			fmt.Fprintf(stderr, "refused: %v\n", err)
+			return exitUsage
+		}
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return exitError
+	}
+	return answer(res.Status, res, res.Text(), *asJSON, stdout, stderr)
+}
+
+// answer prints a recall answer (text capped, or all of it as JSON) and returns the exit code of its status.
+func answer(status string, v any, text string, asJSON bool, stdout, stderr io.Writer) int {
+	if asJSON {
+		b, err := redact.JSON(v)
+		if err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return exitError
+		}
+		fmt.Fprintf(stdout, "%s\n", b)
+	} else {
+		fmt.Fprint(stdout, capLines(text, maxLines))
+	}
+	switch status {
+	case "complete":
+		return 0
+	case "partial":
+		return exitPartial
+	case "unavailable":
+		return exitUnavailable
+	case "expired":
+		return exitExpired
+	}
+	fmt.Fprintf(stderr, "error: unknown status %q\n", status)
+	return exitError
 }

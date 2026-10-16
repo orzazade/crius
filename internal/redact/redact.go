@@ -4,6 +4,7 @@
 package redact
 
 import (
+	"encoding/json"
 	"io"
 	"regexp"
 )
@@ -38,4 +39,34 @@ func (r Writer) Write(b []byte) (int, error) {
 		return 0, err
 	}
 	return len(b), nil
+}
+
+var jsonString = regexp.MustCompile(`"(?:[^"\\]|\\.)*"`)
+
+// JSON is json.MarshalIndent with every string redacted after it is decoded: escaping hides a value's quotes
+// (password: \"abc\") from the patterns, so a Writer alone is not enough for JSON. Order and layout are kept.
+func JSON(v any) ([]byte, error) {
+	b, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	var bad error
+	out := jsonString.ReplaceAllFunc(b, func(lit []byte) []byte {
+		var s string
+		if err := json.Unmarshal(lit, &s); err != nil {
+			bad = err
+			return lit
+		}
+		r, n := Redact(s)
+		if n == 0 {
+			return lit
+		}
+		enc, err := json.Marshal(r)
+		if err != nil {
+			bad = err
+			return lit
+		}
+		return enc
+	})
+	return out, bad
 }

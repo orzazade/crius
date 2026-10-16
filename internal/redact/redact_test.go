@@ -60,3 +60,15 @@ func TestRedactAnUnterminatedQuotedValue(t *testing.T) {
 		}
 	}
 }
+
+// Review of step 4 P1: JSON escapes the quotes around a value (password: \"abc\"), so the line patterns missed it.
+func TestJSONRedactsEachStringBeforeEncoding(t *testing.T) {
+	v := map[string]any{"text": `password: "hunter22"`, "list": []any{"token ghp_" + strings.Repeat("D", 36)}, "n": 3}
+	b, err := JSON(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := string(b); strings.Contains(s, "hunter22") || strings.Contains(s, "DDDD") || !strings.Contains(s, `"n": 3`) {
+		t.Fatal(s)
+	}
+}

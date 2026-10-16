@@ -8,7 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/orzazade/crius/internal/store"
 	"github.com/orzazade/crius/internal/testutil"
 )
 
@@ -224,7 +226,91 @@ func TestRecordRedactsEverySink(t *testing.T) {
 		}
 		return nil
 	})
-	if log := testutil.Read(t, filepath.Join(home, "bus", "demo.log")); !strings.Contains(log, "[redacted]") {
-		t.Fatal(log)
+	// Refused, not rewritten (review of P1): prose that only looks like a secret must not change unseen.
+	rc, out := run("record", "item", "--project", "demo", "--title", "t", "--kind", "code", "--criteria",
+		"password: reset emails a one-time link")
+	if rc != exitUsage || !strings.Contains(out, "--criteria looks like a secret") {
+		t.Fatal(rc, out)
+	}
+	if _, err := os.Stat(filepath.Join(home, "bus", "demo.log")); !os.IsNotExist(err) {
+		t.Fatal("a refused record wrote a bus line", err)
+	}
+}
+
+// findStore is an initialised home with an ingest run that just finished, and one event per text.
+func findStore(t *testing.T, texts ...string) string {
+	t.Helper()
+	_, home := testutil.Temp(t)
+	if rc, out := run("init"); rc != 0 {
+		t.Fatal(rc, out)
+	}
+	db, err := store.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ts := time.Now().UTC().Format(time.RFC3339)
+	if _, err := db.Exec("insert into source_run (started, finished, status) values (?,?,'complete')", ts, ts); err != nil {
+		t.Fatal(err)
+	}
+	for i, text := range texts {
+		if _, err := db.Exec("insert into event (ts, project, kind, text, source_key) values (?,?,?,?,?)",
+			fmt.Sprintf("2026-10-15T10:%02d:00Z", i), "demo", "info", text, fmt.Sprint("k", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return home
+}
+
+// Step 4 P1: a secret in a stored line (an old row, or one a pattern missed then) never reaches find's output;
+// JSON escapes quotes, so --json is redacted value by value.
+func TestFindNeverPrintsAStoredSecret(t *testing.T) {
+	findStore(t, "token ghp_"+strings.Repeat("E", 36), `password: "hunter22" was rotated`)
+	for _, args := range [][]string{{"find", "token", "rotated"}, {"find", "token", "rotated", "--json"}} {
+		rc, out := run(args...)
+		if rc != 0 || strings.Contains(out, "EEEE") || strings.Contains(out, "hunter22") || !strings.Contains(out, "[redacted]") {
+			t.Fatal(args, rc, out)
+		}
+	}
+}
+
+func TestFindCapsTextAt20LinesAndJSONKeepsAll(t *testing.T) {
+	var texts []string
+	for i := 0; i < 30; i++ {
+		texts = append(texts, fmt.Sprint("mail line ", i))
+	}
+	findStore(t, texts...)
+	rc, out := run("find", "mail")
+	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+	if rc != 0 || len(lines) != 20 || !strings.Contains(lines[19], "12 more lines (use --json)") {
+		t.Fatal(rc, len(lines), out)
+	}
+	rc, out = run("find", "mail", "--json")
+	var res struct{ Hits []any }
+	if err := json.Unmarshal([]byte(out), &res); rc != 0 || err != nil || len(res.Hits) != 30 {
+		t.Fatal(rc, err, len(res.Hits))
+	}
+}
+
+func TestFindExitCodesAndFlagsAfterTheQuery(t *testing.T) {
+	testutil.Temp(t)
+	if rc, out := run("find", "x"); rc != exitUnavailable || !strings.Contains(out, "unavailable") {
+		t.Fatal(rc, out)
+	}
+	home := findStore(t, "mail stopped")
+	if rc, out := run("find", "mail", "--project", "demo", "--kind", "info"); rc != 0 || !strings.Contains(out, "mail stopped") {
+		t.Fatal(rc, out)
+	}
+	if rc, out := run("find", "mail", "--kind", "nope"); rc != exitUsage || !strings.Contains(out, "unknown kind") {
+		t.Fatal(rc, out)
+	}
+	if rc, out := run("find", "x", "--since", "yesterday"); rc != exitUsage {
+		t.Fatal(rc, out)
+	}
+	db, _ := store.Open(home)
+	db.Exec("update source_run set finished = '2026-01-01T00:00:00Z'")
+	db.Close()
+	if rc, out := run("find", "mail"); rc != exitPartial || !strings.HasPrefix(out, "partial (last ingest run finished") {
+		t.Fatal(rc, out)
 	}
 }
