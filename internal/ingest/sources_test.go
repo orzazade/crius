@@ -115,7 +115,7 @@ func TestBusLinesKeepTheirRecipient(t *testing.T) {
 
 // Crius 10-17 03:03: bus stamps are local time, UTC ends in Z. A dated line more than an hour behind the newest stamp
 // before it in its file (a writer stamping UTC without Z), or more than 10 minutes ahead of the clock, is loud: one
-// alert per file, writer and day. The line keeps the stamp it was written with; a line flagged ahead does not move
+// alert per file, writer, day and kind (ahead, behind). The line keeps the stamp it was written with; a line flagged ahead does not move
 // the newest stamp, so the good lines after it are not blamed.
 func TestBusClockMistakesAreLoud(t *testing.T) {
 	x, _, _ := busCase(t)
@@ -133,10 +133,11 @@ func TestBusClockMistakesAreLoud(t *testing.T) {
 			"2026-10-17T03:09 INFO crius:lead -> falcon:lead — 9 min ahead: fine\n"+
 			"2026-10-17T02:08 INFO crius:lead -> falcon:lead — 61 min behind 03:09\n")
 	x.run()
-	rows := x.q("select text from alert where key like 'bus-clock:%' order by key")
-	want := []string{"quotes:lead line 2026-10-17T03:15 .* 15m ahead", "axi:lead .* 1h9m behind",
-		"crius:lead .* 1h1m behind", "falcon:lead line 2026-10-15T23:00 .* 27h19m behind",
-		"falcon:lead line 2026-10-16T22:23 .* 3h56m behind the newest stamp before it \\(2026-10-17T02:19\\)"}
+	rows := x.q("select text from alert where key like 'bus-clock:%' order by text")
+	want := []string{"axi:lead .* 1h9m behind", "crius:lead .* 1h1m behind",
+		"falcon:lead line 2026-10-15T23:00 .* 27h19m behind",
+		"falcon:lead line 2026-10-16T22:23 .* 3h56m behind the newest stamp before it \\(2026-10-17T02:19\\)",
+		"quotes:lead line 2026-10-17T03:15 .* 15m ahead"}
 	if len(rows) != len(want) {
 		t.Fatal(rows)
 	}
@@ -147,6 +148,48 @@ func TestBusClockMistakesAreLoud(t *testing.T) {
 	}
 	eq(t, x.one("select ts from event where text = 'UTC without Z'"),
 		time.Date(2026, 10, 16, 22, 23, 0, 0, time.Local).UTC().Format("2006-01-02T15:04:05Z"))
+}
+
+// Review of 944e44a: an alert key holds no writer name (a role can be a token); a slug writer stays readable in the
+// alert (the redactor takes token-service:lead for a key); a re-read with a later clock does not let a line flagged
+// ahead move the newest stamp and blame good lines; a Z line in a DST fall-back hour keeps its instant.
+func TestBusClockReviewOf944e44a(t *testing.T) {
+	x, _, _ := busCase(t)
+	now := time.Date(2026, 10, 17, 3, 0, 0, 0, time.Local)
+	clock = func() time.Time { return now }
+	t.Cleanup(func() { clock = time.Now })
+	token := "ghp_" + strings.Repeat("A", 36)
+	path := filepath.Join(x.home, "bus", "demo.log")
+	text := "2026-10-17T07:00 INFO bad:lead -> crius — bad clock\n" +
+		"2026-10-17T03:00 INFO good:lead -> crius — correct clock\n" +
+		"2026-10-17T01:30 INFO bad:lead -> crius — and behind: a second kind, a second alert\n" +
+		"2026-10-17T03:15 INFO demo:" + token + " -> crius — a token for a role\n" +
+		"2026-10-17T03:20 INFO token-service:lead -> crius — x\n"
+	testutil.Write(t, path, text)
+	testutil.Write(t, filepath.Join(x.home, "bus", token+".log"), "2026-10-17T03:30 INFO demo:lead -> crius — a token for a file name\n")
+	x.run()
+	eq(t, x.one("select count(*) from alert where key like 'bus-clock:%'"), "5")
+	eq(t, x.one("select count(*) from alert where key like '%ghp_%' or text like '%ghp_%'"), "0")
+	eq(t, x.one("select count(*) from alert where text like 'bus clock: token-service:lead line 2026-10-17T03:20 %'"), "1")
+	now = now.Add(5 * time.Hour)
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	testutil.Write(t, path, text) // a new file: read again from the start
+	x.run()
+	eq(t, x.one("select count(*) from alert where text like '%good:lead%'"), "0")
+
+	local := time.Local
+	ny, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Local = ny
+	t.Cleanup(func() { time.Local = local })
+	now = time.Date(2026, 11, 1, 8, 0, 0, 0, time.UTC)
+	testutil.Write(t, filepath.Join(x.home, "bus", "dst.log"), "2026-11-01T06:30Z INFO demo:lead -> crius — second 01:30\n")
+	x.run()
+	eq(t, x.one("select ts from event where text = 'second 01:30'"), "2026-11-01T06:30:00Z")
 }
 
 func TestBusLinesDatedUndatedMalformedAndRedacted(t *testing.T) {

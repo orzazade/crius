@@ -51,6 +51,19 @@ func TestAZStampIsUTC(t *testing.T) {
 	if ParseLine("22:40Z DONE falcon:lead -> crius — z", &st, true) != nil {
 		t.Fatal("an undated Z stamp parsed")
 	}
+	// Review of 944e44a: in a DST fall-back hour the local time repeats, so a Z line keeps its instant.
+	ny, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Local = ny
+	p = ParseLine("2026-11-01T06:30Z INFO demo:lead -> crius — x", &st, true)
+	if p == nil || p.Time != "01:30" || !p.At.Equal(time.Date(2026, 11, 1, 6, 30, 0, 0, time.UTC)) {
+		t.Fatalf("%+v", p)
+	}
+	if p := ParseLine("2026-11-01T01:30 INFO demo:lead -> crius — x", &st, true); p == nil || !p.At.IsZero() {
+		t.Fatalf("a local stamp has an instant: %+v", p)
+	}
 }
 
 func TestUndatedLineStillParses(t *testing.T) {

@@ -46,7 +46,7 @@ var refRes = []struct {
 }
 
 // State dates undated lines: the date and time of the line before. Newest is ingest's: the newest dated stamp in the
-// file so far ("2006-01-02T15:04", local), for the clock check.
+// file so far (RFC 3339, UTC), for the clock check.
 type State struct{ Date, Time, Newest string }
 
 type Line struct {
@@ -54,6 +54,7 @@ type Line struct {
 	Project          string // "" only for a lenient line whose sender has no ':'
 	Role, To, Text   string
 	Refs             map[string][]string
+	At               time.Time // a Z stamp's instant: its local Date and Time repeat in a DST fall-back hour
 	DatedByGuess     bool
 	Late             bool // undated and a few minutes behind the line before: its date does not move the state
 }
@@ -97,11 +98,12 @@ func ParseLine(line string, st *State, strict bool) *Line {
 	if err != nil {
 		return nil
 	}
+	var instant time.Time
 	if utc { // a stamp is local time; one ending in Z is UTC, read as the same moment in local time
 		if day == "" {
 			return nil
 		}
-		at = at.In(time.Local)
+		instant, at = at, at.In(time.Local)
 		day, hhmm = at.Format("2006-01-02"), at.Format("15:04")
 	}
 	guessed, late := day == "", false
@@ -135,7 +137,7 @@ func ParseLine(line string, st *State, strict bool) *Line {
 		st.Date, st.Time = day, hhmm
 	}
 	return &Line{Date: day, Time: hhmm, Type: typ, Project: project, Role: role, To: to, Text: text,
-		Refs: RefsOf(text), DatedByGuess: guessed, Late: late}
+		Refs: RefsOf(text), At: instant, DatedByGuess: guessed, Late: late}
 }
 
 // minutes is the minute of the day of a checked "HH:MM", 0 for "".

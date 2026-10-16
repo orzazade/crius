@@ -151,6 +151,9 @@ func (r *runner) logFile(path, source string, strict bool, project string) error
 			if err != nil {
 				return err
 			}
+			if !p.At.IsZero() { // a Z stamp: its instant, which a repeated local hour loses
+				t = p.At
+			}
 			if !p.DatedByGuess {
 				if err := r.checkClock(tx, path, pathKey, p, t, &st); err != nil {
 					return err
@@ -201,34 +204,47 @@ func (r *runner) logFile(path, source string, strict bool, project string) error
 
 // checkClock: bus stamps are local time, UTC ends in Z (§6). A dated line more than an hour behind the newest stamp
 // before it in the file (a writer stamping UTC without Z), or more than 10 minutes ahead of the clock, queues an alert,
-// one per file, writer and day; the line keeps its stamp. A line flagged ahead does not move the newest stamp, so the
-// good lines after it are not blamed.
+// one per file, writer, day and kind; the line keeps its stamp. A writer flagged ahead that day, on this read or an
+// earlier one (its alert is stored), does not move the newest stamp, so the good lines after it are not blamed.
 func (r *runner) checkClock(tx *sql.Tx, path, pathKey string, p *store.Line, t time.Time, st *store.State) error {
 	writer := p.Role
 	if p.Project != "" {
 		writer = p.Project + ":" + p.Role
 	}
 	stamp := p.Date + "T" + p.Time
-	key := func(how string) string { return "bus-clock:" + how + ":" + pathKey + ":" + writer + ":" + p.Date }
+	// The key names the writer by hash: a role is any word and can be a token.
+	key := func(kind string) string {
+		return "bus-clock:" + kind + ":" + pathKey + ":" + sha1Hex([]byte(writer))[:12] + ":" + p.Date
+	}
+	alert := func(kind, why string) error {
+		_, err := tx.Exec("insert or ignore into alert (key, ts, text) values (?,?,?)", key(kind), utcNow(),
+			fmt.Sprintf("bus clock: %s line %s in %s is %s; stamps are local time, UTC ends in Z; it keeps its stamp",
+				r.name(writer), stamp, r.text(path), why))
+		return err
+	}
 	if ahead := t.Sub(clock()); ahead > 10*time.Minute {
-		return r.queueAlert(tx, key("ahead"), fmt.Sprintf("bus clock: %s line %s in %s is %s ahead of the clock;"+
-			" stamps are local time, UTC ends in Z; it keeps its stamp", writer, stamp, path, span(ahead)))
+		return alert("ahead", span(ahead)+" ahead of the clock")
 	}
 	if st.Newest != "" {
-		newest, err := time.ParseInLocation("2006-01-02T15:04", st.Newest, time.Local)
+		newest, err := time.Parse(time.RFC3339, st.Newest)
 		if err != nil {
 			return fmt.Errorf("bad saved newest stamp %q: %v", st.Newest, err)
 		}
 		if behind := newest.Sub(t); behind > time.Hour {
-			return r.queueAlert(tx, key("behind"), fmt.Sprintf("bus clock: %s line %s in %s is %s behind the newest"+
-				" stamp before it (%s); stamps are local time, UTC ends in Z; it keeps its stamp", writer, stamp, path,
-				span(behind), st.Newest))
+			return alert("behind", fmt.Sprintf("%s behind the newest stamp before it (%s)", span(behind),
+				newest.Local().Format("2006-01-02T15:04")))
 		}
 		if !t.After(newest) {
 			return nil
 		}
 	}
-	st.Newest = stamp
+	var seen int
+	if err := tx.QueryRow("select count(*) from alert where key = ?", key("ahead")).Scan(&seen); err != nil {
+		return err
+	}
+	if seen == 0 {
+		st.Newest = t.UTC().Format(time.RFC3339)
+	}
 	return nil
 }
 

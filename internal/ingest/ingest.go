@@ -118,13 +118,7 @@ func (r *runner) event(tx *sql.Tx, e event) error {
 		}
 	}
 	if e.to != "" {
-		// A slug recipient (project or project:role) carries no secret, and redaction would take token-service:lead
-		// for a key; anything else is redacted like all text.
-		to := e.to
-		if p, role, _ := strings.Cut(to, ":"); !store.Slug.MatchString(p) || role != "" && !store.Slug.MatchString(role) {
-			to = r.text(to)
-		}
-		clean["to"] = []string{to}
+		clean["to"] = []string{r.name(e.to)}
 	}
 	if len(clean) > 0 {
 		b, err := json.Marshal(clean)
@@ -145,6 +139,15 @@ func (r *runner) event(tx *sql.Tx, e event) error {
 		nullable(e.ts), nullable(e.project), e.kind, nullable(r.text(e.actor)), nullable(e.session),
 		nullable(e.item), refs, text, e.key)
 	return err
+}
+
+// name is a bus sender or recipient as written when it is a slug (project or project:role): it carries no secret, and
+// redaction would take token-service:lead for a key. Anything else is redacted like all text.
+func (r *runner) name(s string) string {
+	if p, role, _ := strings.Cut(s, ":"); !store.Slug.MatchString(p) || role != "" && !store.Slug.MatchString(role) {
+		return r.text(s)
+	}
+	return s
 }
 
 // queueAlert records an alert in the caller's transaction; flushAlerts posts it. One alert per key, ever.
