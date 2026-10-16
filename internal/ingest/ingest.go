@@ -125,9 +125,14 @@ func (r *runner) event(tx *sql.Tx, e event) error {
 	if e.hasText {
 		text = r.text(e.text)
 	}
-	_, err := tx.Exec("insert or ignore into event (ts, project, kind, actor, session, item, refs, text, taint,"+
-		" verified, source_key) values (?,?,?,?,?,?,?,?,0,0,?)", nullable(e.ts), nullable(e.project), e.kind,
-		nullable(r.text(e.actor)), nullable(e.session), nullable(e.item), refs, text, e.key)
+	// A key stored as malformed takes the parse when the line reads well now (a newer bus type list); any other
+	// stored row stays as it is.
+	_, err := tx.Exec("insert into event (ts, project, kind, actor, session, item, refs, text, taint,"+
+		" verified, source_key) values (?,?,?,?,?,?,?,?,0,0,?) on conflict(source_key) do update set ts=excluded.ts,"+
+		" project=excluded.project, kind=excluded.kind, actor=excluded.actor, session=excluded.session,"+
+		" item=excluded.item, refs=excluded.refs, text=excluded.text where event.kind='malformed'",
+		nullable(e.ts), nullable(e.project), e.kind, nullable(r.text(e.actor)), nullable(e.session),
+		nullable(e.item), refs, text, e.key)
 	return err
 }
 

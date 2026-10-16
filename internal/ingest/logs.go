@@ -21,6 +21,15 @@ func sha1Hex(b []byte) string {
 	return hex.EncodeToString(s[:])
 }
 
+func typesSum() string {
+	ts := make([]string, 0, len(store.Types))
+	for t := range store.Types {
+		ts = append(ts, t)
+	}
+	sort.Strings(ts)
+	return sha1Hex([]byte(strings.Join(ts, " ")))[:12]
+}
+
 // born is the file's birth time (macOS), so the first undated line of a rescanned file gets a real date.
 func born(path string) (time.Time, error) {
 	fi, err := os.Stat(path)
@@ -72,6 +81,17 @@ func (r *runner) logFile(path, source string, strict bool, project string) error
 		if err != nil {
 			return err
 		}
+		// A bus cursor keeps the type list it was read with; a new list reads the file again from the start.
+		var types string
+		prev, reread := c, false
+		if strict {
+			types = typesSum()
+			if c.sha != types {
+				c, reread = cursor{}, true
+			}
+		}
+		anchored := false // a dated line came before in this pass, so undated dates do not rest on the birth date
+		fresh := 0        // lines past the old cursor: the re-read part is already in coverage.rows
 		pathKey := sha1Hex([]byte(path))[:12]
 		var st store.State
 		if c.state != "" {
@@ -80,12 +100,16 @@ func (r *runner) logFile(path, source string, strict bool, project string) error
 			}
 		}
 		next, n, err := scanLines(path, c, func(pos int64, raw []byte) error {
+			if pos >= prev.offset {
+				fresh++
+			}
 			if pos == 0 { // a new, truncated or replaced file: the saved date state does not apply
 				b, err := born(path)
 				if err != nil {
 					return err
 				}
 				st = store.State{Date: b.Format("2006-01-02"), Time: "00:00"}
+				anchored = false
 			}
 			line := strings.TrimRight(strings.ToValidUTF8(string(raw), "�"), "\r\n")
 			if strings.TrimSpace(line) == "" || !strict && strings.HasPrefix(line, "#") {
@@ -112,10 +136,30 @@ func (r *runner) logFile(path, source string, strict bool, project string) error
 			if items := p.Refs["item"]; len(items) > 0 {
 				e.item = items[0]
 			}
-			return r.event(tx, e)
+			if err := r.event(tx, e); err != nil {
+				return err
+			}
+			if !p.DatedByGuess {
+				anchored = true
+				return nil
+			}
+			if !reread || !anchored {
+				return nil
+			}
+			// A type-list re-read can date an undated line differently (a line before it parses now); the stored
+			// row follows when a dated line anchors it. A date that rests on the birth date stays as stored: a
+			// replaced file's birth is not its lines' date.
+			_, err = tx.Exec("update event set ts=? where source_key=? and ts is not ?", e.ts, key, e.ts)
+			return err
 		})
 		if err != nil {
 			return err
+		}
+		if strict {
+			next.sha = types
+		}
+		if reread && next.inode == prev.inode && next.offset >= prev.offset {
+			n = fresh
 		}
 		if next == c {
 			return nil

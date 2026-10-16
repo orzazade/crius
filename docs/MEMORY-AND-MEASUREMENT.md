@@ -224,6 +224,9 @@ then hosted where §3a allows). A CLI costs nothing until called and works from 
   the **max** of each token field over all its records (the `extract.py` rule).
 - **Partial last line**: never parse a line without its newline; the cursor stops before it.
 - **Truncation** (file shorter than the cursor) or **replacement** (inode changed): rescan the whole file; keys dedupe.
+- **New bus type list**: a bus cursor keeps a hash of the type list it was read with; when the list changes, the file
+  is read again and a row stored as `malformed` takes the line's real type. An undated line after it takes its new
+  date only when a dated line earlier in the file anchors it; a date that rests on the file's birth date stays.
 - **Late arrival**: a record older than the newest seen still upserts; its day's rollup is recomputed.
 - Every row has a `source_key`; a cursor moves only after its transaction commits.
 - Unknown line shapes (new Claude Code version) are counted and alerted, never skipped quietly.

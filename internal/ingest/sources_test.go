@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/orzazade/crius/internal/store"
 	"github.com/orzazade/crius/internal/testutil"
@@ -117,6 +118,83 @@ func TestBusLinesDatedUndatedMalformedAndRedacted(t *testing.T) {
 	before := x.counts()
 	x.run()
 	eq(t, x.counts(), before)
+}
+
+// Crius 16:04 NEED: lines stored as malformed under an older type list get their real type once the list has
+// them, once, and nothing is added twice.
+func TestANewBusTypeUpgradesItsMalformedLinesOnce(t *testing.T) {
+	x, _, _ := busCase(t)
+	delete(store.Types, "WAIT")
+	t.Cleanup(func() { store.Types["WAIT"] = true })
+	testutil.Write(t, filepath.Join(x.home, "bus", "waits.log"),
+		"2026-10-16T09:20 DONE demo:leader -> crius — done\n"+
+			"2026-10-16T09:30 WAIT demo:leader -> crius — waiting on the owner\n"+
+			"this is not a bus line\n")
+	x.run()
+	kinds := "select kind from event where source_key like 'bus:%' order by id"
+	eq(t, x.q(kinds), [][]string{{"done"}, {"malformed"}, {"malformed"}})
+	store.Types["WAIT"] = true
+	before := x.counts()
+	x.run()
+	eq(t, x.q(kinds), [][]string{{"done"}, {"wait"}, {"malformed"}})
+	eq(t, x.one("select text from event where kind='wait'"), "waiting on the owner")
+	eq(t, x.counts(), before)
+	x.run()
+	eq(t, x.counts(), before)
+	// Codex P2: the re-read counted every line of the file a second time.
+	eq(t, x.one("select rows from coverage where source='bus'"), "3")
+}
+
+// Codex P2: a line that now parses moves the date of the undated lines after it; their stored ts must follow.
+// Codex P2: also when the file was replaced in between; the dated first line anchors the dates, not the birth.
+func TestANewBusTypeRedatesTheUndatedLinesAfterIt(t *testing.T) {
+	text := "2026-10-15T23:50 DONE demo:leader -> crius — one\n" +
+		"00:10 WAIT demo:leader -> crius — two\n" +
+		"23:55 DONE demo:leader -> crius — three\n"
+	for _, replace := range []bool{false, true} {
+		x, _, _ := busCase(t)
+		delete(store.Types, "WAIT")
+		t.Cleanup(func() { store.Types["WAIT"] = true })
+		path := filepath.Join(x.home, "bus", "waits.log")
+		testutil.Write(t, path, text)
+		x.run()
+		if replace {
+			testutil.Write(t, path+".new", text)
+			if err := os.Rename(path+".new", path); err != nil {
+				t.Fatal(err)
+			}
+		}
+		store.Types["WAIT"] = true
+		x.run()
+		want, _ := time.ParseInLocation("2006-01-02T15:04", "2026-10-16T23:55", time.Local)
+		eq(t, x.one("select ts from event where text='three'"), want.UTC().Format("2006-01-02T15:04:05Z"))
+	}
+}
+
+// Codex P2 on the fix above: a replaced file with the same lines (new inode, later birth) keeps the stored dates.
+func TestAReplacedBusFileKeepsItsStoredDates(t *testing.T) {
+	for _, newTypes := range []bool{false, true} {
+		x, _, _ := busCase(t)
+		if newTypes {
+			delete(store.Types, "WAIT")
+			t.Cleanup(func() { store.Types["WAIT"] = true })
+		}
+		path := filepath.Join(x.home, "bus", "demo.log")
+		testutil.Write(t, path, "09:30 DONE demo:leader -> crius — one\n")
+		old := time.Now().AddDate(0, 0, -2)
+		if err := os.Chtimes(path, old, old); err != nil {
+			t.Fatal(err)
+		}
+		x.run()
+		ts := x.one("select ts from event where text='one'")
+		testutil.Write(t, path+".new", "09:30 DONE demo:leader -> crius — one\n")
+		if err := os.Rename(path+".new", path); err != nil {
+			t.Fatal(err)
+		}
+		store.Types["WAIT"] = true
+		x.run()
+		eq(t, x.one("select ts from event where text='one'"), ts)
+	}
 }
 
 func TestTeamLogLinesUseTheLenientGrammar(t *testing.T) {
