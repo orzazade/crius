@@ -688,27 +688,45 @@ func (r *Report) Text() string {
 
 // PaceText is the pace push (design §8): speed, top burners, one suggestion.
 func (r *Report) PaceText() string {
-	t := fmt.Sprintf("quota pace high: 7d %.0f%% on day %d of 7 (time passed %.0f%%, %.1f%%/day)", r.SevenPct, r.Day,
-		100*r.Passed, r.PerDay())
+	t := fmt.Sprintf("quota pace high: 7d %.0f%% on day %d of 7 (%.1f%%/day", r.SevenPct, r.Day, r.PerDay())
 	if r.AvgPerDay > 0 && r.PerDay() > r.AvgPerDay {
 		t += fmt.Sprintf(", faster than the 7-day average %.1f%%/day", r.AvgPerDay)
 	}
-	if ro := r.Runout(); !ro.IsZero() && ro.Before(r.Reset) {
-		t += "; runs out ~" + when(ro) + " at this pace, reset " + when(r.Reset)
-	}
-	t += " · top burners: " + list(r.Shares, r.MaxUSD, 3)
+	t += ")"
+	t += " · top burners: " + list(r.Shares, r.MaxUSD, 2)
 	if len(r.Shares) > 0 {
 		t += " · suggestion: slow " + r.Shares[0].Project + " (fewer parallel sessions, cheaper helpers) until the reset"
 	}
-	return t + " · enterprise this week " + money(r.EntWeekUSD)
+	return t + ". " + r.entWeek()
 }
 
-// RunoutText is the push when the subscription will be used up before the reset at this pace (design §8).
+// RunoutText is the push when the subscription will be used up before the reset at this pace (design §8). It also
+// carries the pace facts, so it can stand for the pace push when both are due in one run.
 func (r *Report) RunoutText(enterpriseOK map[string]bool) string {
-	return fmt.Sprintf("quota will run out ~%s at this pace (7d %.0f%% on day %d, %.1f%%/day, reset %s). Then only"+
-		" Appxite work (%s) may continue, on the Appxite enterprise account; personal and scifi work waits until"+
-		" the reset. Enterprise this week %s (%s).", when(r.Runout()), r.SevenPct, r.Day, r.PerDay(), when(r.Reset),
-		strings.Join(okList(enterpriseOK), ", "), money(r.EntWeekUSD), list(r.EntWeek, 0, 4))
+	return fmt.Sprintf("quota runs out ~%s (7d %.0f%% on day %d, %.1f%%/day; reset %s) · top burner: %s. Then only"+
+		" Appxite work (%s) may continue, on the enterprise account; personal and scifi work waits for the reset. %s",
+		when(r.Runout()), r.SevenPct, r.Day, r.PerDay(), when(r.Reset), list(r.Shares[:min(1, len(r.Shares))], r.MaxUSD, 1),
+		strings.Join(okList(enterpriseOK), ", "), r.entWeek())
+}
+
+// UsedUpText is the push when the subscription is used up (design §8, D1).
+func (r *Report) UsedUpText(enterpriseOK map[string]bool) string {
+	return fmt.Sprintf("quota used up: 7d %.0f%% until %s. Only Appxite work (%s) may continue, on the Appxite"+
+		" enterprise account; personal and scifi work waits until the reset. %s",
+		r.SevenPct, when(r.Reset), strings.Join(okList(enterpriseOK), ", "), r.entWeek())
+}
+
+// entWeek is the enterprise $ of the week for a push (the total: by project is in `crius-rec quota`, and a push must
+// fit a bus line). Spend whose account is unknown may be enterprise, so it is said as unknown and the known $ as a
+// floor, never "$0.00 (none)".
+func (r *Report) entWeek() string {
+	switch {
+	case r.UnknownUSD == 0:
+		return fmt.Sprintf("Enterprise this week %s.", money(r.EntWeekUSD))
+	case r.EntWeekUSD > 0:
+		return fmt.Sprintf("Enterprise this week ≥ %s + unknown %s.", money(r.EntWeekUSD), money(r.UnknownUSD))
+	}
+	return fmt.Sprintf("Enterprise this week unknown %s (account not measured).", money(r.UnknownUSD))
 }
 
 func okList(enterpriseOK map[string]bool) []string {
@@ -718,18 +736,6 @@ func okList(enterpriseOK map[string]bool) []string {
 	}
 	sort.Strings(ps)
 	return ps
-}
-
-// UsedUpText is the push when the subscription is used up (design §8, D1).
-func (r *Report) UsedUpText(enterpriseOK map[string]bool) string {
-	var ps []string
-	for p := range enterpriseOK {
-		ps = append(ps, p)
-	}
-	sort.Strings(ps)
-	return fmt.Sprintf("quota used up: 7d %.0f%% until %s. Only Appxite work (%s) may continue, on the Appxite"+
-		" enterprise account; personal and scifi work waits until the reset. Enterprise this week %s (%s).",
-		r.SevenPct, when(r.Reset), strings.Join(ps, ", "), money(r.EntWeekUSD), list(r.EntWeek, 0, 4))
 }
 
 func (v Violation) Text() string {

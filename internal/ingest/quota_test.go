@@ -117,7 +117,8 @@ func (x *ic) report() *quota.Report {
 	return rep
 }
 
-// Day 3 of the epoch (started 2.5 days ago) at 62%: one pace push, and a second run adds none.
+// Day 3 of the epoch (started 2.5 days ago) at 62%: one push (design §9), and a second run adds none. 62% by day 3
+// also runs out before the reset, so that one push is the runout push, carrying the pace facts too.
 func TestQuotaAtSixtyPercentOnDayThreePushesOnce(t *testing.T) {
 	x := quotaCase(t)
 	reset := qNow.Add(4*24*time.Hour + 12*time.Hour)
@@ -125,9 +126,10 @@ func TestQuotaAtSixtyPercentOnDayThreePushesOnce(t *testing.T) {
 	x.spool(sampleAt(x.sid, qNow.Add(-2*time.Hour), 55, reset), sampleAt(x.sid, qNow.Add(-10*time.Minute), 62, reset))
 	x.run()
 	x.run()
-	pace := grepAlerts(x.alerts(), "quota pace high")
-	if len(pace) != 1 || !strings.Contains(pace[0], "7d 62% on day 3 of 7") || !strings.Contains(pace[0], "demo") {
-		t.Fatalf("want one pace push naming the top burner, got %q", x.alerts())
+	push := grepAlerts(x.alerts(), "— quota ")
+	if len(push) != 1 || !strings.Contains(push[0], "7d 62% on day 3") || !strings.Contains(push[0], "top burner: demo") ||
+		!strings.Contains(push[0], "only Appxite work (axi) may continue") || !strings.Contains(push[0], "Enterprise this week") {
+		t.Fatalf("want one whole push naming the top burner and the Appxite rule, got %q", x.alerts())
 	}
 	eq(t, x.one("select count(*) from quota"), "2")
 	eq(t, x.q("select rl from account_seen where session=?", x.sid), [][]string{{"1"}, {"1"}})
@@ -323,7 +325,7 @@ func TestQuotaSampleWithoutShareIsNotZeroPercent(t *testing.T) {
 	l := sampleAt(x.sid, qNow.Add(-10*time.Minute), 0, qNow.Add(4*24*time.Hour))
 	l.SevenPct = nil
 	x.spool(l)
-	if st := x.run(); st.BadLines != 1 {
+	if st := x.run(); st.BadLines != 1 || st.Status != "partial" {
 		t.Fatalf("the line must be counted as bad, got %+v", st)
 	}
 	if rep := x.report(); rep.Status != "partial" || len(rep.Stale) == 0 || !rep.LastSample.IsZero() || rep.UnknownUSD == 0 {
@@ -411,7 +413,7 @@ func TestQuotaLongPaceAlertIsPostedAndDoesNotBlockTheQueue(t *testing.T) {
 		x.spool(sampleAt(sid, qNow.Add(-10*time.Minute), 62, reset))
 	}
 	x.run()
-	if len(grepAlerts(x.alerts(), "quota pace high")) != 1 {
+	if len(grepAlerts(x.alerts(), "quota runs out")) != 1 { // 62% on day 3 also runs out: one push carries both
 		t.Fatalf("pace alert not posted: %q", x.alerts())
 	}
 	x.session("work", x.sid, "/work/demo", "[crius account=enterprise project=demo role=lead]", qNow.Add(-5*time.Minute))
@@ -621,7 +623,7 @@ func TestQuotaRunsOutBeforeTheResetPushesOnce(t *testing.T) {
 			x.spool(sampleAt(x.sid, qNow.Add(-5*time.Minute), c.pct, qNow.Add(7*day-c.passed)))
 			x.run()
 			x.run()
-			got := grepAlerts(x.alerts(), "quota will run out")
+			got := grepAlerts(x.alerts(), "quota runs out")
 			if len(got) != c.want || c.want == 1 && (!strings.Contains(got[0], "only Appxite work (axi) may continue") ||
 				!strings.Contains(got[0], "Enterprise this week")) {
 				t.Fatalf("want %d, got %q", c.want, x.alerts())
@@ -640,6 +642,20 @@ func TestQuotaKnownEnterpriseBesideUnknownIsAFloor(t *testing.T) {
 	x.run()
 	if txt := x.report().Text(); !strings.Contains(txt, "(account not measured) · at least week $0.02 (axi $0.02)") {
 		t.Fatalf("%s", txt)
+	}
+}
+
+// Codex round 6: every push says unknown-account spend as unknown, not as "Enterprise this week $0.00 (none)".
+func TestQuotaPushesSayUnknownSpend(t *testing.T) {
+	x := quotaCase(t)
+	unknown := "dddddddd-2222-3333-4444-555555555555"
+	x.session("personal", x.sid, "/work/demo", "", qNow.Add(-10*time.Minute))
+	x.session("work", unknown, "/work/demo", "", qNow.Add(-2*time.Hour))
+	x.spool(sampleAt(x.sid, qNow.Add(-5*time.Minute), 40, qNow.Add(5*24*time.Hour)))
+	x.run()
+	push := grepAlerts(x.alerts(), "quota runs out")
+	if len(push) != 1 || strings.Contains(push[0], "$0.00 (none)") || !strings.Contains(push[0], "unknown $") {
+		t.Fatalf("%q", x.alerts())
 	}
 }
 

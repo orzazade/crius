@@ -42,7 +42,7 @@ func (r *runner) quotaFile(tx *sql.Tx, path string) error {
 		if err := json.Unmarshal(raw, &l); err != nil || l.TS == "" || l.Session == "" || l.Kind == "" ||
 			l.RL && (l.SevenPct == nil || l.SevenReset == nil) {
 			r.st.BadLines++
-			r.warn(false, "bad quota line in %s at byte %d", path, pos)
+			r.warn(true, "bad quota line in %s at byte %d", path, pos) // a sample that measured nothing
 			return nil
 		}
 		t, err := time.Parse(time.RFC3339, l.TS)
@@ -78,6 +78,16 @@ func (r *runner) quotaFile(tx *sql.Tx, path string) error {
 
 // quotaChecks queues the alerts of design §5 and §8: the account guard (S1), a stale sampler, and the pace and
 // used-up pushes. Each key is alerted once.
+// newAlert: the rule holds and its key was never queued.
+func (r *runner) newAlert(tx *sql.Tx, key string, holds bool) (bool, error) {
+	if !holds {
+		return false, nil
+	}
+	var n int
+	err := tx.QueryRow("select count(*) from alert where key=?", key).Scan(&n)
+	return n == 0, err
+}
+
 func (r *runner) quotaChecks(tx *sql.Tx) error {
 	rep, err := quota.Build(tx, r.cfg.quotaProjects(), clock())
 	if err != nil {
@@ -101,13 +111,29 @@ func (r *runner) quotaChecks(tx *sql.Tx) error {
 	if rep.SevenPct >= 100 {
 		return r.queueAlert(tx, "quota:usedup:"+epoch, rep.UsedUpText(r.cfg.enterpriseOK()))
 	}
-	if rep.RunsOut() {
-		if err := r.queueAlert(tx, "quota:runout:"+epoch, rep.RunoutText(r.cfg.enterpriseOK())); err != nil {
+	// Pace and runout pushes have their own keys; when both are new in one run, the runout push (which carries the
+	// pace facts) goes alone and the pace key is marked as said, so the owner gets one push (design §9).
+	runout, pace := "quota:runout:"+epoch, "quota:pace:"+epoch
+	ro, err := r.newAlert(tx, runout, rep.RunsOut())
+	if err != nil {
+		return err
+	}
+	pc, err := r.newAlert(tx, pace, rep.PaceHigh())
+	if err != nil {
+		return err
+	}
+	switch {
+	case ro && pc:
+		if err := r.queueAlert(tx, runout, rep.RunoutText(r.cfg.enterpriseOK())); err != nil {
 			return err
 		}
-	}
-	if rep.PaceHigh() {
-		return r.queueAlert(tx, "quota:pace:"+epoch, rep.PaceText())
+		_, err := tx.Exec("insert or ignore into alert (key, ts, text, sent) values (?,?,?,?)", pace, utcNow(),
+			"said in "+runout, utcNow())
+		return err
+	case ro:
+		return r.queueAlert(tx, runout, rep.RunoutText(r.cfg.enterpriseOK()))
+	case pc:
+		return r.queueAlert(tx, pace, rep.PaceText())
 	}
 	return nil
 }
