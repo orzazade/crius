@@ -67,6 +67,9 @@ Details: [docs/MEMORY-AND-MEASUREMENT.md](MEMORY-AND-MEASUREMENT.md) §7b, `~/.c
    milestone is verified done, a goal % changes, or an S1 happens. Twice a day (09:00 and 18:00) Crius sends one
    goal report: per lead the goal, % done, change since the last report, next milestone, and what needs the owner.
    Leads keep their GOAL block current; Crius reads it and checks every claimed milestone before the % goes up.
+   A check counts only as one bus line per milestone:
+   `VERIFIED crius:lead -> <project:role> — <ref> · <evidence>`, where `<ref>` is a sha, the milestone's own ref
+   (e.g. F-126) or its exact text. The lead's QA may post these too. Prose like "checked PASS" does not count.
 5. **A lead never stops while its goal has work it can do.** A session cannot continue after its turn ends, so
    "Next I'll do X" followed by ✅ is an idle lead. End a turn only on ❓ (owner needed, with the question) or ⏳
    (own background work running, named). ✅ is only for a finished goal. Crius's bus watch flags a lead that stops
