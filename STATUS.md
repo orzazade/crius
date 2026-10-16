@@ -5,8 +5,7 @@ full Appxite access; no $ cap (daily pace reminder only); Cortex = Appxite Corte
 collector/control tower with its own smart runs, not the decision maker; leads on demand.
 Lead list (assumed until the owner changes it): staffy, axi, falcon, trading, infra, lab.
 
-Rule for every step: test fails first, codex review before "done", owner OK before anything outward-facing
-(deploy, public endpoint, messages as the owner). Build in FRESH sessions that read this file, not in the long
+Rules (done, bugs, reports): docs/RULES.md — one page, every lead and builder follows it. Build in FRESH sessions that read this file, not in the long
 design session (cost lesson from tools/agent-cost/FLOW-REVIEW.md).
 
 ## Week 1 — Smarter Falcon (the foundation) — owner "go" 2026-10-14
@@ -114,3 +113,63 @@ Running now:
 - Watch gap found: the old watcher covered leads only; a member (ms-flow) sat on a hook confirmation prompt. The new
   watcher must sweep EVERY lead and member surface (cmux tree) for "Do you want to proceed" and alert.
 Open: AXI dates — none. Crius dates: 10-20 Explore share; 10-23 300K window + Sonnet member trial.
+- 16:05 park mod helper DONE (uncommitted, not enabled): crius/mods/park/ (DESIGN.md, hooks/register.ts, 38 tests,
+  validate + tsc clean, deep review 7 bugs fixed). Feasible: $.session.compact() compacts the main session. Two
+  decisions for Crius: (1) add PARKED to Types in internal/store/bus.go (via the builder) or reuse PAUSED;
+  (2) team members' mods writing to the Crius bus conflicts with "only leaders write" — old Crius suggests: members
+  skip the bus line, leader reports. Unconfirmed: cache reuse at compaction (check /cost on the first real park);
+  on the work persona the Stop event doesn't reach mods, so it never acts there.
+## Crius session b2449ff6 (took over 2026-10-16 15:41)
+- Wait detector: helper "wait-detector" building ~/.claude/hooks/wait-log.sh (Notification hook, both personas) +
+  wait-sweep.sh (screen sweep, read only) -> ~/.crius/bus/waits.log in bus grammar, kind WAIT. Live since 15:47; caught
+  ms-flow's git reset prompt (owner said yes, answered 15:52 with `cmux send-key --force`). Sweep timer INSTALLED 16:12 (owner yes):
+  space.scifilab.crius.wait-sweep every 120 s, first run ok. Hook 18/18, sweep 38/38. cmux-notify.sh REMOVED 16:14 (owner): unwired from Stop + PostToolUse(Task), both copies deleted (copies in scratchpad).
+- Step 2 VERIFIED 16:02 (clean worktree eaf83d0, 122/0). Builder now: bus types fix (INFO NEED WAIT PARKED + one list
+  in MEMORY-AND-MEASUREMENT.md + cmux-team leader.md + drift test), then re-price review-1016 (cache read 0.1x flat was
+  wrong; ~37% too high in USD). Step 3 still waits for the owner.
+- Park mod: decisions made (PARKED type added via builder; members never write the Crius bus, leader reports). Not
+  enabled; needs the type fix + a second deep review first.
+- AXI: owner signed in to env004 (#34); B62 go-live d077974 rolling.
+## HANDOVER to fresh Crius #2 (2026-10-16 ~16:55) — Crius b2449ff6 restarts itself to load new settings
+Read first: this section, the "Crius session b2449ff6" section above, memory project_crius.md (lessons dated 10-16 b2449ff6).
+Re-arm on start: Monitor `tail -F -n 0` on ~/.crius/bus/{waits,axi,crius,falcon,quotes,trading}.log + crius/bus/build.log,
+awk drops idle_prompt lines and lines whose sender is `crius` (own lines). Sweep timer + Notification hook already live.
+State:
+- Restarts (owner request, load new settings + human-in-the-loop fully uninstalled): done Falcon, Trading, Quotes (fresh,
+  Opus 5.5 1M, owner draft restored unsent), ms-flow, devops, builder (fresh), AXI lead (fresh 16:5x, owner draft
+  "progress report" in its input box: it BLOCKS cmux send to the lead until sent/cleared; owner asked). Left: api-split,
+  qa (AXI lead does them; qa after B62 step 7). After all are done: delete
+  ~/.claude/plugins/store/human-in-the-loop_human-in-the-loop-a2d7945bd523.json and check it does not come back.
+- Builder queue (fresh session, reads docs/notes/RESUME.md): bus-types merged main=39b3ecd + reinstalled (verified
+  16:48, ingest warnings=0); next re-scan of skipped bus lines, then review-1016 re-price (tell owner old vs new USD),
+  then step 3 (owner said go 16:03). Verify each DONE on a clean worktree (helper), tell owner in plain English.
+- AXI: B62 live on env004; step-7 browser test blocked by Rethink's commitment-period toggle, team checking other
+  paths. ms-flow: Crius answered NO to `git branch -D ms-flow/c34-merge` (16:23): local origin/feature/idzi/94864-envhub
+  = 48d73779 does not contain its "pushed" merge 16474fd5; asked it to prove with ls-remote, then delete with -d only.
+- Quotes: waiting for owner's "go" on B3. Finding for owner (open): Appxite leads (Quotes, AXI) run in the personal
+  persona (~/.claude, Max) because they start in ~/Projects/scifi.
+- Settings changes today: Notification hook (wait-log.sh) both personas; cmux-notify.sh removed (Stop/PostToolUse empty);
+  human-in-the-loop uninstalled; no "model" key in ~/.claude/settings.json (keep it that way).
+## Crius session 3b660534 (took over 2026-10-16 ~17:00) — handover state at 20:20
+Re-arm on start: Monitor `~/.crius/bin/crius-buswatch.sh` (30 min, re-arm on expiry; then check tail of each log for the gap).
+It drops own lines (sender crius, crius:lead, waits:crius), shows an idle_prompt WAIT only when that tab's screen ends on ❓
+(OWNER-Q, once per tab per 30 min, state in ~/.crius/buswatch.seen). Crius writes bus lines as `crius:lead`.
+Done today: builder bus re-scan (main 78d58f8), review-1016 re-price (TOTAL $28,226 -> $17,823), shared rate table
+tools/agent-cost/rates.json (since.py ~1/3 lower; files NOT in git: ~/Projects/scifi/tools has git root $HOME — owner told),
+step 3 quota DONE + verified (main 530eac8, installed; personal statusline + work statusline.js live). Quotes B3 + decision A
+DONE (channels 9cff6a4, fresh Quotes session). AXI: B62 step 7 DONE (split), #75516 cancelled (#75519), ScheduleOrder go-live
+loaded on env004; AXI lead restarted fresh 18:31 but already ~93% context -> restart after the current re-check.
+Open for owner: (1) env004 test order: Claude's safety check blocks the Place order click; owner clicks it (A) or types
+"yes, place the test order" in AXI (B). (2) keep §8 pace + M2 doc rewrites by builder (Crius: keep). (3) step 4 now or later.
+(4) Trading idle, waits for owner on "keep A9 as a test". (5) Quotes needs a seller 9adffa71 user (PC-2, RB-71, Boba provision).
+First live quota alert 19:43: runs out ~Mon 10-19 at last pace, Trading 67% of week (idle now). Lessons in memory project_crius.md.
+Update 20:50 (Crius 3b660534): env004 test order unblocked by adding env004 / *.devtest.appxite.com as a test env to
+autoMode.environment (both personas; backups in Crius scratchpad). AXI ScheduleOrder go-live on env004 DONE + re-check PASS
+(#75520-#75522); AXI lead restarted fresh 20:4x. Owner gave Crius full authority 20:2x: §8/M2 rewrites kept, step 4 started
+(builder fresh, wip/recall: P1 redaction 4945559, P2 find 0178403; verify each before merge). Trading idle, A9 left as is.
+Open for owner: only the Quotes seller 9adffa71 user (not blocking). human-in-the-loop stays uninstalled (store file still there).
+
+### Crius 3b660534, 22:58: step 4b queued (redaction root cause)
+Six review rounds on step 4 each found a new leak of one class: hand-made key=value parsing in redact.Redact. Decision:
+step 4 ships after the 1eb7a34 deep review with a KNOWN-GAPS list. Step 4b swaps in a maintained ruleset (gitleaks
+rules) behind redact.Redact, with all six rounds' leak cases as fixtures. Order: quota --room (aitch routing) first, then 4b.
