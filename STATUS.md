@@ -79,3 +79,9 @@ Owner answers 10-15: #28 QAs post in Teams AND add owner as ADO reviewer (no Tea
 - PAUSED here by owner ("reach a goal and pause; don't burn the limit"). Next session, in order: (1) confirm hub CPU dropped after d62bf8c deploy; (2) when mail initial sync completes (mail-poll.json has deltaLink), remove FALCON_MAIL_WINDOW_DAYS from the plist + restart Mac daemon when idle; (3) Crius token setup (owner, 4 steps); (4) card pile-up review; (5) Week 2.
 - Disk: ~2.6 GB free 10-16. NOT ours: axon session's copy_b24.sh fills $TMPDIR with fxh_* dirs (~233k, 60 GB, ~65k/hour). Shared $TMPDIR falcon-* sweep was blocked by the classifier (may hold other sessions' runs).
 - 10-16: d62bf8c CI green, falcon-api rolled out; CPU samples 14m/31m/333m/149m (was pinned 497-500m) -> next-session step (1) DONE. Disk back to 63 GB free (axon cleaned its fxh_* dirs).
+
+
+## 2026-10-16 — memory and measurement design (Crius restart)
+- [x] Research: research/memory-and-measurement.md, research/claude-code-telemetry.md (OTel works on the Max login)
+- [x] Design: docs/MEMORY-AND-MEASUREMENT.md, codex-critiqued (12 findings applied), owner decisions D1-D4
+- [ ] Rollout step 1-2 (store + ingest) — waiting for the owner's "go"
