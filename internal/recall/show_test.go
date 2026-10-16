@@ -146,3 +146,13 @@ func TestTwoSupersedesPickTheFirst(t *testing.T) {
 		t.Fatal(by, err)
 	}
 }
+
+// Review 5d5fee4: a project known only by its commits or artifacts is a project (its STATE.md is not built yet).
+func TestShowAProjectKnownByCommitsOnly(t *testing.T) {
+	db := open(t)
+	exec(t, db, "insert into git_commit (sha, project) values (?, 'infra')", strings.Repeat("a", 40))
+	s, err := Show(db, os.Getenv("CRIUS_HOME"), "infra", false, now)
+	if err != nil || s.Status != "unavailable" {
+		t.Fatal(s, err)
+	}
+}

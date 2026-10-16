@@ -237,14 +237,21 @@ last 30 days. A Haiku helper runs `rg` over the transcript folders of that proje
 files, max 2 minutes), and returns at most 10 citations (transcript path, message uuid, time) with a one-line
 redacted paraphrase each. Older than 30 days -> `expired`. Crius never reads the slices itself.
 
-**`find --deep` as built (step 4).** The CLI does the search itself, in Go, with no `rg` on PATH needed (same
-bounds, one binary). The caller is the Haiku helper (the Explore agent): it runs `crius-rec find QUERY --deep
---project P [--since …]` and passes the citations on. The search reads the transcripts of the project's sessions
-and their subagent files changed within the window, newest 50 files first, for at most 2 minutes, and cites at most
-10 user or assistant messages whose own text holds every query word: path, message uuid, time, and a one-line
-redacted snippet around the first word. Each cut (files, citations, time) makes the answer `partial` and says so.
-A `--since` before the 30 days gives `expired` (exit 5): the retained part is still searched, and the durable rows
-`find` has for the whole window follow, marked `durable`.
+**`find --deep` as built (step 4).** The CLI does the search itself, in Go, with no `rg` on PATH needed. The caller
+is the Haiku helper (the Explore agent): it runs `crius-rec find QUERY --deep [--project P] [--since …]` and passes
+the citations on. Every project's transcripts are searched, sessions filed under none included, with their subagent
+files at any depth; `--project` only ranks that project first, because an asker does not know where a talk was filed
+and a filing error must not hide an answer (Crius, 10-16; this replaces the 50-file cap, which made "all projects"
+meaningless: about 2,500 files and 5 GB in 30 days, read in about 10 s). The asking session
+(`CLAUDE_CODE_SESSION_ID`) ranks last, since it holds the question itself. A message is cited when its own text
+(user or assistant; tool input and results count) holds every query word; within a rank the shortest stretch holding
+them all comes first, then the newest. At most 10 citations (`more` says there are others): path, message uuid, time,
+and a one-line snippet around that stretch, redacted before it is cut. The 2-minute limit makes the answer `partial`
+with the count of files not read; so does a missing transcript of a session active in the window. An unknown
+`--project` is refused. A `--since` before the 30 days gives `expired` (exit 5): the retained part is still
+searched, and the durable rows `find` has for the whole window follow, marked `durable`. projects.toml is the source
+of truth for filing: each ingest run re-files a session filed by its folder when the config now files that folder
+differently.
 
 **Generated files, not commands:** digest (`state/digest/`), scorecard (`state/scorecards/`), STATE.md. Each starts
 with a freshness stamp: `built <ts> · status partial · bus 09:20 ok · git 09:30 ok · quota/max STALE 6 h`.

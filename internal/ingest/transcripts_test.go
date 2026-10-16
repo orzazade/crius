@@ -341,3 +341,16 @@ func TestARequestWithANullModelIsLeftUnpricedNotFatal(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+// projects.toml is the source of truth: a session filed by its folder is re-filed when the config changes, even
+// with no new transcript lines (a finished session would otherwise keep its old filing forever).
+func TestAConfigChangeRefilesSessionsFiledByFolder(t *testing.T) {
+	x := newIC(t, cfg{})
+	testutil.Write(t, x.tx, lines(prompt("u1", "2026-10-16T09:00:00Z", "hello", "", "/other/wt")))
+	x.run()
+	eq(t, x.q("select coalesce(project,'-'), attrib_source from session"), [][]string{{"-", "unknown"}})
+	writeConfig(t, x.home, x.personal, x.work, cfg{cwd: "/other"})
+	x.run()
+	eq(t, x.q("select project, attrib_source from session"), [][]string{{"demo", "cwd"}})
+	eq(t, x.q("select distinct project from event"), [][]string{{"demo"}})
+}

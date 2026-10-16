@@ -29,6 +29,7 @@ type Query struct {
 	Kinds           []string
 	Active, Waiting bool
 	Now             time.Time
+	Self            string // the asking session (CLAUDE_CODE_SESSION_ID): --deep ranks it last
 }
 
 type Hit struct {
@@ -222,7 +223,7 @@ func Find(db *sql.DB, q Query, busTypes map[string]bool) (*Result, error) {
 	}
 
 	// Sessions are not in the word index (titles are not records): a word query on them alone could only say "no".
-	if slices.Contains(q.Kinds, "session") && wordRe.MatchString(q.Text) && !slices.ContainsFunc(strings.Fields(q.Text),
+	if slices.Equal(q.Kinds, []string{"session"}) && wordRe.MatchString(q.Text) && !slices.ContainsFunc(strings.Fields(q.Text),
 		sessionRe.MatchString) {
 		return nil, fmt.Errorf("%w: sessions are found by id prefix or listed with no query; words do not search them", ErrQuery)
 	}
@@ -309,10 +310,15 @@ func session(ctx context.Context, conn *sql.Conn, q Query, tok, match string, re
 		if err := rows.Scan(&h.ID, &h.Project, &h.TS, &h.Text, &taint); err != nil {
 			return err
 		}
-		if !seen[h.ID] && len(res.Hits) < maxHits {
-			seen[h.ID], h.Taint = true, taint != 0
-			res.Hits = append(res.Hits, h)
+		if seen[h.ID] {
+			continue
 		}
+		if len(res.Hits) == maxHits {
+			res.More = true
+			break
+		}
+		seen[h.ID], h.Taint = true, taint != 0
+		res.Hits = append(res.Hits, h)
 	}
 	return rows.Err()
 }

@@ -38,7 +38,8 @@ func deep(t *testing.T, db *sql.DB, q Query) *Result {
 	return r
 }
 
-func TestDeepCitesMessagesOfOneProjectOnly(t *testing.T) {
+// Crius 20:57: every project is searched; the asked project only ranks first (filing errors must not hide answers).
+func TestDeepCitesAllProjectsTheAskedOneFirst(t *testing.T) {
 	db := open(t)
 	key := "ghp_" + strings.Repeat("F", 36)
 	path := transcript(t, db, "falcon", "s1",
@@ -47,9 +48,11 @@ func TestDeepCitesMessagesOfOneProjectOnly(t *testing.T) {
 		msg("user", "u2", "2026-10-15T10:02:00Z", `"only the cwd says it"`),
 		msg("system", "x9", "2026-10-15T10:03:00Z", `"mail stopped (a hook notice, not a message)"`),
 		`{"type":"summary","summary":"mail stopped"}`)
-	transcript(t, db, "trading", "s2", msg("user", "x1", "2026-10-15T10:00:00Z", `"mail stopped too"`))
+	transcript(t, db, "trading", "s2", msg("user", "x1", "2026-10-15T11:00:00Z", `"mail stopped too"`))
+	transcript(t, db, "", "s3", msg("user", "n1", "2026-10-15T12:00:00Z", `"unfiled: mail stopped"`))
+	exec(t, db, "update session set project = null where id = 's3'")
 	r := deep(t, db, Query{Text: "mail stopped", Project: "falcon"})
-	if r.Status != "complete" || len(r.Hits) != 2 {
+	if r.Status != "complete" || len(r.Hits) != 4 || r.Hits[2].ID != "x1" && r.Hits[2].ID != "n1" {
 		t.Fatalf("%s %+v", r.Status, r.Hits)
 	}
 	h := r.Hits[1]
@@ -57,12 +60,33 @@ func TestDeepCitesMessagesOfOneProjectOnly(t *testing.T) {
 		strings.Contains(h.Text, "FFFF") || !strings.Contains(h.Text, "[redacted]") {
 		t.Fatalf("%+v", h)
 	}
-	if r.Hits[0].ID != "a1" || !strings.Contains(r.Text(), "transcripts of project falcon") {
+	if r.Hits[0].ID != "a1" || !strings.Contains(r.Text(), "transcripts of all projects, falcon first") {
 		t.Fatal(r.Text())
+	}
+	if r = deep(t, db, Query{Text: "mail stopped", Project: "trading"}); r.Hits[0].ID != "x1" || len(r.Hits) != 4 {
+		t.Fatalf("%+v", r.Hits)
 	}
 }
 
-// Bounded: the newest 50 files, at most 10 citations, and a time limit; each cut makes the answer partial.
+// Within a project, the message holding the words closest together ranks first, then the newest.
+func TestDeepRanksTheTightestMatchFirst(t *testing.T) {
+	db := open(t)
+	transcript(t, db, "falcon", "s1",
+		msg("user", "far", "2026-10-15T12:00:00Z", `"mail went out, and much later the poll stopped"`),
+		msg("user", "near", "2026-10-15T10:00:00Z", `"so mail stopped on 09-21"`))
+	if r := deep(t, db, Query{Text: "mail stopped"}); len(r.Hits) != 2 || r.Hits[0].ID != "near" {
+		t.Fatalf("%+v", r.Hits)
+	}
+	// The snippet shows the tightest stretch, wherever it is, with a rune index (Ж is 2 bytes, 1 rune).
+	long := "mail " + strings.Repeat("Ж", 300) + " stopped " + strings.Repeat("x", 300) + " mail stopped on 09-21"
+	transcript(t, db, "falcon", "s2", msg("user", "long", "2026-10-15T09:00:00Z", fmt.Sprintf("%q", long)))
+	r := deep(t, db, Query{Text: "mail stopped"})
+	if h := r.Hits[1]; h.ID != "long" || !strings.Contains(h.Text, "mail stopped on 09-21") {
+		t.Fatalf("%+v", h)
+	}
+}
+
+// Bounded: at most 10 citations (more is said), and a time limit that makes the answer partial.
 func TestDeepIsBounded(t *testing.T) {
 	db := open(t)
 	for i := 0; i < 55; i++ {
@@ -72,13 +96,13 @@ func TestDeepIsBounded(t *testing.T) {
 	}
 	r := deep(t, db, Query{Text: "mail stopped", Project: "falcon"})
 	reasons := strings.Join(r.Reasons, "; ")
-	if r.Status != "partial" || len(r.Hits) != 10 || !r.More || !strings.Contains(reasons, "newest 50 of 55 files") ||
-		r.Hits[0].ID != "u0" {
+	if r.Status != "complete" || len(r.Hits) != 10 || !r.More || r.Hits[0].ID != "u0" {
 		t.Fatal(r.Status, len(r.Hits), r.More, reasons)
 	}
 	defer func(d time.Duration) { deepTimeout = d }(deepTimeout)
 	deepTimeout = 0
-	if r = deep(t, db, Query{Text: "mail stopped", Project: "falcon"}); !strings.Contains(strings.Join(r.Reasons, "; "), "time limit") {
+	if r = deep(t, db, Query{Text: "mail stopped", Project: "falcon"}); r.Status != "partial" ||
+		!strings.Contains(strings.Join(r.Reasons, "; "), "time limit, 55 of 55 files not read") {
 		t.Fatal(r.Reasons)
 	}
 }
@@ -93,12 +117,71 @@ func TestDeepPastRetentionIsExpiredWithTheDurableRows(t *testing.T) {
 	}
 }
 
-func TestDeepNeedsAProjectAndWords(t *testing.T) {
+func TestDeepNeedsWords(t *testing.T) {
 	db := open(t)
-	for _, q := range []Query{{Text: "mail"}, {Project: "falcon"}, {Text: "mail", Project: "falcon", Waiting: true}} {
+	for _, q := range []Query{{Project: "falcon"}, {Text: "mail", Project: "falcon", Waiting: true}} {
 		q.Now = now
 		if _, err := Deep(db, q, store.Types); !errors.Is(err, ErrQuery) {
 			t.Fatal(q, err)
 		}
+	}
+}
+
+// The asking session holds the question itself: it ranks after every other session, but is still searched.
+func TestDeepRanksTheAskingSessionLast(t *testing.T) {
+	db := open(t)
+	transcript(t, db, "crius", "self", msg("user", "q", "2026-10-15T12:00:00Z", `"which commit armed the k3s hooks?"`))
+	transcript(t, db, "staffy", "old", msg("assistant", "a", "2026-10-14T10:00:00Z", `"k3s now runs the gating hooks (cf62176)"`))
+	r := deep(t, db, Query{Text: "k3s hooks", Project: "crius", Self: "self"})
+	if len(r.Hits) != 2 || r.Hits[0].ID != "a" {
+		t.Fatalf("%+v", r.Hits)
+	}
+}
+
+// Review 5d5fee4: the message is redacted before the snippet is cut, so a secret cut in half cannot leak its tail.
+func TestDeepRedactsBeforeCutting(t *testing.T) {
+	db := open(t)
+	key := "sk-ant-api03-" + strings.Repeat("Q", 100)
+	transcript(t, db, "falcon", "s1", msg("user", "u1", "2026-10-15T10:00:00Z", `"`+key+` mail stopped"`))
+	if r := deep(t, db, Query{Text: "mail stopped"}); len(r.Hits) != 1 || strings.Contains(r.Hits[0].Text, "QQQQ") {
+		t.Fatalf("%+v", r.Hits)
+	}
+}
+
+// Review 5d5fee4: workflow agents write deeper (subagents/workflows/wf_*/agent-*.jsonl); they are searched too.
+func TestDeepReadsNestedSubagentFiles(t *testing.T) {
+	db := open(t)
+	p := transcript(t, db, "falcon", "s1", msg("user", "u1", "2026-10-15T10:00:00Z", `"hello"`))
+	testutil.Write(t, filepath.Join(strings.TrimSuffix(p, ".jsonl"), "subagents", "workflows", "wf_1", "agent-1.jsonl"),
+		msg("assistant", "a1", "2026-10-15T10:01:00Z", `"mail stopped"`)+"\n")
+	if r := deep(t, db, Query{Text: "mail stopped"}); len(r.Hits) != 1 || r.Hits[0].ID != "a1" {
+		t.Fatalf("%+v", r.Hits)
+	}
+}
+
+// Review 5d5fee4: failing to look is not "no": a transcript of a session active in the window that is gone makes the
+// answer partial; a project the store does not know is refused.
+func TestDeepSaysWhatItCouldNotRead(t *testing.T) {
+	db := open(t)
+	p := transcript(t, db, "falcon", "s1", msg("user", "u1", "2026-10-15T10:00:00Z", `"hello"`))
+	exec(t, db, "update session set ended = '2026-10-15T10:00:00Z'")
+	os.Remove(p)
+	r := deep(t, db, Query{Text: "mail stopped"})
+	if r.Status != "partial" || !strings.Contains(strings.Join(r.Reasons, "; "), "1 transcript of a session active in the window is missing") {
+		t.Fatal(r.Status, r.Reasons)
+	}
+	if _, err := Deep(db, Query{Text: "mail", Project: "falcn", Now: now}, store.Types); !errors.Is(err, ErrQuery) {
+		t.Fatal(err)
+	}
+}
+
+// Review 5d5fee4: the durable rows' "more" survives an expired answer.
+func TestDeepExpiredKeepsDurableMore(t *testing.T) {
+	db := open(t)
+	for i := 0; i <= maxHits; i++ {
+		event(t, db, "2026-09-05T10:00:00Z", "falcon", "info", "mail stopped", "")
+	}
+	if r := deep(t, db, Query{Text: "mail stopped", Since: now.AddDate(0, 0, -45)}); r.Status != "expired" || !r.More {
+		t.Fatal(r.Status, r.More)
 	}
 }

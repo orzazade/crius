@@ -10,14 +10,16 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 )
 
 // Expected is what one ingest run should read (from projects.toml and the folders it names): files per coverage
 // source, and the teams whose leads must post (projects with a bus file or team logs).
 type Expected struct {
-	Files map[string][]string
-	Teams []string
+	Files    map[string][]string
+	Teams    []string
+	Problems []string // what could not be listed (an unreadable root or folder)
 }
 
 // silentAfter is how long a team with active sessions may go without a bus or team-log line (design §5).
@@ -72,6 +74,7 @@ func CheckHealth(db *sql.DB, home string, exp Expected, now time.Time) (*Health,
 	if status != "complete" {
 		h.Problems = append(h.Problems, reasons...)
 	}
+	h.Problems = append(h.Problems, exp.Problems...)
 	var started, finished, runStatus sql.NullString
 	var id int
 	err = db.QueryRow("select id, started, finished, status from source_run order by id desc limit 1").Scan(&id, &started,
@@ -160,18 +163,18 @@ func (h *Health) backup(home string, now time.Time) error {
 // last run's start: newer data belongs to the next run.
 func (h *Health) sources(db *sql.DB, exp Expected, runStart time.Time) error {
 	type cov struct {
-		offset int64
-		lastOK string
+		inode, offset int64
+		lastOK        string
 	}
 	seen := map[string]map[string]cov{}
-	rows, err := db.Query("select source, resource, offset, coalesce(last_ok,'') from coverage")
+	rows, err := db.Query("select source, resource, coalesce(inode, 0), offset, coalesce(last_ok,'') from coverage")
 	if err != nil {
 		return err
 	}
 	for rows.Next() {
 		var src, res string
 		var c cov
-		if err := rows.Scan(&src, &res, &c.offset, &c.lastOK); err != nil {
+		if err := rows.Scan(&src, &res, &c.inode, &c.offset, &c.lastOK); err != nil {
 			rows.Close()
 			return err
 		}
@@ -216,6 +219,10 @@ func (h *Health) sources(db *sql.DB, exp Expected, runStart time.Time) error {
 				}
 				if runStart.IsZero() || !fi.ModTime().Before(runStart) {
 					continue
+				}
+				// A replaced file (another inode) is read from its start, as the ingest does.
+				if st, isUnix := fi.Sys().(*syscall.Stat_t); isUnix && c.inode != 0 && int64(st.Ino) != c.inode {
+					c.offset = 0
 				}
 				switch {
 				case !ok:

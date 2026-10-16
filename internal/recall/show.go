@@ -383,15 +383,13 @@ func showCommitOrSession(ctx context.Context, db *sql.DB, s *Shown) error {
 }
 
 // showProject prints the project's STATE.md (design §4); until the digest step builds it, that is unavailable. A
-// name with no session, event, item or decision in the store is no project: a true "no".
+// name with no row in the store is no project: a true "no".
 func showProject(db *sql.DB, home string, s *Shown) error {
 	path := filepath.Join(home, "state", s.ID, "STATE.md")
 	b, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		var known bool
-		if err := db.QueryRow("select exists (select 1 from session where project = ?1) or exists (select 1 from event"+
-			" where project = ?1) or exists (select 1 from item where project = ?1) or exists (select 1 from decision"+
-			" where project = ?1)", s.ID).Scan(&known); err != nil {
+		known, err := knownProject(db, s.ID)
+		if err != nil {
 			return err
 		}
 		if !known {
@@ -431,4 +429,14 @@ func (s *Shown) Text() string {
 	}
 	b.WriteString(s.Body)
 	return b.String()
+}
+
+// knownProject says whether any row of the store names the project.
+func knownProject(db *sql.DB, p string) (bool, error) {
+	var known bool
+	err := db.QueryRow("select exists (select 1 from session where project = ?1) or exists (select 1 from event where"+
+		" project = ?1) or exists (select 1 from item where project = ?1) or exists (select 1 from decision where"+
+		" project = ?1) or exists (select 1 from git_commit where project = ?1) or exists (select 1 from artifact where"+
+		" project = ?1)", p).Scan(&known)
+	return known, err
 }

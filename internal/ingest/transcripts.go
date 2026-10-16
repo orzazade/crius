@@ -143,6 +143,44 @@ func (r *runner) ingestTranscripts() {
 			r.warn(true, "cannot walk %s: %v", rt.path, err)
 		}
 	}
+	if err := r.refile(); err != nil {
+		r.warn(true, "re-filing sessions by folder: %v", err)
+	}
+}
+
+// refile re-derives the filing of sessions filed by their folder when projects.toml now files that folder
+// differently. rollUp runs only for a file with new lines, so without this a finished session keeps a stale project.
+func (r *runner) refile() error {
+	rows, err := r.db.Query("select id, coalesce(cwd,''), coalesce(project,'') from session where attrib_source in ('cwd','unknown')")
+	if err != nil {
+		return err
+	}
+	var stale []string
+	for rows.Next() {
+		var id, cwd, project string
+		if err := rows.Scan(&id, &cwd, &project); err != nil {
+			rows.Close()
+			return err
+		}
+		if r.cfg.projectForCwd(cwd) != project {
+			stale = append(stale, id)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil || len(stale) == 0 {
+		return err
+	}
+	tx, err := r.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, sid := range stale {
+		if err := r.rollUp(tx, sid); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (r *runner) transcriptFile(rt root, path string) error {

@@ -12,8 +12,8 @@ import (
 )
 
 // Step 4 P6, recall v0: 20 questions with answers from STATUS.md (testdata/recall-v0.json), asked of the LIVE store.
-// A question is answered when its answer is in the top 5 of find, or (the caller's next step) of find --deep in the
-// question's project. The bar is 80%. Run: CRIUS_RECALL_LIVE=1 go test -run TestRecallV0 -v ./internal/recall
+// A question is answered when its answer is in the top 5 of find, or (the caller's next step) of find --deep with
+// the question's project ranked first and the asking session (as the CLI sees it) last. The bar is 80%. Run: CRIUS_RECALL_LIVE=1 go test -run TestRecallV0 -v ./internal/recall
 func TestRecallV0(t *testing.T) {
 	if os.Getenv("CRIUS_RECALL_LIVE") == "" {
 		t.Skip("asks the live store; set CRIUS_RECALL_LIVE=1")
@@ -55,7 +55,7 @@ func TestRecallV0(t *testing.T) {
 			byFind++
 			how = "find"
 		} else {
-			q.Project = x.Project
+			q.Project, q.Self = x.Project, os.Getenv("CLAUDE_CODE_SESSION_ID")
 			if r, err = Deep(db, q, store.Types); err != nil {
 				t.Fatal(x.Q, err)
 			}

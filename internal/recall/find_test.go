@@ -241,3 +241,17 @@ func TestFindMatchesIDsWhole(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// Review 5d5fee4: the session list says when it is cut; words with sessions among other kinds are not refused.
+func TestFindSessionListSaysMore(t *testing.T) {
+	db := open(t)
+	for i := 0; i <= maxHits; i++ {
+		exec(t, db, "insert into session (id, project, started) values (?, 'demo', '2026-10-16T11:00:00.000Z')", fmt.Sprint("s", i))
+	}
+	if r := find(t, db, Query{Kinds: []string{"session"}}); len(r.Hits) != maxHits || !r.More {
+		t.Fatal(len(r.Hits), r.More)
+	}
+	if _, err := Find(db, Query{Text: "deploy", Kinds: []string{"session", "decision"}, Now: now}, store.Types); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -393,7 +393,7 @@ func findCmd(home string, args []string, now time.Time, stdout, stderr io.Writer
 	defer db.Close()
 	search := recall.Find
 	if *deep {
-		search = recall.Deep
+		search, q.Self = recall.Deep, os.Getenv("CLAUDE_CODE_SESSION_ID")
 	}
 	res, err := search(db, q, store.Types)
 	if err != nil {

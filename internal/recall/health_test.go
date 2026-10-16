@@ -100,6 +100,14 @@ func TestHealthFlagsUnreadAndBehindFiles(t *testing.T) {
 	if !strings.Contains(txt, "PROBLEM transcript: 1 never read") || !strings.Contains(txt, "PROBLEM bus: 1 behind") {
 		t.Fatal(txt)
 	}
+	// A replaced file (another inode) is read from its start: no longer than the cursor, it is still behind.
+	testutil.Write(t, busFile, "line\n")
+	os.Chtimes(busFile, old, old)
+	exec(t, db, "update coverage set inode = 1 where source = 'bus'")
+	if txt = health(t, db, home, exp).Text(); !strings.Contains(txt, "bus: 1 behind") {
+		t.Fatal(txt)
+	}
+	exec(t, db, "update coverage set inode = null where source = 'bus'")
 	// A partial last line (no newline yet) waits by design: not behind.
 	testutil.Write(t, busFile, "line\nhalf")
 	os.Chtimes(busFile, old, old)
@@ -122,5 +130,16 @@ func TestHealthFlagsOldHeartbeatMissingBackupAndAStaleRun(t *testing.T) {
 	os.Remove(filepath.Join(home, "heartbeat"))
 	if txt = health(t, db, home, exp).Text(); !strings.Contains(txt, "PROBLEM no heartbeat") {
 		t.Fatal(txt)
+	}
+}
+
+// Review 5d5fee4: what Expected could not list shows as a problem, and health still reports the rest.
+func TestHealthShowsWhatCouldNotBeListed(t *testing.T) {
+	db, home, exp := healthy(t)
+	exp.Problems = []string{"transcript root /gone cannot be read"}
+	h := health(t, db, home, exp)
+	if h.Status != "partial" || !strings.Contains(h.Text(), "PROBLEM transcript root /gone cannot be read") ||
+		!strings.Contains(h.Text(), "bus 1/1 read") {
+		t.Fatal(h.Text())
 	}
 }

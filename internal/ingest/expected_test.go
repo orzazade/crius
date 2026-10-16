@@ -3,6 +3,7 @@ package ingest
 import (
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/orzazade/crius/internal/testutil"
@@ -14,7 +15,7 @@ func TestExpectedListsWhatARunShouldRead(t *testing.T) {
 	tx := filepath.Join(root, "tx")
 	repo := filepath.Join(root, "repo")
 	team := filepath.Join(root, "team.log")
-	testutil.Write(t, filepath.Join(home, "projects.toml"), "[transcripts]\npersonal = \""+tx+"\"\n"+
+	testutil.Write(t, filepath.Join(home, "projects.toml"), "[transcripts]\npersonal = \""+tx+"\"\nwork = \""+root+"/gone\"\n"+
 		"[projects.demo]\npersona = \"personal\"\naccounts = [\"max\"]\ncwd = []\nrepos = [\""+repo+"\"]\nteam_logs = []\nartifact_dirs = []\n"+
 		"[projects.lab]\npersona = \"personal\"\naccounts = [\"max\"]\ncwd = []\nrepos = []\nteam_logs = [\""+team+"\"]\nartifact_dirs = []\n"+
 		"[projects.idle]\npersona = \"personal\"\naccounts = [\"max\"]\ncwd = []\nrepos = []\nteam_logs = []\nartifact_dirs = []\n")
@@ -35,5 +36,9 @@ func TestExpectedListsWhatARunShouldRead(t *testing.T) {
 	}
 	if !reflect.DeepEqual(exp.Files, want) || !reflect.DeepEqual(exp.Teams, []string{"demo", "lab"}) {
 		t.Fatalf("%v\n%v", exp.Files, exp.Teams)
+	}
+	// Review 5d5fee4: a root that cannot be read is a problem to report, not a reason to report nothing.
+	if len(exp.Problems) != 1 || !strings.Contains(exp.Problems[0], "gone") {
+		t.Fatal(exp.Problems)
 	}
 }

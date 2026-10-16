@@ -361,11 +361,13 @@ func TestHealthExitCodes(t *testing.T) {
 
 // Step 4 P5: --deep searches one project's transcripts; past 30 days it is expired (exit 5), not "no match".
 func TestFindDeepExitCodes(t *testing.T) {
-	findStore(t)
-	if rc, _ := run("find", "mail", "--deep"); rc != exitUsage {
-		t.Fatal(rc)
+	findStore(t, "x")
+	for _, args := range [][]string{{"--deep", "--project", "demo"}, {"mail", "--deep", "--project", "dmeo"}} {
+		if rc, out := run(append([]string{"find"}, args...)...); rc != exitUsage {
+			t.Fatal(args, rc, out)
+		}
 	}
-	if rc, out := run("find", "mail", "--deep", "--project", "demo"); rc != 0 || !strings.Contains(out, "transcripts of project demo") {
+	if rc, out := run("find", "mail", "--deep", "--project", "demo"); rc != 0 || !strings.Contains(out, "transcripts of all projects, demo first") {
 		t.Fatal(rc, out)
 	}
 	if rc, out := run("find", "mail", "--deep", "--project", "demo", "--since", "45d"); rc != exitExpired || !strings.Contains(out, "older than 30 days") {
