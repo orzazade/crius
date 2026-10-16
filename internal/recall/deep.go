@@ -34,7 +34,7 @@ var deepTimeout = 2 * time.Minute
 // match (the shortest stretch holding every word) comes first; the asked project only breaks a tie, then the newest
 // (Crius 10-17: a project-first rank let a project that talks a lot push a tight match elsewhere out). The asking
 // session ranks last: it holds the question itself. Files are read asked project first, then the others, then the
-// asking session, each part newest first, so a time limit cuts the least likely files. It runs in Go, not rg, so the CLI needs nothing on PATH. A
+// asking session, each part newest first; a time limit cuts the files read last, and the answer says partial. It runs in Go, not rg, so the CLI needs nothing on PATH. A
 // window that starts before the 30 days is expired: it shows the durable rows left, plus what the retained part of
 // the window still has.
 func Deep(db *sql.DB, q Query, busTypes map[string]bool) (*Result, error) {
@@ -84,7 +84,7 @@ func Deep(db *sql.DB, q Query, busTypes map[string]bool) (*Result, error) {
 	}
 	first := ""
 	if q.Project != "" {
-		first = ", " + q.Project + " first"
+		first = ", " + q.Project + " breaks ties"
 	}
 	res.Scope = fmt.Sprintf("transcripts of all projects%s (%d files, since %s UTC)", first, len(files),
 		from.UTC().Format("2006-01-02 15:04"))

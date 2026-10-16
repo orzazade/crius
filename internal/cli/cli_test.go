@@ -392,7 +392,7 @@ func TestFindDeepExitCodes(t *testing.T) {
 			t.Fatal(args, rc, out)
 		}
 	}
-	if rc, out := run("find", "mail", "--deep", "--project", "demo"); rc != 0 || !strings.Contains(out, "transcripts of all projects, demo first") {
+	if rc, out := run("find", "mail", "--deep", "--project", "demo"); rc != 0 || !strings.Contains(out, "transcripts of all projects, demo breaks ties") {
 		t.Fatal(rc, out)
 	}
 	if rc, out := run("find", "mail", "--deep", "--project", "demo", "--since", "45d"); rc != exitExpired || !strings.Contains(out, "older than 30 days") {

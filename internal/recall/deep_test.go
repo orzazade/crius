@@ -63,7 +63,7 @@ func TestDeepCitesAllProjectsTheAskedOneFirst(t *testing.T) {
 		strings.Contains(h.Text, "FFFF") || !strings.Contains(h.Text, "[redacted]") {
 		t.Fatalf("%+v", h)
 	}
-	if r.Hits[0].ID != "a1" || !strings.Contains(r.Text(), "transcripts of all projects, falcon first") {
+	if r.Hits[0].ID != "a1" || !strings.Contains(r.Text(), "transcripts of all projects, falcon breaks ties") {
 		t.Fatal(r.Text())
 	}
 	if r = deep(t, db, Query{Text: "mail stopped", Project: "trading"}); r.Hits[0].ID != "x1" || len(r.Hits) != 4 {
