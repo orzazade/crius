@@ -26,6 +26,7 @@ const sources = "events, decisions, items, artifacts, commits, sessions"
 type Query struct {
 	Text, Project   string
 	Since           time.Time // zero: all time (--waiting: the last 24 h)
+	Until           time.Time // zero: up to now; the eval asks the store as it was when a question was written
 	Kinds           []string
 	Active, Waiting bool
 	Now             time.Time
@@ -187,6 +188,9 @@ func Find(db *sql.DB, q Query, busTypes map[string]bool) (*Result, error) {
 	if !q.Since.IsZero() {
 		where, args = append(where, norm+" >= ?"), append(args, stamp(q.Since))
 	}
+	if !q.Until.IsZero() {
+		where, args = append(where, norm+" <= ?"), append(args, stamp(q.Until))
+	}
 	if len(q.Kinds) > 0 {
 		where = append(where, "kind in ("+strings.TrimSuffix(strings.Repeat("?,", len(q.Kinds)), ",")+")")
 		for _, k := range q.Kinds {
@@ -306,6 +310,9 @@ func session(ctx context.Context, conn *sql.Conn, q Query, tok, match string, re
 	}
 	if !q.Since.IsZero() {
 		cond, args = cond+" and started >= ?", append(args, stamp(q.Since))
+	}
+	if !q.Until.IsZero() {
+		cond, args = cond+" and started <= ?", append(args, stamp(q.Until))
 	}
 	if len(q.Kinds) > 0 && !slices.Contains(q.Kinds, "session") {
 		return nil

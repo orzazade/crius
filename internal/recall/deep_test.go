@@ -254,7 +254,7 @@ func TestDeepSaysWhatItSkipped(t *testing.T) {
 		t.Fatal(r.Status, r.Reasons)
 	}
 	var c []cand
-	_, gone, err := deepFile(deepSrc{path: p + ".gone"}, [][]byte{[]byte("x")}, now, time.Now().Add(time.Minute), &c, new(int))
+	_, gone, err := deepFile(deepSrc{path: p + ".gone"}, [][]byte{[]byte("x")}, now, time.Time{}, time.Now().Add(time.Minute), &c, new(int))
 	if err != nil || !gone {
 		t.Fatal(gone, err)
 	}

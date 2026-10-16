@@ -92,7 +92,7 @@ func Deep(db *sql.DB, q Query, busTypes map[string]bool) (*Result, error) {
 	var best []cand
 	total, gone := 0, 0
 	for i, f := range files {
-		stopped, g, err := deepFile(f, terms, from, deadline, &best, &total)
+		stopped, g, err := deepFile(f, terms, from, q.Until, deadline, &best, &total)
 		if err != nil {
 			return nil, err
 		}
@@ -119,7 +119,7 @@ func Deep(db *sql.DB, q Query, busTypes map[string]bool) (*Result, error) {
 		res.Status = "expired"
 		res.Reasons = append(res.Reasons, fmt.Sprintf("transcripts older than 30 days are gone (asked since %s); "+
 			"durable rows below", q.Since.UTC().Format("2006-01-02")))
-		durable, err := Find(db, Query{Text: q.Text, Since: q.Since, Now: q.Now}, busTypes)
+		durable, err := Find(db, Query{Text: q.Text, Since: q.Since, Until: q.Until, Now: q.Now}, busTypes)
 		if err != nil {
 			return nil, err
 		}
@@ -294,7 +294,7 @@ type deepLine struct {
 
 // deepFile counts the matching messages of one file and keeps the best; stopped is true when the deadline passed,
 // gone when the file went away after it was listed.
-func deepFile(src deepSrc, terms [][]byte, from, deadline time.Time, best *[]cand, total *int) (stopped, gone bool, err error) {
+func deepFile(src deepSrc, terms [][]byte, from, until, deadline time.Time, best *[]cand, total *int) (stopped, gone bool, err error) {
 	path := src.path
 	f, err := os.Open(path)
 	if err != nil {
@@ -311,7 +311,7 @@ func deepFile(src deepSrc, terms [][]byte, from, deadline time.Time, best *[]can
 		}
 		line, err := r.ReadBytes('\n')
 		if len(line) > 0 && containsAll(bytes.ToLower(line), terms) {
-			if c, ok := deepCite(src, line, terms, from); ok {
+			if c, ok := deepCite(src, line, terms, from, until); ok {
 				*total++
 				keep(best, c, deepCitation)
 			}
@@ -334,14 +334,15 @@ func containsAll(s []byte, terms [][]byte) bool {
 	return true
 }
 
-// deepCite makes a candidate of a user or assistant message whose own text (not its metadata) holds every term.
-func deepCite(src deepSrc, line []byte, terms [][]byte, from time.Time) (cand, bool) {
+// deepCite makes a candidate of a user or assistant message of the window whose own text (not its metadata) holds
+// every term.
+func deepCite(src deepSrc, line []byte, terms [][]byte, from, until time.Time) (cand, bool) {
 	var l deepLine
 	if json.Unmarshal(line, &l) != nil || (l.Type != "user" && l.Type != "assistant") {
 		return cand{}, false
 	}
 	ts, err := time.Parse(time.RFC3339Nano, l.Timestamp)
-	if err != nil || ts.Before(from) {
+	if err != nil || ts.Before(from) || !until.IsZero() && ts.After(until) {
 		return cand{}, false
 	}
 	raw := messageText(l.Message.Content)
