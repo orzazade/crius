@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>space.scifilab.crius.watchdog</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>@HOME@/.crius/bin/crius-watchdog</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HOME</key>
+		<string>@HOME@</string>
+	</dict>
+	<key>StartInterval</key>
+	<integer>300</integer>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>@HOME@/.crius/logs/watchdog.log</string>
+	<key>StandardErrorPath</key>
+	<string>@HOME@/.crius/logs/watchdog.log</string>
+</dict>
+</plist>

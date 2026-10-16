@@ -174,7 +174,7 @@ func (r *runner) transcriptFile(rt root, path string) error {
 		var first, last, cwd, title string
 		unknown := map[string]int{}
 		bad := 0
-		next, _, n, err := scanLines(path, c, func(pos int64, raw []byte) error {
+		next, n, err := scanLines(path, c, func(pos int64, raw []byte) error {
 			var o txLine
 			if err := json.Unmarshal(raw, &o); err != nil {
 				bad++

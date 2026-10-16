@@ -178,22 +178,22 @@ func inodeOf(fi os.FileInfo) int64 {
 
 // scanLines calls fn for each complete line after the cursor; a line without its newline is left for later.
 // It rescans from 0 when the file was replaced (new inode) or truncated (shorter than the cursor).
-func scanLines(path string, c cursor, fn func(pos int64, line []byte) error) (next cursor, rescanned bool, n int, err error) {
+func scanLines(path string, c cursor, fn func(pos int64, line []byte) error) (next cursor, n int, err error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return c, false, 0, err
+		return c, 0, err
 	}
 	defer f.Close()
 	fi, err := f.Stat()
 	if err != nil {
-		return c, false, 0, err
+		return c, 0, err
 	}
 	ino, offset := inodeOf(fi), c.offset
 	if ino != c.inode || fi.Size() < offset {
-		offset, rescanned = 0, true
+		offset = 0
 	}
 	if _, err := f.Seek(offset, io.SeekStart); err != nil {
-		return c, false, 0, err
+		return c, 0, err
 	}
 	br := bufio.NewReaderSize(f, 1<<20)
 	pos := offset
@@ -203,15 +203,15 @@ func scanLines(path string, c cursor, fn func(pos int64, line []byte) error) (ne
 			break
 		}
 		if err != nil {
-			return c, false, n, err
+			return c, n, err
 		}
 		if err := fn(pos, line); err != nil {
-			return c, false, n, err
+			return c, n, err
 		}
 		pos += int64(len(line))
 		n++
 	}
-	return cursor{inode: ino, offset: pos, state: c.state, sha: c.sha}, rescanned, n, nil
+	return cursor{inode: ino, offset: pos, state: c.state, sha: c.sha}, n, nil
 }
 
 // inTx runs fn in one transaction: commit on success, rollback on error.
