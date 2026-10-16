@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Gap: a sample this far from a request (both sides) leaves the request unmeasured, and open sessions with no sample
@@ -686,34 +687,55 @@ func (r *Report) Text() string {
 	return b.String()
 }
 
-// PaceText is the pace push (design §8): speed, top burners, one suggestion.
-func (r *Report) PaceText() string {
-	t := fmt.Sprintf("quota pace high: 7d %.0f%% on day %d of 7 (%.1f%%/day", r.SevenPct, r.Day, r.PerDay())
+// busLine is the longest alert the bus keeps (store.MaxLen); a longer one is cut at the end.
+const busLine = 300
+
+// fit joins a push's head (names and numbers that can run long) and its tail (what the push must say: the Appxite
+// rule, the enterprise $), shortening the head so the tail is never cut.
+func fit(head, tail string) string {
+	room := busLine - utf8.RuneCountInString(tail) - 1
+	if h := []rune(head); len(h) > room {
+		head = string(h[:max(0, room-1)]) + "…"
+	}
+	return head + " " + tail
+}
+
+// pace is the speed part of the pace and runout pushes.
+func (r *Report) pace() string {
+	t := fmt.Sprintf("7d %.0f%% on day %d of 7 (%.1f%%/day", r.SevenPct, r.Day, r.PerDay())
 	if r.AvgPerDay > 0 && r.PerDay() > r.AvgPerDay {
 		t += fmt.Sprintf(", faster than the 7-day average %.1f%%/day", r.AvgPerDay)
 	}
-	t += ")"
-	t += " · top burners: " + list(r.Shares, r.MaxUSD, 2)
-	if len(r.Shares) > 0 {
-		t += " · suggestion: slow " + r.Shares[0].Project + " (fewer parallel sessions, cheaper helpers) until the reset"
+	return t + ")"
+}
+
+func (r *Report) suggestion() string {
+	if len(r.Shares) == 0 {
+		return ""
 	}
-	return t + ". " + r.entWeek()
+	return " · suggestion: slow " + r.Shares[0].Project + " (fewer parallel sessions, cheaper helpers) until the reset"
+}
+
+// PaceText is the pace push (design §8): speed, top burners, one suggestion.
+func (r *Report) PaceText() string {
+	return fit("quota pace high: "+r.pace()+" · top burners: "+list(r.Shares, r.MaxUSD, 2)+r.suggestion()+".",
+		r.entWeek())
 }
 
 // RunoutText is the push when the subscription will be used up before the reset at this pace (design §8). It also
-// carries the pace facts, so it can stand for the pace push when both are due in one run.
+// carries the pace facts and suggestion, so it can stand for the pace push when both are due in one run.
 func (r *Report) RunoutText(enterpriseOK map[string]bool) string {
-	return fmt.Sprintf("quota runs out ~%s (7d %.0f%% on day %d, %.1f%%/day; reset %s) · top burner: %s. Then only"+
-		" Appxite work (%s) may continue, on the enterprise account; personal and scifi work waits for the reset. %s",
-		when(r.Runout()), r.SevenPct, r.Day, r.PerDay(), when(r.Reset), list(r.Shares[:min(1, len(r.Shares))], r.MaxUSD, 1),
-		strings.Join(okList(enterpriseOK), ", "), r.entWeek())
+	return fit(fmt.Sprintf("quota runs out ~%s, reset %s: %s · top burner: %s%s.", when(r.Runout()), when(r.Reset),
+		r.pace(), list(r.Shares[:min(1, len(r.Shares))], r.MaxUSD, 1), r.suggestion()),
+		fmt.Sprintf("Then only Appxite work (%s) may continue, on the enterprise account; personal and scifi work"+
+			" waits for the reset. %s", strings.Join(okList(enterpriseOK), ", "), r.entWeek()))
 }
 
 // UsedUpText is the push when the subscription is used up (design §8, D1).
 func (r *Report) UsedUpText(enterpriseOK map[string]bool) string {
-	return fmt.Sprintf("quota used up: 7d %.0f%% until %s. Only Appxite work (%s) may continue, on the Appxite"+
-		" enterprise account; personal and scifi work waits until the reset. %s",
-		r.SevenPct, when(r.Reset), strings.Join(okList(enterpriseOK), ", "), r.entWeek())
+	return fit(fmt.Sprintf("quota used up: 7d %.0f%% until %s.", r.SevenPct, when(r.Reset)),
+		fmt.Sprintf("Only Appxite work (%s) may continue, on the Appxite enterprise account; personal and scifi"+
+			" work waits until the reset. %s", strings.Join(okList(enterpriseOK), ", "), r.entWeek()))
 }
 
 // entWeek is the enterprise $ of the week for a push (the total: by project is in `crius-rec quota`, and a push must
