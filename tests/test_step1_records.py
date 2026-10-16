@@ -132,16 +132,18 @@ class CliTest(TempCase):
         return rc, out.getvalue()
 
     def test_init_record_and_leak_test(self):
+        # Built at runtime: the leak test (rightly) fails if a tracked file holds a literal id from the store.
+        slug = "zz" + "cli"
         self.assertEqual(self.run_cli("init")[0], 0)
-        rc, out = self.run_cli("record", "item", "--project", "demo", "--title", "t", "--kind", "code",
+        rc, out = self.run_cli("record", "item", "--project", slug, "--title", "t", "--kind", "code",
                                "--criteria", "CI pass", "--criteria", "codex review")
-        self.assertEqual((rc, out.strip()), (0, "demo#1"))
-        rc, out = self.run_cli("record", "decision", "--project", "demo", "--title", "t", "--why", "w", "--by", "crius")
-        self.assertEqual((rc, out.strip()), (0, "demo-D1"))
-        rc, out = self.run_cli("record", "bus", "--project", "demo", "--role", "leader", "--type", "DONE",
-                               "--text", "item=demo#1 sha=abc1234 done")
+        self.assertEqual((rc, out.strip()), (0, slug + "#1"))
+        rc, out = self.run_cli("record", "decision", "--project", slug, "--title", "t", "--why", "w", "--by", "crius")
+        self.assertEqual((rc, out.strip()), (0, slug + "-D1"))
+        rc, out = self.run_cli("record", "bus", "--project", slug, "--role", "leader", "--type", "DONE",
+                               "--text", f"item={slug}#1 sha=abc1234 done")
         self.assertEqual(rc, 0)
-        self.assertEqual(len((self.home / "bus" / "demo.log").read_text().splitlines()), 2)
+        self.assertEqual(len((self.home / "bus" / f"{slug}.log").read_text().splitlines()), 2)
         rc, out = self.run_cli("leak-test", "--repo", str(REPO))
         self.assertEqual(rc, 0, out)
 
