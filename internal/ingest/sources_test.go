@@ -225,3 +225,41 @@ func TestASymlinkedArtifactFolderIsWalked(t *testing.T) {
 	x.run()
 	eq(t, x.q("select title from artifact"), [][]string{{"Linked plan"}})
 }
+
+// Codex P1 twice on the Go version (bus role and Supersedes, then tag values, cwd, model, agent type): fields were
+// redacted one insert at a time, so each new field could miss it. This plants a secret in every text field the
+// ingest reads and scans every column of every table, so a field added later is covered too.
+func TestAPlantedSecretReachesNoColumn(t *testing.T) {
+	root := t.TempDir()
+	repo := testutil.GitRepo(t, filepath.Join(root, "repo"))
+	arts := filepath.Join(root, "docs")
+	teamLog := filepath.Join(root, "BUILD-LOG.md")
+	x := newIC(t, cfg{repo: repo, artifactDir: arts, teamLogs: teamLog})
+	slugTok := "sk-" + strings.Repeat("q", 30) // passes the tag's slug checks
+	tok := "ghp_" + strings.Repeat("Z", 36)
+	tag := "[crius account=max project=demo role=" + slugTok + " item=" + slugTok + "#1]"
+	a := assistant(A{Req: "req_1", TS: "2026-10-16T09:00:01Z", Model: "claude-" + tok})
+	testutil.Write(t, x.tx, lines(prompt("u1", "2026-10-16T09:00:00Z", tag, "", "/work/demo/"+tok), a,
+		map[string]any{"type": "custom-title", "customTitle": "t " + tok}))
+	sub := filepath.Join(x.personal, "-work-demo", x.sid, "subagents")
+	testutil.Write(t, filepath.Join(sub, "agent-1.jsonl"), lines(assistant(A{Req: "req_s", TS: "2026-10-16T09:00:02Z", Sidechain: true})))
+	testutil.Write(t, filepath.Join(sub, "agent-1.meta.json"), `{"agentType": "`+tok+`"}`)
+	testutil.Write(t, filepath.Join(x.home, "bus", "demo.log"), "2026-10-16T09:20 DONE demo:"+tok+" -> crius — "+tok+" path="+tok+"\n")
+	testutil.Write(t, teamLog, "09:20 NEED "+tok+" -> leader — "+tok+"\n")
+	testutil.Write(t, filepath.Join(x.home, "state", "demo", "DECISIONS.md"), "## demo-D1 · 2026-10-16\nDecision: "+tok+
+		"\nWhy: "+tok+"\nDecided by: "+tok+"\nSupersedes: "+tok+"\nReason: "+tok+"\nRefs: "+tok+" · taint: no\n")
+	testutil.Write(t, filepath.Join(arts, "plan.md"), "# "+tok+"\n## "+tok+"\n")
+	testutil.Write(t, filepath.Join(repo, "f.txt"), "1\n")
+	testutil.Git(t, repo, "add", "-A")
+	testutil.Git(t, repo, "commit", "-q", "-m", tok, "-m", tok)
+	x.run()
+	for _, tb := range x.q("select name from sqlite_master where type='table'") {
+		for _, row := range x.q(`select * from "` + tb[0] + `"`) {
+			for _, v := range row {
+				if strings.Contains(v, strings.Repeat("Z", 20)) || strings.Contains(v, strings.Repeat("q", 20)) {
+					t.Errorf("%s: secret stored: %s", tb[0], v)
+				}
+			}
+		}
+	}
+}

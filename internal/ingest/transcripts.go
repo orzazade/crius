@@ -100,8 +100,8 @@ type block struct {
 }
 
 type reqAgg struct {
-	first, last, model, uuid       string
-	in, out, cr, cw, cw1h, cw5m    int64
+	first, last, model, uuid    string
+	in, out, cr, cw, cw1h, cw5m int64
 }
 
 func isObject(raw json.RawMessage) bool {
@@ -168,7 +168,7 @@ func (r *runner) transcriptFile(rt root, path string) error {
 		}
 		if b, err := os.ReadFile(strings.TrimSuffix(path, ".jsonl") + ".meta.json"); err == nil &&
 			json.Unmarshal(b, &meta) == nil && meta.AgentType != "" {
-			qsrc = "subagent:" + truncate(meta.AgentType, 40)
+			qsrc = "subagent:" + truncate(r.text(meta.AgentType), 40)
 		}
 	}
 	return r.inTx(func(tx *sql.Tx) error {
@@ -204,7 +204,7 @@ func (r *runner) transcriptFile(rt root, path string) error {
 						last = ts
 					}
 					if cwd == "" {
-						cwd = o.CWD
+						cwd = r.text(o.CWD)
 					}
 				}
 			}
@@ -226,9 +226,12 @@ func (r *runner) transcriptFile(rt root, path string) error {
 				} else if m.Usage != nil && req != "" && (sub || !o.IsSidechain) {
 					a := reqs[req]
 					if a == nil {
-						a = &reqAgg{first: ts, last: ts, model: m.Model, uuid: o.UUID}
+						a = &reqAgg{first: ts, last: ts, uuid: o.UUID}
 						reqs[req] = a
 						order = append(order, req)
+					}
+					if a.model == "" {
+						a.model = r.text(m.Model)
 					}
 					if ts != "" {
 						if a.first == "" || ts < a.first {
@@ -372,6 +375,9 @@ func (r *runner) userLine(tx *sql.Tx, o txLine, m txMessage, sid string, sub boo
 		return err
 	}
 	if tag := parseTag(text); tag != nil && ts != "" {
+		for k, v := range tag {
+			tag[k] = r.text(v) // the checks allow slugs, and a slug can look like a key
+		}
 		_, err := tx.Exec("insert or ignore into assignment (session, item, role, account, project, parent, from_ts,"+
 			" source) values (?,?,?,?,?,?,?,'launch')", sid, nullable(tag["item"]), tag["role"], tag["account"],
 			tag["project"], nullable(tag["parent"]), ts)
@@ -389,14 +395,15 @@ func upsertRequest(tx *sql.Tx, req, sid, qsrc, path string, a *reqAgg) error {
 		" tok_in=max(tok_in, excluded.tok_in), tok_out=max(tok_out, excluded.tok_out),"+
 		" tok_cache_read=max(tok_cache_read, excluded.tok_cache_read),"+
 		" tok_cache_write=max(tok_cache_write, excluded.tok_cache_write),"+
-		" tok_cw_1h=max(tok_cw_1h, excluded.tok_cw_1h), tok_cw_5m=max(tok_cw_5m, excluded.tok_cw_5m)",
+		" tok_cw_1h=max(tok_cw_1h, excluded.tok_cw_1h), tok_cw_5m=max(tok_cw_5m, excluded.tok_cw_5m),"+
+		" model=coalesce(nullif(request.model, ''), excluded.model)",
 		req, sid, nullable(a.first), nullable(a.last), a.model, qsrc, a.in, a.out, a.cr, a.cw, a.cw1h, a.cw5m, path,
 		nullable(a.uuid)); err != nil {
 		return err
 	}
 	var model string
 	var in, out, cr, cw, c1, c5 int64
-	if err := tx.QueryRow("select model, tok_in, tok_out, tok_cache_read, tok_cache_write, tok_cw_1h, tok_cw_5m"+
+	if err := tx.QueryRow("select coalesce(model, ''), tok_in, tok_out, tok_cache_read, tok_cache_write, tok_cw_1h, tok_cw_5m"+
 		" from request where request_id=?", req).Scan(&model, &in, &out, &cr, &cw, &c1, &c5); err != nil {
 		return err
 	}
@@ -428,6 +435,9 @@ func (r *runner) rollUp(tx *sql.Tx, sid string) error {
 		as = append(as, a)
 	}
 	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
 	for i, a := range as {
 		source, to := "switch", any(nil)
 		if i == 0 {
@@ -479,6 +489,9 @@ func (r *runner) rollUp(tx *sql.Tx, sid string) error {
 		counts[k] = n
 	}
 	crows.Close()
+	if err := crows.Err(); err != nil {
+		return err
+	}
 	var modelMain sql.NullString
 	var peak sql.NullInt64
 	if err := tx.QueryRow("select (select model from request where session=?1 and query_source='main' group by model"+

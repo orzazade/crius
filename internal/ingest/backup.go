@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/orzazade/crius/internal/store"
@@ -64,7 +65,7 @@ func BackupIfDue(home string, now time.Time) (path string, err error) {
 	name := "record-" + now.Format("2006-01-02") + ".db"
 	dest := filepath.Join(dir, name+".gz")
 	if _, err := os.Stat(dest); err == nil {
-		return "", nil
+		return "", syncDir(dir) // a sync that failed after the rename is retried here
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return "", err
 	}
@@ -76,7 +77,27 @@ func BackupIfDue(home string, now time.Time) (path string, err error) {
 			os.Remove(gzTmp)
 		}
 	}()
-	os.Remove(snap) // left by a crash; VACUUM INTO needs a free name
+	// Temp files left by a crash (any day) would block this run or stay forever. The caller holds the writer
+	// lock, so no other backup is writing them.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", err
+	}
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".tmp") && e.Type().IsRegular() {
+			if err := os.Remove(filepath.Join(dir, e.Name())); err != nil {
+				return "", err
+			}
+		}
+	}
+	// Made here with mode 600, so the raw copy is never readable by others; VACUUM INTO accepts an empty file.
+	f, err := os.OpenFile(snap, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		return "", err
+	}
 	db, err := store.Open(home)
 	if err != nil {
 		return "", err
@@ -102,14 +123,18 @@ func BackupIfDue(home string, now time.Time) (path string, err error) {
 	zw := gzip.NewWriter(out)
 	_, err = io.Copy(zw, in)
 	in.Close()
-	err = errors.Join(err, zw.Close(), out.Close())
+	// On disk before the rename, so a power cut cannot leave a short file under the final name.
+	err = errors.Join(err, zw.Close(), out.Sync(), out.Close())
 	if err != nil {
 		return "", err
 	}
 	if err := os.Rename(gzTmp, dest); err != nil {
 		return "", err
 	}
-	entries, err := os.ReadDir(dir)
+	if err := syncDir(dir); err != nil {
+		return dest, err
+	}
+	entries, err = os.ReadDir(dir)
 	if err != nil {
 		return dest, err
 	}
@@ -128,6 +153,14 @@ func BackupIfDue(home string, now time.Time) (path string, err error) {
 		}
 	}
 	return dest, nil
+}
+
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	return errors.Join(d.Sync(), d.Close())
 }
 
 func integrityOK(path string) error {

@@ -12,9 +12,9 @@ import (
 )
 
 type wc struct {
-	t                 *testing.T
-	home, tx, hb      string
-	now               time.Time
+	t            *testing.T
+	home, tx, hb string
+	now          time.Time
 }
 
 func newWC(t *testing.T) *wc {

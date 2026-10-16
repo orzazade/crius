@@ -35,7 +35,21 @@ Always use `GOTOOLCHAIN=local` (Go 1.25.6). Deps pinned: modernc.org/sqlite v1.5
   1 P1 + 6 P2, all fixed red first (unreadable root = error, future stamp/wake = error, symlinked roots resolved —
   same class fixed in ingest transcript roots and artifact folders, missing-heartbeat baseline = any transcript,
   fresh stamp re-arms, wake error posted via run() in cmd/crius-watchdog, installer refuses odd path chars).
-  Part 3 (core) timed out whole; re-running as 3a transcripts.go, 3b ingest/redact/config/prices, 3c backup.go.
+  Part 3 (core) timed out whole; split into 3a/3b/3c. 3c backup: 1 P1 + 2 P2 fixed (fsync file and folder,
+  stale *.tmp swept, snapshot 0600); no red test for fsync or mode (not visible in a test). 3a transcripts: 1 P1
+  (tag values, cwd, model, agentType unredacted: second time for this class, so TestAPlantedSecretReachesNoColumn
+  plants a secret in every input field and scans every column) + 1 P2 (empty first model) fixed red first; P3
+  late subagent .meta.json declined (written at agent start). 3b core: short passwords kept (P1), rows.Err()
+  unchecked, Main output unredacted (now a redacting writer), cache read 0.1x for every model (P2) - all fixed
+  red first; alert duplicate after a crash declined (at-least-once by design). Prices now from the claude-api
+  reference (2026-10-06): cache read 0.05x Opus 5.5, 0.025x Fable/Mythos 5.1; Opus 4.0/4.1/4.5 and Sonnet
+  4.0/4.5 unpriced (no confirmed price; the store has none). A price-table change reprices every stored row once.
+  Real store after repricing: $20,688.88 list (was $31,124 at 0.1x). review-1016 used 0.1x too, so its cost is
+  high by the same amount - step 6's 2% check must compare like with like.
+  The root-symlink fix re-read 1633 files once (~/.claude-personal -> ~/.claude); keys are uuid / request id,
+  so no duplicate rows; 1610 old-spelling coverage rows are orphaned and unread.
+  Re-review of these fixes: 1 P1 (unterminated quoted value kept) + 2 P2 (NULL model stopped every run at
+  reprice; failed folder sync after rename never retried) - all fixed red first. go test: 122 PASS / 0 FAIL.
 - [ ] 9: commit, clean-worktree proof, install launchd, live drill, DONE line, STOP.
 
 ## Next

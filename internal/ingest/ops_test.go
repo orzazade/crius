@@ -224,3 +224,83 @@ func TestListCost(t *testing.T) {
 		t.Fatal("priced an unknown model")
 	}
 }
+
+// Codex P2 on the Go version: a temp file left by a crash blocked every retry, and older ones stayed forever.
+func TestTempFilesLeftByACrashAreCleanedAndDoNotBlock(t *testing.T) {
+	x := newIC(t, cfg{})
+	seedDB(t, x.home)
+	dir := filepath.Join(x.home, "backup")
+	for _, n := range []string{"record-2026-10-16.db.gz.tmp", "record-2026-10-15.db.gz.tmp", ".record-2026-10-15.db.tmp"} {
+		testutil.Write(t, filepath.Join(dir, n), "half")
+	}
+	if _, err := BackupIfDue(x.home, time.Date(2026, 10, 16, 4, 0, 0, 0, time.Local)); err != nil {
+		t.Fatal(err)
+	}
+	eq(t, listDir(t, dir), []string{"record-2026-10-16.db.gz"})
+}
+
+// Codex P2 on the Go version: every model read cache at 0.1x input, and Opus 4.0/4.1 took Opus 4.5's price.
+// Rates from the bundled pricing reference (2026-10-06): cache reads 0.05x on Opus 5.5, 0.025x on Fable/Mythos 5.1.
+func TestCacheReadRatesPerModelAndNoGuessedPrice(t *testing.T) {
+	for model, want := range map[string]float64{"claude-opus-5-5": 0.2, "claude-fable-5-1": 0.25, "claude-mythos-5-1": 0.25,
+		"claude-fable-5": 1, "claude-sonnet-5-5": 0.2, "claude-opus-4-8": 0.5} {
+		if c, ok := ListCost(model, 0, 1_000_000, 0, 0, 0, 0); !ok || c != want {
+			t.Errorf("%s: %v %v, want %v", model, c, ok, want)
+		}
+	}
+	for _, m := range []string{"claude-opus-4-1-20250805", "claude-opus-4-20250514"} {
+		if _, ok := ListCost(m, 1, 0, 0, 0, 0, 1); ok {
+			t.Errorf("%s priced without a confirmed price", m)
+		}
+	}
+}
+
+// Codex P1 on the Go version: a secret-named key needed a 20-character value, so short passwords were kept.
+func TestRedactShortValuesOfSecretNamedKeys(t *testing.T) {
+	for s, secret := range map[string]string{"password=hunter2": "hunter2", `{"password": "pa ss!"}`: "pa ss",
+		"PASSWD: s3cr3t": "s3cr3t", "api_key='k1'": "k1", "access_token: tok-9": "tok-9"} {
+		if got, n := Redact(s); n == 0 || strings.Contains(got, secret) {
+			t.Errorf("%q -> %q", s, got)
+		}
+	}
+	if got, n := Redact("the password is required"); n != 0 {
+		t.Fatal(got)
+	}
+}
+
+// Codex P2 on the Go version: Main printed config errors and backup warnings without redaction.
+func TestMainOutputIsRedacted(t *testing.T) {
+	x := newIC(t, cfg{})
+	secret := "sk-" + strings.Repeat("z", 30)
+	p := filepath.Join(x.home, "projects.toml")
+	b, _ := os.ReadFile(p)
+	testutil.Write(t, p, string(b)+"\n\""+secret+"\" = 1\n")
+	rc, out := mainRun(t, "--repo", testutil.RepoRoot(t))
+	if rc == 0 || !strings.Contains(out, "unknown keys") || strings.Contains(out, strings.Repeat("z", 20)) {
+		t.Fatal(rc, out)
+	}
+}
+
+// Codex P1 on the Go version: a value with no closing quote (a cut-off credential) was kept.
+func TestRedactAnUnterminatedQuotedValue(t *testing.T) {
+	for _, s := range []string{`password="abcdefghijklmnop`, `api_key: 'abcdefghijklmnop`} {
+		if got, n := Redact(s); n == 0 || strings.Contains(got, "abcdefghijklmnop") {
+			t.Errorf("%q -> %q", s, got)
+		}
+	}
+}
+
+// Codex P2 on the Go version: a failed folder sync after the rename was never retried, because the next run saw
+// the final file and returned success.
+func TestAnExistingBackupStillNeedsAFolderSync(t *testing.T) {
+	x := newIC(t, cfg{})
+	now := time.Date(2026, 10, 16, 4, 0, 0, 0, time.Local)
+	dir := filepath.Join(x.home, "backup")
+	os.MkdirAll(dir, 0o700)
+	testutil.Write(t, filepath.Join(dir, "record-2026-10-16.db.gz"), "x")
+	os.Chmod(dir, 0o300) // the folder cannot be opened, so it cannot be synced
+	defer os.Chmod(dir, 0o700)
+	if _, err := BackupIfDue(x.home, now); err == nil {
+		t.Fatal("a folder that cannot be synced passed as backed up")
+	}
+}

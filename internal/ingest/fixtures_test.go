@@ -130,10 +130,10 @@ artifact_dirs = %s
 }
 
 type ic struct {
-	t                    *testing.T
-	root, home           string
-	personal, work, sid  string
-	tx                   string
+	t                   *testing.T
+	root, home          string
+	personal, work, sid string
+	tx                  string
 }
 
 func newIC(t *testing.T, c cfg) *ic {
@@ -195,6 +195,9 @@ func (x *ic) q(query string, args ...any) [][]string {
 			}
 		}
 		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		x.t.Fatal(err)
 	}
 	return out
 }

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/orzazade/crius/internal/store"
 	"github.com/orzazade/crius/internal/testutil"
 )
 
@@ -278,4 +279,65 @@ func TestASymlinkedTranscriptRootIsRead(t *testing.T) {
 	testutil.Write(t, x.tx, lines(assistant(A{Req: "req_1", TS: "2026-10-16T09:00:00Z"})))
 	x.run()
 	eq(t, x.one("select count(*) from request"), "1")
+}
+
+// Codex P2 on the Go version: when a request's first record had no model, the model (and so the cost) stayed empty.
+func TestAModelArrivingInALaterRecordIsKept(t *testing.T) {
+	x := newIC(t, cfg{})
+	noModel := func(req, ts string) map[string]any {
+		a := assistant(A{Req: req, TS: ts})
+		a["message"].(map[string]any)["model"] = ""
+		return a
+	}
+	testutil.Write(t, x.tx, lines(noModel("req_a", "2026-10-16T09:00:00Z"), assistant(A{Req: "req_a", TS: "2026-10-16T09:00:01Z"}),
+		noModel("req_b", "2026-10-16T09:00:02Z")))
+	x.run()
+	appendFile(t, x.tx, lines(assistant(A{Req: "req_b", TS: "2026-10-16T09:00:03Z"})))
+	x.run()
+	eq(t, x.q("select request_id, model, cost_list_usd is not null from request order by 1"),
+		[][]string{{"req_a", "claude-opus-5-5", "1"}, {"req_b", "claude-opus-5-5", "1"}})
+}
+
+// A row priced before the price table changed kept its old cost, so the store mixed two price tables silently.
+func TestAPriceTableChangeRepricesStoredRowsOnce(t *testing.T) {
+	x := newIC(t, cfg{})
+	testutil.Write(t, x.tx, lines(assistant(A{Req: "req_1", TS: "2026-10-16T09:00:00Z", Out: 10, CR: 100})))
+	x.run()
+	want := x.one("select cost_list_usd from request")
+	db, err := store.Open(x.home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec("update request set cost_list_usd=999; update coverage set sha='old' where source='prices'"); err != nil {
+		t.Fatal(err)
+	}
+	x.run()
+	if got := x.one("select cost_list_usd from request"); got != want {
+		t.Fatalf("not repriced: %s, want %s", got, want)
+	}
+	if _, err := db.Exec("update request set cost_list_usd=999"); err != nil {
+		t.Fatal(err)
+	}
+	x.run() // same table: no full reprice on every run
+	if got := x.one("select cost_list_usd from request"); got != "999" && got != "999.0" {
+		t.Fatalf("repriced again: %s", got)
+	}
+}
+
+// Codex P2 on the Go version: one request with a NULL model made the reprice fail, and so every run.
+func TestARequestWithANullModelIsLeftUnpricedNotFatal(t *testing.T) {
+	x := newIC(t, cfg{})
+	db, err := store.Open(x.home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec("insert into request (request_id, session, model) values ('r0', 's0', null)"); err != nil {
+		t.Fatal(err)
+	}
+	x.run()
+	if got := x.one("select cost_list_usd is null from request where request_id='r0'"); got != "1" {
+		t.Fatal(got)
+	}
 }

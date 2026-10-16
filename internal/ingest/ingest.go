@@ -154,6 +154,10 @@ func (r *runner) flushAlerts() {
 		pending = append(pending, [2]string{k, t})
 	}
 	rows.Close()
+	if err := rows.Err(); err != nil {
+		r.warn(true, "cannot read the alert queue: %v", err)
+		return
+	}
 	for _, a := range pending {
 		line, err := store.FormatLine("ALERT", "crius", "ingest", a[1], "crius", time.Now())
 		if err == nil {
@@ -239,6 +243,9 @@ func Run(home string) (*Stats, error) {
 	}
 	defer db.Close()
 	db.SetMaxOpenConns(1)
+	if err := repriceIfChanged(db); err != nil {
+		return nil, fmt.Errorf("reprice: %w", err)
+	}
 	r := &runner{home: home, db: db, cfg: cfg, st: &Stats{UnknownTypes: map[string]int{}}, touched: map[string]bool{}}
 	started := utcNow()
 	r.ingestTranscripts()
@@ -270,7 +277,19 @@ func Run(home string) (*Stats, error) {
 }
 
 // Main is crius-ingest: leak test, writer lock, one run, the daily backup, and the heartbeat after a complete run.
+// redacting passes each write through Redact: everything Main prints may quote a config value or an error.
+type redacting struct{ w io.Writer }
+
+func (r redacting) Write(b []byte) (int, error) {
+	s, _ := Redact(string(b))
+	if _, err := io.WriteString(r.w, s); err != nil {
+		return 0, err
+	}
+	return len(b), nil
+}
+
 func Main(args []string, stdout, stderr io.Writer) int {
+	stdout, stderr = redacting{stdout}, redacting{stderr}
 	fs := flag.NewFlagSet("crius-ingest", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	repo := fs.String("repo", os.Getenv("CRIUS_REPO"), "the crius checkout the leak test scans")
@@ -289,7 +308,6 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	if problems := store.LeakProblems(home, *repo); len(problems) > 0 {
 		fmt.Fprintln(stderr, "unavailable: git-leak test failed; ingest refused")
 		for _, p := range problems {
-			p, _ = Redact(p)
 			fmt.Fprintf(stderr, "  %s\n", p)
 		}
 		return exitUnavailable
