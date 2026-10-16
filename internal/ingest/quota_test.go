@@ -505,6 +505,22 @@ func TestQuotaSpoolTimesWithOffsetsAreOrderedByInstant(t *testing.T) {
 	}
 }
 
+// Codex round 5 P2: a session whose requests have no time does not stop the quota checks.
+func TestQuotaRequestsWithoutTimeDoNotStopTheChecks(t *testing.T) {
+	x := quotaCase(t)
+	x.session("work", x.sid, "/work/demo", "", qNow.Add(-10*time.Minute))
+	x.run()
+	db, err := store.Open(x.home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("update request set ts_first=null, ts_last=null"); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	x.report()
+}
+
 func TestQuotaBadSpoolLineIsCountedNotSkippedQuietly(t *testing.T) {
 	x := quotaCase(t)
 	appendFile(t, filepath.Join(x.home, "spool", "quota.jsonl"), "{not json\n")

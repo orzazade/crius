@@ -225,7 +225,8 @@ func sessions(db Querier, p Projects) (out map[string]*sess, sampled map[string]
 			s.obs = append(s.obs, obs{t, rl})
 			return nil
 		}},
-		{"select session, min(coalesce(ts_first, ts_last)) from request group by session", func(r *sql.Rows) error {
+		{"select session, min(coalesce(ts_first, ts_last)) from request" +
+			" where coalesce(ts_first, ts_last) is not null group by session", func(r *sql.Rows) error {
 			var id, ts string
 			if err := r.Scan(&id, &ts); err != nil {
 				return err
