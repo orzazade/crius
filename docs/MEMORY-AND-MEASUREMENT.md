@@ -212,7 +212,9 @@ Known gaps:
 - Missing tag: the `-n` title files the session when it has the lead form `<project>[-build]: <role>` or
   `<project> · <role>` (`attrib_source=title`): the role is the part after the separator, the project the named one
   when projects.toml has it (as written, else without `-build`), else the folder's. The role must be one word: a
-  title with no separator (`q-tutor`, `poc-web`) or prose after it (`fix: flaky test`) gives no role. The account
+  title with no separator (`q-tutor`, `poc-web`) or prose after it (`fix: flaky test`) gives no role. A prefix
+  that is no project still gives a role (`fix: typo` -> `typo`): team names are not all projects (first-order,
+  fxhunt, academy), and requiring one would drop 85 of the 148 real roles (store copy, 2026-10-17). The account
   guard (S1) still files an untagged session by its folder only: the folder is where the work ran, a title is a
   name someone typed.
   Otherwise project may come from cwd (`attrib_source=cwd`); role and item stay `unknown`. Never guessed.
