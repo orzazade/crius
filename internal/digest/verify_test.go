@@ -108,18 +108,20 @@ func TestVerifiedReviewOfA4908e3(t *testing.T) {
 	line(t, db, at, "crius:lead", "info", "bbb2222 not yet checked PASS")
 	line(t, db, at, "crius:lead", "info", "ccc3333 checked PASS but e2e failed")
 	line(t, db, at, "crius:lead", "info", "checked PASS run 1234567")
+	pushed := line(t, db, at, "crius:lead", "info", "86a776a re-checked PASS (15/15). Not pushed: public repo. Next?")
 	g := &Goal{Milestones: []Milestone{
 		{State: Done, Text: "a", Refs: "bus 2026-10-17T05:10"},
 		{State: Done, Text: "b", Refs: "bus 2026-10-17T05:11"},
 		{State: Done, Text: "c", Refs: "bus 2026-10-17T05:12"},
 		{State: Done, Text: "d", Refs: "aaa1111, bbb2222, ccc3333"},
 		{State: Done, Text: "e", Refs: "1234567abc"},
+		{State: Done, Text: "f", Refs: "86a776a"}, // the "not" and "?" are about other things
 	}}
 	got, err := Verified(db, "api:lead", g)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []int64{0, 0, named, 0, 0}; !reflect.DeepEqual(got, want) {
+	if want := []int64{0, 0, named, 0, 0, pushed}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v want %v", got, want)
 	}
 }

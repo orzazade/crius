@@ -13,12 +13,14 @@ var (
 	letterRe = regexp.MustCompile(`[a-f]`)
 	busRefRe = regexp.MustCompile(`\bbus (\d{4}-\d{2}-\d{2}T\d{2}:\d{2})\b`)
 	passRe   = regexp.MustCompile(`\bchecked PASS\b`)
-	noPassRe = regexp.MustCompile(`(?i)\bfail|\bnot\b|\?`) // a failure, a negation or a question on the line
+	// a failure anywhere on the line, a "not" in the clause before the pass, or a question mark right after it
+	noPassRe = regexp.MustCompile(`(?i)\bfail|\bnot\b[^.;:!]*\bchecked PASS|checked PASS\s*\?`)
 )
 
 // Verified gives, per milestone, the id of the bus line that checked it, 0 for none (Crius 10-17: a % counts only
 // with a Crius or QA check on the bus). A check is an info, done or decision line from Crius (crius:lead) or from the
-// lead's own project's QA (role qa or qa-*) that says "checked PASS" and has no fail, "not" or "?" (any case). A done
+// lead's own project's QA (role qa or qa-*) that says "checked PASS" with no "not" in the clause before it,
+// no "?" right after it and no fail on the line (any case). A done
 // milestone is verified when a check names one of its refs: a sha (7 or more hex with at least one letter, so a
 // run id is not taken for one; any case; sha= allowed) that is, or begins, a whole word of the check that is such a
 // sha too; or "bus <local YYYY-MM-DDTHH:MM>", the check at that minute when it names the lead as a whole name or is
