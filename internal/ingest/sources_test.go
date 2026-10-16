@@ -208,6 +208,30 @@ func TestAReplacedBusFileKeepsItsStoredDates(t *testing.T) {
 	}
 }
 
+// Opus P3 on 29fdcb6: a late line is not an anchor. Its stored date is the day before the line it follows, so the
+// lines after it would move a day back.
+func TestALateLineIsNotAnAnchor(t *testing.T) {
+	x, _, _ := busCase(t)
+	path := filepath.Join(x.home, "bus", "demo.log")
+	birth := time.Now().AddDate(0, 0, -3)
+	write := func(first string) {
+		testutil.Write(t, path+".new", "00:01 DONE demo:leader -> crius — "+first+"\n"+
+			"23:58 DONE demo:leader -> crius — b\n00:03 DONE demo:leader -> crius — c\n")
+		if err := os.Rename(path+".new", path); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, birth, birth); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("a")
+	x.run()
+	c := x.one("select ts from event where text='c'")
+	write("A") // the first line changed: b is the first stored line
+	x.run()
+	eq(t, x.one("select ts from event where text='c'"), c)
+}
+
 // Opus P3 on 277f507: a dated line keeps its stored ts on a re-read; it was read in the zone of its day, and a run
 // in another zone must not shift it.
 func TestARereadKeepsADatedLine(t *testing.T) {

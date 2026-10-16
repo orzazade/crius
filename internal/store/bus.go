@@ -3,7 +3,8 @@ package store
 // Bus line grammar (design §6): `<YYYY-MM-DDTHH:MM> TYPE <project>:<role> -> crius — text [refs]`.
 //
 // Old `HH:MM` lines still parse: their date comes from a running state (the previous line's date, plus one day
-// when the clock goes back an hour or more), which the caller seeds from the file.
+// when the clock goes back more than a few minutes), which the caller seeds from the file. The guess can be wrong
+// either way; a writer that dates its lines removes it.
 
 import (
 	"os"
@@ -21,6 +22,11 @@ var Types = map[string]bool{"DONE": true, "BLOCKED": true, "NEED-OWNER": true, "
 	"PARKED": true}
 
 const MaxLen = 300
+
+// lateWithin is how many minutes behind the line before an undated line may be and still count as late, not as
+// the next day. Out-of-order lines seen on the bus are 1 minute behind, midnights 1396 or more; a small window
+// keeps the one-day silence case above rare.
+const lateWithin = 10
 
 // Slug is a project or role name. Go's `$` matches only at the very end, so "demo\n" does not pass.
 var Slug = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
@@ -48,6 +54,7 @@ type Line struct {
 	Role, To, Text   string
 	Refs             map[string][]string
 	DatedByGuess     bool
+	Late             bool // undated and a few minutes behind the line before: its date does not move the state
 }
 
 func RefsOf(text string) map[string][]string {
@@ -99,13 +106,14 @@ func ParseLine(line string, st *State, strict bool) *Line {
 			return nil
 		}
 		// Two writers can post a few minutes out of order (17:53 then 17:52, or 23:58 after 00:01): a line less
-		// than an hour behind the one before is late, on the nearer day, and leaves the state alone. Any other step
-		// back is midnight; the ones seen on the bus step back 23 hours or more. A line after 23 to 24 hours of
-		// silence and less than an hour earlier on the clock is dated a day early, as one after 24 hours or more
-		// always was. An empty state time is a file with no line yet.
+		// than lateWithin minutes behind the one before is late, on the nearer day, and leaves the state alone. Any
+		// other step back is midnight; the ones seen on the bus step back 23 hours or more. The cost: after a day of
+		// silence, a next line up to lateWithin minutes earlier on the clock is taken as late, and it and the lines
+		// after it are a day early (as every line after 24 hours or more of silence always was). An empty state
+		// time is a file with no line yet.
 		back := (minutes(st.Time) - minutes(hhmm) + 24*60) % (24 * 60)
 		switch {
-		case st.Time != "" && back > 0 && back < 60:
+		case st.Time != "" && back > 0 && back < lateWithin:
 			late = true
 			if hhmm > st.Time {
 				day = d.AddDate(0, 0, -1).Format("2006-01-02")
@@ -118,7 +126,7 @@ func ParseLine(line string, st *State, strict bool) *Line {
 		st.Date, st.Time = day, hhmm
 	}
 	return &Line{Date: day, Time: hhmm, Type: typ, Project: project, Role: role, To: to, Text: text,
-		Refs: RefsOf(text), DatedByGuess: guessed}
+		Refs: RefsOf(text), DatedByGuess: guessed, Late: late}
 }
 
 // minutes is the minute of the day of a checked "HH:MM", 0 for "".

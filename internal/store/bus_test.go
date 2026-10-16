@@ -57,8 +57,8 @@ func TestUndatedLineAfterMidnightMovesToNextDay(t *testing.T) {
 func TestUndatedLineAMinuteEarlierStaysOnTheDay(t *testing.T) {
 	st := &State{Date: "2026-10-16", Time: "17:53"}
 	for _, c := range []struct{ line, day string }{{"17:52 DONE axi:leader -> crius — x", "2026-10-16"},
-		{"17:54 DONE axi:leader -> crius — x", "2026-10-16"}, {"16:55 DONE axi:leader -> crius — x", "2026-10-16"},
-		{"16:54 DONE axi:leader -> crius — x", "2026-10-17"}} {
+		{"17:54 DONE axi:leader -> crius — x", "2026-10-16"}, {"17:45 DONE axi:leader -> crius — x", "2026-10-16"},
+		{"17:44 DONE axi:leader -> crius — x", "2026-10-17"}} {
 		if p := ParseLine(c.line, st, true); p == nil || p.Date != c.day {
 			t.Fatalf("%s: %+v", c.line, p)
 		}

@@ -22,7 +22,8 @@ func sha1Hex(b []byte) string {
 }
 
 // datingVersion names the rules that date a log line (store.ParseLine's undated-line steps and logFile's seeding and
-// anchoring). Raise it when they change: every log is read again and the stored dates follow.
+// anchoring). Raise it by hand when they change: every log is read again, and the undated lines after each file's
+// anchor (its first stored, not late, undated line, which keeps its date) take the new dates.
 const datingVersion = "d2"
 
 func typesSum() string {
@@ -128,9 +129,10 @@ func (r *runner) logFile(path, source string, strict bool, project string) error
 			}
 			if !p.DatedByGuess {
 				anchored = true
-			} else if !anchored {
+			} else if !anchored && !p.Late {
 				// The first undated line the store holds keeps its date, and the lines after it date from there: a
 				// re-read must not move a file to a new birth date (a replaced file's birth is not its lines' date).
+				// A late line is no anchor: its date is not the state's.
 				var stored sql.NullString
 				err := tx.QueryRow("select ts from event where source_key=?", key).Scan(&stored)
 				if err != nil && err != sql.ErrNoRows {
