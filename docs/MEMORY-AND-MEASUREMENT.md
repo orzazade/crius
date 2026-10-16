@@ -218,6 +218,12 @@ naming no session shows as `unknown`. `record` refuses a text that looks like a 
 it, so prose that only looks like one is never changed unseen. `--json` is redacted value by value (JSON escaping
 hides quotes from the patterns).
 
+**`show` as built (step 4).** An item (criteria, children, every event whose refs name it), a decision (the full entry
+read from its DECISIONS.md; `Status: SUPERSEDED by <id> (<date>): <title>` or `active`), a session (with its request
+count and list $), a commit, an `event:<n>`, or a project's STATE.md (`unavailable` until the digest step builds it).
+A hex prefix that matches more than one commit or session is refused with the matches. `--history` gives a decision's
+supersede chain, oldest first; acceptance, revokes and corrections join it in step 6.
+
 **Bounded transcript search (`find --deep`).** Used only when the store has no answer and the question is about the
 last 30 days. A Haiku helper runs `rg` over the transcript folders of that project and time window only (max 50
 files, max 2 minutes), and returns at most 10 citations (transcript path, message uuid, time) with a one-line

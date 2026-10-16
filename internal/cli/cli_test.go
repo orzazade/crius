@@ -314,3 +314,26 @@ func TestFindExitCodesAndFlagsAfterTheQuery(t *testing.T) {
 		t.Fatal(rc, out)
 	}
 }
+
+func TestShowExitCodes(t *testing.T) {
+	testutil.Temp(t)
+	if rc, out := run("show", "demo#1"); rc != exitUnavailable {
+		t.Fatal(rc, out)
+	}
+	findStore(t)
+	if rc, out := run("record", "item", "--project", "demo", "--title", "mail fix", "--kind", "code", "--criteria", "CI"); rc != 0 {
+		t.Fatal(rc, out)
+	}
+	if rc, out := run("show", "demo#1", "--json"); rc != 0 || !strings.Contains(out, `"value": "mail fix"`) {
+		t.Fatal(rc, out)
+	}
+	if rc, out := run("show", "demo#2"); rc != 0 || !strings.Contains(out, "no match in items (id demo#2)") {
+		t.Fatal(rc, out)
+	}
+	if rc, out := run("show", "demo"); rc != exitUnavailable || !strings.Contains(out, "STATE.md") {
+		t.Fatal(rc, out)
+	}
+	if rc, out := run("show", "NotAnId"); rc != exitUsage {
+		t.Fatal(rc, out)
+	}
+}

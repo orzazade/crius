@@ -1,5 +1,5 @@
 // Package cli is crius-rec, the door to the record store. Commands: init, leak-test, record bus|decision|item (step 1),
-// quota (step 3), find (step 4).
+// quota (step 3), find and show (step 4).
 package cli
 
 import (
@@ -38,6 +38,7 @@ const usage = `usage: crius-rec init
        crius-rec record item --project P --title T --kind code|research|falcon|other --criteria C [--criteria C ...] [--parent ID] [--taint]
        crius-rec quota [--json | --room]
        crius-rec find [QUERY] [--project P] [--since YYYY-MM-DD|Nd|Nh] [--kind K ...] [--active] [--waiting] [--json]
+       crius-rec show ID|PROJECT [--history] [--json]
 `
 
 type multi []string
@@ -101,6 +102,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return quotaCmd(home, time.Now(), *asJSON, *room, stdout, stderr)
 	case "find":
 		return findCmd(home, args, time.Now(), stdout, stderr)
+	case "show":
+		return showCmd(home, args, time.Now(), stdout, stderr)
 	}
 	fmt.Fprint(stderr, usage)
 	return exitUsage
@@ -378,6 +381,36 @@ func findCmd(home string, args []string, now time.Time, stdout, stderr io.Writer
 	}
 	defer db.Close()
 	res, err := recall.Find(db, q, store.Types)
+	if err != nil {
+		if errors.Is(err, recall.ErrQuery) {
+			fmt.Fprintf(stderr, "refused: %v\n", err)
+			return exitUsage
+		}
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return exitError
+	}
+	return answer(res.Status, res, res.Text(), *asJSON, stdout, stderr)
+}
+
+// showCmd prints one thing in full (design §4): item, decision, session, commit, event or project.
+func showCmd(home string, args []string, now time.Time, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("show", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	history, asJSON := fs.Bool("history", false, ""), fs.Bool("json", false, "")
+	words, err := parseAll(fs, args)
+	if err != nil {
+		return exitUsage
+	}
+	if len(words) != 1 {
+		fmt.Fprint(stderr, "show needs one id\n"+usage)
+		return exitUsage
+	}
+	db, rc := openStore(home, stderr)
+	if db == nil {
+		return rc
+	}
+	defer db.Close()
+	res, err := recall.Show(db, home, words[0], *history, now)
 	if err != nil {
 		if errors.Is(err, recall.ErrQuery) {
 			fmt.Fprintf(stderr, "refused: %v\n", err)

@@ -298,28 +298,10 @@ func session(ctx context.Context, conn *sql.Conn, q Query, tok string, res *Resu
 	return rows.Err()
 }
 
-// supersede marks each decision a later decision of its project supersedes; --active drops those. As in
-// store.ActiveIDs, a supersede of the same or a later number is ignored.
+// supersede marks each decision a later decision of its project supersedes; --active drops those.
 func supersede(ctx context.Context, conn *sql.Conn, q Query, res *Result) error {
-	rows, err := conn.QueryContext(ctx, "select id, supersedes from decision where coalesce(supersedes,'') <> ''")
+	by, err := supersededBy(ctx, conn)
 	if err != nil {
-		return err
-	}
-	by := map[string]string{}
-	for rows.Next() {
-		var id, sup string
-		if err := rows.Scan(&id, &sup); err != nil {
-			rows.Close()
-			return err
-		}
-		if p, n := splitD(id); p != "" {
-			if sp, sn := splitD(sup); sp == p && sn < n {
-				by[sup] = id
-			}
-		}
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
 		return err
 	}
 	kept := res.Hits[:0]
