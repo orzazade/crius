@@ -39,14 +39,19 @@ func loadRules(b []byte) []rule {
 	}
 	out := make([]rule, 0, len(f.Rules))
 	for _, r := range f.Rules {
-		out = append(out, rule{id: r.ID, re: regexp.MustCompile(r.Regex), group: r.SecretGroup, entropy: r.Entropy,
-			keywords: r.Keywords})
+		re := regexp.MustCompile(r.Regex)
+		if r.SecretGroup == 0 && re.NumSubexp() == 1 {
+			r.SecretGroup = 1 // the one group is the secret
+		}
+		out = append(out, rule{id: r.ID, re: re, group: r.SecretGroup, entropy: r.Entropy, keywords: r.Keywords})
 	}
 	return out
 }
 
-// redactRules replaces each secret a gitleaks rule finds: the rule's secret group, else its first non-empty group,
-// else the whole match. A rule with an entropy floor skips a lower-entropy secret, as gitleaks does; its keywords
+// redactRules replaces each secret a gitleaks rule finds: the rule's secret group (a rule with one group: that
+// group), else the whole match. Gitleaks takes the first non-empty group, but with several groups that can be a
+// fragment: the Teams webhook's is 5 characters of a GUID. A rule with an entropy floor skips a lower-entropy secret,
+// as gitleaks does; its keywords
 // are a quick filter, as in gitleaks.
 func redactRules(s string) (string, int) {
 	hits := 0
@@ -65,13 +70,6 @@ func redactRules(s string) (string, int) {
 			lo, hi := m[0], m[1]
 			if g := r.group; g > 0 && 2*g+1 < len(m) && m[2*g] >= 0 {
 				lo, hi = m[2*g], m[2*g+1]
-			} else if g == 0 {
-				for i := 2; i+1 < len(m); i += 2 {
-					if m[i] >= 0 && m[i+1] > m[i] {
-						lo, hi = m[i], m[i+1]
-						break
-					}
-				}
 			}
 			if lo < last || r.entropy > 0 && entropy(s[lo:hi]) < r.entropy {
 				continue

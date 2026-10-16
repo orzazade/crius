@@ -79,3 +79,25 @@
 {"src": "c2353", "in": "password: my pass phrase here", "secret": "phrase"}
 {"src": "c2353", "in": "podman login quay.io -p hunter2xyz -u bob", "secret": "hunter2xyz"}
 {"src": "c2353", "in": "some-new-client --user bob -p hunter2xyz", "secret": "hunter2xyz"}
+{"src": "opus-final", "in": "password: 'it''s hunter2xyz'", "secret": "hunter2xyz"}
+{"src": "opus-final", "in": "export DB_PASSWORD='p@ss'\"'\"'hunter2xyz'", "secret": "hunter2xyz"}
+{"src": "opus-final", "in": "PASSWORD = \"\"\"hunter2xyz\"\"\"", "secret": "hunter2xyz"}
+{"src": "opus-final", "in": "password=\"\"hunter2xyz", "secret": "hunter2xyz"}
+{"src": "opus-final", "in": "passwords:\n- hunter1\n- hunter2xyz", "secret": "hunter2xyz"}
+{"src": "opus-final", "in": "secrets:\n- name: a\n  value: hunter1\n- name: b\n  value: hunter2xyz", "secret": "hunter2xyz"}
+{"src": "opus-final", "in": "docker login \\\n  -u bob \\\n  -p hunter2xyz registry.io", "secret": "hunter2xyz"}
+{"src": "opus-final", "in": "mysql -h db \\\r\n  -u root \\\r\n  -phunter2xyz app", "secret": "hunter2xyz"}
+{"src": "opus-final", "in": "https://acme.webhook.office.com/webhookb2/abcdef12-abcd-abcd-abcd-abcdef123456@abcdef12-abcd-abcd-abcd-abcdef123456/IncomingWebhook/0123456789abcdef0123456789abcdef/abcdef12-abcd-abcd-abcd-abcdef123456", "secret": "0123456789abcdef0123456789abcdef"}
+{"src": "opus-final", "in": "redis://:hunter2xyz@localhost:6379/0", "secret": "hunter2xyz"}
+{"src": "opus-final", "in": "password: | # from vault\n  hunter2xyz", "secret": "hunter2xyz"}
+{"src": "opus-final", "in": "password: !vault |\n  hunter2xyz", "secret": "hunter2xyz"}
+{"src": "opus-final", "in": "args: [\"mysql\", \"-u\", \"root\", \"-p\", \"hunter2xyz\"]", "secret": "hunter2xyz"}
+{"src": "opus-final", "in": "mysql -u root '-phunter2xyz'", "secret": "hunter2xyz"}
+{"src": "opus-final", "in": "PASSWORD ?= hunter2xyz", "secret": "hunter2xyz"}
+{"src": "opus-final", "in": "PASSWORD += hunter2xyz", "secret": "hunter2xyz"}
+{"src": "opus-final", "in": "if password != \"hunter2xyz\":", "secret": "hunter2xyz"}
+{"src": "opus-final", "in": "SMTP_PASS=hunter2xyz", "secret": "hunter2xyz"}
+{"src": "opus-final", "in": "DB_PWD=hunter2xyz", "secret": "hunter2xyz"}
+{"src": "opus-final", "in": "postgres://bob:hun@ter2xyz@db/x", "secret": "ter2xyz"}
+{"src": "opus-final", "in": "SECRET_KEY = (\n    \"hunter2xyz\"\n)", "secret": "hunter2xyz"}
+{"src": "opus-final", "in": "password=\"ab\\\" hunter2xyz\" tail", "secret": "hunter2xyz"}

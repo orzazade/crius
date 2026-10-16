@@ -166,17 +166,25 @@ CLI output, error messages, logs, digests, alerts, and helper answers. A hit is 
 
 **Redaction since step 4b.** Six review rounds each found a new edge of exact value-end parsing, so the key = value
 path now fails closed (Crius 23:40): after a secret-named key, a value ends early only at a quote or backtick pair
-that closes on the same line with nothing escaped inside; any other value is blanked to the end of its line (or of
-its JSON string or tool-input field). A key with no value, a block scalar (`|`, `>`) or a line that ends at another
-secret key also takes the next line and the lines indented under the key. `-p` is a password on a line that names a
-user (`-u`, `--user`) or a login, or after `mysql`, `mariadb` and `sshpass`. On top, the gitleaks rules for token formats (vendored v8.30.1 in
+that closes on the same line with nothing escaped inside and a separator (space, `,;)]}#`, line end) after it; any
+other value is blanked to the end of its line (or of its JSON string or tool-input field). A key with no value, a
+block scalar (`|`, `>`, also after a tag or before a comment), an opening bracket, or a line that ends at another
+secret key also takes the next line, the lines indented under the key and list items (`- x`) at its indent. `-p` is a password on a command line (backslash
+continuations joined) that names a user (`-u`, `--user`) or a login, or after `mysql`, `mariadb` and `sshpass`. On top, the gitleaks rules for token formats (vendored v8.30.1 in
 `internal/redact/rules/`, MIT; `bin/refresh-gitleaks-rules <tag>` refreshes them; path rules and allowlists are
-dropped). Every leak case of the six rounds and every gap listed for step 4 is a fixture in
+dropped; a rule without a secret group redacts its one group, else the whole match). Every leak case of the six rounds and every gap listed for step 4 is a fixture in
 `internal/redact/testdata/leaks.jsonl`. On the 31k real lines nothing the step-4 redactor caught is printed, 32
 lines change, 0.14% more of the text is blanked, and redaction takes about 340 ms per MB (twice step 4).
 Known gaps:
 - A secret with no key, no known prefix and no known shape (a bare word in prose) is not caught.
 - A password flag other than `-p` with no user on the line (`redis-cli -a x`) is printed.
+- A key with no operator (SQL `WITH PASSWORD 'x'`, netrc `password x`), a name after `token_` (`GITHUB_TOKEN_PROD=x`;
+  `token_count` must stay), Unicode or odd spaces around the operator, and `--password` with its value on the next
+  line are printed (Opus review of 09f817a, P2/P3).
+- Time: the gitleaks rules make redaction about 13 times slower on long real lines (the 30 longest transcript lines,
+  34 MB: 69 s, worst 3.2 s per MB; step 4: 5 s) and up to 57 s for 1 MB of text built to hold every rule keyword.
+  Ingest redacts every stored text and `find --deep` its 10 cited messages. Follow-up: run each rule near its
+  keywords only, once a rule's match length is known to be bounded.
 - `find --deep` matches words before redaction, so a guessed secret confirms itself by being found (it is never
   printed).
 - Over-redaction: the rest of the line after any secret-named key (prose such as `password: is required`, review

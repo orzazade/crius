@@ -18,7 +18,10 @@ import (
 
 // secretKey names a key whose value is a secret: the key = value pattern and SecretKey share it.
 const secretKey = `(api[_-]?key|passw(?:or)?d|passphrase|secret|token(?:[_-]?(?:v?\d+|value|key|secret))?\b|private[_-]?key|` +
-	`authorization)`
+	`authorization|[_.-](?:pass|pwd)\b)`
+
+// operator is what stands between a key and its value: assignment and comparison in config, shell, Make and code.
+const operator = `(?::=|=>|[?+!]?==?|:)`
 
 var secretKeyRe = regexp.MustCompile(`(?i)` + secretKey)
 
@@ -34,45 +37,60 @@ var blockRe = regexp.MustCompile(`(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:--
 // The rest of the name may follow the secret word (secret_access_key, password.prod); the key's quotes may come
 // escaped (code or JSON quoted in a command); the operator may be code's (:=, =>, ==); a scheme may lead the value
 // (Authorization: Basic ...).
-var pairRe = regexp.MustCompile(`(?i)` + secretKey + `[\w.-]*\\*["']?[ \t]*(?::=|=>|==?|:)[ \t]*` +
+var pairRe = regexp.MustCompile(`(?i)` + secretKey + `[\w.-]*\\*["']?[ \t]*` + operator + `[ \t]*` +
 	`(?:(?:basic|bearer|digest|token)[ \t]+)?()`)
 
-// blockStart is a key line's value that continues on the lines below: nothing (YAML), a block scalar (| or >), or
-// a line that ends at another secret-named key and its operator (grep output: secrets.yaml: password:).
-var blockStart = regexp.MustCompile(`(?i)^(?:[|>][-+0-9]*)?$|` + secretKey + `[\w.-]*\\*["']?[ \t]*(?::=|=>|==?|:)$`)
+// blockStart is a key line's value that continues on the lines below: nothing (YAML), a block scalar (| or >) or an
+// opening bracket, each after an optional tag (!vault) and before an optional comment, or a line that ends at
+// another secret-named key and its operator (grep output: secrets.yaml: password:).
+var blockStart = regexp.MustCompile(`(?i)^(?:![^\s]+[ \t]*)?(?:[|>][-+0-9]*|[(\[{])?[ \t]*(?:#.*)?$|` + secretKey +
+	`[\w.-]*\\*["']?[ \t]*` + operator + `$`)
 
 var secretRes = []*regexp.Regexp{
 	// A long flag and its value, to the end of the line (--password hunter2).
 	regexp.MustCompile(`(?i)--` + secretKey + `[\w-]*[ \t]+[^\s-][^\n]*`),
-	// Credentials in a URL (postgres://user:pass@host).
-	regexp.MustCompile(`\b[A-Za-z][A-Za-z0-9+.-]*://[^/\s:@"']+:[^@\s/"']+@`),
+	// Credentials in a URL (postgres://user:pass@host, redis://:pass@host), to the last @ before the path.
+	regexp.MustCompile(`\b[A-Za-z][A-Za-z0-9+.-]*://[^/\s:@"']*:[^\s/"']+@`),
 	regexp.MustCompile(`\b(sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{36,}|xox[bpors]-[A-Za-z0-9-]+|AKIA[0-9A-Z]{16})`),
 	regexp.MustCompile(`(?i)\bbearer\s+[A-Za-z0-9._~+/-]{20,}=*`),
 	regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}`),
 }
 
-// A short -p is a password on a line that names a user (-u bob, -uroot, --user, --username) or a login, or after a
-// client that takes one that way (mysql -phunter2, sshpass -p hunter2); elsewhere -p means something else. Keyed on
-// the line, not a list of clients (Crius 23:53: docker login -u bob -p x was printed). The redaction runs from the
-// first -p to the end of the line.
+// A short -p is a password on a command line that names a user (-u bob, -uroot, --user, --username) or a login, or
+// after a client that takes one that way (mysql -phunter2, sshpass -p hunter2); elsewhere -p means something else.
+// Keyed on the line, not a list of clients (Crius 23:53: docker login -u bob -p x was printed). A line ending in a
+// backslash goes on below, and an argument may be quoted (["-p", "x"]). The redaction runs from the first -p to the
+// end of the command line.
 var (
-	shortFlagLine = regexp.MustCompile(`(?i)\b(?:mysql\w*|mariadb\w*|sshpass|login)\b|(?:^|[ \t])(?:-u|--user(?:name)?\b)`)
-	shortFlag     = regexp.MustCompile(`(?:^|[ \t])-p`)
+	shortFlagLine = regexp.MustCompile(`(?i)\b(?:mysql\w*|mariadb\w*|sshpass|login)\b|(?:^|[\s"'\[,])(?:-u|--user(?:name)?\b)`)
+	shortFlag     = regexp.MustCompile(`(?:^|[\s"'\[,])-p`)
 )
 
 func redactShortFlag(s string) (string, int) {
-	lines, hits := strings.SplitAfter(s, "\n"), 0
-	for i, l := range lines {
-		if m := shortFlag.FindStringIndex(l); m != nil && shortFlagLine.MatchString(l) {
-			end := len(l) - len(l[len(strings.TrimRight(l, "\r\n")):])
-			lines[i] = l[:m[1]-2] + "[redacted]" + l[end:]
-			hits++
+	var b strings.Builder
+	hits := 0
+	for pos := 0; pos < len(s); {
+		end := lineEnd(s, pos)
+		for end < len(s) && strings.HasSuffix(strings.TrimRight(s[pos:end], "\r"), `\`) {
+			end = lineEnd(s, end+1)
 		}
+		l := s[pos:end]
+		body := strings.TrimRight(l, "\r")
+		if m := shortFlag.FindStringIndex(body); m != nil && shortFlagLine.MatchString(body) {
+			b.WriteString(body[:m[1]-2] + "[redacted]" + l[len(body):])
+			hits++
+		} else {
+			b.WriteString(l)
+		}
+		if end < len(s) {
+			b.WriteByte('\n')
+		}
+		pos = end + 1
 	}
 	if hits == 0 {
 		return s, 0
 	}
-	return strings.Join(lines, ""), hits
+	return b.String(), hits
 }
 
 // Redact returns the text with each secret replaced by [redacted], and the number of secrets replaced.
@@ -123,22 +141,28 @@ func valueEnd(s string, v int) int {
 	if i := strings.IndexByte(s[v:], '\n'); i >= 0 {
 		le = v + i
 	}
-	// v follows an operator or a space, so an escaped quote (\") starts with its backslash and is no opener here.
+	// v follows an operator or a space, so an escaped quote (\") starts with its backslash and is no opener here. The
+	// close counts only before a separator: 'it''s x', 'a'"'"'b' and ""x go on after it.
 	if q := s[v:min(v+1, le)]; q == `"` || q == "'" || q == "`" {
 		if c := strings.IndexByte(s[v+1:le], q[0]); c >= 0 && !strings.Contains(s[v+1:v+1+c], `\`) {
-			return v + 1 + c + 1
+			if e := v + 1 + c + 1; e == le || strings.IndexByte(" \t\r,;)]}#", s[e]) >= 0 {
+				return e
+			}
 		}
 	}
 	if !blockStart.MatchString(strings.TrimRight(s[v:le], " \t\r")) || le == len(s) {
 		return le
 	}
-	// The value goes on below: the next line whatever its indent, then each line indented deeper than the key line.
+	// The value goes on below: the next line whatever its indent, then each line indented deeper than the key line
+	// or a list item (- x) at its indent.
 	ls := strings.LastIndexByte(s[:v], '\n') + 1
 	indent := len(s[ls:v]) - len(strings.TrimLeft(s[ls:v], " \t"))
 	end := lineEnd(s, le+1)
 	for end < len(s) {
 		next := s[end+1 : lineEnd(s, end+1)]
-		if d := len(next) - len(strings.TrimLeft(next, " \t")); d <= indent && strings.TrimSpace(next) != "" {
+		t := strings.TrimLeft(next, " \t")
+		if d := len(next) - len(t); d <= indent && strings.TrimSpace(next) != "" &&
+			!(d == indent && (strings.HasPrefix(t, "- ") || strings.TrimSpace(t) == "-")) {
 			break
 		}
 		end = lineEnd(s, end+1)
