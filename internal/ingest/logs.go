@@ -21,6 +21,10 @@ func sha1Hex(b []byte) string {
 	return hex.EncodeToString(s[:])
 }
 
+// datingVersion names the rules that date a log line (store.ParseLine's undated-line steps and logFile's seeding and
+// anchoring). Raise it when they change: every log is read again and the stored dates follow.
+const datingVersion = "d2"
+
 func typesSum() string {
 	ts := make([]string, 0, len(store.Types))
 	for t := range store.Types {
@@ -81,9 +85,9 @@ func (r *runner) logFile(path, source string, strict bool, project string) error
 		if err != nil {
 			return err
 		}
-		// A cursor keeps the parser (and, for the bus, the type list) it was read with; a new one reads the file
-		// again from the start, so stored lines take the new parse.
-		want := store.ParserSum()
+		// A cursor keeps the dating rules (and, for the bus, the type list) it was read with; new ones read the
+		// file again from the start, and the stored dates follow.
+		want := datingVersion
 		if strict {
 			want += typesSum()
 		}
@@ -91,13 +95,7 @@ func (r *runner) logFile(path, source string, strict bool, project string) error
 		if c.sha != want {
 			c, reread = cursor{}, true
 		}
-		fi, err := os.Stat(path)
-		if err != nil {
-			return err
-		}
-		replaced := prev.inode != 0 && inodeOf(fi) != prev.inode
-		kept := 0         // stored dates the read disagrees with but cannot overrule
-		anchored := false // a dated line came before in this pass, so undated dates do not rest on the birth date
+		anchored := false // a dated line or a stored date came before in this pass: dates do not rest on the birth
 		fresh := 0        // lines past the old cursor: the re-read part is already in coverage.rows
 		pathKey := sha1Hex([]byte(path))[:12]
 		var st store.State
@@ -115,7 +113,7 @@ func (r *runner) logFile(path, source string, strict bool, project string) error
 				if err != nil {
 					return err
 				}
-				st = store.State{Date: b.Format("2006-01-02"), Time: "00:00"}
+				st = store.State{Date: b.Format("2006-01-02")}
 				anchored = false
 			}
 			line := strings.TrimRight(strings.ToValidUTF8(string(raw), "�"), "\r\n")
@@ -127,6 +125,25 @@ func (r *runner) logFile(path, source string, strict bool, project string) error
 			if p == nil {
 				r.warn(false, "malformed line in %s at byte %d", path, pos)
 				return r.event(tx, event{kind: "malformed", key: key, project: project})
+			}
+			if !p.DatedByGuess {
+				anchored = true
+			} else if !anchored {
+				// The first undated line the store holds keeps its date, and the lines after it date from there: a
+				// re-read must not move a file to a new birth date (a replaced file's birth is not its lines' date).
+				var stored sql.NullString
+				err := tx.QueryRow("select ts from event where source_key=?", key).Scan(&stored)
+				if err != nil && err != sql.ErrNoRows {
+					return err
+				}
+				if stored.Valid {
+					t, err := time.Parse("2006-01-02T15:04:05Z", stored.String)
+					if err != nil {
+						return err
+					}
+					p.Date = t.In(time.Local).Format("2006-01-02")
+					st.Date, anchored = p.Date, true
+				}
 			}
 			t, err := time.ParseInLocation("2006-01-02T15:04", p.Date+"T"+p.Time, time.Local)
 			if err != nil {
@@ -147,31 +164,14 @@ func (r *runner) logFile(path, source string, strict bool, project string) error
 				return err
 			}
 			if !p.DatedByGuess {
-				anchored = true
+				return nil // its date is written on the line
 			}
-			// A line read before keeps its row, and its date follows this read (a newer parser or type list dates
-			// it better). A date that rests on the birth date of a replaced file stays as stored, loudly: a
-			// replaced file's birth is not its lines' date.
-			var stored sql.NullString
-			if err := tx.QueryRow("select ts from event where source_key=?", key).Scan(&stored); err != nil {
-				return err
-			}
-			if stored.String == e.ts {
-				return nil
-			}
-			if replaced && !anchored {
-				kept++
-				return nil
-			}
-			_, err = tx.Exec("update event set ts=? where source_key=?", e.ts, key)
+			// A line read before keeps its row; its guessed date follows this read (newer dating rules or type list).
+			_, err = tx.Exec("update event set ts=? where source_key=? and ts is not ?", e.ts, key, e.ts)
 			return err
 		})
 		if err != nil {
 			return err
-		}
-		if kept > 0 {
-			r.warn(false, "%d lines of %s keep their stored date: the file was replaced, so its birth date does not"+
-				" date them", kept, path)
 		}
 		next.sha = want
 		if reread && next.inode == prev.inode && next.offset >= prev.offset {

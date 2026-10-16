@@ -65,6 +65,18 @@ func TestUndatedLineAMinuteEarlierStaysOnTheDay(t *testing.T) {
 	}
 }
 
+// Opus P2 on 277f507: the same race across midnight. A late 23:58 after 00:01 is the day before, and the line
+// after it is not pushed a day on.
+func TestUndatedLineLateAcrossMidnight(t *testing.T) {
+	st := &State{Date: "2026-10-16", Time: "23:59"}
+	for _, c := range []struct{ line, day string }{{"00:01 DONE axi:leader -> crius — x", "2026-10-17"},
+		{"23:58 DONE axi:leader -> crius — x", "2026-10-16"}, {"00:02 DONE axi:leader -> crius — x", "2026-10-17"}} {
+		if p := ParseLine(c.line, st, true); p == nil || p.Date != c.day {
+			t.Fatalf("%s: %+v", c.line, p)
+		}
+	}
+}
+
 func TestUndatedLineWithoutStateIsNotParsed(t *testing.T) {
 	if ParseLine("09:20 DONE axi:leader -> crius — x", nil, true) != nil {
 		t.Fatal("an undated line needs a date to start from")

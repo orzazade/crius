@@ -6,9 +6,6 @@ package store
 // when the clock goes back an hour or more), which the caller seeds from the file.
 
 import (
-	"crypto/sha1"
-	_ "embed"
-	"encoding/hex"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -24,15 +21,6 @@ var Types = map[string]bool{"DONE": true, "BLOCKED": true, "NEED-OWNER": true, "
 	"PARKED": true}
 
 const MaxLen = 300
-
-//go:embed bus.go
-var parser []byte
-
-// ParserSum changes whenever this file does, so the ingest reads its logs again and stored dates follow the parser.
-func ParserSum() string {
-	s := sha1.Sum(parser)
-	return hex.EncodeToString(s[:6])
-}
 
 // Slug is a project or role name. Go's `$` matches only at the very end, so "demo\n" does not pass.
 var Slug = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
@@ -100,30 +88,40 @@ func ParseLine(line string, st *State, strict bool) *Line {
 	if _, err := time.Parse("2006-01-02T15:04", check+"T"+hhmm); err != nil {
 		return nil
 	}
-	guessed := day == ""
+	guessed, late := day == "", false
 	if guessed {
 		if st == nil || st.Date == "" {
 			return nil
 		}
 		day = st.Date
-		// Two writers can post a few minutes out of order (17:53 then 17:52); that is the same day. The midnights
-		// seen on the bus step back 23 hours or more.
-		if hhmm < st.Time && minutes(st.Time)-minutes(hhmm) >= 60 {
-			d, err := time.Parse("2006-01-02", day)
-			if err != nil {
-				return nil
+		d, err := time.Parse("2006-01-02", day)
+		if err != nil {
+			return nil
+		}
+		// Two writers can post a few minutes out of order (17:53 then 17:52, or 23:58 after 00:01): a line less
+		// than an hour behind the one before is late, on the nearer day, and leaves the state alone. Any other step
+		// back is midnight; the ones seen on the bus step back 23 hours or more. A line after 23 to 24 hours of
+		// silence and less than an hour earlier on the clock is dated a day early, as one after 24 hours or more
+		// always was. An empty state time is a file with no line yet.
+		back := (minutes(st.Time) - minutes(hhmm) + 24*60) % (24 * 60)
+		switch {
+		case st.Time != "" && back > 0 && back < 60:
+			late = true
+			if hhmm > st.Time {
+				day = d.AddDate(0, 0, -1).Format("2006-01-02")
 			}
+		case hhmm < st.Time:
 			day = d.AddDate(0, 0, 1).Format("2006-01-02")
 		}
 	}
-	if st != nil {
+	if st != nil && !late {
 		st.Date, st.Time = day, hhmm
 	}
 	return &Line{Date: day, Time: hhmm, Type: typ, Project: project, Role: role, To: to, Text: text,
 		Refs: RefsOf(text), DatedByGuess: guessed}
 }
 
-// minutes is the minute of the day of a checked "HH:MM".
+// minutes is the minute of the day of a checked "HH:MM", 0 for "".
 func minutes(hhmm string) int {
 	t, _ := time.Parse("15:04", hhmm)
 	return t.Hour()*60 + t.Minute()

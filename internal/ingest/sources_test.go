@@ -148,9 +148,9 @@ func TestANewBusTypeUpgradesItsMalformedLinesOnce(t *testing.T) {
 // Codex P2: a line that now parses moves the date of the undated lines after it; their stored ts must follow.
 // Codex P2: also when the file was replaced in between; the dated first line anchors the dates, not the birth.
 func TestANewBusTypeRedatesTheUndatedLinesAfterIt(t *testing.T) {
-	text := "2026-10-15T23:50 DONE demo:leader -> crius — one\n" +
-		"00:10 WAIT demo:leader -> crius — two\n" +
-		"23:55 DONE demo:leader -> crius — three\n"
+	text := "2026-10-15T20:00 DONE demo:leader -> crius — one\n" +
+		"03:00 WAIT demo:leader -> crius — two\n" +
+		"21:00 DONE demo:leader -> crius — three\n"
 	for _, replace := range []bool{false, true} {
 		x, _, _ := busCase(t)
 		delete(store.Types, "WAIT")
@@ -166,7 +166,7 @@ func TestANewBusTypeRedatesTheUndatedLinesAfterIt(t *testing.T) {
 		}
 		store.Types["WAIT"] = true
 		x.run()
-		want, _ := time.ParseInLocation("2006-01-02T15:04", "2026-10-16T23:55", time.Local)
+		want, _ := time.ParseInLocation("2006-01-02T15:04", "2026-10-16T21:00", time.Local)
 		eq(t, x.one("select ts from event where text='three'"), want.UTC().Format("2006-01-02T15:04:05Z"))
 	}
 }
@@ -192,12 +192,19 @@ func TestAReplacedBusFileKeepsItsStoredDates(t *testing.T) {
 			t.Fatal(err)
 		}
 		store.Types["WAIT"] = true
-		st := x.run()
+		x.run()
 		eq(t, x.one("select ts from event where text='one'"), ts)
-		// Crius 01:09: a stored date the re-read disagrees with is kept, but not silently.
-		if w := strings.Join(st.Warnings, "\n"); !strings.Contains(w, "1 lines of "+path+" keep their stored date") {
-			t.Fatalf("%q", w)
+		// Opus P1 on 277f507: a later re-read (a newer parser) must not date the lines from the new birth either.
+		db, err := store.Open(x.home)
+		if err != nil {
+			t.Fatal(err)
 		}
+		if _, err := db.Exec("update coverage set sha='older-parser' where source='bus'"); err != nil {
+			t.Fatal(err)
+		}
+		db.Close()
+		x.run()
+		eq(t, x.one("select ts from event where text='one'"), ts)
 	}
 }
 
@@ -227,7 +234,7 @@ func TestAChangedParserRedatesStoredLines(t *testing.T) {
 		eq(t, x.one("select ts from event where text='two'"), good)
 		eq(t, x.counts(), before)
 		// The cursor keeps the parser it read with, so the next run does not read the whole file again.
-		want := store.ParserSum()
+		want := datingVersion
 		if source == "bus" {
 			want += typesSum()
 		}
@@ -235,19 +242,17 @@ func TestAChangedParserRedatesStoredLines(t *testing.T) {
 	}
 }
 
-// A replaced file whose lines date the same as stored is no disagreement: no warning.
-func TestAReplacedLogWithTheSameDatesIsQuiet(t *testing.T) {
-	x, _, _ := busCase(t)
-	path := filepath.Join(x.home, "bus", "demo.log")
-	testutil.Write(t, path, "09:30 DONE demo:leader -> crius — one\n")
+// A file's first undated line is on its birth date at any hour, also late in the evening.
+func TestAnEveningFirstLineIsOnTheBirthDate(t *testing.T) {
+	x, _, teamLog := busCase(t)
+	testutil.Write(t, teamLog, "23:30 NEED api -> leader — schema?\n")
 	x.run()
-	testutil.Write(t, path+".new", "09:30 DONE demo:leader -> crius — one\n")
-	if err := os.Rename(path+".new", path); err != nil {
+	b, err := born(teamLog)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if w := strings.Join(x.run().Warnings, "\n"); strings.Contains(w, "stored date") {
-		t.Fatal(w)
-	}
+	want, _ := time.ParseInLocation("2006-01-02T15:04", b.Format("2006-01-02")+"T23:30", time.Local)
+	eq(t, x.one("select ts from event where source_key like 'team:%'"), want.UTC().Format("2006-01-02T15:04:05Z"))
 }
 
 func TestTeamLogLinesUseTheLenientGrammar(t *testing.T) {
