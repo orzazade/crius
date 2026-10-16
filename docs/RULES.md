@@ -14,9 +14,10 @@ A piece of work is done only when all of these hold:
 4. **Checked by someone else.** QA, or Crius, re-runs the check on a clean checkout of that sha with real-shaped
    data before it is reported to the owner. A builder's own word never closes an item.
 5. **Live where it is meant to work.** Installed or deployed and seen working there (one live check), not only in tests.
-6. **Owner OK before anything outward-facing:** production, a push to a public repo, a public endpoint, messages
-   as the owner, anything people outside the team see. Test environments (env004, local, our own scifilab test
-   deploys) follow the team's own rules in its TEAM.md; no owner OK per push.
+6. **Owner OK before anything outward-facing:** production, a public endpoint, messages as the owner, anything
+   people outside the team see. Pushes: the owner's personal projects (scifi, aitch, …) push to main after the
+   checks above, no OK needed; Appxite projects go through a PR branch, never straight to main. Test environments
+   (env004, local, our own scifilab test deploys) follow the team's own rules in its TEAM.md; no owner OK per push.
 
 Known gaps that were accepted are written down next to the work (a KNOWN-GAPS list) and do not block done.
 
