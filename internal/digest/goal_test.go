@@ -79,6 +79,28 @@ func TestParseGoalTellsLostFromUnreadable(t *testing.T) {
 	}
 }
 
+// Review of 909b68e: an example block in a code fence is not the lead's block, and a heading that is almost right
+// (indented, other case, one #) is an unreadable block, not LOST.
+func TestParseGoalSkipsFencesAndCatchesNearMisses(t *testing.T) {
+	fenced := "# Status\n\n```\n## GOAL (2020-01-01 00:00)\nGoal: old example\n- [x] a · abc1234\nDone: 100% (example)\nNext: x\nNeeds owner: nothing\n```\n\n" +
+		strings.TrimPrefix(good, "# Status: falcon\n")
+	if g, err := ParseGoal(fenced); err != nil || g.Goal != "Falcon is Crius's senses." {
+		t.Fatal(g, err)
+	}
+	if g, err := ParseGoal("\ufeff" + good[strings.Index(good, "## GOAL"):]); err != nil || g.Done != 33 {
+		t.Fatal("a BOM before a good block:", err)
+	}
+	if _, err := ParseGoal("```\n## GOAL (2020-01-01 00:00)\n```\nno block outside the fence\n"); !errors.Is(err, ErrLost) {
+		t.Fatal(err)
+	}
+	for _, h := range []string{"   ## GOAL (2026-10-17 02:40)", "## Goal (2026-10-17 02:40)", "# GOAL — crius:build"} {
+		var u *Unreadable
+		if _, err := ParseGoal(h + "\nGoal: x\n"); !errors.As(err, &u) || u.Line != 1 || u.Why != "heading needs (YYYY-MM-DD HH:MM)" {
+			t.Errorf("%q: %v", h, err)
+		}
+	}
+}
+
 // A file that cannot be read is a failure to look, not LOST (shared rules: "found nothing" and "failed to look"
 // are different states).
 func TestReadGoalFailsLoudOnAnUnreadableFile(t *testing.T) {

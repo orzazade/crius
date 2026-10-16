@@ -62,7 +62,7 @@ func Build(db *sql.DB, leads []ingest.Lead, prev Snapshot, now time.Time) (*Repo
 			entries = append(entries, entry{line: fmt.Sprintf("%s: ERROR: %v", l.Name, err)})
 			continue
 		}
-		checked, err := Verified(db, g)
+		checked, err := Verified(db, l.Name, g)
 		if err != nil {
 			return nil, err
 		}
