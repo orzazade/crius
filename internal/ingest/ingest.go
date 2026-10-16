@@ -140,7 +140,9 @@ func (r *runner) event(tx *sql.Tx, e event) error {
 	// A key stored as malformed takes the parse when the line reads well now (a newer bus type list); any other
 	// stored row stays as it is.
 	_, err := tx.Exec("insert into event (ts, project, kind, actor, session, item, refs, text, taint,"+
-		" verified, source_key) values (?,?,?,?,?,?,?,?,0,0,?) on conflict(source_key) do update set ts=excluded.ts,"+
+		" verified, source_key) values (?,?,?,?,?,?,?,?,0,0,?) on conflict(source_key) do update set"+
+		// A line still malformed keeps the time it was first read: the report counts it once, not after every re-read.
+		" ts=case when excluded.kind='malformed' then coalesce(event.ts, excluded.ts) else excluded.ts end,"+
 		" project=excluded.project, kind=excluded.kind, actor=excluded.actor, session=excluded.session,"+
 		" item=excluded.item, refs=excluded.refs, text=excluded.text where event.kind='malformed'",
 		nullable(e.ts), nullable(e.project), e.kind, nullable(r.text(e.actor)), nullable(e.session),

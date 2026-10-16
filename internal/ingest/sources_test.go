@@ -628,6 +628,21 @@ func TestMalformedLinesAreCountedWhenRead(t *testing.T) {
 	x.run()
 	eq(t, x.one("select count(*) from event where kind = 'corrected'"), "1")
 	eq(t, x.one("select count(*) from event where kind = 'malformed' and project = 'demo' and ts >= '"+before+"'"), "2")
+	// Read again (a new type list): a line still malformed keeps the time it was first read, so the report does not
+	// count it again; a row from before rows had a time gets one.
+	db, err := store.Open(x.home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec("update event set ts = case when id = (select min(id) from event where kind = 'malformed')" +
+		" then '2000-01-01T00:00:00Z' end where kind = 'malformed'; update coverage set sha = 'older-parser'")
+	db.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	x.run()
+	eq(t, x.q("select ts is null, ts = '2000-01-01T00:00:00Z' from event where kind = 'malformed' order by id"),
+		[][]string{{"0", "1"}, {"0", "0"}})
 }
 
 // Review of 7cd24aa: a configured project's role is redacted on its own only when it is a slug: a URL keeps its
