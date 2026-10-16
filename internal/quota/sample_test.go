@@ -298,6 +298,17 @@ func TestSampleRenderClockAndLegacy(t *testing.T) {
 		t.Errorf("after the clock step: %s responded %v", l.Kind, *l.Responded)
 	}
 
+	// Review of 45ca441: a line written while the clock ran ahead must not date a response once the clock passes it.
+	h = home(t)
+	must(t, h, in(1, 40), t0)
+	must(t, h, in(2, 41), t0.Add(40*time.Minute)) // clock 30 min ahead: the line's time is 12:40
+	must(t, h, in(2, 41), t0.Add(11*time.Minute)) // corrected
+	must(t, h, in(2, 41), t0.Add(15*time.Minute))
+	must(t, h, in(3, 42), t0.Add(45*time.Minute)) // no render for 30 min: the response may be that old
+	if l := last(h); l.Kind != "change" || *l.Responded {
+		t.Errorf("clock ahead then corrected: %s responded %v", l.Kind, *l.Responded)
+	}
+
 	h = home(t)
 	must(t, h, in(1, 40), t0)
 	must(t, h, in(2, 41), t0.Add(time.Minute))

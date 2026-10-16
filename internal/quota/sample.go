@@ -136,13 +136,15 @@ func Sample(home, persona string, in []byte, now time.Time) (string, error) {
 	alive, _ := time.Parse(tsFormat, st.Alive[persona])
 	// rate_limits come with a response, so their absence means an API-billed session only when a response arrived
 	// since the last render: a new session shows none before its first response, a resumed one shows its old cost.
-	// The session's last render: the kept render time, or its last line when that is newer and not ahead of the clock
-	// (a line is a render too; a state file from before the field has only that). None: a zero time, so no response
-	// counts as new. A render ahead of the clock (it stepped back) proves nothing either (review of 778abca).
-	rendered, _ := time.Parse(tsFormat, s.Render)
-	if t, err := time.Parse(tsFormat, s.TS); err == nil && t.After(rendered) && !t.After(now) {
-		rendered = t
+	// The session's last render: the kept render time; in a state file from before that field, its last line (a
+	// line is a render too). Never the line when Render is kept: a line written while the clock ran ahead is not
+	// corrected and would date a response again once the clock passes it (review of 45ca441). None: a zero time, so
+	// no response counts as new. A render ahead of the clock (it stepped back) proves nothing (review of 778abca).
+	r := s.Render
+	if r == "" {
+		r = s.TS
 	}
+	rendered, _ := time.Parse(tsFormat, r)
 	gap := now.Sub(rendered)
 	responded := known && (d.Cost.USD > s.USD || d.Cost.APIms > s.APIms) && gap >= 0 && gap <= RenderGap
 	// An idle session can repeat a past epoch's window: it never heartbeats, so it cannot stand in for a live one.
