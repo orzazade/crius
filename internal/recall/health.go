@@ -220,8 +220,9 @@ func (h *Health) sources(db *sql.DB, exp Expected, runStart time.Time) error {
 				if runStart.IsZero() || !fi.ModTime().Before(runStart) {
 					continue
 				}
-				// A replaced file (another inode) is read from its start, as the ingest does.
-				if st, isUnix := fi.Sys().(*syscall.Stat_t); isUnix && c.inode != 0 && int64(st.Ino) != c.inode {
+				// A replaced file (another inode) or a truncated one is read from its start, as the ingest does.
+				if st, isUnix := fi.Sys().(*syscall.Stat_t); isUnix && c.inode != 0 && int64(st.Ino) != c.inode ||
+					fi.Size() < c.offset {
 					c.offset = 0
 				}
 				switch {

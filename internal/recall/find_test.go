@@ -251,7 +251,9 @@ func TestFindSessionListSaysMore(t *testing.T) {
 	if r := find(t, db, Query{Kinds: []string{"session"}}); len(r.Hits) != maxHits || !r.More {
 		t.Fatal(len(r.Hits), r.More)
 	}
-	if _, err := Find(db, Query{Text: "deploy", Kinds: []string{"session", "decision"}, Now: now}, store.Types); err != nil {
-		t.Fatal(err)
+	// Review 831be40: sessions asked for next to another kind are not searched by words, and the answer says so.
+	r, err := Find(db, Query{Text: "deploy", Kinds: []string{"session", "decision"}, Now: now}, store.Types)
+	if err != nil || r.Status != "partial" || !strings.Contains(strings.Join(r.Reasons, "; "), "sessions are not searched by words") {
+		t.Fatal(r, err)
 	}
 }

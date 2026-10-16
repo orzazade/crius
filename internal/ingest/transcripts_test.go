@@ -354,3 +354,15 @@ func TestAConfigChangeRefilesSessionsFiledByFolder(t *testing.T) {
 	eq(t, x.q("select project, attrib_source from session"), [][]string{{"demo", "cwd"}})
 	eq(t, x.q("select distinct project from event"), [][]string{{"demo"}})
 }
+
+// Review 831be40: a registered session's events from before its first tag follow the folder; a config change
+// re-files them too.
+func TestAConfigChangeRefilesPreTagEvents(t *testing.T) {
+	x := newIC(t, cfg{})
+	testutil.Write(t, x.tx, lines(prompt("u1", "2026-10-16T09:00:00Z", "hello", "", "/other/wt"),
+		prompt("u2", "2026-10-16T09:05:00Z", "[crius account=max project=demo role=qa]", "", "/other/wt")))
+	x.run()
+	writeConfig(t, x.home, x.personal, x.work, cfg{cwd: "/other"})
+	x.run()
+	eq(t, x.q("select coalesce(project,'-') from event order by ts"), [][]string{{"demo"}, {"demo"}})
+}

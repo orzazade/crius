@@ -108,6 +108,12 @@ func TestHealthFlagsUnreadAndBehindFiles(t *testing.T) {
 		t.Fatal(txt)
 	}
 	exec(t, db, "update coverage set inode = null where source = 'bus'")
+	// A file shorter than the cursor was truncated and is read from its start, as the ingest does.
+	exec(t, db, "update coverage set offset = 50 where source = 'bus'")
+	if txt = health(t, db, home, exp).Text(); !strings.Contains(txt, "bus: 1 behind") {
+		t.Fatal(txt)
+	}
+	exec(t, db, "update coverage set offset = 5 where source = 'bus'")
 	// A partial last line (no newline yet) waits by design: not behind.
 	testutil.Write(t, busFile, "line\nhalf")
 	os.Chtimes(busFile, old, old)

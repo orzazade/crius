@@ -185,3 +185,81 @@ func TestDeepExpiredKeepsDurableMore(t *testing.T) {
 		t.Fatal(r.Status, r.More)
 	}
 }
+
+// Review 831be40: tool input is decoded before redaction; raw JSON keeps \" and the key=value pattern missed it.
+func TestDeepRedactsToolInput(t *testing.T) {
+	db := open(t)
+	transcript(t, db, "falcon", "s1", msg("assistant", "a1", "2026-10-15T10:00:00Z",
+		`[{"type":"tool_use","input":{"command":"export PASSWORD=\"hunter2xyz\" && echo mail stopped"}}]`))
+	if r := deep(t, db, Query{Text: "mail stopped"}); len(r.Hits) != 1 || strings.Contains(r.Hits[0].Text, "hunter2") {
+		t.Fatalf("%+v", r.Hits)
+	}
+}
+
+// Review 831be40: only the best citations are kept while reading; more is still said.
+func TestDeepKeepsOnlyTheBest(t *testing.T) {
+	db := open(t)
+	var lines []string
+	for i := 0; i < 200; i++ {
+		lines = append(lines, msg("user", fmt.Sprint("u", i), fmt.Sprintf("2026-10-15T10:%02d:%02dZ", i/60, i%60),
+			fmt.Sprintf("%q", "mail"+strings.Repeat(" x", i)+" stopped")))
+	}
+	transcript(t, db, "falcon", "s1", lines...)
+	var c []cand
+	keep(&c, cand{span: 5}, 3)
+	keep(&c, cand{span: 9}, 3)
+	keep(&c, cand{span: 1}, 3)
+	keep(&c, cand{span: 7}, 3)
+	keep(&c, cand{span: 3}, 3)
+	if len(c) != 3 || c[0].span != 1 || c[2].span != 5 {
+		t.Fatalf("%+v", c)
+	}
+	r := deep(t, db, Query{Text: "mail stopped"})
+	if len(r.Hits) != 10 || !r.More || r.Hits[0].ID != "u0" || r.Hits[9].ID != "u9" {
+		t.Fatalf("%d %v %+v", len(r.Hits), r.More, r.Hits[0])
+	}
+}
+
+// Review 831be40: the span ends at the furthest word end in the window, counted in letters (runes).
+func TestTightestOverlapAndRunes(t *testing.T) {
+	terms := func(ws ...string) (b [][]byte) {
+		for _, w := range ws {
+			b = append(b, []byte(w))
+		}
+		return b
+	}
+	for _, ws := range [][]string{{"mailbox", "mail"}, {"mail", "mailbox"}} {
+		if at, span := tightest([]rune("a mailbox"), terms(ws...)); at != 2 || span != 7 {
+			t.Fatal(ws, at, span)
+		}
+	}
+	if _, span := tightest([]rune("почта остановилась"), terms("почта", "остановилась")); span != 18 {
+		t.Fatal(span)
+	}
+}
+
+// Review 831be40: an unreadable folder or a file gone before it is read makes the answer partial, not an error or
+// a silent skip. An expired window stays expired (exit 5) and keeps the cut's reason.
+func TestDeepSaysWhatItSkipped(t *testing.T) {
+	db := open(t)
+	p := transcript(t, db, "falcon", "s1", msg("user", "u1", "2026-10-15T10:00:00Z", `"mail stopped"`))
+	sub := filepath.Join(strings.TrimSuffix(p, ".jsonl"), "subagents")
+	testutil.Write(t, filepath.Join(sub, "a.jsonl"), "{}\n")
+	os.Chmod(sub, 0)
+	defer os.Chmod(sub, 0o755)
+	r := deep(t, db, Query{Text: "mail stopped"})
+	if r.Status != "partial" || len(r.Hits) != 1 || !strings.Contains(strings.Join(r.Reasons, "; "), "cannot read") {
+		t.Fatal(r.Status, r.Reasons)
+	}
+	var c []cand
+	_, gone, err := deepFile(deepSrc{path: p + ".gone"}, [][]byte{[]byte("x")}, now, time.Now().Add(time.Minute), &c, new(int))
+	if err != nil || !gone {
+		t.Fatal(gone, err)
+	}
+	defer func(d time.Duration) { deepTimeout = d }(deepTimeout)
+	deepTimeout = 0
+	r = deep(t, db, Query{Text: "mail stopped", Since: now.AddDate(0, 0, -45)})
+	if r.Status != "expired" || !strings.Contains(strings.Join(r.Reasons, "; "), "time limit") {
+		t.Fatal(r.Status, r.Reasons)
+	}
+}

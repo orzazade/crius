@@ -242,16 +242,18 @@ is the Haiku helper (the Explore agent): it runs `crius-rec find QUERY --deep [-
 the citations on. Every project's transcripts are searched, sessions filed under none included, with their subagent
 files at any depth; `--project` only ranks that project first, because an asker does not know where a talk was filed
 and a filing error must not hide an answer (Crius, 10-16; this replaces the 50-file cap, which made "all projects"
-meaningless: about 2,500 files and 5 GB in 30 days, read in about 10 s). The asking session
+meaningless: about 2,500 files and 5 GB in 30 days, read in about 10 s for a rare phrase and 45 s for a single letter, at 36 MB). The asking session
 (`CLAUDE_CODE_SESSION_ID`) ranks last, since it holds the question itself. A message is cited when its own text
-(user or assistant; tool input and results count) holds every query word; within a rank the shortest stretch holding
+(user or assistant; tool input, decoded, and results count) holds every query word; within a rank the shortest stretch holding
 them all comes first, then the newest. At most 10 citations (`more` says there are others): path, message uuid, time,
 and a one-line snippet around that stretch, redacted before it is cut. The 2-minute limit makes the answer `partial`
-with the count of files not read; so does a missing transcript of a session active in the window. An unknown
-`--project` is refused. A `--since` before the 30 days gives `expired` (exit 5): the retained part is still
+with the count of files not read; so does a missing transcript of a session active in the window, a folder
+that cannot be read, or a file gone before it is read. Only the best 10 are held while reading, so a common word
+costs no more memory than a rare one. An unknown
+`--project` is refused. A `--since` before the 30 days gives `expired` (exit 5), even when the time limit also cut it (that stays among the reasons): the retained part is still
 searched, and the durable rows `find` has for the whole window follow, marked `durable`. projects.toml is the source
-of truth for filing: each ingest run re-files a session filed by its folder when the config now files that folder
-differently.
+of truth for filing: each ingest run re-files a session filed by its folder, and a registered session's events from
+before its first tag, when the config now files that folder differently.
 
 **Generated files, not commands:** digest (`state/digest/`), scorecard (`state/scorecards/`), STATE.md. Each starts
 with a freshness stamp: `built <ts> · status partial · bus 09:20 ok · git 09:30 ok · quota/max STALE 6 h`.

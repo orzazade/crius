@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/orzazade/crius/internal/store"
@@ -151,7 +152,11 @@ func (r *runner) ingestTranscripts() {
 // refile re-derives the filing of sessions filed by their folder when projects.toml now files that folder
 // differently. rollUp runs only for a file with new lines, so without this a finished session keeps a stale project.
 func (r *runner) refile() error {
-	rows, err := r.db.Query("select id, coalesce(cwd,''), coalesce(project,'') from session where attrib_source in ('cwd','unknown')")
+	// A registered session's events from before its first tag are filed by its folder too.
+	rows, err := r.db.Query("select id, coalesce(cwd,''), coalesce(project,'') from session where attrib_source in" +
+		" ('cwd','unknown') union select distinct s.id, coalesce(s.cwd,''), coalesce(e.project,'') from (select session," +
+		" min(from_ts) f from assignment group by session) a join session s on s.id = a.session join event e on" +
+		" e.session = a.session and e.ts < a.f")
 	if err != nil {
 		return err
 	}
@@ -162,7 +167,7 @@ func (r *runner) refile() error {
 			rows.Close()
 			return err
 		}
-		if r.cfg.projectForCwd(cwd) != project {
+		if r.cfg.projectForCwd(cwd) != project && !slices.Contains(stale, id) {
 			stale = append(stale, id)
 		}
 	}

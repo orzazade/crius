@@ -227,6 +227,10 @@ func Find(db *sql.DB, q Query, busTypes map[string]bool) (*Result, error) {
 		sessionRe.MatchString) {
 		return nil, fmt.Errorf("%w: sessions are found by id prefix or listed with no query; words do not search them", ErrQuery)
 	}
+	if slices.Contains(q.Kinds, "session") && wordRe.MatchString(q.Text) {
+		res.Status = "partial"
+		res.Reasons = append(res.Reasons, "sessions are not searched by words (give an id prefix, or list them with no query)")
+	}
 	// 1. Exact ids, and the events that cite them: an item or decision id whole, a sha by prefix either way (refs
 	// hold short shas). An item, decision or event id is not searched as words: no row for it is a true "no".
 	words := q.Text
