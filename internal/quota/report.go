@@ -70,6 +70,7 @@ type asg struct {
 // launch-tag assignments (asg), both sorted by time.
 type sess struct {
 	persona, cwdProject string
+	first               time.Time // the session's first request
 	obs                 []obs
 	asg                 []asg
 }
@@ -158,6 +159,9 @@ func (s *sess) guard(id string, ok map[string]bool) []Violation {
 			continue
 		}
 		from, to := o.ts.Add(-Grace), time.Time{}
+		if i == 0 && !s.first.IsZero() && s.first.Before(from) {
+			from = s.first // requests before the first line take its account
+		}
 		for _, x := range s.obs[i+1:] {
 			if x.rl {
 				to = x.ts.Add(-Grace)
@@ -220,6 +224,15 @@ func sessions(db Querier, p Projects) (out map[string]*sess, sampled map[string]
 			sampled[persona] = true
 			s.obs = append(s.obs, obs{t, rl})
 			return nil
+		}},
+		{"select session, min(coalesce(ts_first, ts_last)) from request group by session", func(r *sql.Rows) error {
+			var id, ts string
+			if err := r.Scan(&id, &ts); err != nil {
+				return err
+			}
+			t, err := parseTS(ts)
+			get(id).first = t
+			return err
 		}},
 		{"select session, from_ts, coalesce(to_ts, ''), coalesce(project, ''), coalesce(account, 'unknown')" +
 			" from assignment order by from_ts", func(r *sql.Rows) error {

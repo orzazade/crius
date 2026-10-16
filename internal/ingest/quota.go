@@ -43,11 +43,13 @@ func (r *runner) quotaFile(tx *sql.Tx, path string) error {
 			r.warn(false, "bad quota line in %s at byte %d", path, pos)
 			return nil
 		}
-		if _, err := time.Parse(time.RFC3339, l.TS); err != nil {
+		t, err := time.Parse(time.RFC3339, l.TS)
+		if err != nil {
 			r.st.BadLines++
 			r.warn(false, "bad quota line in %s at byte %d", path, pos)
 			return nil
 		}
+		l.TS = t.UTC().Format(time.RFC3339) // stored in one form, so ordering by text is ordering by time
 		rl := 0
 		key := fmt.Sprintf("quota:%d:%s", pos, sha1Hex(raw)[:12])
 		if l.RL {
@@ -59,7 +61,7 @@ func (r *runner) quotaFile(tx *sql.Tx, path string) error {
 				return err
 			}
 		}
-		_, err := tx.Exec("insert or ignore into account_seen (source_key, session, persona, ts, rl) values (?,?,?,?,?)",
+		_, err = tx.Exec("insert or ignore into account_seen (source_key, session, persona, ts, rl) values (?,?,?,?,?)",
 			key, r.text(l.Session), r.text(l.Persona), l.TS, rl)
 		return err
 	})

@@ -473,6 +473,38 @@ func TestQuotaUnpricedEnterpriseTodayBeforeTheEpochIsSaid(t *testing.T) {
 	}
 }
 
+// Codex round 4 P2: requests before a session's first statusline line take that line's account, so the guard checks
+// the projects they ran under too.
+func TestQuotaEnterpriseBeforeTheFirstLineIsGuarded(t *testing.T) {
+	x := quotaCase(t)
+	sid := "c3c3c3c3-2222-3333-4444-555555555555"
+	recs := []map[string]any{
+		prompt("p1", iso(qNow.Add(-60*time.Minute)), "fix the demo\n", "", "/work/demo"),
+		assistant(A{Req: sid + "-1", TS: iso(qNow.Add(-59 * time.Minute))}),
+		prompt("p2", iso(qNow.Add(-50*time.Minute)), "[crius account=enterprise project=axi role=lead]\n", "", "/work/demo"),
+		assistant(A{Req: sid + "-2", TS: iso(qNow.Add(-49 * time.Minute))})}
+	testutil.Write(t, filepath.Join(x.work, "-p", sid+".jsonl"), lines(recs...))
+	x.spool(quota.Line{TS: iso(qNow.Add(-45 * time.Minute)), Kind: "session", Session: sid, Persona: "work"})
+	x.run()
+	if s1 := grepAlerts(x.alerts(), "S1 personal work"); len(s1) != 1 ||
+		!strings.Contains(s1[0], "session c3c3c3c3, project demo (account from statusline)") {
+		t.Fatalf("want S1 for demo, got %q", x.alerts())
+	}
+}
+
+// Codex round 4 P2: a spool time with a zone offset is ordered by the instant, not by its text.
+func TestQuotaSpoolTimesWithOffsetsAreOrderedByInstant(t *testing.T) {
+	x := quotaCase(t)
+	x.session("work", x.sid, "/work/demo", "", qNow.Add(-20*time.Minute))
+	ent := quota.Line{TS: qNow.Add(-60 * time.Minute).In(time.FixedZone("", 4*3600)).Format(time.RFC3339),
+		Kind: "session", Session: x.sid, Persona: "work"}
+	x.spool(ent, sampleAt(x.sid, qNow.Add(-30*time.Minute), 20, qNow.Add(4*24*time.Hour)))
+	x.run()
+	if rep := x.report(); rep.EntWeekUSD != 0 || rep.MaxUSD == 0 {
+		t.Fatalf("the 20-min-old request bills Max: enterprise %v max %v", rep.EntWeekUSD, rep.MaxUSD)
+	}
+}
+
 func TestQuotaBadSpoolLineIsCountedNotSkippedQuietly(t *testing.T) {
 	x := quotaCase(t)
 	appendFile(t, filepath.Join(x.home, "spool", "quota.jsonl"), "{not json\n")
