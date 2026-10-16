@@ -124,3 +124,19 @@ func TestSampleFailsLoudly(t *testing.T) {
 		t.Fatal("a missing spool folder must fail")
 	}
 }
+
+// Codex round 2: a resumed session shows its old cost before its first new response, and a render can come before
+// rate_limits do. Neither is an enterprise line; a response that arrives without rate_limits is.
+func TestSampleWritesNoRateLimitsOnlyAfterAResponse(t *testing.T) {
+	h := home(t)
+	t0 := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+	must(t, h, render("r", 0, 0, false), t0)                   // resumed: cost 0.5 already, no response yet
+	must(t, h, render("r", 0, 0, false), t0.Add(time.Minute))  // re-render, same cost
+	must(t, h, render("r", 5, 6, true), t0.Add(2*time.Minute)) // first response: Max
+	must(t, h, render("m", 5, 6, true), t0.Add(3*time.Minute)) // a Max session...
+	more := []byte(`{"session_id":"m","cost":{"total_cost_usd":0.9,"total_api_duration_ms":1900}}`)
+	must(t, h, more, t0.Add(4*time.Minute)) // ...whose next response came without rate_limits: now API-billed
+	if got, want := kinds(spoolLines(t, h)), "r:session:true m:session:true m:session:false"; got != want {
+		t.Fatalf("got %s want %s", got, want)
+	}
+}

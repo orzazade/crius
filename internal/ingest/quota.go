@@ -59,11 +59,12 @@ func (r *runner) quotaFile(tx *sql.Tx, path string) error {
 				return err
 			}
 		}
-		// Once a session showed rate_limits it is on Max: their absence before is the moment before the first
-		// response, not another account.
-		_, err := tx.Exec("insert into account_seen (session, persona, rl, first_ts, last_ts) values (?,?,?,?,?)"+
-			" on conflict(session) do update set rl=max(rl, excluded.rl), first_ts=min(first_ts, excluded.first_ts),"+
-			" last_ts=max(last_ts, excluded.last_ts)", r.text(l.Session), r.text(l.Persona), rl, l.TS, l.TS)
+		// The latest line says which account the session bills to now; one enterprise line is enough for the guard
+		// (the sampler writes rl=false only after a response that came without rate_limits).
+		_, err := tx.Exec("insert into account_seen (session, persona, rl, ent, first_ts, last_ts) values (?,?,?,?,?,?)"+
+			" on conflict(session) do update set rl=case when excluded.last_ts >= last_ts then excluded.rl else rl end,"+
+			" ent=max(ent, excluded.ent), first_ts=min(first_ts, excluded.first_ts),"+
+			" last_ts=max(last_ts, excluded.last_ts)", r.text(l.Session), r.text(l.Persona), rl, 1-rl, l.TS, l.TS)
 		return err
 	})
 	if err != nil {

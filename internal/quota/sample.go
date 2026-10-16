@@ -50,9 +50,12 @@ type Line struct {
 }
 
 type seen struct {
-	TS   string `json:"ts"`
-	RL   bool   `json:"rl"`
-	Vals string `json:"vals"`
+	TS    string  `json:"ts"`
+	Lined bool    `json:"lined"` // a line was written for the session; RL and Vals are what it said
+	RL    bool    `json:"rl"`
+	Vals  string  `json:"vals"`
+	USD   float64 `json:"usd"` // cost and API time at the last render, to see a new response arrive
+	APIms float64 `json:"api_ms"`
 }
 
 type state struct {
@@ -73,9 +76,6 @@ func Sample(home, persona string, in []byte, now time.Time) (string, error) {
 		return "", errors.New("statusline input has no session_id")
 	}
 	rl := d.RateLimits != nil
-	if !rl && d.Cost.USD == 0 && d.Cost.APIms == 0 {
-		return "quota: no response yet", nil // rate_limits come with the first response; absence says nothing yet
-	}
 	l := Line{TS: now.UTC().Format(tsFormat), Session: d.SessionID, Persona: persona, RL: rl}
 	if rl {
 		if w := d.RateLimits.Five; w != nil {
@@ -110,13 +110,25 @@ func Sample(home, persona string, in []byte, now time.Time) (string, error) {
 	}
 	s, known := st.Sessions[d.SessionID]
 	last, _ := time.Parse(tsFormat, st.Last)
+	// rate_limits come with a response, so their absence means an API-billed session only when a response arrived
+	// since the last render: a new session shows none before its first response, a resumed one shows its old cost.
+	responded := known && (d.Cost.USD > s.USD || d.Cost.APIms > s.APIms)
 	switch {
-	case !known || s.RL != rl:
+	case rl && !(s.Lined && s.RL):
 		l.Kind = "session"
 	case rl && s.Vals != vals:
 		l.Kind = "change"
 	case rl && now.Sub(last) >= Heartbeat:
 		l.Kind = "heartbeat"
+	case !rl && !(s.Lined && !s.RL) && responded:
+		l.Kind = "session"
+	}
+	n := seen{TS: s.TS, Lined: s.Lined, RL: s.RL, Vals: s.Vals, USD: d.Cost.USD, APIms: d.Cost.APIms}
+	if !known {
+		n.TS = l.TS
+	}
+	if l.Kind != "" {
+		n.TS, n.Lined, n.RL, n.Vals = l.TS, true, rl, vals
 	}
 	if l.Kind != "" {
 		b, err := json.Marshal(l)
@@ -131,16 +143,18 @@ func Sample(home, persona string, in []byte, now time.Time) (string, error) {
 		if err := errors.Join(err, f.Close()); err != nil {
 			return "", err
 		}
-		st.Sessions[d.SessionID] = seen{TS: l.TS, RL: rl, Vals: vals}
 		if rl {
 			st.Last = l.TS
 		}
-		for id, v := range st.Sessions { // a week without a line: the session is gone
+	}
+	if l.Kind != "" || n != s {
+		st.Sessions[d.SessionID] = n
+		for id, v := range st.Sessions { // a week since its last line (or first sight): the session is gone
 			if t, err := time.Parse(tsFormat, v.TS); err != nil || now.Sub(t) > 7*24*time.Hour {
 				delete(st.Sessions, id)
 			}
 		}
-		b, err = json.Marshal(st)
+		b, err := json.Marshal(st)
 		if err != nil {
 			return "", err
 		}
@@ -151,6 +165,9 @@ func Sample(home, persona string, in []byte, now time.Time) (string, error) {
 		if err := os.Rename(tmp, statePath); err != nil {
 			return "", err
 		}
+	}
+	if !rl && !(n.Lined && !n.RL) {
+		return "quota: no response yet", nil
 	}
 	return display(l), nil
 }

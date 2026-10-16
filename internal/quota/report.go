@@ -54,55 +54,60 @@ type Querier interface {
 	Query(query string, args ...any) (*sql.Rows, error)
 }
 
-// accounts gives each session the account it is billed to: what the statusline saw (rate_limits present = max,
-// absent after a response = enterprise), else the launch tag, else unknown. A tag the statusline contradicts is a
-// mismatch. A session the statusline saw but no transcript gave (yet) is still checked, with no project.
-func accounts(db Querier, enterpriseOK map[string]bool) (map[string]sess, []Violation, error) {
-	rows, err := db.Query("select s.id, coalesce(s.persona, ''), coalesce(s.project, ''), s.account, a.rl" +
+// accounts gives each session the account it bills to now: the statusline's latest observation (rate_limits present
+// = max, absent after a response = enterprise), else the launch tag, else unknown. The guard checks every session
+// that was ever on the enterprise account, by either source. A tag the statusline contradicts is a mismatch. A
+// session the statusline saw but no transcript gave (yet) is still checked, with no project. sampled lists the
+// personas whose statusline has written a line.
+func accounts(db Querier, enterpriseOK map[string]bool) (out map[string]sess, vs []Violation, sampled map[string]bool,
+	err error) {
+	rows, err := db.Query("select s.id, coalesce(s.persona, ''), coalesce(s.project, ''), s.account, a.rl, a.ent" +
 		" from session s left join account_seen a on a.session = s.id" +
-		" union all select a.session, coalesce(a.persona, ''), '', 'unknown', a.rl from account_seen a" +
+		" union all select a.session, coalesce(a.persona, ''), '', 'unknown', a.rl, a.ent from account_seen a" +
 		" where a.session not in (select id from session)")
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	defer rows.Close()
-	out := map[string]sess{}
-	var vs []Violation
+	out, sampled = map[string]sess{}, map[string]bool{}
 	for rows.Next() {
-		var id string
+		var id, tag string
 		var s sess
-		var rl sql.NullInt64
-		if err := rows.Scan(&id, &s.persona, &s.project, &s.account, &rl); err != nil {
-			return nil, nil, err
+		var rl, ent sql.NullInt64
+		if err := rows.Scan(&id, &s.persona, &s.project, &tag, &rl, &ent); err != nil {
+			return nil, nil, nil, err
 		}
-		seen := ""
-		if rl.Valid {
-			seen = "enterprise"
-			if rl.Int64 == 1 {
-				seen = "max"
-			}
-		}
-		if s.account != "unknown" {
+		s.account = tag
+		if tag != "unknown" {
 			s.source = "tag"
-			if seen != "" && seen != s.account {
-				vs = append(vs, Violation{Session: id, Project: s.project, Kind: "mismatch",
-					Source: "tag " + s.account + ", statusline " + seen})
-			}
 		}
-		if seen != "" {
+		if rl.Valid {
+			sampled[s.persona] = true
+			seen := map[int64]string{0: "enterprise", 1: "max"}[rl.Int64]
+			if tag != "unknown" && seen != tag {
+				vs = append(vs, Violation{Session: id, Project: s.project, Kind: "mismatch",
+					Source: "tag " + tag + ", statusline " + seen})
+			}
 			s.account, s.source = seen, "statusline"
 		}
-		if s.account == "enterprise" {
+		via := ""
+		switch {
+		case ent.Int64 == 1:
+			via = "statusline"
+		case tag == "enterprise":
+			via = "tag"
+		}
+		if via != "" {
 			switch {
 			case s.project == "":
-				vs = append(vs, Violation{Session: id, Kind: "unmapped", Source: s.source})
+				vs = append(vs, Violation{Session: id, Kind: "unmapped", Source: via})
 			case !enterpriseOK[s.project]:
-				vs = append(vs, Violation{Session: id, Project: s.project, Kind: "s1", Source: s.source})
+				vs = append(vs, Violation{Session: id, Project: s.project, Kind: "s1", Source: via})
 			}
 		}
 		out[id] = s
 	}
-	return out, vs, rows.Err()
+	return out, vs, sampled, rows.Err()
 }
 
 type sample struct {
@@ -117,7 +122,7 @@ func parseTS(s string) (time.Time, error) { return time.Parse(time.RFC3339, s) }
 // Build makes the report as of now. enterpriseOK lists the projects that may run on the enterprise account.
 func Build(db Querier, enterpriseOK map[string]bool, now time.Time) (*Report, error) {
 	rep := &Report{Now: now, Status: "none"}
-	ss, vs, err := accounts(db, enterpriseOK)
+	ss, vs, sampled, err := accounts(db, enterpriseOK)
 	if err != nil {
 		return nil, err
 	}
@@ -152,21 +157,30 @@ func Build(db Querier, enterpriseOK map[string]bool, now time.Time) (*Report, er
 	// Resets only move forward, and an idle session's statusline can repeat an older window (older reset, lower
 	// share), so the epoch is the latest reset sampled and the share is the highest sampled for it, never the
 	// newest line's.
+	// Only samples of that epoch count as samples: an idle session's old-epoch heartbeat measures nothing now.
 	start := now.Add(-week)
+	var reset int64
+	for _, s := range samples {
+		reset = max(reset, s.reset.Int64)
+	}
+	cur := samples[:0]
+	for _, s := range samples {
+		if math.Abs(float64(s.reset.Int64-reset)) < 3600 {
+			cur = append(cur, s)
+		}
+	}
+	samples = cur
 	if n := len(samples); n > 0 {
 		last := samples[n-1]
 		rep.LastSample, rep.LastKind = last.ts, last.kind
-		var reset, fiveReset int64
+		var fiveReset int64
 		for _, s := range samples {
-			reset = max(reset, s.reset.Int64)
 			if s.five.Valid {
 				fiveReset = max(fiveReset, s.fiveReset.Int64)
 			}
 		}
 		for _, s := range samples {
-			if math.Abs(float64(s.reset.Int64-reset)) < 3600 {
-				rep.SevenPct = math.Max(rep.SevenPct, s.seven.Float64)
-			}
+			rep.SevenPct = math.Max(rep.SevenPct, s.seven.Float64)
 			if s.five.Valid && math.Abs(float64(s.fiveReset.Int64-fiveReset)) < 600 {
 				rep.FivePct = math.Max(rep.FivePct, s.five.Float64)
 			}
@@ -186,15 +200,20 @@ func Build(db Querier, enterpriseOK map[string]bool, now time.Time) (*Report, er
 		}
 	}
 
-	// Requests since the epoch start (or the last 7 days when no epoch is known).
+	// Requests since the epoch start (or the last 7 days when no epoch is known), and enterprise since local
+	// midnight even when the Max epoch started later.
+	y, m, d := now.Local().Date()
+	today := time.Date(y, m, d, 0, 0, 0, 0, time.Local)
+	from := start
+	if today.Before(from) {
+		from = today
+	}
 	rows, err = db.Query("select session, coalesce(ts_last, ts_first), cost_list_usd from request"+
-		" where coalesce(ts_last, ts_first) >= ?", start.UTC().Format(time.RFC3339))
+		" where coalesce(ts_last, ts_first) >= ?", from.UTC().Format(time.RFC3339))
 	if err != nil {
 		return nil, err
 	}
 	shares, entWeek, entDay := map[string]float64{}, map[string]float64{}, map[string]float64{}
-	y, m, d := now.Local().Date()
-	today := time.Date(y, m, d, 0, 0, 0, 0, time.Local)
 	var newestOpen time.Time // newest request of a session the sampler should cover
 	for rows.Next() {
 		var sid, ts string
@@ -202,9 +221,6 @@ func Build(db Querier, enterpriseOK map[string]bool, now time.Time) (*Report, er
 		if err := rows.Scan(&sid, &ts, &cost); err != nil {
 			rows.Close()
 			return nil, err
-		}
-		if !cost.Valid {
-			rep.Unpriced++ // a model with no list price: its $ is missing, not 0
 		}
 		usd := cost.Float64
 		t, err := parseTS(ts)
@@ -217,6 +233,16 @@ func Build(db Querier, enterpriseOK map[string]bool, now time.Time) (*Report, er
 		if project == "" {
 			project = "unknown"
 		}
+		if s.account == "enterprise" && !t.Before(today) {
+			rep.EntDay += usd
+			entDay[project] += usd
+		}
+		if t.Before(start) {
+			continue
+		}
+		if !cost.Valid {
+			rep.Unpriced++ // a model with no list price: its $ is missing, not 0
+		}
 		switch s.account {
 		case "max":
 			rep.MaxUSD += usd
@@ -227,16 +253,13 @@ func Build(db Querier, enterpriseOK map[string]bool, now time.Time) (*Report, er
 		case "enterprise":
 			rep.EntWeekUSD += usd
 			entWeek[project] += usd
-			if !t.Before(today) {
-				rep.EntDay += usd
-				entDay[project] += usd
-			}
 		default:
 			rep.UnknownUSD += usd
 		}
-		// Max sessions, and personal ones whose account is not known yet (the personal statusline samples), must
-		// have a sample: if the sampler is broken their account stays unknown, so unknown must count here.
-		if (s.account == "max" || s.account == "unknown" && s.persona == "personal") && t.After(newestOpen) {
+		// Max sessions must have a sample, and so must unknown ones of a persona whose statusline samples (personal
+		// always): a sampler broken before a session's first line leaves its account unknown.
+		if (s.account == "max" || s.account == "unknown" && (s.persona == "personal" || sampled[s.persona])) &&
+			t.After(newestOpen) {
 			newestOpen = t
 		}
 	}

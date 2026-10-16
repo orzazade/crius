@@ -55,10 +55,12 @@ create table if not exists quota (
   source_key text primary key, ts text not null, account text not null, session text, persona text, epoch integer,
   five_hour_pct real, five_reset integer, seven_day_pct real, sample_kind text not null);
 create index if not exists quota_ts on quota (ts);
--- What the statusline showed per session: rl=1 when rate_limits were present (Max), 0 after a response without them
--- (enterprise). The account guard checks the launch tag against it.
+-- What the statusline showed per session: rl is the latest observation (1 = rate_limits present = Max, 0 = a
+-- response without them = enterprise), ent=1 once any line said enterprise. The account guard checks the launch tag
+-- against it.
 create table if not exists account_seen (
-  session text primary key, persona text, rl integer not null, first_ts text not null, last_ts text not null);
+  session text primary key, persona text, rl integer not null, ent integer not null, first_ts text not null,
+  last_ts text not null);
 create table if not exists source_run (
   id integer primary key, started text, finished text, status text, stats text);
 -- One row per distinct alert, written in the same transaction as the rows that raised it; sent is set once the

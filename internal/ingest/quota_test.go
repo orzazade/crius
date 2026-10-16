@@ -229,17 +229,24 @@ func TestQuotaScifiSessionOnTheEnterpriseAccountIsS1(t *testing.T) {
 	}
 }
 
-// A session that showed rate_limits once is on Max, whether a render without them came before or after.
-func TestQuotaRateLimitsSeenOnceMeanMax(t *testing.T) {
+// Codex round 2 P1: the latest statusline line says where the session bills now, and any enterprise line (or an
+// enterprise tag) puts it under the guard, even when Max was seen before.
+func TestQuotaLatestObservationBillsAndAnyEnterpriseIsGuarded(t *testing.T) {
 	x := quotaCase(t)
+	byTag := "88888888-2222-3333-4444-555555555555"
 	x.session("work", x.sid, "/work/demo", "", qNow.Add(-20*time.Minute))
-	x.spool(quota.Line{TS: iso(qNow.Add(-19 * time.Minute)), Kind: "session", Session: x.sid, Persona: "work"},
-		sampleAt(x.sid, qNow.Add(-18*time.Minute), 20, qNow.Add(4*24*time.Hour)))
+	x.session("work", byTag, "/work/demo", "[crius account=enterprise project=demo role=lead]", qNow.Add(-20*time.Minute))
+	x.spool(sampleAt(x.sid, qNow.Add(-30*time.Minute), 20, qNow.Add(4*24*time.Hour)),
+		quota.Line{TS: iso(qNow.Add(-19 * time.Minute)), Kind: "session", Session: x.sid, Persona: "work"},
+		sampleAt(byTag, qNow.Add(-19*time.Minute), 20, qNow.Add(4*24*time.Hour)))
 	x.run()
-	x.spool(quota.Line{TS: iso(qNow.Add(-17 * time.Minute)), Kind: "session", Session: x.sid, Persona: "work"})
-	x.run()
-	if got := grepAlerts(x.alerts(), "enterprise account"); len(got) != 0 {
-		t.Fatalf("want no S1, got %q", got)
+	s1 := strings.Join(grepAlerts(x.alerts(), "S1 personal work on the enterprise account"), "\n")
+	if !strings.Contains(s1, "session 11111111, project demo (account from statusline)") ||
+		!strings.Contains(s1, "session 88888888, project demo (account from tag)") {
+		t.Fatalf("want S1 for both, got %q", x.alerts())
+	}
+	if rep := x.report(); rep.EntWeekUSD == 0 {
+		t.Fatalf("the session now bills enterprise: %+v", rep)
 	}
 }
 
@@ -331,6 +338,77 @@ func TestQuotaUnpricedRequestsMakeThePartial(t *testing.T) {
 	db.Close()
 	if rep := x.report(); rep.Status != "partial" || rep.Unpriced != 1 || !strings.Contains(rep.Text(), "unpriced: 1") {
 		t.Fatalf("status %s unpriced %d\n%s", rep.Status, rep.Unpriced, rep.Text())
+	}
+}
+
+// Codex round 2 P2: an idle session's heartbeat from the previous epoch is not a sample of the current one.
+func TestQuotaOldEpochHeartbeatIsNotACurrentSample(t *testing.T) {
+	x := quotaCase(t)
+	other := "99999999-2222-3333-4444-555555555555"
+	x.session("personal", x.sid, "/work/demo", "", qNow.Add(-10*time.Minute))
+	x.spool(sampleAt(x.sid, qNow.Add(-2*time.Hour), 20, qNow.Add(4*24*time.Hour)),
+		sampleAt(other, qNow.Add(-5*time.Minute), 90, qNow.Add(-3*24*time.Hour)))
+	x.run()
+	if rep := x.report(); rep.Status != "stale" || rep.Uncovered == 0 || rep.SevenPct != 20 {
+		t.Fatalf("status %s uncovered %v 7d %v", rep.Status, rep.Uncovered, rep.SevenPct)
+	}
+}
+
+// Codex round 2 P2: enterprise "today" counts from local midnight even when the Max epoch started later.
+func TestQuotaEnterpriseTodayIsNotCutByTheMaxEpoch(t *testing.T) {
+	x := quotaCase(t)
+	ent := "aaaaaaaa-2222-3333-4444-555555555555"
+	morning := time.Date(qNow.Year(), qNow.Month(), qNow.Day(), 0, 30, 0, 0, time.Local)
+	reset := morning.Add(30*time.Minute + 7*24*time.Hour) // the Max epoch began at 01:00 local
+	x.session("work", ent, "/work/axi", "", morning)
+	x.spool(quota.Line{TS: iso(morning.Add(time.Minute)), Kind: "session", Session: ent, Persona: "work"},
+		sampleAt(x.sid, qNow.Add(-time.Minute), 1, reset))
+	x.run()
+	if rep := x.report(); rep.EntDay == 0 || rep.EntWeekUSD != 0 {
+		t.Fatalf("today %v week %v", rep.EntDay, rep.EntWeekUSD)
+	}
+}
+
+// Codex round 2 P2: once the work statusline samples, an untagged work session it never saw counts as open.
+func TestQuotaUnknownSessionOfASampledPersonaCanBeStale(t *testing.T) {
+	x := quotaCase(t)
+	seenBefore := "bbbbbbbb-2222-3333-4444-555555555555"
+	x.session("work", x.sid, "/work/demo", "", qNow.Add(-10*time.Minute))
+	l := sampleAt(seenBefore, qNow.Add(-3*time.Hour), 20, qNow.Add(4*24*time.Hour))
+	l.Persona = "work"
+	x.spool(l)
+	x.run()
+	if rep := x.report(); rep.Status != "stale" {
+		t.Fatalf("status %s", rep.Status)
+	}
+}
+
+// Codex round 2 P1 claim: a pace push longer than a bus line blocks the alert queue. queueAlert cuts every alert
+// to the bus limit, so a long one is posted and the next one still goes out.
+func TestQuotaLongPaceAlertIsPostedAndDoesNotBlockTheQueue(t *testing.T) {
+	long := strings.Repeat("x", 60)
+	extra := axiProject
+	for _, p := range []string{"a" + long, "b" + long, "c" + long} {
+		extra += "\n[projects." + p + "]\npersona = \"personal\"\naccounts = [\"max\"]\ncwd = [\"/work/" + p +
+			"\"]\nrepos = []\nteam_logs = []\nartifact_dirs = []\n"
+	}
+	clock = func() time.Time { return qNow }
+	t.Cleanup(func() { clock = time.Now })
+	x := newIC(t, cfg{extra: extra})
+	reset := qNow.Add(4*24*time.Hour + 12*time.Hour)
+	for i, p := range []string{"a" + long, "b" + long, "c" + long} {
+		sid := strings.Repeat(string(rune('c'+i)), 8) + "-2222-3333-4444-555555555555"
+		x.session("personal", sid, "/work/"+p, "", qNow.Add(-20*time.Minute))
+		x.spool(sampleAt(sid, qNow.Add(-10*time.Minute), 62, reset))
+	}
+	x.run()
+	if len(grepAlerts(x.alerts(), "quota pace high")) != 1 {
+		t.Fatalf("pace alert not posted: %q", x.alerts())
+	}
+	x.session("work", x.sid, "/work/demo", "[crius account=enterprise project=demo role=lead]", qNow.Add(-5*time.Minute))
+	x.run()
+	if len(grepAlerts(x.alerts(), "S1 personal work")) != 1 {
+		t.Fatalf("the next alert must still go out: %q", x.alerts())
 	}
 }
 
