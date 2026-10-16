@@ -40,7 +40,8 @@ func deep(t *testing.T, db *sql.DB, q Query) *Result {
 	return r
 }
 
-// Crius 20:57: every project is searched; the asked project only ranks first (filing errors must not hide answers).
+// Crius 20:57: every project is searched (filing errors must not hide answers); between equally tight matches the
+// asked project comes first.
 func TestDeepCitesAllProjectsTheAskedOneFirst(t *testing.T) {
 	db := open(t)
 	key := "ghp_" + strings.Repeat("F", 36)
@@ -66,6 +67,18 @@ func TestDeepCitesAllProjectsTheAskedOneFirst(t *testing.T) {
 		t.Fatal(r.Text())
 	}
 	if r = deep(t, db, Query{Text: "mail stopped", Project: "trading"}); r.Hits[0].ID != "x1" || len(r.Hits) != 4 {
+		t.Fatalf("%+v", r.Hits)
+	}
+}
+
+// Crius 02:11 (10-17): closeness ranks first, the asked project only breaks ties. A project-first rank let every loose
+// match in a project that talks a lot push a tight match elsewhere out of the top 5 as the store grew.
+func TestDeepRanksATightMatchElsewhereAboveALooseOneInTheAskedProject(t *testing.T) {
+	db := open(t)
+	transcript(t, db, "falcon", "s1", msg("user", "loose", "2026-10-15T12:00:00Z", `"33 open PRs, and the mail queue was lost"`))
+	transcript(t, db, "crius", "s2", msg("user", "tight", "2026-10-15T10:00:00Z", `"was 422 on poll-pr, 33 PRs lost"`))
+	r := deep(t, db, Query{Text: "33 PRs lost", Project: "falcon"})
+	if len(r.Hits) != 2 || r.Hits[0].ID != "tight" {
 		t.Fatalf("%+v", r.Hits)
 	}
 }

@@ -30,11 +30,11 @@ const (
 var deepTimeout = 2 * time.Minute
 
 // Deep is the bounded transcript search: the transcripts of every session changed in the window (at most the last
-// 30 days), for 2 minutes, citing 10 messages (path, message uuid, time, a redacted one-line snippet). The asked
-// project only ranks first: an asker does not know where a talk was filed, and a filing error must not hide an
-// answer (Crius, 10-16). The asking session ranks last: it holds the question itself. Files are read in that order,
-// each part newest first; within a rank, the tightest match (the shortest stretch holding every word) comes first,
-// then the newest. It runs in Go, not rg, so the CLI needs nothing on PATH. A
+// 30 days), for 2 minutes, citing 10 messages (path, message uuid, time, a redacted one-line snippet). The tightest
+// match (the shortest stretch holding every word) comes first; the asked project only breaks a tie, then the newest
+// (Crius 10-17: a project-first rank let a project that talks a lot push a tight match elsewhere out). The asking
+// session ranks last: it holds the question itself. Files are read asked project first, then the others, then the
+// asking session, each part newest first, so a time limit cuts the least likely files. It runs in Go, not rg, so the CLI needs nothing on PATH. A
 // window that starts before the 30 days is expired: it shows the durable rows left, plus what the retained part of
 // the window still has.
 func Deep(db *sql.DB, q Query, busTypes map[string]bool) (*Result, error) {
@@ -43,7 +43,7 @@ func Deep(db *sql.DB, q Query, busTypes map[string]bool) (*Result, error) {
 	case len(terms) == 0:
 		return nil, fmt.Errorf("%w: --deep needs words to search for", ErrQuery)
 	case q.Waiting || q.Active || len(q.Kinds) > 0:
-		return nil, fmt.Errorf("%w: --deep takes only a query, --project (ranks first) and --since", ErrQuery)
+		return nil, fmt.Errorf("%w: --deep takes only a query, --project (breaks ties) and --since", ErrQuery)
 	}
 	if q.Project != "" {
 		if known, err := knownProject(db, q.Project); err != nil {
@@ -164,8 +164,8 @@ type deepSrc struct {
 	mt   time.Time
 }
 
-// cand is a matching message: its hit without the snippet, its text (not yet redacted), and its ranking: by rank,
-// then the shortest span holding every word, then the newest.
+// cand is a matching message: its hit without the snippet, its text (not yet redacted), and its ranking: the asking
+// session last, then the shortest span holding every word, then the asked project, then the newest.
 type cand struct {
 	hit  Hit
 	text string
@@ -174,11 +174,14 @@ type cand struct {
 }
 
 func (a cand) less(b cand) bool {
-	if a.rank != b.rank {
-		return a.rank < b.rank
+	if (a.rank == rankSelf) != (b.rank == rankSelf) {
+		return b.rank == rankSelf
 	}
 	if a.span != b.span {
 		return a.span < b.span
+	}
+	if a.rank != b.rank {
+		return a.rank < b.rank
 	}
 	return a.hit.TS > b.hit.TS
 }

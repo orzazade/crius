@@ -295,12 +295,13 @@ redacted paraphrase each. Older than 30 days -> `expired`. Crius never reads the
 **`find --deep` as built (step 4).** The CLI does the search itself, in Go, with no `rg` on PATH needed. The caller
 is the Haiku helper (the Explore agent): it runs `crius-rec find QUERY --deep [--project P] [--since …]` and passes
 the citations on. Every project's transcripts are searched, sessions filed under none included, with their subagent
-files at any depth; `--project` only ranks that project first, because an asker does not know where a talk was filed
-and a filing error must not hide an answer (Crius, 10-16; this replaces the 50-file cap, which made "all projects"
+files at any depth; `--project` only breaks ties between equally tight matches, because an asker does not know where
+a talk was filed and a filing error must not hide an answer (Crius, 10-16; ranking that project first above every
+closer match was withdrawn 10-17, since a project that talks a lot pushed tight matches elsewhere out; this replaces the 50-file cap, which made "all projects"
 meaningless: about 2,500 files and 5 GB in 30 days, read in about 10 s for a rare phrase and 45 s for a single letter, at 36 MB). The asking session
 (`CLAUDE_CODE_SESSION_ID`) ranks last, since it holds the question itself. A message is cited when its own text
-(user or assistant; tool input, decoded, and results count) holds every query word; within a rank the shortest stretch holding
-them all comes first, then the newest. At most 10 citations (`more` says there are others): path, message uuid, time,
+(user or assistant; tool input, decoded, and results count) holds every query word; the shortest stretch holding
+them all comes first, then the asked project, then the newest (the asking session still last). At most 10 citations (`more` says there are others): path, message uuid, time,
 and a one-line snippet around that stretch, redacted before it is cut. The 2-minute limit makes the answer `partial`
 with the count of files not read; so does a missing transcript of a session active in the window, a folder
 that cannot be read, or a file gone before it is read. Only the best 10 are held while reading, so a common word
