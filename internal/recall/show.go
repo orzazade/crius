@@ -61,8 +61,11 @@ func supersededBy(ctx context.Context, q querier) (map[string]string, error) {
 			return nil, err
 		}
 		if p, n := splitD(id); p != "" {
+			// Two decisions superseding one: the first (lowest number) is its successor, whatever the row order.
 			if sp, sn := splitD(sup); sp == p && sn < n {
-				by[sup] = id
+				if _, on := splitD(by[sup]); by[sup] == "" || n < on {
+					by[sup] = id
+				}
 			}
 		}
 	}
@@ -107,7 +110,7 @@ func Show(db *sql.DB, home, id string, history bool, now time.Time) (*Shown, err
 	case "commit or session":
 		err = showCommitOrSession(ctx, db, s)
 	case "project":
-		err = showProject(home, s)
+		err = showProject(db, home, s)
 	}
 	return s, err
 }
@@ -379,11 +382,21 @@ func showCommitOrSession(ctx context.Context, db *sql.DB, s *Shown) error {
 	return nil
 }
 
-// showProject prints the project's STATE.md (design §4); until the digest step builds it, that is unavailable.
-func showProject(home string, s *Shown) error {
+// showProject prints the project's STATE.md (design §4); until the digest step builds it, that is unavailable. A
+// name with no session, event, item or decision in the store is no project: a true "no".
+func showProject(db *sql.DB, home string, s *Shown) error {
 	path := filepath.Join(home, "state", s.ID, "STATE.md")
 	b, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
+		var known bool
+		if err := db.QueryRow("select exists (select 1 from session where project = ?1) or exists (select 1 from event"+
+			" where project = ?1) or exists (select 1 from item where project = ?1) or exists (select 1 from decision"+
+			" where project = ?1)", s.ID).Scan(&known); err != nil {
+			return err
+		}
+		if !known {
+			return nil
+		}
 		s.Status, s.Reasons = "unavailable", []string{path + " is not built yet (the digest step builds it)"}
 		return nil
 	}

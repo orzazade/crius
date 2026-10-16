@@ -269,7 +269,7 @@ func quotaCmd(home string, now time.Time, asJSON, room bool, stdout, stderr io.W
 			fmt.Fprintf(stderr, "error: %v\n", err)
 			return exitError
 		}
-		fmt.Fprintf(stdout, "%s\n", b)
+		writeJSON(stdout, b)
 	} else {
 		fmt.Fprint(stdout, capLines(rep.Text(), maxLines))
 	}
@@ -458,6 +458,15 @@ func healthCmd(home string, now time.Time, asJSON bool, stdout, stderr io.Writer
 }
 
 // answer prints a recall answer (text capped, or all of it as JSON) and returns the exit code of its status.
+// writeJSON prints JSON that redact.JSON already redacted value by value, past Run's raw redacting Writer: a raw
+// pattern over encoded text can cut a closing quote (a value ending in "password:").
+func writeJSON(stdout io.Writer, b []byte) {
+	if w, ok := stdout.(redact.Writer); ok {
+		stdout = w.W
+	}
+	fmt.Fprintf(stdout, "%s\n", b)
+}
+
 func answer(status string, v any, text string, asJSON bool, stdout, stderr io.Writer) int {
 	if asJSON {
 		b, err := redact.JSON(v)
@@ -465,7 +474,7 @@ func answer(status string, v any, text string, asJSON bool, stdout, stderr io.Wr
 			fmt.Fprintf(stderr, "error: %v\n", err)
 			return exitError
 		}
-		fmt.Fprintf(stdout, "%s\n", b)
+		writeJSON(stdout, b)
 	} else {
 		fmt.Fprint(stdout, capLines(text, maxLines))
 	}

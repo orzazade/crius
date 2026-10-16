@@ -2,6 +2,7 @@ package recall
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -206,5 +207,37 @@ func TestACommitShaAndASessionPrefixAreExactHits(t *testing.T) {
 	}
 	if r := find(t, db, Query{Text: "7dce2bdf"}); len(r.Hits) != 1 || r.Hits[0].Kind != "session" {
 		t.Fatalf("%+v", r.Hits)
+	}
+}
+
+// Review 0178403: a cited id matches whole (demo#1 is not demo#11); a full sha finds events citing its short form;
+// an id with no row is a true "no", not a word search; sessions are a kind.
+func TestFindMatchesIDsWhole(t *testing.T) {
+	db := open(t)
+	event(t, db, "2026-10-16T10:00:00Z", "demo", "info", "item=demo#11 shipped", `{"item":["demo#11"]}`)
+	event(t, db, "2026-10-16T10:01:00Z", "demo", "info", "per demo-D12 we poll", `{"decision":["demo-D12"]}`)
+	event(t, db, "2026-10-16T10:02:00Z", "demo", "commit_made", "committed", `{"sha":["8e66e952"]}`)
+	for _, id := range []string{"demo#1", "demo-D1", "demo#99"} {
+		if r := find(t, db, Query{Text: id}); len(r.Hits) != 0 || r.Status != "complete" {
+			t.Fatalf("%s: %+v", id, r.Hits)
+		}
+	}
+	if r := find(t, db, Query{Text: "8e66e952" + strings.Repeat("0", 32)}); len(r.Hits) != 1 || r.Hits[0].Text != "committed" {
+		t.Fatalf("%+v", r.Hits)
+	}
+	if r := find(t, db, Query{Text: "8e66e9"}); len(r.Hits) != 0 {
+		t.Fatalf("a 6-char prefix is not a sha: %+v", r.Hits)
+	}
+	// Sessions are listed, or found by id prefix; words do not search them, so a word query on them is refused.
+	exec(t, db, "insert into session (id, project, started) values ('7dce2bdf-0000', 'demo', '2026-10-16T11:00:00.000Z')")
+	if r := find(t, db, Query{Kinds: []string{"session"}, Since: now.Add(-2 * time.Hour)}); len(r.Hits) != 1 ||
+		r.Hits[0].Match != "list" {
+		t.Fatalf("%+v", r.Hits)
+	}
+	if r := find(t, db, Query{Text: "7dce2bdf", Kinds: []string{"session"}}); len(r.Hits) != 1 {
+		t.Fatalf("%+v", r.Hits)
+	}
+	if _, err := Find(db, Query{Text: "mail", Kinds: []string{"session"}, Now: now}, store.Types); !errors.Is(err, ErrQuery) {
+		t.Fatal(err)
 	}
 }

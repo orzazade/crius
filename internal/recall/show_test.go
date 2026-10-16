@@ -1,6 +1,7 @@
 package recall
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -128,5 +129,20 @@ func TestShowNotFoundNamesWhereItLookedAndABadIDIsRefused(t *testing.T) {
 	}
 	if _, err := Show(db, home, "demo#1", true, now); !errors.Is(err, ErrQuery) {
 		t.Fatal("--history before step 6 covers decisions only", err)
+	}
+}
+
+// Review 626e532: when two decisions supersede one, the first (lowest number) is its successor, whatever the row order.
+func TestTwoSupersedesPickTheFirst(t *testing.T) {
+	home := decisions(t)
+	db, err := store.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	exec(t, db, "update decision set supersedes = 'demo-D1' where id = 'demo-D3'")
+	by, err := supersededBy(context.Background(), db)
+	if err != nil || by["demo-D1"] != "demo-D2" {
+		t.Fatal(by, err)
 	}
 }

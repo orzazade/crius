@@ -21,7 +21,7 @@ const maxAge = 20 * time.Minute
 // maxHits bounds one answer; the text output is capped further by the CLI.
 const maxHits = 500
 
-const sources = "events, decisions, items, artifacts, commits"
+const sources = "events, decisions, items, artifacts, commits, sessions"
 
 type Query struct {
 	Text, Project   string
@@ -115,7 +115,7 @@ func stamp(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05.000Z
 
 // Kinds are the kinds find accepts: every event kind in the store, the bus types, and the other sources.
 func Kinds(db *sql.DB, busTypes map[string]bool) ([]string, error) {
-	known := []string{"decision", "item", "artifact", "commit"}
+	known := []string{"decision", "item", "artifact", "commit", "session"}
 	for t := range busTypes {
 		known = append(known, strings.ToLower(t))
 	}
@@ -221,11 +221,23 @@ func Find(db *sql.DB, q Query, busTypes map[string]bool) (*Result, error) {
 		return rows.Err()
 	}
 
-	// 1. Exact ids, and the events that cite them.
+	// Sessions are not in the word index (titles are not records): a word query on them alone could only say "no".
+	if slices.Contains(q.Kinds, "session") && wordRe.MatchString(q.Text) && !slices.ContainsFunc(strings.Fields(q.Text),
+		sessionRe.MatchString) {
+		return nil, fmt.Errorf("%w: sessions are found by id prefix or listed with no query; words do not search them", ErrQuery)
+	}
+	// 1. Exact ids, and the events that cite them: an item or decision id whole, a sha by prefix either way (refs
+	// hold short shas). An item, decision or event id is not searched as words: no row for it is a true "no".
+	words := q.Text
 	for _, tok := range strings.Fields(q.Text) {
 		tok = strings.Trim(tok, ".,;:?!()[]\"'")
-		cite := `id <> '' and refs like '%"' || ? || '%'`
+		cite := `id <> '' and instr(refs, '"' || ? || '"') > 0`
+		citeSha := `id <> '' and case when json_valid(refs) then exists (select 1 from json_tree(refs) j where` +
+			` j.type = 'text' and length(j.atom) >= 7 and (j.atom like ? || '%' or ? like j.atom || '%')) end`
 		var err error
+		if itemRe.MatchString(tok) || decisionRe.MatchString(tok) || eventRe.MatchString(tok) {
+			words = strings.Replace(words, tok, " ", 1)
+		}
 		switch {
 		case itemRe.MatchString(tok):
 			err = add("exact", "kind = 'item' and id = ?", "id", tok)
@@ -238,10 +250,13 @@ func Find(db *sql.DB, q Query, busTypes map[string]bool) (*Result, error) {
 			err = add("exact", "kind = 'commit' and id like ? || '%'", norm+" desc", tok)
 		}
 		if err == nil && sessionRe.MatchString(tok) {
-			err = session(ctx, conn, q, tok, res, seen)
+			err = session(ctx, conn, q, tok, "exact", res, seen)
 		}
-		if err == nil && (itemRe.MatchString(tok) || decisionRe.MatchString(tok) || shaRe.MatchString(tok)) {
+		if err == nil && (itemRe.MatchString(tok) || decisionRe.MatchString(tok)) {
 			err = add("exact", cite, norm+" desc", tok)
+		}
+		if err == nil && shaRe.MatchString(tok) {
+			err = add("exact", citeSha, norm+" desc", tok, tok)
 		}
 		if err != nil {
 			return nil, err
@@ -249,7 +264,7 @@ func Find(db *sql.DB, q Query, busTypes map[string]bool) (*Result, error) {
 	}
 	// 2. Full-text, best match first; 3. with no words, a list, newest first.
 	var terms []string
-	for _, w := range wordRe.FindAllString(strings.ToLower(q.Text), -1) {
+	for _, w := range wordRe.FindAllString(strings.ToLower(words), -1) {
 		terms = append(terms, `"`+w+`"`)
 	}
 	if len(terms) > 0 {
@@ -260,6 +275,9 @@ func Find(db *sql.DB, q Query, busTypes map[string]bool) (*Result, error) {
 			cond = "1"
 		}
 		err = add("list", cond, norm+" desc, id desc")
+		if err == nil && slices.Contains(q.Kinds, "session") {
+			err = session(ctx, conn, q, "", "list", res, seen)
+		}
 	}
 	if err != nil {
 		return nil, err
@@ -268,7 +286,7 @@ func Find(db *sql.DB, q Query, busTypes map[string]bool) (*Result, error) {
 }
 
 // session adds the sessions whose id starts with tok (they are not in the text index: titles are not records).
-func session(ctx context.Context, conn *sql.Conn, q Query, tok string, res *Result, seen map[string]bool) error {
+func session(ctx context.Context, conn *sql.Conn, q Query, tok, match string, res *Result, seen map[string]bool) error {
 	cond, args := "id like ? || '%'", []any{tok}
 	if q.Project != "" {
 		cond, args = cond+" and project = ?", append(args, q.Project)
@@ -286,7 +304,7 @@ func session(ctx context.Context, conn *sql.Conn, q Query, tok string, res *Resu
 	}
 	defer rows.Close()
 	for rows.Next() {
-		h := Hit{Kind: "session", Match: "exact"}
+		h := Hit{Kind: "session", Match: match}
 		var taint int
 		if err := rows.Scan(&h.ID, &h.Project, &h.TS, &h.Text, &taint); err != nil {
 			return err

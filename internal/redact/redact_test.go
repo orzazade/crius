@@ -72,3 +72,11 @@ func TestJSONRedactsEachStringBeforeEncoding(t *testing.T) {
 		t.Fatal(s)
 	}
 }
+
+// Review 0178403: a key at the end of a line takes nothing from the next line.
+func TestRedactStaysOnItsLine(t *testing.T) {
+	out, _ := Redact("new password:\n2026-10-16 next line")
+	if !strings.Contains(out, "\n2026-10-16 next line") {
+		t.Fatalf("%q", out)
+	}
+}

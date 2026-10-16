@@ -372,3 +372,23 @@ func TestFindDeepExitCodes(t *testing.T) {
 		t.Fatal(rc, out)
 	}
 }
+
+// Review 0178403: --json is redacted per value once; a raw pass over the encoded text must not eat a closing quote.
+func TestFindJSONStaysValid(t *testing.T) {
+	findStore(t, "owner asked for the new password:")
+	rc, out := run("find", "owner", "--json")
+	if rc != 0 || !json.Valid([]byte(out)) {
+		t.Fatal(rc, out)
+	}
+}
+
+// Review 626e532: a word that is no known project is a true "no", not "unavailable".
+func TestShowUnknownProjectIsNoMatch(t *testing.T) {
+	findStore(t, "x")
+	if rc, out := run("show", "nosuchproj"); rc != 0 || !strings.Contains(out, "no match") {
+		t.Fatal(rc, out)
+	}
+	if rc, out := run("show", "demo"); rc != exitUnavailable {
+		t.Fatal(rc, out)
+	}
+}
