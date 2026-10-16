@@ -5,7 +5,8 @@ happened, fast and reliably; whether Claude Code memory is enough; what standard
 measure output, cost and waits. Inputs: `research/memory-and-measurement.md`, `research/claude-code-telemetry.md`,
 `docs/DESIGN.md` (7b overrides), `STATUS.md`, cmux-team skill §6, `tools/agent-cost/review-1016/REPORT.md`.
 Marks: **FACT** = checked in a file or by a test today. **ESTIMATE** = my reasoning, to be checked.
-Rev 2 applies all 12 Codex findings (verdict "ship after fixes"); §10 lists what I decided without the owner.
+Rev 2 applies all 12 Codex findings (verdict "ship after fixes"). Rev 3 adds the owner's answers of 2026-10-16
+(§10) and §7b on mistakes and corrections.
 
 ---
 
@@ -19,12 +20,13 @@ Rev 2 applies all 12 Codex findings (verdict "ship after fixes"); §10 lists wha
 4. Numbers come from ground truth. Agent reports are "claims" until a check or an independent review confirms them.
 5. Five commands are the only door: `find`, `show`, `record`, `quota`, `health`. The home behind them can change.
 6. Leads write by hand only bus lines, four fields in `LEAD.md`, and decisions. Everything else is derived.
-7. Headline numbers, weekly: accepted owner outcomes (code / research / Falcon apart), observed quota used, and time
-   the owner kept agents waiting. Quality numbers are candidates until a defect is confirmed.
+7. Headline numbers, weekly: accepted owner outcomes (code / research / Falcon apart), subscription quota pace plus
+   Appxite enterprise $ spend, and time the owner kept agents waiting. Quality numbers stay candidates until confirmed.
 8. Every answer says `complete`, `partial`, `unavailable` or `expired`, names what it searched, and fails loudly.
-9. Crius starts fresh each day from a script-built digest (zero model tokens), not from raw data.
-10. Nothing leaves the Mac except allowlisted metadata, unless there is an operational need AND the owner's explicit
-    permission. No graph DB, no memory product, no dashboard, no OTel until a need is shown.
+9. Crius starts fresh each day from a script-built digest (zero model tokens). Mistakes are fixed forward with
+   linked records, never by rewriting history (§7b).
+10. Everything stays on the Mac (owner, 2026-10-16). One notification channel (Remote Control push), few and
+    high-signal. No graph DB, no memory product, no dashboard, no OTel until a need is shown.
 
 ---
 
@@ -41,10 +43,9 @@ Weight 1-5 = how much it decides the design. Each target is checked by a rollout
 | **Cost** (quota) | 3 | ingest, digest, scorecard: 0 model tokens; Crius ≤ 5% of weekly quota; helpers on Haiku | measured from its own sessions |
 | **Speed** | 2 | `find`/`show` ≤ 2 s; a helper answer ≤ 60 s | recall test timing |
 
-Cases the design must survive: a lead forgets to report (derived from git and team logs, flagged "lead silent"); a
-session crashes (transcript stays; session closed at its last record, end reason `unknown`); a hook fails silently
-(expected-event check, like the 10-09 `check-secrets.sh` exit 127); the ingest dies or the Mac sleeps (independent
-heartbeat check, §5); evidence expires (answers say `expired`, not "not found").
+Must survive: a lead forgets to report ("lead silent", derived from git and team logs); a session crashes (closed
+at its last record, end `unknown`); a hook fails silently (expected-event check, like the 10-09 exit 127); the ingest
+dies (local watchdog, §5); evidence expires (`expired`, not "not found").
 
 ---
 
@@ -59,24 +60,20 @@ heartbeat check, §5); evidence expires (answers say `expired`, not "not found")
 | **Metrics** | durable `request`, `session`, `wait`, `quota`, `acceptance` rows; weekly files | ingest; scorecard script | Crius, owner | rows + markdown | requests 90 d then daily rollup forever | ESTIMATE ≤ 250 MB/yr |
 | **Artifacts** | where written today (repos, `research/`, `docs/`) | authors | anyone | markdown | as the repo keeps it | pointer row: path, sha256, title, headings, taint |
 
-Why not auto-memory for the timeline: 200-line cap, loaded into every session, not loaded by subagents, no dates or
-supersession, written by agents (self-report), no query. Nothing here writes events into it.
-
-Existing pieces and how each is used:
+Auto-memory is not the timeline: 200-line cap, loaded into every session, not loaded by subagents, no dates or
+supersession, self-reported, no query. Existing pieces and how each is used:
 
 | Piece | Use | Limit |
 |---|---|---|
 | Transcripts (`~/.claude/projects` = `~/.claude-personal/projects`, 4.4 GB; `~/.claude-work/projects`, 94 MB; FACT) | main source of requests, sessions, prompts (human vs peer), compactions, commits made, AskUserQuestion, hook errors | deleted after 30 days (default `cleanupPeriodDays`; oldest file 09-16; FACT). **Decided: keep 30 days** (disk); durable records carry what we need |
 | `tools/agent-cost` `extract.py` (1,575 files, 159K requests, 20 s, no prompt or tool text; FACT) | core of `crius-ingest`: same fields, same max-usage rule per request, made incremental (§5) | full run writes 65 MB JSONL; the store keeps rows instead |
 | context-mode FTS5 (`~/.claude/context-mode`, 841 MB; FACT) | stays the in-session recall tool | not the record: per-project DBs, private schema, raw tool output inside |
-| Auto-memory | preferences, pointers | caps, no time structure |
-| Statusline `rate_limits` | the only source of real quota (FACT); first instrument after ingest (§5) | work persona has a statusline; personal has none (FACT) |
+| Statusline `rate_limits` | the only source of real quota (FACT); first instrument after ingest (§5) | work persona has a statusline; personal has none (FACT). `rate_limits` exists only on Pro/Max, so a session with no `rate_limits` but a cost is on the enterprise account (ESTIMATE, checked in step 3) |
 | Hooks | later, only for live waits (`find --waiting`) | a recorder, never a gate |
 | OTel (works on the Max login, needs a collector; FACT) | deferred until permission-wait precision or hook diagnostics justify it | if added: allowlisted fields only |
-| Falcon (`falcon-crius` MCP: 18 reads + 14 actions) | a source: Falcon run outcomes and cost (k3s runs' transcripts are not on the Mac); receives the heartbeat | not a home for private rows without the two conditions in §3 |
+| Falcon (`falcon-crius` MCP: 18 reads + 14 actions) | a source: Falcon run outcomes and cost (k3s runs' transcripts are not on the Mac), copied to the Mac | not a home for Crius rows (everything local, §10) |
 | cmux-team bus `crius/bus/<project>.log` (exists, empty, gitignored; FACT) | the leads' channel to Crius, strict grammar (§6) | moves to `~/.crius/bus/` (§3b) |
 | Explore / quick-review (Haiku), codex | Explore runs `find` and the bounded transcript search for Crius; reviews are acceptance evidence | no new agent type |
-| Telegram / Discord | alerts, pace reminder fallback | redacted text only |
 
 ---
 
@@ -92,18 +89,17 @@ Existing pieces and how each is used:
 | Quality | 4: no unique keys, double counts | 5: keys and constraints | 5 |
 | Owner effort | 5 | 5 | 3: tokens, SOPS secret, deploys |
 | Robustness | 3 | 4: one machine; backups + outside heartbeat | 3 today: Falcon bus not built |
-| Data boundary | 5 | 5: stays on the Mac | needs the owner's explicit permission |
+| Data boundary | 5 | 5: stays on the Mac | owner chose Mac only (2026-10-16) |
 | Phone / voice reach | 2 | 3: through Crius (Remote Control) | 5 |
 | Weighted (§1 weights; last two not weighted) | 3.8 | **4.8** | 4.0 |
 
 **Pick: SQLite on the Mac.** Sources are on the Mac, so the extractor runs there anyway.
 
-**Move to Falcon Postgres only when BOTH hold:** (1) an operational need, such as the voice connector answering
-without a Crius session, or the Falcon bus stable for 2 weeks and needing these rows; and (2) the owner's explicit
-permission for that data on k3s (Q2). Until then only **allowlisted metadata** leaves the Mac: heartbeat time,
-per-source status and counts, quota percentages, outcome counts. No text, paths, titles or Appxite names.
-**Path:** same tables in Postgres; one more backend in `crius-rec` (deferred, not built now); the ingest can become a
-job of Falcon's Mac daemon. Callers do not change.
+**Everything stays on the Mac (owner, 2026-10-16).** Nothing from the store leaves it, metadata included. A move
+(to Falcon Postgres, or a remote Crius later; the owner holds the `crius.ai` domain, note only) needs BOTH an
+operational need, such as a voice connector answering without a Crius session, AND a new explicit owner permission.
+**Path, if that day comes:** same tables in Postgres; one more backend in `crius-rec` (not built now); the ingest
+can become a job of Falcon's Mac daemon. Callers do not change.
 
 ### 3b. File layout
 
@@ -135,14 +131,15 @@ finds no `<project>-D<n>` or `<project>#<n>` id that exists only in private file
 |---|---|
 | `request` | request_id (PK), session, ts_first, ts_last, model, query_source, tok_in, tok_out (max over streamed records), tok_cache_read, tok_cache_write, cost_list_usd, transcript_path, line_uuid. 90 days, then rolled into `usage_day` |
 | `usage_day` | session, day, model, query_source, calls, tokens by type, cost (forever) |
-| `session` | id, account, persona, project, role, parent_id, item, each with `attrib_source` (`registered`, `cwd`, `unknown`), title, model_main, started, ended, end_reason, peak_ctx, compactions, human_prompts, peer_prompts, interrupts, hook_blocks, hook_errors, taint |
+| `session` | id, account (`max` = the one subscription, `enterprise` = Appxite API billing, `unknown`), persona, project, role, parent_id, item, each with `attrib_source` (`registered`, `cwd`, `unknown`), title, model_main, started, ended, end_reason, peak_ctx, compactions, human_prompts, peer_prompts, interrupts, hook_blocks, hook_errors, taint |
 | `assignment` | session, item, role, from_ts, to_ts, source (launch or task switch) |
 | `wait` | wait_id, session, kind, request_ref (notification or tool_use_id), opened, resolution_ref, resolved, resolved_by (`human/peer/timeout/none`), state `open/resolved` |
 | `quota` | ts, account, epoch (`resets_at`), five_hour_pct, seven_day_pct, sample_kind `change/heartbeat` |
 | `item` | id `<project>#<n>`, parent (owner outcome), kind `code/research/falcon/other`, title, criteria (set at open), opened, state, taint |
-| `acceptance` | item, revision (sha or artifact sha256), checks (refs + results), reviewer + review_ref, accepted_by, ts, verdict |
+| `acceptance` | item, revision (sha or artifact sha256), checks (refs + results), reviewer + review_ref, accepted_by, ts, state `accepted/revoked`, revoked_ts, revoked_by, revoke_reason, defect, fix_item |
 | `evidence` | id, kind (`commit/ci/gate/review/artifact/bus`), ref, revision, ts, source_key |
-| `defect` | id, item, found_by, signal refs (revert, BUG line, owner report), incident id (dedupe), confirmed (bool) |
+| `defect` | id, item, revision, found_by (`us/owner/others`), found_ts, severity `S1-S3`, cause_class, signal refs (revert, BUG line, owner report), incident id (dedupe), confirmed, locked_output (bool) |
+| `correction` | id, target (row id), field, old_value, new_value, reason, by, ts. Views apply it; the target row is never edited |
 | `event` | id, ts UTC, project, kind, actor, session, item, refs JSON, text (≤ 300, filtered), taint, verified, source_key UNIQUE |
 | `decision` | id, project, ts, title, decided_by, supersedes, file, line, session, taint |
 | `commit` | sha, repo, project, ts, session (from the transcript's `[branch sha]` result), files, is_revert, reverts_sha, ci |
@@ -153,14 +150,13 @@ artifact titles and headings), daily and weekly rollups, `STATE.md`, digest, sco
 
 **Backup and restore.** Nightly `sqlite3 .backup` into `~/.crius/backup/` (Time Machine covers it if on). A
 **restore-after-expiry test** runs weekly: restore the newest backup into a scratch DB, remove access to transcripts
-older than 30 days, regenerate a matured week's scorecard, and compare it with the frozen file. Any difference fails.
+older than 30 days, regenerate a matured week's scorecard, and compare it with that file's latest revision (§7b).
+Any difference fails. **Disk budget:** `~/.crius` ≤ 1 GB; nightly prune of fine events and `request` rows after 90
+days, after rollup.
 
-**Disk budget:** `~/.crius` ≤ 1 GB. Nightly prune of fine events and `request` rows after 90 days, after rollup.
-
-**Links.** Item = `<project>#<n>`, child items point to their owner outcome. Decision = `<project>-D<n>`; team rulings
-stay `B<n>` and are indexed as `<project>-B<n>` by pointer. Event -> decision -> commit -> session goes by refs in bus
-lines, decision entries and transcript commit results. No trailers in commits (Appxite colleagues see nothing new).
-Refs are validated (a sha must exist); a bad ref is kept and flagged.
+**Links.** Item `<project>#<n>` (children point to their owner outcome); decision `<project>-D<n>`; team rulings
+indexed as `<project>-B<n>`. Event -> decision -> commit -> session goes by refs in bus lines, decision entries and
+transcript commit results; no commit trailers. Refs are validated; a bad ref is kept and flagged.
 
 **No secrets, no bodies.** Text enters only from short fields written for the record (bus lines, decision entries,
 titles, headings). Prompt text, tool output and assistant text are never stored: only lengths, counts, timestamps,
@@ -169,10 +165,10 @@ CLI output, error messages, logs, digests, alerts, and helper answers. A hit is 
 
 ### 3d. Provenance and taint
 
-- **At launch** the session gets `CRIUS_ACCOUNT/PROJECT/ROLE/PARENT/ITEM` (cmux launch `--settings` env) and its first
-  prompt carries one tag line, `[crius project=quotes role=qa parent=<uuid> item=quotes#41]`. The ingest extracts only
-  that tag from the prompt (allowlisted regex), nothing else. **At a task switch** (clear-per-item) the resume prompt
-  carries a new tag and starts a new `assignment` row.
+- **At launch** the session gets `CRIUS_ACCOUNT` (`max` or `enterprise`) and `CRIUS_PROJECT/ROLE/PARENT/ITEM` (cmux
+  launch `--settings` env), and its first prompt carries one tag line, `[crius account=max project=quotes role=qa
+  parent=<uuid> item=quotes#41]`. The ingest extracts only that tag (allowlisted regex). **At a task switch**
+  (clear-per-item) the resume prompt carries a new tag and starts a new `assignment` row.
 - Missing tag: project may come from cwd (`attrib_source=cwd`); role and item stay `unknown`. Never guessed.
 - **Taint**: a session becomes tainted when it reads a tainted source (Falcon mail/ticket/PR records, web pages).
   Everything it writes inherits taint: decisions, artifacts, events, items. A `find` answer or helper answer is
@@ -182,24 +178,18 @@ CLI output, error messages, logs, digests, alerts, and helper answers. A hit is 
 
 ## 4. The interface: five commands
 
-`crius-rec <command>` (Python stdlib + sqlite3). Text by default, `--json` for scripts, output capped (default 20
-lines). Every answer starts with a status line and exits with a code:
-
-| Status | Meaning | Exit |
-|---|---|---|
-| `complete` | all sources for the scope were fresh and searched | 0 |
-| `partial` | some sources stale or failed; names them; results may be missing | 3 |
-| `unavailable` | could not search (DB locked, store missing, leak test failed) | 4 |
-| `expired` | the evidence existed but is past retention (e.g. transcript > 30 d); shows the durable rows that remain | 5 |
-
-A true "no" is `complete` with `no match in <sources, project, since>`.
+`crius-rec <command>` (Python stdlib + sqlite3). Text by default, `--json` for scripts, output capped (20 lines).
+Every answer starts with a status: `complete` (exit 0: all sources for the scope fresh and searched), `partial`
+(exit 3: names the stale or failed sources), `unavailable` (exit 4: DB locked, store missing, leak test failed),
+`expired` (exit 5: evidence past retention; shows the durable rows left). A true "no" is `complete` with
+`no match in <sources, project, since>`.
 
 | Command | Covers | Users | Typical cost |
 |---|---|---|---|
 | `find <query> [--project] [--since] [--kind decision\|done\|blocked\|defect...] [--active] [--waiting] [--deep]` | search and timelines. Order: exact ID, then FTS5, then (knowledge questions) Falcon `memory_search`. `--kind decision --active` replaces a decisions command; `--since` gives a timeline; `--waiting` lists open waits. `--deep` = the bounded transcript search below | Crius via Explore, owner, helpers | 500-1,500 tokens |
-| `show <id>` | one thing in full: an item (criteria, child items, evidence, acceptance, defects), a decision (and what supersedes it), a session, or a project (its STATE.md) | Crius, leads | 300-800 |
-| `record <type> ...` | writes: `bus` (checks grammar), `decision` (append + bus line, returns id), `item` (new id + criteria), `accept` (acceptance record), `register` (assignment) | leads, Crius | ~50 |
-| `quota` | per account: epoch, observed % used, pace vs time passed, uncovered usage, list-price shares by project (separate) | Crius daily check | ~150 |
+| `show <id> [--history]` | one thing in full: an item (criteria, child items, evidence, acceptance, defects), a decision (and what supersedes it), a session, or a project (its STATE.md). `--history` gives the whole chain (§7b) | Crius, leads | 300-800 |
+| `record <type> ...` | writes: `bus` (checks grammar), `decision` (append + bus line, returns id; `--supersedes <id> --reason`), `item` (new id + criteria), `accept`, `revoke`, `defect`, `correct` (§7b), `register` (assignment) | leads, Crius | ~50 |
+| `quota` | two blocks. **Subscription** (one Max account, both personas): epoch, observed % used, pace vs time passed, uncovered usage, list-price shares by project. **Enterprise** (Appxite API billing, real employer money): $ this week and today by project (quotes, AXI), and any non-Appxite session on it as a violation | Crius daily check | ~200 |
 | `health` | per source and per resource: last run, freshness, expected vs seen, heartbeat age, last backup and restore test | Crius, alerts | ~200 |
 
 **Bounded transcript search (`find --deep`).** Used only when the store has no answer and the question is about the
@@ -208,7 +198,7 @@ files, max 2 minutes), and returns at most 10 citations (transcript path, messag
 redacted paraphrase each. Older than 30 days -> `expired`. Crius never reads the slices itself.
 
 **Generated files, not commands:** digest (`state/digest/`), scorecard (`state/scorecards/`), STATE.md. Each starts
-with a freshness stamp: `built <ts> · status partial · bus 09:20 ok · git 09:30 ok · quota/personal STALE 6 h`.
+with a freshness stamp: `built <ts> · status partial · bus 09:20 ok · git 09:30 ok · quota/max STALE 6 h`.
 
 **Deferred:** a trials table and command, a Postgres backend, an MCP server (only for the Week 4 voice connector, and
 then hosted where §3a allows). A CLI costs nothing until called and works from the phone through Remote Control.
@@ -238,28 +228,39 @@ then hosted where §3a allows). A CLI costs nothing until called and works from 
 - Every row has a `source_key`; a cursor moves only after its transaction commits.
 - Unknown line shapes (new Claude Code version) are counted and alerted, never skipped quietly.
 
+**Account guard.** Each session's account comes from its launch tag, checked against the statusline (`rate_limits`
+present = Max). A non-Appxite project (`projects.toml` marks which may use `enterprise`) seen on the enterprise
+account is an S1 `health` problem and goes to the owner at once: personal work must never bill the employer.
+Enterprise $ is list price from tokens (ESTIMATE of the employer's bill; no billing source is read).
+
 **Instrumentation order** (each only when its need is real):
-1. **Ingest + quota sampling.** The statusline script appends a sample when a value changes, plus a **heartbeat sample
-   every 30 minutes** while a session is open, so "no sample" means "not measured", not "no use".
-2. **Minimal hooks** (Notification, Stop, SessionStart/End) only when live waits are needed (`find --waiting`). Until
-   then waits come from transcripts after the fact.
-3. **OTel** only if permission-wait precision or hook diagnostics justify it. Then a local collector with an
-   attribute allowlist (drop `user.email`, account ids, prompts, tool details) and file output kept 7 days.
+1. **Ingest + quota sampling**: a sample on each change plus a **heartbeat sample every 30 min** while a session is
+   open, so "no sample" means "not measured", not "no use".
+2. **Minimal hooks** (Notification, Stop, SessionStart/End) only for live waits; until then waits come from transcripts.
+3. **OTel** only if permission-wait precision or hook diagnostics justify it: local collector, attribute allowlist
+   (drop `user.email`, account ids, prompts, tool details), files kept 7 days.
 
 **Schedule.** launchd every 10 minutes (ESTIMATE 1-3 s per incremental run; a full pass is 20 s, FACT). 03:00:
 re-count the last 2 days from scratch (> 1% difference = alert), prune, backup, restore test (weekly). 06:30: digest.
 After each quota reset: scorecard. No model tokens in any of these.
 
 **Failure loudness, end to end.**
-- **Independent heartbeat.** Each ingest run sends allowlisted metadata (time, per-source status, row counts) to the
-  Falcon hub. A k3s CronJob alerts on Telegram/Discord when the heartbeat is older than 30 minutes during hours when
-  sessions ran. It works even when the Mac, launchd or the ingest is dead.
+- **Independent heartbeat, on the Mac.** Each ingest run stamps `~/.crius/heartbeat`. A separate launchd watchdog
+  (own job, own schedule, no shared code with the ingest) alerts when the stamp is older than 30 minutes while
+  transcripts are growing. If the whole Mac is down, no session runs either, so nothing goes unseen (Falcon's k3s
+  runs keep their own records and are read back later).
 - **Per-resource coverage**: every transcript root, repo, bus file and account has an expected-vs-seen row. Expected
   events: a session with commits in its transcript must show those commits in git; an account with open sessions must
   have a quota sample within 45 minutes; a team with active sessions must have a bus or BUILD-LOG line within 3 h
   ("lead silent"); once hooks exist, every session must have a SessionStart line.
 - Freshness is stamped in every generated file; every answer carries a status; failures exit nonzero.
-- Alerts: one redacted line per problem per day, plus the top of the digest.
+
+**Notifications: few, high-signal, one channel (owner rule, 2026-10-16).** Scripts never notify the owner directly.
+They append a redacted line to `~/.crius/bus/crius.log`; Crius reads it and decides. Only two things reach the phone,
+by Remote Control push (Crius asks with AskUserQuestion or assign_task): something the owner must act on now (S1, an
+enterprise-account violation, NEED-OWNER that blocks a team), and at most one pace reminder a day. Everything else
+waits for the digest. No Telegram or Discord until the system is mature; a push the owner learns to ignore costs
+more than a late one.
 
 ---
 
@@ -290,7 +291,6 @@ Open outcomes: quotes#41 (3 child tasks, 2 d), quotes#43 (4 h)
 Accepted since last digest: quotes#40 (rev 9f1e2d3: CI pass, codex review clean, accepted by crius)
 Blocked: none · Open waits on owner: 1 (NEED-OWNER 08:55, 45 min)
 Active decisions (last 5): quotes-D12 ..., quotes-D11 ...
-Today: 14 commits, 0 reverts · sessions 4 busy, 1 idle · attribution unknown for 1 session
 ```
 
 **DECISIONS.md** — append-only via `crius-rec record decision`, never edited:
@@ -311,7 +311,7 @@ Supersession is read from the newer entry only. A correction is a new entry that
 | decisions that outlive the task; acceptance criteria when opening an item | acceptance checks against the criteria |
 
 The provenance tag (§3d) goes into the cmux-team launch and resume prompt templates. Reviewers: codex and quick-review
-end with `FINDINGS P1=<n> P2=<n> P3=<n>` (an agent-definition edit, part of Q3).
+end with `FINDINGS P1=<n> P2=<n> P3=<n>` (an agent-definition edit, approved in D3).
 
 ---
 
@@ -325,27 +325,27 @@ tasks, which are not counted. Code, research and Falcon outcomes are reported ap
   that failed to run is not a review. The reviewer is never the session that did the work.
 - **Explicit acceptance record**: Crius (or the owner, when the criteria say so) writes `record accept`, which checks
   the evidence against the criteria and stores the `acceptance` row and an `ACCEPTED` event.
-- A revert or reopen within 14 days marks the outcome `reopened` and links a candidate defect.
+- A confirmed defect, at any time, revokes the acceptance and opens a linked fix item (§7b).
 
 | # | Metric | Definition | Source |
 |---|---|---|---|
 | M1 | Accepted outcomes | count per quota week, split code / research / Falcon, by project | `acceptance` |
-| M2 | Observed quota | per account and reset epoch: sum of positive `seven_day_pct` deltas between samples; plus **uncovered usage** = list-price $ of requests with no sample on either side within 45 min | `quota`, `request` |
+| M2 | Observed subscription quota | the one Max account (both personas), per reset epoch: sum of positive `seven_day_pct` deltas between samples; plus **uncovered usage** = list-price $ of `max` requests with no sample on either side within 45 min | `quota`, `request` |
+| M2e | Enterprise $ | Appxite enterprise account: list-price $ per day and week, by project; non-Appxite sessions on it listed as violations. Real employer money, never merged with M2 | `request`, `session.account` |
 | M2b | Project share (separate) | each project's share of list-price $ per account and epoch. Never merged into M2 | `usage_day` |
 | M2c | Quota per outcome (**experimental**) | M2 x M2b share / M1 for that project and kind. **Undefined when M1 = 0** | derived |
 | M3 | Agent-wait minutes | sum over sessions of resolved wait durations (`blocked` kinds), by kind; overlapping waits add up | `wait` |
 | M4 | Owner wait-elapsed time | union of intervals when ≥ 1 agent was blocked on the owner (overlap counted once) | `wait` |
 | M5 | Open waits | unresolved waits with age, never dropped | `wait` |
 | M6 | Cycle time | item open -> acceptance, p50 / p90, per kind | `item`, `acceptance` |
-| M7 | Owner interventions | human prompts into non-Crius sessions, interrupts, owner-reversed decisions, per outcome | transcripts, decisions |
-| M8 | Owner effort | only where observed: human prompts and their count per outcome. Active keyboard time only if OTel is added | transcripts |
-| M9 | Crius response | owner prompt -> Crius Stop, p50 / p90 | transcripts |
-| M10 | Defects (**candidate** -> confirmed) | candidate signals: reverts, fix commits on the same files within 72 h, BUG after QA, reopen, owner report. Confirmed = linked to an item and its revision, deduped into incidents | `defect` |
-| M11 | Review findings (**candidate**) | P1/P2 per reviewed revision; share later confirmed as defects | `evidence`, `defect` |
-| M12 | Context cost drivers | $ per main call, share of main $ above 267K, compactions per 100 calls, mean member context | `usage_day`, `session` |
-| M13 | Crius cost | Crius sessions' list-price share; observed quota when attributable | `session.role=crius` |
-| M14 | Memory recall | % right in top 5, seconds, negative answers that name scope | `eval/recall.jsonl` |
-| M15 | Record health | coverage %, heartbeat gaps, unknown attribution share, malformed lines, claims unverified | `coverage`, `session` |
+| M7 | Owner interventions and effort | only where observed: human prompts into non-Crius sessions, interrupts, owner overrides, per outcome. Keyboard time only if OTel is added | transcripts, decisions |
+| M8 | Crius response | owner prompt -> Crius Stop, p50 / p90 | transcripts |
+| M9 | Defects (**candidate** -> confirmed) | candidate signals: reverts, fix commits on the same files within 72 h, BUG after QA, reopen, owner report. Confirmed = linked to an item and its revision, deduped into incidents | `defect` |
+| M10 | Review findings (**candidate**) | P1/P2 per reviewed revision; share later confirmed as defects | `evidence`, `defect` |
+| M11 | Context cost drivers | $ per main call, share of main $ above 267K, compactions per 100 calls, mean member context | `usage_day`, `session` |
+| M12 | Crius cost | Crius sessions' list-price share; observed quota when attributable | `session.role=crius` |
+| M13 | Memory recall | % right in top 5, seconds, negative answers that name scope | `eval/recall.jsonl` |
+| M14 | Record health | coverage %, heartbeat gaps, unknown attribution share, malformed lines, claims unverified | `coverage`, `session` |
 
 **Cohorts.** A week's outcomes are shown **provisional** at first and **matured** 14 days later (after the reopen and
 defect window). Quality numbers are judged on matured cohorts only.
@@ -354,7 +354,7 @@ defect window). Quality numbers are judged on matured cohorts only.
 ```
 # Quota week ending 2026-10-23 · built 2026-10-23 07:00 · status complete · def v1
 Outcomes   code 14 · research 5 · Falcon 4 (provisional)  | wk 10-09 matured: code 11, 1 reopened
-Quota      personal: 71% observed, uncovered 3% · work: 40% observed, uncovered 0%
+Quota      Max (both personas): 71% observed, uncovered 3% · enterprise: $412 (quotes 260, axi 152), 0 violations
 Shares     list-price: quotes 26% · axi 22% · falcon 14% · trading 9% · Crius 4% · unknown 6% · other 19%
 Per outcome (experimental) quotes code 2.1% · axi code 3.4% · trading: undefined (0 outcomes)
 Waits      agent-wait 212 min (permission 40, NEED-OWNER 150, AskUser 22) · owner elapsed 94 min · open 1 (3 h)
@@ -370,14 +370,70 @@ mixed work they cannot prove cause. Start dates are staggered; savings are never
   (baseline 0.126 $/main call on weekdays, 69 compactions; ≥ 3 weekdays and 30 compactions; back to 500K if $/main
   call falls < 5% or pushback after compaction > 2x the same-week rate). The store takes over only once it
   reproduces those numbers within 2%.
-- **Sonnet members** (from 10-16, judged 10-23): per role, BUG after QA, candidate defects, cost per child task,
-  vs the same roles on Opus the week before. Re-read on the matured cohort two weeks later.
+- **Sonnet members** (from 10-16, judged 10-23, re-read on the matured cohort): per role, BUG after QA, candidate
+  defects, cost per child task, vs the same roles on Opus the week before.
 - **Clear-per-item**: member mean context, tasks per session, team $ per team prompt (P2 $21), candidate defects.
-  The task-switch tag makes per-task cost exact for members.
 
 **Goodhart guards.** Criteria fixed before work; one outcome per owner goal (splitting adds child tasks, not units);
 independent review bound to the revision; output always next to quality; leads never get metrics as targets;
 definitions versioned; 4-week trends; n < 10 marked "small sample"; 3 random outcomes opened each week.
+
+---
+
+## 7b. Mistakes, corrections and locked output
+
+We and the agents will make mistakes that tests miss, and some will sit in output that is already out. The rule:
+**never rewrite history.** Every fix is a new record linked to what it fixes, and old numbers are updated in the open.
+
+| Kind | Example | What is recorded | Fix path |
+|---|---|---|---|
+| Escaped defect | a bug found after acceptance | confirmed `defect`; the acceptance is **revoked** (row kept, with reason and defect id); a fix item linked by `fixes=` | the fix item gets its own criteria and acceptance |
+| Bad decision | `quotes-D7` turns out wrong | a new numbered decision `Supersedes: quotes-D7` with `Reason:` | work already done under D7 gets a check item if it shipped |
+| Wrong data in the store | wrong project or account, a double count, a claim taken as fact | a `correction` row (target, field, old, new, reason, by) | views apply it; the original row stays |
+| Locked output already out | merged or deployed code, a sent mail or ADO/PR comment, a released doc | a `locked_output` event linked to the item | fix forward with a new linked item (below) |
+
+**Locked output.** Code: a new fix item; a revert is a normal new commit, never a history rewrite or force-push.
+Outward text (mail, ADO or PR comment, PR description): a visible follow-up that says what was wrong, drafted by Crius
+or the lead, approved by the owner before it goes out (T3); no silent edit or delete of what others already read. A
+released doc: a new version with a dated "Corrected" note at the top. Production is never touched by Crius or leads;
+a fix that needs production goes to the owner and the team's normal release path.
+
+**Severity and who decides.**
+
+| Severity | Meaning | Crius does alone | Needs the owner |
+|---|---|---|---|
+| S1 | others saw it (colleagues, customers, users), or production, money, data loss, security, or personal work on the enterprise account | contain inside its rights (pause the lead, stop runs), open the fix item, draft the follow-up | the fix path and every outward step; this is one of the few pushes |
+| S2 | accepted work is wrong but nothing went out (personal repo, internal doc, store data) | revoke, open and assign the fix item, correct store rows, supersede its own decisions | sees it in the digest; may override |
+| S3 | cosmetic, or metric noise | a correction record | weekly review only |
+
+Only the owner supersedes an owner decision; Crius may propose.
+
+**Measurement stays honest.** A revoked acceptance counts against the original outcome's week, not the week it was
+found. Matured cohorts are recomputed, and a scorecard gets an appended line `revised <date>: code 11 -> 10 (axi#12
+revoked, defect D-31)`; the old value stays visible. Finding a mistake is never punished:
+- defects are counted by who found them: **found-by-us** (Crius, lead, QA, review, monitors) and **found-by-owner**
+  or **found-by-others** (colleagues, users), plus time to detect;
+- the bad signals are escapes (found by owner or others) and revocations per accepted outcome, not the count of
+  defects we found ourselves;
+- a week where found-by-us drops while found-by-others rises is flagged as a possible reporting gap.
+
+**Learning loop.**
+- Each confirmed mistake gets one cause class from a short list that may grow: missing test, wrong assumption, stale
+  context, silent failure, misread request, harness or tool, review gap, bad data.
+- The second confirmed mistake of the same class opens a guard item: a mechanical check (test, hook, health check)
+  that goes red on both past cases (the owner's "diagnose repeats" rule). Guards that change config or hooks are
+  proposals the owner approves.
+- The weekly scorecard run includes Crius's review of corrections, revocations and overrides, with at most 3 guard
+  proposals to the owner.
+
+**Owner overrides of Crius.** When the owner reverses a Crius decision, it is recorded as a superseding decision
+(`Decided by: owner`, `Overrides: crius`). Override rate per week and per decision class is a Crius-quality number on
+the scorecard. It also feeds the autonomy ratchet (DESIGN §4): an override resets that class's approval count.
+
+**Interface.** `record decision --supersedes <id> --reason`; `record defect <item> --found-by us|owner|others
+--severity S2 --class "stale context"`; `record revoke <item> --defect <id> --reason` (opens the fix item); `record
+correct --corrects <row-id> --field project --value axi --reason`; `show <id> --history` (the whole chain in order);
+`find --kind correction|revoked|override --since 30d`.
 
 ---
 
@@ -386,16 +442,18 @@ definitions versioned; 4-week trends; n < 10 marked "small sample"; 3 random out
 - **06:30** script: ingest, STATE.md, digest (≤ 60 lines, stamped): needs the owner (top, four lines each), accepted
   yesterday, blocked, open waits, decisions, quota pace, health.
 - **Morning start**: a fresh Crius session with CRIUS.md + the digest only (target ≤ 15K tokens). If pace is high
-  (default ≥ 60% observed by day 3 of the epoch; Q4), ONE reminder: speed, top burners, one suggestion. No stop.
+  (≥ 60% observed by day 3 of the epoch, or faster than the 7-day average), ONE Remote Control push: speed, top
+  burners, one suggestion. No stop. When the subscription is used up (or will be before `resets_at`), the push says:
+  only Appxite work (quotes, AXI) may continue, on the Appxite enterprise account; personal and scifi work waits
+  until the reset time. It also shows enterprise $ so far this week.
 - **During the day**: wakes on bus events (Monitor in the pilot, the Falcon bus later); reads the line and `show
   <project>` (≤ 1K tokens); acts through leads.
 - **"What happened with X?"**: Explore runs `find`; if needed `find --deep`; Crius keeps only the cited answer and
   its status. A `partial` or `expired` status is said to the owner as it is.
-- **Deciding**: `find --kind decision --active --project X` first, then `record decision`.
-- **Accepting**: `show <item>`, then `record accept` only when every criterion has evidence on the same revision.
-- **Hygiene**: capped outputs, no raw dumps, restart at ~150K, stable prefix (DESIGN §6).
+- **Deciding**: `find --kind decision --active --project X` first, then `record decision`. **Accepting**: `show
+  <item>`, then `record accept` only with evidence for every criterion on one revision. Restart at ~150K.
 - **Cost of Crius** (ESTIMATE): ~$0.02-0.03 list price per call at ~50K context (review-1016: $0.12 at ~235K);
-  150-300 calls/day = ~$4-9/day, a few % of a week. Scripts: 0 tokens. Haiku helpers < 1%. M13 replaces the guess.
+  150-300 calls/day = ~$4-9/day, a few % of a week. Scripts: 0 tokens. Haiku helpers < 1%. M12 replaces the guess.
 
 ---
 
@@ -404,14 +462,14 @@ definitions versioned; 4-week trends; n < 10 marked "small sample"; 3 random out
 | Step | What | Test |
 |---|---|---|
 | 1 | `~/.crius/` layout, git-leak test, decision files, item ids with criteria, dated bus grammar + provenance tag in cmux-team templates | leak test fails when a `.db` is tracked or `~/.crius` is in a work tree; 3 decisions incl. a supersede give the right active set; an undated line still parses |
-| 2 | `crius-ingest` v1 (transcripts, git, bus, files) -> durable rows; backup; heartbeat + k3s CronJob | fixture where one request spans two runs gives one row with max usage; partial line, truncation, replacement and late-arrival fixtures; second run adds 0 rows; stop the ingest -> alert in ≤ 30 min |
-| 3 | Quota sampling (personal statusline with 30-min heartbeat sample) + `quota` | samples at 60% on day 3 -> one reminder; a 2-hour gap with open sessions -> "uncovered" shown, not 0 |
+| 2 | `crius-ingest` v1 (transcripts, git, bus, files) -> durable rows; backup; heartbeat + local watchdog | fixture where one request spans two runs gives one row with max usage; partial line, truncation, replacement and late-arrival fixtures; second run adds 0 rows; stop the ingest -> alert in ≤ 30 min |
+| 3 | Quota sampling (personal statusline with 30-min heartbeat sample) + `quota` | samples at 60% on day 3 -> one push; at 100% the push names Appxite-only work and the enterprise account; a 2-hour gap with open sessions -> "uncovered", not 0; a scifi session on the enterprise account -> S1 |
 | 4 | `find`, `show`, `health`, `find --deep`, redaction on every sink | recall v0 (20 questions from STATUS.md: "when did mail stop" -> 09-21; "which commit armed k3s hooks" -> cf62176) ≥ 80% top 5; a silent lead appears in `health`; a 40-day-old question -> `expired`; a superseded decision is marked; a true "no" names its scope; a planted secret in a bus line never reaches output, error text or an alert |
 | 5 | Digest + Crius daily start | start ≤ 15K tokens; 5 owner questions answered with no lead tab opened |
-| 6 | `record accept` + scorecard; first descriptive read 10-23 next to the review-1016 scripts | accept refuses evidence on a different sha; numbers match review-1016 within 2%; restore-after-expiry test passes |
+| 6 | `record accept` + scorecard; first descriptive read 10-23 next to the review-1016 scripts | accept refuses evidence on a different sha; numbers match review-1016 within 2%; restore-after-expiry passes; a revoke keeps the acceptance row and lowers the original week; a correction changes the view, not the row; `show --history` lists the chain; a second mistake of one class opens a guard item |
 | 7 | Minimal hooks for live waits (if needed) | a scratch permission prompt -> open wait -> resolved with paired ids; a session with no SessionStart line -> alert |
 | 8 | OTel (only if justified) | allowlist drops `user.email`; session count matches transcripts |
-| 9 | Falcon source; move to Postgres only on both §3a conditions | k3s run count in the store = Falcon's list for a day |
+| 9 | Falcon source (read back to the Mac) | k3s run count in the store = Falcon's list for a day |
 
 **Do not build:** a graph DB or Graphiti; Mem0, Letta, Zep; Langfuse, Phoenix; embeddings over transcripts; LLM calls
 at ingest; a dashboard UI; a trials engine or second backend now; storing transcript text; an MCP server before the
@@ -419,30 +477,29 @@ voice connector; size classes; any metric with no action attached.
 
 ---
 
-## 10. Risks, decisions I made, and questions for the owner
+## 10. Risks and decisions
 
 **Risks.**
-1. Silent gaps. Guard: outside heartbeat, per-resource coverage, statuses, nightly re-count.
+1. Silent gaps. Guard: local watchdog, per-resource coverage, statuses, nightly re-count.
 2. Transcript format changes. Guard: unknown shapes alerted; fixtures per Claude Code version.
-3. Quota is observed only where sampled; per-project quota is an estimate (marked experimental).
+3. Quota is observed only where sampled; per-project quota and enterprise $ are list-price estimates.
 4. Small samples and Goodhart: matured cohorts, 4-week trends, descriptive trials.
-5. Appxite data: content-free rows, local store, allowlisted metadata only off the Mac.
-6. Lost durable rows if the Mac disk dies without backups: nightly backup + restore test; offsite only per Q2.
+5. Personal work billed to the employer by mistake. Guard: account tag + statusline check, S1 push.
+6. Lost durable rows if the Mac disk dies: nightly backup + restore test; no offsite copy while everything is local.
 7. Over-building: drop any part nobody reads for 4 weeks.
 
-**Decided without the owner (say if any is wrong):** keep transcripts at 30 days; acceptance for non-code = Crius
-after an independent review bound to the artifact hash, or the owner when the criteria name them; no size classes;
-private state in `~/.crius/` outside git; OTel deferred; CLI before MCP; trials stay descriptive.
+**Owner decisions, 2026-10-16.**
+- **D1. One Max account for both personas = one weekly quota.** When it is used up, only Appxite work (quotes, AXI)
+  may continue, on the Appxite enterprise account, which bills API cost to the employer. So: enterprise $ is tracked
+  apart (M2e), personal and scifi work never runs on it (account guard, §5), and `quota` and the pace push show both.
+- **D2. Everything local (Mac only) for now.** A remote Crius may come later (the owner holds `crius.ai`; note only).
+- **D3. Config changes approved, one at a time as each step comes:** personal statusline with quota samples (step 3),
+  the `FINDINGS` line in the codex and quick-review agents (step 6), minimal hooks (step 7, if needed), OTel with an
+  allowlist (step 8, if justified). Each is still announced before it is applied.
+- **D4. Notifications by Remote Control push only, few and high-signal.** No Telegram or Discord until the system is
+  mature. General rule: one channel; push only what needs the owner now; the rest goes to the digest (§5).
 
-**Questions only the owner can answer.**
-- **Q1. Do the personal and work personas use one Max account (one weekly quota) or two?** One -> one pace check and
-  one quota line. Two -> two of each. Until answered, `quota` reports per config dir and marks the account `unknown`.
-- **Q2. Where may Appxite-derived data live?** (a) Mac only, the default. (b) also Falcon Postgres on k3s -> allows
-  the §3a move when there is also an operational need, and an offsite backup. (c) also the private GitHub repo. Only
-  allowlisted metadata (heartbeat, counts, quota %) leaves the Mac until you choose (b) or (c).
-- **Q3. Approve these config changes, one at a time when their step comes?** (a) a statusline in the personal persona
-  that writes quota samples (step 3; without it, personal quota is uncovered); (b) the `FINDINGS` line in the codex
-  and quick-review agent definitions (step 6; without it, findings are not counted); (c) minimal hooks in both
-  personas (step 7, only if live waits are needed); (d) OTel env with an allowlist (step 8, only if justified).
-- **Q4. Pace reminder: what threshold (default ≥ 60% observed by day 3 of the epoch, or burning faster than the
-  7-day average) and which channel (Remote Control push to the phone, or Telegram/Discord)?**
+**Decided by me (say if any is wrong):** keep transcripts at 30 days; acceptance for non-code = Crius after an
+independent review bound to the artifact hash, or the owner when the criteria name them; no size classes; private
+state in `~/.crius/` outside git; OTel deferred; CLI before MCP; trials stay descriptive; pace threshold ≥ 60% by
+day 3 of the epoch or faster than the 7-day average.
