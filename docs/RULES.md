@@ -49,8 +49,18 @@ Details: [docs/MEMORY-AND-MEASUREMENT.md](MEMORY-AND-MEASUREMENT.md) §7b, `~/.c
 
 ## 3. Goal and reports
 
-1. Every lead keeps a **GOAL block at the top of its status file**: the end goal in one line, milestones marked
-   done or remaining, % done with how it was counted, and the date. Kept current per milestone.
+1. Every lead keeps a **GOAL block at the top of its status file**, kept current per milestone, in exactly this
+   form (Crius's digest reads it; anything else is reported as unreadable):
+   ```
+   ## GOAL (YYYY-MM-DD HH:MM)
+   Goal: <the end goal in one line>
+   - [x] <milestone> · <refs: sha, run id, bus line>
+   - [~] <milestone in progress> · <refs>
+   - [ ] <milestone not started>
+   Done: N% (<how it was counted>)
+   Next: <next milestone>
+   Needs owner: <what, or "nothing">
+   ```
 2. A **report** to the owner is: goal, % done, what is done, what remains. Not a ticket log.
 3. A lead that cannot name its goal asks the owner (NEED-OWNER). A lead with no goal is lost.
 4. **Crius tracks; the owner does not have to ask.** Crius tells the owner at once when a decision is needed, a
