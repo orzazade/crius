@@ -35,10 +35,11 @@ var blockRe = regexp.MustCompile(`(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:--
 // escaped (code or JSON quoted in a command); the operator may be code's (:=, =>, ==); a scheme may lead the value
 // (Authorization: Basic ...).
 var pairRe = regexp.MustCompile(`(?i)` + secretKey + `[\w.-]*\\*["']?[ \t]*(?::=|=>|==?|:)[ \t]*` +
-	`(?:(?:basic|bearer|digest|token)[ \t]+)?` + "(\\\\*[\"']|`|[^\\s\"',;`]+)")
+	`(?:(?:basic|bearer|digest|token)[ \t]+)?` + "(\\\\*[\"']|`|[^\\s\"',;`])")
 
 // keyStart is a secret-named key and its operator at the start of a text.
-var keyStart = regexp.MustCompile(`(?i)^[\w.-]*?` + secretKey + `[\w.-]*\\*["']?[ \t]*(?::=|=>|==?|:)`)
+var keyStart = regexp.MustCompile(`(?i)^[\w.-]*?` + secretKey + `[\w.-]*\\*["']?[ \t]*(?::=|=>|==?|:)[ \t]*` +
+	`(?:(?:basic|bearer|digest|token)[ \t]+)?` + "(?:\\\\*[\"']|`|[^\\s\"',;`])")
 
 var secretRes = []*regexp.Regexp{
 	// A long flag and its value (--password hunter2); -p is too short to tell.
@@ -64,11 +65,14 @@ func Redact(s string) (string, int) {
 
 // redactPairs replaces the value of each secret-named key, any length: a short password is still a password. A
 // regexp cannot tell where such a value ends, so the scan does: a quoted value at the quote escaped like its opener
-// (\"a\\\"b\" ends at the last \"), or at the end of the line when cut off; a backtick value at its pair; and a
-// "value" that is itself a secret-named key means the first name had none (grep output: secrets.yaml: password: x).
+// (\"a\\\"b\" ends at the last \"), or at the end of the line when cut off; a backtick value at its pair, or at
+// the end of the line; a plain value at a space or a quote. A "value" that is itself a secret-named key with a value
+// (grep output: secrets.yaml: password: x) is scanned again, and the redaction starts at the first value, so no part
+// of it is printed. Each step moves on through the text: the scan is linear.
 func redactPairs(s string) (string, int) {
 	var b strings.Builder
 	hits, pos := 0, 0
+	from := -1 // start of a rescanned value: the redaction starts there
 	for {
 		m := pairRe.FindStringSubmatchIndex(s[pos:])
 		if m == nil {
@@ -76,23 +80,45 @@ func redactPairs(s string) (string, int) {
 		}
 		v, end := pos+m[len(m)-2], pos+m[len(m)-1] // the value is the last group: secretKey has one too
 		if keyStart.MatchString(s[v:]) {
-			b.WriteString(s[pos:v])
+			if from < 0 {
+				b.WriteString(s[pos:v])
+				from = v
+			}
 			pos = v
 			continue
 		}
+		lo, start := pos, pos+m[0]
+		if from >= 0 {
+			lo, start = from, from // already written up to from
+		}
+		from = -1
 		switch q := s[end-1]; q {
 		case '"', '\'':
 			end = quoteEnd(s, end, q, end-1-v)
 		case '`':
 			e := strings.IndexAny(s[end:], "`\n")
-			if end == len(s) || s[end] == ' ' || s[end] == '\t' || e < 0 || s[end+e] != '`' {
-				b.WriteString(s[pos:end]) // a lone backtick (markdown around the key) is no value
+			if end == len(s) || s[end] == ' ' || s[end] == '\t' {
+				b.WriteString(s[lo:end]) // a lone backtick (markdown around the key) is no value
 				pos = end
 				continue
 			}
+			if e < 0 || s[end+e] != '`' {
+				e = strings.IndexByte(s[end:], '\n')
+				if e < 0 {
+					e = len(s) - end
+				}
+				end += e
+				break
+			}
 			end += e + 1
+		default:
+			if e := strings.IndexAny(s[end:], " \t\n\r\f\v\"',;`"); e < 0 {
+				end = len(s)
+			} else {
+				end += e
+			}
 		}
-		b.WriteString(s[pos : pos+m[0]])
+		b.WriteString(s[lo:start])
 		b.WriteString("[redacted]")
 		hits++
 		pos = end
@@ -116,7 +142,7 @@ func quoteEnd(s string, from int, q byte, n int) int {
 			for j := i - 1; j >= from && s[j] == '\\'; j-- {
 				k++
 			}
-			if n == 0 && k%2 == 0 || n > 0 && k == n {
+			if k%(2*n+2) == n {
 				return i + 1
 			}
 		}

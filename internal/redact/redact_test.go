@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRedactCommonSecretShapes(t *testing.T) {
@@ -185,6 +186,36 @@ func TestRedactValueEnds(t *testing.T) {
 	} {
 		if out, _ := Redact(in); out != want {
 			t.Errorf("%s\n got %s\nwant %s", in, out, want)
+		}
+	}
+}
+
+// Review of e5f5af1: a value that only looks like a key (a secret word and an operator, then nothing) is still the
+// value, and all of it is redacted; an unclosed backtick value runs to the end of the line; a value that ends in a
+// backslash still ends at its quote.
+func TestRedactValueThatLooksLikeAKey(t *testing.T) {
+	for _, in := range []string{"password=hunter2secret:", "password=hunter2Token= \nnext", "api_key=Hunter2.secret:,x",
+		"password=hunter2.secret=x tail", "password=`hunter2", "password = `hunter2\nmore`"} {
+		if out, n := Redact(in); n == 0 || strings.Contains(strings.ToLower(out), "hunter2") {
+			t.Errorf("%q -> %q (%d)", in, out, n)
+		}
+	}
+	if out, _ := Redact("password=hunter2 tail stays, token=x;y"); out != "[redacted] tail stays, [redacted];y" {
+		t.Error(out)
+	}
+	in := `curl -d "{\"password\":\"a\\\\\"}" keep this text` + "\nnext line"
+	if out, _ := Redact(in); out != `curl -d "{\"[redacted]}" keep this text`+"\nnext line" {
+		t.Errorf("%s -> %s", in, out)
+	}
+}
+
+// Review of e5f5af1: keys used as values, or a long run after them, take linear time (they took minutes).
+func TestRedactKeysAsValuesAreLinear(t *testing.T) {
+	for _, in := range []string{strings.Repeat("password=", 1<<13), strings.Repeat("password=", 500) + strings.Repeat("a", 1<<18)} {
+		t0 := time.Now()
+		Redact(in)
+		if d := time.Since(t0); d > time.Second {
+			t.Errorf("%d bytes took %v", len(in), d)
 		}
 	}
 }
