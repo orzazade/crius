@@ -812,7 +812,14 @@ func TestQuotaRoomCountsResponsesOnly(t *testing.T) {
 			sid string
 			usd float64
 			at  time.Duration
-		}{{a, 0, -56 * time.Minute}, {a, 1, -55 * time.Minute}, {a, 2, -5 * time.Minute}}, "room"},
+		}{{a, 0, -56 * time.Minute}, {a, 1, -55 * time.Minute}, {a, 1, -47 * time.Minute}, {a, 1, -39 * time.Minute},
+			{a, 1, -31 * time.Minute}, {a, 2, -24 * time.Minute}}, "room"},
+		// review of d25f4f2: no render between, so the response may be 50 min old
+		{"response after a render gap", []struct {
+			sid string
+			usd float64
+			at  time.Duration
+		}{{a, 0, -56 * time.Minute}, {a, 1, -55 * time.Minute}, {a, 2, -5 * time.Minute}}, "unknown"},
 	} {
 		x := quotaCase(t)
 		if err := os.MkdirAll(filepath.Join(x.home, "spool"), 0o700); err != nil {

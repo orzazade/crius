@@ -16,15 +16,19 @@ func Room(r *Report) (verdict, reason string) {
 	switch {
 	case !r.Ended.IsZero():
 		return "unknown", "quota week ended " + day(r.Ended) + ", no sample since"
-	case r.SevenAt.IsZero():
+	case r.Reset.IsZero():
 		return "unknown", "no quota sample yet"
 	}
+	nums := fmt.Sprintf("7d %.0f%%, 5h %.0f%%, reset %s", math.Floor(r.SevenPct), math.Floor(r.FivePct), day(r.Reset))
 	age := r.Now.Sub(r.MeasuredAt())
-	nums := fmt.Sprintf("7d %.0f%%, 5h %.0f%%, reset %s, sample %s old", math.Floor(r.SevenPct), math.Floor(r.FivePct),
-		day(r.Reset), ago(age))
+	if !r.SevenAt.IsZero() {
+		nums += ", sample " + ago(age) + " old"
+	}
 	switch {
-	case r.SevenPct >= 100 || r.FivePct >= 100:
+	case r.SevenPct >= 100 || r.FivePct >= 100: // full at any age, measured or not (review of d25f4f2)
 		return "full", nums
+	case r.SevenAt.IsZero():
+		return "unknown", nums + " (top share not measured)"
 	case r.SevenAt.After(r.Now) || !r.FiveReset.IsZero() && r.FiveAt.After(r.Now): // each, not only the older one
 		return "unknown", nums + " (sample ahead of the clock)"
 	case !r.FiveKnown:

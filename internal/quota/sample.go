@@ -60,7 +60,13 @@ type seen struct {
 	Vals  string  `json:"vals"`
 	USD   float64 `json:"usd"` // cost and API time at the last render, to see a new response arrive
 	APIms float64 `json:"api_ms"`
+	// Render: the session's last render, kept to the minute; a response is dated by it (review of d25f4f2).
+	Render string `json:"render,omitempty"`
 }
+
+// RenderGap: the statusline renders at least every refreshInterval (300 s), so a session's renders are closer than
+// this while its sampler runs. A response found after a longer gap may be that old: its values are not new.
+const RenderGap = 10 * time.Minute
 
 type state struct {
 	Last     map[string]string `json:"last"`  // per persona: its newest line with rate_limits of the current epoch
@@ -130,7 +136,8 @@ func Sample(home, persona string, in []byte, now time.Time) (string, error) {
 	alive, _ := time.Parse(tsFormat, st.Alive[persona])
 	// rate_limits come with a response, so their absence means an API-billed session only when a response arrived
 	// since the last render: a new session shows none before its first response, a resumed one shows its old cost.
-	responded := known && (d.Cost.USD > s.USD || d.Cost.APIms > s.APIms)
+	rendered, _ := time.Parse(tsFormat, s.Render) // none yet: a zero time, so no response counts as new
+	responded := known && (d.Cost.USD > s.USD || d.Cost.APIms > s.APIms) && now.Sub(rendered) <= RenderGap
 	// An idle session can repeat a past epoch's window: it never heartbeats, so it cannot stand in for a live one.
 	current := rl && *l.SevenReset > st.Reset-3600
 	// A session whose response came without rate_limits is API-billed: it measures no quota, but its render shows
@@ -148,7 +155,10 @@ func Sample(home, persona string, in []byte, now time.Time) (string, error) {
 	case !rl && !(s.Lined && !s.RL) && responded:
 		l.Kind = "session"
 	}
-	n := seen{TS: s.TS, Lined: s.Lined, RL: s.RL, Vals: s.Vals, USD: d.Cost.USD, APIms: d.Cost.APIms}
+	n := seen{TS: s.TS, Lined: s.Lined, RL: s.RL, Vals: s.Vals, USD: d.Cost.USD, APIms: d.Cost.APIms, Render: s.Render}
+	if now.Sub(rendered) >= time.Minute {
+		n.Render = l.TS
+	}
 	if !known {
 		n.TS = l.TS
 	}

@@ -199,7 +199,9 @@ exit 0 room, 3 full, 4 unknown (the reason also on stderr). Owner's rule (Crius,
 within 45 min has room until 7d or 5h reaches 100%; an older one only while both are under 90%, else unknown; 7d at
 100% is full at any age; a 5h window that has reset counts 0. Each share is aged by the newest measurement
 showing it: a share only rises within its window, so a lower reading is an older one; a measurement is a line that
-came with a response (the sampler marks it; a line from before the mark counts unless it is a heartbeat); the older
+came with a response (the sampler marks it when the cost rose and the session rendered within the last 10 min, so
+the response is that recent; a line from before the mark counts unless it is a heartbeat); a share at 100% is full
+even when only unmeasured lines show it; the older
 of the 7d and the running 5h share's ages counts. No sample, an ended week, a sample ahead of the clock, no
 5h window sampled, or a failure is unknown, never room. It reads the store, so a sample is up to one ingest run (10 min) older than the spool.  A session
 first seen long after its last response shows an old reading, so its line is not a measurement (Crius 23:11).

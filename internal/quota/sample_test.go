@@ -253,15 +253,24 @@ func TestSampleMarksResponses(t *testing.T) {
 			`{"five_hour":{"used_percentage":5,"resets_at":1760630400},"seven_day":{"used_percentage":40,"resets_at":1761206400}}}`, sid, usd, usd*1000))
 	}
 	must(t, h, []byte(`{"session_id":"a","cost":{"total_cost_usd":0,"total_api_duration_ms":0}}`), t0)
-	must(t, h, cost("a", 1), t0.Add(time.Minute))    // a's first response: session, responded
-	must(t, h, cost("b", 3), t0.Add(2*time.Minute))  // b first seen already with rate_limits: session, not responded
-	must(t, h, cost("b", 3), t0.Add(40*time.Minute)) // idle: heartbeat, not responded
-	must(t, h, cost("a", 2), t0.Add(75*time.Minute)) // a responded, same values: heartbeat, responded
+	must(t, h, cost("a", 1), t0.Add(time.Minute))   // a's first response: session, responded
+	must(t, h, cost("b", 3), t0.Add(2*time.Minute)) // b first seen already with rate_limits: session, not responded
+	for _, m := range []int{9, 18, 27} {
+		must(t, h, cost("a", 1), t0.Add(time.Duration(m)*time.Minute)) // a renders idle (refreshInterval): no line
+	}
+	must(t, h, cost("a", 2), t0.Add(33*time.Minute)) // a responded, same values: heartbeat, responded
+	must(t, h, cost("b", 3), t0.Add(70*time.Minute)) // idle: heartbeat, not responded
 	var got []string
 	for _, l := range spoolLines(t, h) {
 		got = append(got, fmt.Sprintf("%s:%s:%v", l.Session, l.Kind, l.Responded != nil && *l.Responded))
 	}
-	if want := "a:session:true b:session:false b:heartbeat:false a:heartbeat:true"; strings.Join(got, " ") != want {
+	if want := "a:session:true b:session:false a:heartbeat:true b:heartbeat:false"; strings.Join(got, " ") != want {
 		t.Fatalf("got  %s\nwant %s", strings.Join(got, " "), want)
+	}
+
+	// Review of d25f4f2: with no render for an hour, the response that raised the cost may be an hour old.
+	must(t, h, cost("a", 3), t0.Add(140*time.Minute))
+	if ls := spoolLines(t, h); len(ls) != 5 || *ls[4].Responded {
+		t.Fatalf("a response after a render gap counts as new: %+v", ls[len(ls)-1])
 	}
 }
