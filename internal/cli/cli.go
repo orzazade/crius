@@ -31,7 +31,7 @@ const usage = `usage: crius-rec init
        crius-rec record bus --project P --role R --type T --text TEXT
        crius-rec record decision --project P --title T --why W --by "owner|crius|lead [ref]" [--supersedes ID --reason R] [--refs R] [--taint]
        crius-rec record item --project P --title T --kind code|research|falcon|other --criteria C [--criteria C ...] [--parent ID] [--taint]
-       crius-rec quota [--json]
+       crius-rec quota [--json | --room]
 `
 
 type multi []string
@@ -86,10 +86,11 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fs := flag.NewFlagSet("quota", flag.ContinueOnError)
 		fs.SetOutput(stderr)
 		asJSON := fs.Bool("json", false, "print the report as JSON")
-		if fs.Parse(args) != nil || fs.NArg() > 0 {
+		room := fs.Bool("room", false, "print whether the Max account has room: one JSON line; exit 0 room, 3 full, 4 unknown")
+		if fs.Parse(args) != nil || fs.NArg() > 0 || *asJSON && *room {
 			return exitUsage
 		}
-		return quotaCmd(home, time.Now(), *asJSON, stdout, stderr)
+		return quotaCmd(home, time.Now(), *asJSON, *room, stdout, stderr)
 	}
 	fmt.Fprint(stderr, usage)
 	return exitUsage
@@ -187,27 +188,45 @@ func recordItem(home, project, title, kind string, criteria []string, parent str
 
 // quotaCmd prints the two quota blocks (or the report as JSON), starting with the status and its reasons; anything
 // but complete exits partial. Everything it prints is redacted: errors can quote a config value.
-func quotaCmd(home string, now time.Time, asJSON bool, stdout, stderr io.Writer) int {
+func quotaCmd(home string, now time.Time, asJSON, room bool, stdout, stderr io.Writer) int {
 	stdout, stderr = ingest.Redacting{W: stdout}, ingest.Redacting{W: stderr}
+	// fail says why on stderr; with --room every failure is also an "unknown" verdict on stdout, the one line a
+	// launcher reads, with a short reason (the full one is on stderr).
+	fail := func(rc int, reason, msg string) int {
+		fmt.Fprintln(stderr, msg)
+		if room {
+			roomLine(stdout, "unknown", reason, nil)
+			return exitUnavailable
+		}
+		return rc
+	}
 	if fi, err := os.Stat(filepath.Join(home, "state")); err != nil || !fi.IsDir() {
-		fmt.Fprintf(stderr, "unavailable: %s is missing; run crius-rec init\n", home)
-		return exitUnavailable
+		return fail(exitUnavailable, "quota store missing", fmt.Sprintf("unavailable: %s is missing; run crius-rec init", home))
 	}
 	projects, err := ingest.QuotaProjects(home)
 	if err != nil {
-		fmt.Fprintf(stderr, "error: %v\n", err)
-		return exitError
+		return fail(exitError, "quota config error", fmt.Sprintf("error: %v", err))
 	}
 	db, err := store.Open(home)
 	if err != nil {
-		fmt.Fprintf(stderr, "error: %v\n", err)
-		return exitError
+		return fail(exitError, "quota store error", fmt.Sprintf("error: %v", err))
 	}
 	defer db.Close()
 	rep, err := quota.Build(db, projects, now)
 	if err != nil {
-		fmt.Fprintf(stderr, "error: %v\n", err)
-		return exitError
+		return fail(exitError, "quota report error", fmt.Sprintf("error: %v", err))
+	}
+	if room {
+		v, reason := quota.Room(rep)
+		roomLine(stdout, v, reason, rep)
+		switch v {
+		case "room":
+			return 0
+		case "full":
+			return exitPartial
+		}
+		fmt.Fprintf(stderr, "unknown: %s\n", reason)
+		return exitUnavailable
 	}
 	if asJSON {
 		b, err := json.MarshalIndent(rep, "", "  ")
@@ -223,6 +242,28 @@ func quotaCmd(home string, now time.Time, asJSON bool, stdout, stderr io.Writer)
 		return exitPartial
 	}
 	return 0
+}
+
+// roomLine is the --room answer: one JSON line. Launchers read verdict and reason; the numbers are null when there
+// is no report.
+func roomLine(w io.Writer, verdict, reason string, r *quota.Report) {
+	v := struct {
+		Verdict    string   `json:"verdict"`
+		Reason     string   `json:"reason"`
+		Seven      *float64 `json:"seven"`
+		Five       *float64 `json:"five"`
+		Reset      string   `json:"reset"`
+		SampleAgeS *int64   `json:"sample_age_s"`
+	}{Verdict: verdict, Reason: reason}
+	if r != nil && !r.LastSample.IsZero() {
+		age := int64(r.Now.Sub(r.LastSample).Seconds())
+		v.Seven, v.Five, v.SampleAgeS = &r.SevenPct, &r.FivePct, &age
+	}
+	if r != nil && !r.Reset.IsZero() {
+		v.Reset = r.Reset.UTC().Format(time.RFC3339)
+	}
+	b, _ := json.Marshal(v) // a struct of strings and numbers always marshals
+	fmt.Fprintf(w, "%s\n", b)
 }
 
 // maxLines caps text output (design §4); --json has everything.

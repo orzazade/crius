@@ -173,3 +173,26 @@ func TestQuotaErrorOutputIsRedacted(t *testing.T) {
 		t.Fatal(rc, out)
 	}
 }
+
+// Crius 22:36 and aitch's contract: --room prints one JSON line on stdout on every exit (0 room, 3 full, 4 unknown),
+// and says an unknown answer on stderr too.
+func TestQuotaRoomUnknownIsLoud(t *testing.T) {
+	_, home := testutil.Temp(t)
+	var out, errb bytes.Buffer
+	if rc := Run([]string{"quota", "--room"}, &out, &errb); rc != exitUnavailable || !strings.Contains(errb.String(), "missing") {
+		t.Fatal(rc, out.String(), errb.String())
+	}
+	var r struct{ Verdict, Reason string }
+	if err := json.Unmarshal(out.Bytes(), &r); err != nil || r.Verdict != "unknown" || !strings.Contains(r.Reason, "missing") ||
+		strings.Count(out.String(), "\n") != 1 {
+		t.Fatal(err, out.String())
+	}
+	run("init")
+	out.Reset()
+	errb.Reset()
+	if rc := Run([]string{"quota", "--room"}, &out, &errb); rc != exitUnavailable || !strings.Contains(out.String(), `"verdict":"unknown"`) ||
+		!strings.Contains(out.String(), "no quota sample") || !strings.Contains(errb.String(), "no quota sample") {
+		t.Fatal(rc, out.String(), errb.String())
+	}
+	_ = home
+}

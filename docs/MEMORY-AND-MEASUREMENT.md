@@ -193,6 +193,13 @@ Every answer starts with a status: `complete` (exit 0: all sources for the scope
 | `quota` | two blocks. **Subscription** (one Max account, both personas): epoch, observed % used, pace vs time passed, uncovered usage, list-price shares by project. **Enterprise** (Appxite API billing, real employer money): $ this week and today by project (quotes, AXI), and any non-Appxite session on it as a violation | Crius daily check | ~200 |
 | `health` | per source and per resource: last run, freshness, expected vs seen, heartbeat age, last backup and restore test | Crius, alerts | ~200 |
 
+**Room on the Max account (`quota --room`).** For a launcher choosing the account of a new session: one JSON line
+on stdout, `{"verdict":"room|full|unknown","reason":"7d 43%, 5h 9%, reset 22 Oct 02:00, sample 5 min old",...}`,
+exit 0 room, 3 full, 4 unknown (the reason also on stderr). Owner's rule (Crius, 10-16): a current-week sample
+within 45 min has room until 7d or 5h reaches 100%; an older one only while both are under 90%, else unknown; 7d at
+100% is full at any age; a 5h window that has reset counts 0. No sample, an ended week or a failure is unknown,
+never room. It reads the store, so a sample is up to one ingest run (10 min) older than the spool.
+
 **Bounded transcript search (`find --deep`).** Used only when the store has no answer and the question is about the
 last 30 days. A Haiku helper runs `rg` over the transcript folders of that project and time window only (max 50
 files, max 2 minutes), and returns at most 10 citations (transcript path, message uuid, time) with a one-line
