@@ -301,3 +301,17 @@ func TestFindCommitBlockSurvivesAFullList(t *testing.T) {
 		t.Fatalf("more %v commits %d", r.More, len(r.Commits))
 	}
 }
+
+// More matching commits than one page: none of them reaches the hits, and they do not mark the hits as cut.
+func TestFindManyCommitsStayInTheirBlock(t *testing.T) {
+	db := open(t)
+	event(t, db, "2026-10-16T10:00:00Z", "trading", "info", "deploy went out", "")
+	for i := 0; i < maxHits+3; i++ {
+		exec(t, db, "insert into git_commit (sha, repo, project, ts, files, subject) values (?, '/r/synapse', 'trading',"+
+			" '2026-10-16T10:00:00Z', '[]', 'deploy script')", fmt.Sprintf("%07dabc", i))
+	}
+	r := find(t, db, Query{Text: "deploy"})
+	if len(r.Hits) != 1 || r.Hits[0].Kind == "commit" || r.More || len(r.Commits) != maxCommits {
+		t.Fatalf("hits %+v more %v commits %d", r.Hits, r.More, len(r.Commits))
+	}
+}
