@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -272,5 +273,44 @@ func TestSampleMarksResponses(t *testing.T) {
 	must(t, h, cost("a", 3), t0.Add(140*time.Minute))
 	if ls := spoolLines(t, h); len(ls) != 5 || *ls[4].Responded {
 		t.Fatalf("a response after a render gap counts as new: %+v", ls[len(ls)-1])
+	}
+}
+
+// Review of 778abca: a render time ahead of the clock (the clock stepped back) proves nothing, and a state file from
+// before the render field still dates a response by the session's last line, which was a render too.
+func TestSampleRenderClockAndLegacy(t *testing.T) {
+	t0 := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+	in := func(usd, seven float64) []byte {
+		return []byte(fmt.Sprintf(`{"session_id":"a","cost":{"total_cost_usd":%v,"total_api_duration_ms":%v},"rate_limits":`+
+			`{"five_hour":{"used_percentage":5,"resets_at":1760630400},"seven_day":{"used_percentage":%v,"resets_at":1761206400}}}`,
+			usd, usd*1000, seven))
+	}
+	last := func(h string) Line { ls := spoolLines(t, h); return ls[len(ls)-1] }
+
+	h := home(t)
+	must(t, h, in(1, 40), t0)
+	must(t, h, in(2, 41), t0.Add(-5*time.Minute)) // the clock stepped back an hour: the response may be 54 min old
+	if l := last(h); l.Kind != "change" || *l.Responded {
+		t.Errorf("clock back: %s responded %v", l.Kind, *l.Responded)
+	}
+	must(t, h, in(3, 42), t0.Add(-3*time.Minute)) // the render 2 min ago is the session's last: responses count again
+	if l := last(h); l.Kind != "change" || !*l.Responded {
+		t.Errorf("after the clock step: %s responded %v", l.Kind, *l.Responded)
+	}
+
+	h = home(t)
+	must(t, h, in(1, 40), t0)
+	must(t, h, in(2, 41), t0.Add(time.Minute))
+	p := filepath.Join(h, "spool", "quota.state.json")
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, regexp.MustCompile(`,"render":"[^"]*"`).ReplaceAll(b, nil), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	must(t, h, in(3, 42), t0.Add(5*time.Minute)) // last line 4 min ago: a render, so the response is recent
+	if l := last(h); l.Kind != "change" || !*l.Responded {
+		t.Errorf("legacy state: %s responded %v", l.Kind, *l.Responded)
 	}
 }

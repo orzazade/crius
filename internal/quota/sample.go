@@ -136,8 +136,15 @@ func Sample(home, persona string, in []byte, now time.Time) (string, error) {
 	alive, _ := time.Parse(tsFormat, st.Alive[persona])
 	// rate_limits come with a response, so their absence means an API-billed session only when a response arrived
 	// since the last render: a new session shows none before its first response, a resumed one shows its old cost.
-	rendered, _ := time.Parse(tsFormat, s.Render) // none yet: a zero time, so no response counts as new
-	responded := known && (d.Cost.USD > s.USD || d.Cost.APIms > s.APIms) && now.Sub(rendered) <= RenderGap
+	// The session's last render: the kept render time, or its last line when that is newer and not ahead of the clock
+	// (a line is a render too; a state file from before the field has only that). None: a zero time, so no response
+	// counts as new. A render ahead of the clock (it stepped back) proves nothing either (review of 778abca).
+	rendered, _ := time.Parse(tsFormat, s.Render)
+	if t, err := time.Parse(tsFormat, s.TS); err == nil && t.After(rendered) && !t.After(now) {
+		rendered = t
+	}
+	gap := now.Sub(rendered)
+	responded := known && (d.Cost.USD > s.USD || d.Cost.APIms > s.APIms) && gap >= 0 && gap <= RenderGap
 	// An idle session can repeat a past epoch's window: it never heartbeats, so it cannot stand in for a live one.
 	current := rl && *l.SevenReset > st.Reset-3600
 	// A session whose response came without rate_limits is API-billed: it measures no quota, but its render shows
@@ -156,7 +163,7 @@ func Sample(home, persona string, in []byte, now time.Time) (string, error) {
 		l.Kind = "session"
 	}
 	n := seen{TS: s.TS, Lined: s.Lined, RL: s.RL, Vals: s.Vals, USD: d.Cost.USD, APIms: d.Cost.APIms, Render: s.Render}
-	if now.Sub(rendered) >= time.Minute {
+	if gap >= time.Minute || gap < 0 {
 		n.Render = l.TS
 	}
 	if !known {
