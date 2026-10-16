@@ -34,7 +34,8 @@ type input struct {
 }
 
 // Line is one spool record. Kind: `session` (first sight of a session, or its rate_limits came or went),
-// `change` (the session's own values changed), `heartbeat` (no line from any session for Heartbeat).
+// `change` (the session's own values changed), `heartbeat` (no line for Heartbeat: from a Max session, none of the
+// current epoch; from a known enterprise session, none at all, so an enterprise-only persona is not stale).
 // RL says whether the statusline had rate_limits: present only on Pro/Max, so false after a response means an
 // API-billed (enterprise) session.
 type Line struct {
@@ -60,6 +61,7 @@ type seen struct {
 
 type state struct {
 	Last     map[string]string `json:"last"`  // per persona: its newest line with rate_limits of the current epoch
+	Alive    map[string]string `json:"alive"` // per persona: its newest line of any kind
 	Reset    int64             `json:"reset"` // the newest seven-day resets_at seen: the current epoch
 	Sessions map[string]seen   `json:"sessions"`
 }
@@ -103,7 +105,7 @@ func Sample(home, persona string, in []byte, now time.Time) (string, error) {
 		return "", err
 	}
 	statePath := filepath.Join(spool, "quota.state.json")
-	st := state{Sessions: map[string]seen{}, Last: map[string]string{}}
+	st := state{Sessions: map[string]seen{}, Last: map[string]string{}, Alive: map[string]string{}}
 	if b, err := os.ReadFile(statePath); err == nil {
 		if err := json.Unmarshal(b, &st); err != nil {
 			return "", fmt.Errorf("%s: %w", statePath, err)
@@ -114,22 +116,31 @@ func Sample(home, persona string, in []byte, now time.Time) (string, error) {
 		if st.Last == nil {
 			st.Last = map[string]string{}
 		}
+		if st.Alive == nil {
+			st.Alive = map[string]string{}
+		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return "", err
 	}
 	s, known := st.Sessions[d.SessionID]
 	last, _ := time.Parse(tsFormat, st.Last[persona])
+	alive, _ := time.Parse(tsFormat, st.Alive[persona])
 	// rate_limits come with a response, so their absence means an API-billed session only when a response arrived
 	// since the last render: a new session shows none before its first response, a resumed one shows its old cost.
 	responded := known && (d.Cost.USD > s.USD || d.Cost.APIms > s.APIms)
 	// An idle session can repeat a past epoch's window: it never heartbeats, so it cannot stand in for a live one.
 	current := rl && *l.SevenReset > st.Reset-3600
+	// A session whose response came without rate_limits is API-billed: it measures no quota, but its render shows
+	// the persona's statusline is alive. A session not known yet (resumed, no response) may be Max: no line.
+	enterprise := !rl && s.Lined && !s.RL
 	switch {
 	case rl && !(s.Lined && s.RL):
 		l.Kind = "session"
 	case rl && s.Vals != vals:
 		l.Kind = "change"
 	case current && now.Sub(last) >= Heartbeat:
+		l.Kind = "heartbeat"
+	case enterprise && now.Sub(alive) >= Heartbeat:
 		l.Kind = "heartbeat"
 	case !rl && !(s.Lined && !s.RL) && responded:
 		l.Kind = "session"
@@ -158,6 +169,7 @@ func Sample(home, persona string, in []byte, now time.Time) (string, error) {
 			st.Last[persona] = l.TS
 			st.Reset = max(st.Reset, *l.SevenReset)
 		}
+		st.Alive[persona] = l.TS
 	}
 	if l.Kind != "" || n != s {
 		st.Sessions[d.SessionID] = n

@@ -96,9 +96,9 @@ func TestSampleRecordsRateLimitsPresence(t *testing.T) {
 	}
 	out := must(t, h, render("e", 0, 0, false), t0.Add(time.Minute))
 	must(t, h, render("e", 0, 0, false), t0.Add(2*time.Minute))
-	must(t, h, render("e", 0, 0, false), t0.Add(90*time.Minute)) // no heartbeat without rate_limits
+	must(t, h, render("e", 0, 0, false), t0.Add(90*time.Minute)) // a known enterprise session heartbeats too
 	must(t, h, render("e", 5, 6, true), t0.Add(91*time.Minute))
-	if got, want := kinds(spoolLines(t, h)), "e:session:false e:session:true"; got != want {
+	if got, want := kinds(spoolLines(t, h)), "e:session:false e:heartbeat:false e:session:true"; got != want {
 		t.Fatalf("got %s want %s", got, want)
 	}
 	if !strings.Contains(out, "no plan limits") {
@@ -192,6 +192,53 @@ func TestSampleOldEpochDoesNotHeartbeat(t *testing.T) {
 		}
 	}
 	if got, want := kinds(spoolLines(t, h)), "a:session:true idle:session:true a:heartbeat:true"; got != want {
+		t.Fatalf("got %s want %s", got, want)
+	}
+}
+
+// Crius 22:12: an enterprise-only persona (no rate_limits) heartbeats while a known enterprise session renders, so
+// it is never stale (no line within Gap) while sessions are open. A session whose account is not known yet (resumed,
+// no response) writes no enterprise line; the enterprise lines do not hold back a Max session's current-epoch
+// heartbeat in the same persona.
+func TestSampleEnterprisePersonaStaysAlive(t *testing.T) {
+	h := home(t)
+	t0 := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+	work := func(in []byte, at time.Duration) {
+		t.Helper()
+		if _, err := Sample(h, "work", in, t0.Add(at)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	work([]byte(`{"session_id":"e","cost":{"total_cost_usd":0,"total_api_duration_ms":0}}`), 0)
+	work(render("e", 0, 0, false), time.Minute) // its first response, without rate_limits: enterprise
+	for at := 5 * time.Minute; at <= 2*time.Hour; at += 5 * time.Minute {
+		work(render("e", 0, 0, false), at)
+		work(render("r", 0, 0, false), at) // resumed, no response yet: account unknown
+	}
+	prev := t0
+	for _, l := range spoolLines(t, h) {
+		ts, _ := time.Parse(tsFormat, l.TS)
+		if ts.Sub(prev) > Gap || l.Session != "e" || l.RL {
+			t.Fatalf("line %+v after %s: %s", l, prev.Format(tsFormat), kinds(spoolLines(t, h)))
+		}
+		prev = ts
+	}
+	if t0.Add(2*time.Hour).Sub(prev) > Gap || len(spoolLines(t, h)) > 5 { // a session line and a heartbeat per 30 min
+		t.Fatalf("last line %s: %s", prev, kinds(spoolLines(t, h)))
+	}
+
+	h = home(t)
+	for _, r := range []struct {
+		in []byte
+		at time.Duration
+	}{{render("m", 10, 40, true), 0}, {[]byte(`{"session_id":"e","cost":{"total_cost_usd":0,"total_api_duration_ms":0}}`), 0},
+		{render("e", 0, 0, false), time.Minute}, {render("e", 0, 0, false), 31 * time.Minute},
+		{render("m", 10, 40, true), 31 * time.Minute},
+		// m resumed later: same cost, no rate_limits before its next response; it is not an enterprise session.
+		{[]byte(`{"session_id":"m","cost":{"total_cost_usd":0.5,"total_api_duration_ms":900}}`), 100 * time.Minute}} {
+		work(r.in, r.at)
+	}
+	if got, want := kinds(spoolLines(t, h)), "m:session:true e:session:false e:heartbeat:false m:heartbeat:true"; got != want {
 		t.Fatalf("got %s want %s", got, want)
 	}
 }

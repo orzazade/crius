@@ -246,7 +246,9 @@ Enterprise $ is list price from tokens (ESTIMATE of the employer's bill; no bill
    open, so "no sample" means "not measured", not "no use". `crius-statusline --persona P` is the statusLine command
    (`refreshInterval` 300 s, so idle sessions re-run it): it writes a line when a session is first seen after a
    response, when that session's own 5h/7d values change, and a heartbeat when that persona wrote no current-epoch
-   line for 30 min. An idle session repeating its own older values writes no change line, but may write that
+   line for 30 min. A known enterprise session (its response came without `rate_limits`) heartbeats when its persona
+   wrote no line at all for 30 min, so an enterprise-only persona is not stale while its sessions are open; a session
+   whose account is not known yet (resumed, no response) writes none (Crius, 10-16). An idle session repeating its own older values writes no change line, but may write that
    heartbeat with an older share of the same epoch (harmless: the report takes the epoch's highest share); a line of a
    past epoch never heartbeats. `rate_limits` without
    the seven-day share and reset is an error, not a sample. It never touches the store, and on an error it prints
