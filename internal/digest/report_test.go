@@ -157,10 +157,8 @@ func TestBuildAddsTheStoreSections(t *testing.T) {
 	verified(t, db, since.Add(time.Hour), "crius:lead", "crius:build", "b3a87cb · 31/34")
 	verified(t, db, since.Add(2*time.Hour), "axi:qa-api", "axi:leader", "axi#7 · on env004")
 	verified(t, db, since.Add(3*time.Hour), "crius:build", "crius:build", "2cc2222 · the builder's own claim")
-	verified(t, db, since.Add(4*time.Hour), "axi:leader", "crius", "env004 is down, tests wait") // a line to crius
-	if _, err := db.Exec("update event set kind = 'blocked' where text = 'env004 is down, tests wait'"); err != nil {
-		t.Fatal(err)
-	}
+	line(t, db, since.Add(4*time.Hour), "axi:leader", "blocked", "env004 is down, tests wait")
+	verified(t, db, since.Add(150*time.Minute), "crius:lead", "crius", "F-1 · sent to no lead")
 	for i := 1; i <= 4; i++ {
 		line(t, db, since.Add(time.Duration(4+i)*time.Minute), "crius:lead", "decision", fmt.Sprint("decision ", i))
 	}
@@ -183,9 +181,10 @@ func TestBuildAddsTheStoreSections(t *testing.T) {
 	for _, want := range []string{
 		"# Goal report · 2026-10-17 09:00 · status partial\nsources read: bus " + bus + " · git " + git + " · prices never\n",
 		"\n## Since the last report (2026-10-17 00:00)\n" +
-			"Verified by Crius or QA: 2\n" +
+			"Verified by Crius or QA: 3\n" +
 			"  crius:lead -> crius:build " + since.Add(time.Hour).Format("15:04") + " b3a87cb · 31/34\n" +
 			"  axi:qa-api -> axi:leader " + since.Add(2*time.Hour).Format("15:04") + " axi#7 · on env004\n" +
+			"  crius:lead -> crius " + since.Add(150*time.Minute).Format("15:04") + " F-1 · sent to no lead\n" +
 			"Blocked: 1\n  axi:leader " + since.Add(4*time.Hour).Format("15:04") + " env004 is down, tests wait\n" +
 			"Decisions: 4\n  crius:lead 00:05 decision 1\n  crius:lead 00:06 decision 2\n  crius:lead 00:07 decision 3\n  +1 more\n" +
 			"Open waits (last 24 h): 1\n  " + now.Add(-30*time.Minute).Format("15:04") + ` wait idle_prompt "falcon" sid=3b660534` + "\n",

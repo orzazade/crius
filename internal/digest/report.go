@@ -252,7 +252,7 @@ func storeSections(db *sql.DB, in Input, now time.Time) ([]string, error) {
 				if err := json.Unmarshal([]byte(refs), &r); err != nil {
 					return nil, fmt.Errorf("event at %s: refs: %w", ts, err)
 				}
-				if len(r["to"]) > 0 && r["to"][0] != "crius" {
+				if len(r["to"]) > 0 { // a VERIFIED line; one to "crius" names no lead and shows it
 					to = " -> " + r["to"][0]
 				}
 			}
