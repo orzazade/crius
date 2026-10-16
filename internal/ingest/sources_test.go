@@ -85,20 +85,25 @@ func busCase(t *testing.T) (*ic, string, string) {
 	return newIC(t, cfg{artifactDir: arts, teamLogs: teamLog}), arts, teamLog
 }
 
-// RULES 3.4: a VERIFIED line is a bus type, and every bus or team-log line keeps its recipient (refs "to"), so the
-// digest can tell which lead a check is for.
+// RULES 3.4: a VERIFIED line is a bus type and keeps its recipient (refs "to"), so the digest can tell which lead a
+// check is for; other lines do not (review of 636d4da). A slug recipient is stored as written: redaction would turn
+// token-service:lead into [redacted]; any other recipient is redacted like all text.
 func TestBusLinesKeepTheirRecipient(t *testing.T) {
 	x, _, teamLog := busCase(t)
 	testutil.Write(t, filepath.Join(x.home, "bus", "demo.log"),
-		"2026-10-17T02:57 VERIFIED crius:lead -> demo:build — b3a87cb · step 4: 31/34\n"+
-			"2026-10-17T02:58 DONE demo:leader -> crius — done\n")
+		"2026-10-17T02:57 VERIFIED crius:lead -> token-service:lead — b3a87cb · step 4: 31/34\n"+
+			"2026-10-17T02:58 DONE demo:leader -> crius — done\n"+
+			"2026-10-17T03:00 VERIFIED crius:lead -> sk-ant-api03-"+strings.Repeat("A", 40)+" — F-1 · x\n")
 	testutil.Write(t, teamLog, "2026-10-17T02:59 VERIFIED crius:lead -> demo:qa-ui — F-126 · ticks seen\n")
 	x.run()
-	rows := x.q("select kind, refs from event where kind in ('verified', 'done') order by ts")
+	if rows := x.q("select refs from event where kind = 'done'"); len(rows) != 1 || rows[0][0] != "<nil>" {
+		t.Fatal("a line other than VERIFIED keeps its recipient:", rows)
+	}
+	rows := x.q("select kind, refs from event where kind = 'verified' order by ts")
 	if len(rows) != 3 {
 		t.Fatal(rows)
 	}
-	for i, want := range []string{"demo:build", "crius", "demo:qa-ui"} {
+	for i, want := range []string{"token-service:lead", "demo:qa-ui", "[redacted]"} {
 		var refs map[string][]string
 		if err := json.Unmarshal([]byte(rows[i][1]), &refs); err != nil || len(refs["to"]) != 1 || refs["to"][0] != want {
 			t.Errorf("%v: %v", rows[i], err)

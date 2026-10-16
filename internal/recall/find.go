@@ -250,12 +250,13 @@ func Find(db *sql.DB, q Query, busTypes map[string]bool) (*Result, error) {
 		res.Reasons = append(res.Reasons, "sessions are not searched by words (give an id prefix, or list them with no query)")
 	}
 	// 1. Exact ids, and the events that cite them: an item or decision id whole, a sha by prefix either way (refs
-	// hold short shas). An item, decision or event id is not searched as words: no row for it is a true "no".
+	// hold short shas; a VERIFIED line's recipient, refs "to", is no citation). An item, decision or event id is not
+	// searched as words: no row for it is a true "no".
 	words := q.Text
 	for _, tok := range toks {
 		cite := `id <> '' and instr(refs, '"' || ? || '"') > 0`
 		citeSha := `id <> '' and case when json_valid(refs) then exists (select 1 from json_tree(refs) j where` +
-			` j.type = 'text' and length(j.atom) >= 7 and (j.atom like ? || '%' or ? like j.atom || '%')) end`
+			` j.type = 'text' and j.path <> '$.to' and length(j.atom) >= 7 and (j.atom like ? || '%' or ? like j.atom || '%')) end`
 		var err error
 		if itemRe.MatchString(tok) || decisionRe.MatchString(tok) || eventRe.MatchString(tok) {
 			words = strings.Replace(words, tok, " ", 1)

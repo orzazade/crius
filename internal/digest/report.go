@@ -66,7 +66,7 @@ func Build(db *sql.DB, leads []ingest.Lead, prev Snapshot, now time.Time) (*Repo
 			cannotRead++
 			continue
 		}
-		checked, unmatched, err := Verified(db, l.Name, g)
+		checked, notCounted, err := Verified(db, l.Name, g)
 		if err != nil {
 			return nil, err
 		}
@@ -82,8 +82,8 @@ func Build(db *sql.DB, leads []ingest.Lead, prev Snapshot, now time.Time) (*Repo
 		snap := LeadSnap{Done: g.Done, Verified: verified}
 		r.Snap[l.Name] = snap
 		lost := ""
-		if unmatched > 0 {
-			lost = fmt.Sprintf(" · VERIFIED lines that match no milestone: %d", unmatched)
+		if notCounted > 0 {
+			lost = fmt.Sprintf(" · VERIFIED lines not counted: %d", notCounted)
 		}
 		entries = append(entries, entry{
 			line: fmt.Sprintf("%s: %d%% claimed · verified %d of %d done (%d milestones) · %s%s", l.Name, g.Done, verified, done,

@@ -17,11 +17,10 @@ var (
 // isSha: 7 to 40 hex with at least one letter, so a run id is not taken for one.
 func isSha(w string) bool { return shaRe.MatchString(w) && letterRe.MatchString(w) }
 
-// Verified gives, per milestone, the id of the VERIFIED line that checked it, 0 for none, and how many VERIFIED lines
-// to the lead match no done milestone (RULES 3.4). A VERIFIED line counts when it is to the lead and from Crius
-// (crius:lead) or the lead's own project's QA (role qa or qa-*); its text is "<ref> · <evidence>". The ref matches a
-// done milestone when it is a sha that is, or begins, a sha word of the milestone's refs (any case); or equals one of
-// the milestone's refs or its text (any case). The sender is trusted as written on the line.
+// Verified gives, per milestone, the id of the first VERIFIED line that checked it, 0 for none, and how many VERIFIED
+// lines to the lead count for no milestone (RULES 3.4). A VERIFIED line is to the lead and from Crius (crius:lead) or
+// the lead's own project's QA (role qa or qa-*); it counts when it matches exactly one done milestone, so a check that
+// does not land is seen. The sender is trusted as written on the line.
 func Verified(db *sql.DB, lead string, g *Goal) ([]int64, int, error) {
 	project, _, _ := strings.Cut(lead, ":")
 	rows, err := db.Query("select id, coalesce(refs, ''), text from event where kind = 'verified' and"+
@@ -31,7 +30,7 @@ func Verified(db *sql.DB, lead string, g *Goal) ([]int64, int, error) {
 		return nil, 0, err
 	}
 	defer rows.Close()
-	out, unmatched := make([]int64, len(g.Milestones)), 0
+	out, notCounted := make([]int64, len(g.Milestones)), 0
 	for rows.Next() {
 		var id int64
 		var refs, text string
@@ -47,34 +46,40 @@ func Verified(db *sql.DB, lead string, g *Goal) ([]int64, int, error) {
 		if !slices.Contains(r["to"], lead) {
 			continue
 		}
-		ref, _, _ := strings.Cut(text, " · ")
-		ref = strings.ToLower(strings.TrimSpace(ref))
-		hit := false
+		var hits []int
 		for i, m := range g.Milestones {
-			if m.State == Done && matches(ref, m) {
-				hit = true
-				if out[i] == 0 {
-					out[i] = id
-				}
+			if m.State == Done && matches(text, m) {
+				hits = append(hits, i)
 			}
 		}
-		if !hit {
-			unmatched++
+		if len(hits) != 1 {
+			notCounted++
+			continue
+		}
+		if out[hits[0]] == 0 {
+			out[hits[0]] = id
 		}
 	}
-	return out, unmatched, rows.Err()
+	return out, notCounted, rows.Err()
 }
 
-func matches(ref string, m Milestone) bool {
-	if ref == strings.ToLower(m.Text) {
+// matches: the text is "<ref> · <evidence>" with some evidence, and the ref is the milestone's text (which may hold
+// " · ") or one of its refs, exactly; or a sha that is, or begins, a sha word of its refs, in any case.
+func matches(text string, m Milestone) bool {
+	if rest, ok := strings.CutPrefix(text, m.Text+" · "); ok && strings.TrimSpace(rest) != "" {
 		return true
 	}
+	ref, evidence, ok := strings.Cut(text, " · ")
+	if !ok || strings.TrimSpace(evidence) == "" {
+		return false
+	}
+	ref = strings.TrimSpace(ref)
 	for _, r := range strings.Split(m.Refs, ",") {
-		if ref == strings.ToLower(strings.TrimSpace(r)) {
+		if ref == strings.TrimSpace(r) {
 			return true
 		}
 	}
-	if !isSha(ref) {
+	if ref = strings.ToLower(ref); !isSha(ref) {
 		return false
 	}
 	for _, w := range wordRe.FindAllString(strings.ToLower(m.Refs), -1) {

@@ -104,19 +104,29 @@ func nullable(s string) any {
 
 type event struct {
 	ts, kind, key, session, project, actor, item, text string
+	to                                                 string // a VERIFIED line's recipient, kept in refs "to"
 	hasText                                            bool
 	refs                                               map[string][]string
 }
 
 func (r *runner) event(tx *sql.Tx, e event) error {
 	var refs, text any
-	if len(e.refs) > 0 {
-		clean := map[string][]string{}
-		for k, vs := range e.refs {
-			for _, v := range vs {
-				clean[k] = append(clean[k], r.text(v))
-			}
+	clean := map[string][]string{}
+	for k, vs := range e.refs {
+		for _, v := range vs {
+			clean[k] = append(clean[k], r.text(v))
 		}
+	}
+	if e.to != "" {
+		// A slug recipient (project or project:role) carries no secret, and redaction would take token-service:lead
+		// for a key; anything else is redacted like all text.
+		to := e.to
+		if p, role, _ := strings.Cut(to, ":"); !store.Slug.MatchString(p) || role != "" && !store.Slug.MatchString(role) {
+			to = r.text(to)
+		}
+		clean["to"] = []string{to}
+	}
+	if len(clean) > 0 {
 		b, err := json.Marshal(clean)
 		if err != nil {
 			return err

@@ -210,6 +210,16 @@ func TestACommitShaAndASessionPrefixAreExactHits(t *testing.T) {
 	}
 }
 
+// Review of 636d4da: a VERIFIED line's recipient (refs "to") is routing, not a citation: abcdef1:lead is no sha.
+func TestARecipientIsNotACitation(t *testing.T) {
+	db := open(t)
+	event(t, db, "2026-10-17T03:00:00Z", "crius", "verified", "F-1 · rc 0", `{"to":["abcdef1:lead"]}`)
+	cited := event(t, db, "2026-10-17T03:01:00Z", "crius", "done", "x", `{"sha":["abcdef1"]}`)
+	if r := find(t, db, Query{Text: "abcdef1"}); len(r.Hits) != 1 || r.Hits[0].ID != fmt.Sprint("event:", cited) {
+		t.Fatalf("%+v", r.Hits)
+	}
+}
+
 // Review 0178403: a cited id matches whole (demo#1 is not demo#11); a full sha finds events citing its short form;
 // an id with no row is a true "no", not a word search; sessions are a kind.
 func TestFindMatchesIDsWhole(t *testing.T) {
