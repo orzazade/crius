@@ -180,20 +180,20 @@ func TestAReplacedBusFileKeepsItsStoredDates(t *testing.T) {
 			t.Cleanup(func() { store.Types["WAIT"] = true })
 		}
 		path := filepath.Join(x.home, "bus", "demo.log")
-		testutil.Write(t, path, "09:30 DONE demo:leader -> crius — one\n")
+		testutil.Write(t, path, "09:30 DONE demo:leader -> crius — one\n09:40 DONE demo:leader -> crius — two\n")
 		old := time.Now().AddDate(0, 0, -2)
 		if err := os.Chtimes(path, old, old); err != nil {
 			t.Fatal(err)
 		}
 		x.run()
-		ts := x.one("select ts from event where text='one'")
-		testutil.Write(t, path+".new", "09:30 DONE demo:leader -> crius — one\n")
+		ts := x.q("select ts from event where text in ('one', 'two') order by id")
+		testutil.Write(t, path+".new", "09:30 DONE demo:leader -> crius — one\n09:40 DONE demo:leader -> crius — two\n")
 		if err := os.Rename(path+".new", path); err != nil {
 			t.Fatal(err)
 		}
 		store.Types["WAIT"] = true
 		x.run()
-		eq(t, x.one("select ts from event where text='one'"), ts)
+		eq(t, x.q("select ts from event where text in ('one', 'two') order by id"), ts)
 		// Opus P1 on 277f507: a later re-read (a newer parser) must not date the lines from the new birth either.
 		db, err := store.Open(x.home)
 		if err != nil {
@@ -204,8 +204,26 @@ func TestAReplacedBusFileKeepsItsStoredDates(t *testing.T) {
 		}
 		db.Close()
 		x.run()
-		eq(t, x.one("select ts from event where text='one'"), ts)
+		eq(t, x.q("select ts from event where text in ('one', 'two') order by id"), ts)
 	}
+}
+
+// Opus P3 on 277f507: a dated line keeps its stored ts on a re-read; it was read in the zone of its day, and a run
+// in another zone must not shift it.
+func TestARereadKeepsADatedLine(t *testing.T) {
+	x, _, _ := busCase(t)
+	testutil.Write(t, filepath.Join(x.home, "bus", "demo.log"), "2026-10-16T09:30 DONE demo:leader -> crius — one\n")
+	x.run()
+	db, err := store.Open(x.home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("update event set ts='2026-10-16T01:30:00Z'; update coverage set sha='older-parser'"); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	x.run()
+	eq(t, x.one("select ts from event"), "2026-10-16T01:30:00Z")
 }
 
 // Crius 01:09: a line stored with a date an older parser got wrong is re-dated when a changed parser reads the file
