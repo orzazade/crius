@@ -1,0 +1,31 @@
+#!/bin/bash
+# The goal report at 09:00 and 18:00 (launchd space.scifilab.crius.digest): ingest first, so the report reads fresh
+# data, then crius-rec digest --write. Exit 0 or 3 (partial: the report says why) is a run. Any other exit posts an
+# ALERT on the crius bus and the job exits 1; a failed ingest still gets a report, which says how old its data is.
+# While the 10-minute ingest holds the lock (exit 75), the ingest is tried again for a minute.
+set -u
+bin="$HOME/.crius/bin"
+failed=0
+alert() {
+  failed=1
+  "$bin/crius-rec" record bus --project crius --role digest --type ALERT --text "$1" ||
+    echo "$(date +%FT%H:%M) cannot post ALERT: $1" >&2
+}
+for try in 1 2 3 4 5 6; do
+  "$bin/crius-ingest"
+  rc=$?
+  [ "$rc" = 75 ] && [ "$try" != 6 ] || break
+  sleep 10
+done
+case $rc in
+  0 | 3) ;;
+  75) alert "goal report: crius-ingest busy for a minute (lock held); the report reads the last good run" ;;
+  *) alert "goal report: crius-ingest exit $rc; the report reads the last good run; see ~/.crius/logs/digest.log" ;;
+esac
+"$bin/crius-rec" digest --write
+rc=$?
+case $rc in
+  0 | 3) ;;
+  *) alert "goal report: crius-rec digest --write exit $rc, no report; see ~/.crius/logs/digest.log" ;;
+esac
+exit "$failed"

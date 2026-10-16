@@ -1,8 +1,8 @@
 #!/bin/bash
-# Install (or reinstall) the two Crius launchd jobs: the ingest every 10 min and the watchdog every 5 min.
-# Builds both binaries, crius-statusline (the statusLine command) and crius-rec (for launchers: quota --room), from
-# this checkout into ~/.crius/bin, then prints each installed plist and the job state, so the owner sees exactly
-# what was installed.
+# Install (or reinstall) the three Crius launchd jobs: the ingest every 10 min, the watchdog every 5 min and the goal
+# report at 09:00 and 18:00. Builds both binaries, crius-statusline (the statusLine command) and crius-rec (for
+# launchers: quota --room; the goal report), from this checkout into ~/.crius/bin with the report's run script, then
+# prints each installed plist and the job state, so the owner sees exactly what was installed.
 set -euo pipefail
 repo="$(cd "$(dirname "$(realpath "$0")")/.." && pwd -P)"
 bin="$HOME/.crius/bin"
@@ -15,9 +15,10 @@ mkdir -p -m 700 "$bin"
 for cmd in crius-ingest crius-watchdog crius-statusline crius-rec; do
   GOTOOLCHAIN=local go -C "$repo" build -o "$bin/$cmd" "./cmd/$cmd"
 done
+install -m 755 "$repo/bin/crius-digest-run" "$bin/crius-digest-run"
 dest="$HOME/Library/LaunchAgents"
 mkdir -p "$dest"
-for job in ingest watchdog; do
+for job in ingest watchdog digest; do
   label="space.scifilab.crius.$job"
   plist="$dest/$label.plist"
   sed -e "s#@REPO@#$repo#g" -e "s#@HOME@#$HOME#g" "$repo/launchd/$label.plist.in" > "$plist.tmp"

@@ -377,7 +377,8 @@ Enterprise $ is list price from tokens (ESTIMATE of the employer's bill; no bill
    (drop `user.email`, account ids, prompts, tool details), files kept 7 days.
 
 **Schedule.** launchd every 10 minutes (ESTIMATE 1-3 s per incremental run; a full pass is 20 s, FACT). 03:00:
-re-count the last 2 days from scratch (> 1% difference = alert), prune, backup, restore test (weekly). 06:30: digest.
+re-count the last 2 days from scratch (> 1% difference = alert), prune, backup, restore test (weekly). 09:00 and
+18:00: ingest, then the goal report (`bin/crius-digest-run`; any exit but 0 or 3 posts an ALERT).
 After each quota reset: scorecard. No model tokens in any of these.
 
 **Failure loudness, end to end.**
@@ -588,8 +589,10 @@ correct --corrects <row-id> --field project --value axi --reason`; `show <id> --
 
 ## 8. How Crius works day to day
 
-- **06:30** script: ingest, STATE.md, digest (≤ 60 lines, stamped): needs the owner (top, four lines each), accepted
-  yesterday, blocked, open waits, decisions, quota pace, health.
+- **09:00 and 18:00** (launchd `space.scifilab.crius.digest`): ingest, then the goal report (≤ 60 lines, stamped):
+  needs the owner on top (first marked), per lead goal, % claimed against verified milestones, change since the
+  last report, next milestone; then checks that passed, blocked, decisions, open waits, quota pace, health. A
+  failed run posts an ALERT on the crius bus.
 - **Morning start**: a fresh Crius session with CRIUS.md + the digest only (target ≤ 15K tokens). If pace is high
   (≥ 60% observed by day 3 of the epoch, or from day 2 this epoch's %/day above the average %/day of the last 7
   days of samples, which needs 7 days of samples), ONE Remote Control push per epoch: speed, top burners, one
