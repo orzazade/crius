@@ -80,3 +80,23 @@ func TestRedactStaysOnItsLine(t *testing.T) {
 		t.Fatalf("%q", out)
 	}
 }
+
+// Review 4836329: the value of a secret-named key is a secret whatever its shape, also when the key is a JSON key
+// (each string redacted alone never sees the key).
+func TestJSONRedactsTheValueOfASecretKey(t *testing.T) {
+	v := map[string]any{"refs": map[string]any{"password": "two words", "env": map[string]any{"DB_PASSWORD": "pg9"},
+		"api_key": 123456, "user": "bob"}}
+	b, err := JSON(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := string(b); strings.Contains(s, "two words") || strings.Contains(s, "pg9") || strings.Contains(s, "123456") ||
+		!strings.Contains(s, `"user": "bob"`) || !strings.Contains(s, `"password": "[redacted]"`) {
+		t.Fatal(s)
+	}
+	for k, want := range map[string]bool{"password": true, "DB_PASSWORD": true, "x-api-key": true, "user": false, "pass": false} {
+		if SecretKey(k) != want {
+			t.Error(k, !want)
+		}
+	}
+}

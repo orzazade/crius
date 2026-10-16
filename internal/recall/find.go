@@ -227,7 +227,9 @@ func Find(db *sql.DB, q Query, busTypes map[string]bool) (*Result, error) {
 		sessionRe.MatchString) {
 		return nil, fmt.Errorf("%w: sessions are found by id prefix or listed with no query; words do not search them", ErrQuery)
 	}
-	if slices.Contains(q.Kinds, "session") && wordRe.MatchString(q.Text) {
+	if slices.Contains(q.Kinds, "session") && slices.ContainsFunc(strings.Fields(q.Text), func(w string) bool {
+		return wordRe.MatchString(w) && !sessionRe.MatchString(w)
+	}) {
 		res.Status = "partial"
 		res.Reasons = append(res.Reasons, "sessions are not searched by words (give an id prefix, or list them with no query)")
 	}

@@ -417,8 +417,7 @@ func messageText(raw json.RawMessage) string {
 		case b.Text != "":
 			parts = append(parts, b.Text)
 		case len(b.Input) > 0:
-			// Decoded, not raw JSON: an escaped quote (\") would hide a password from the redaction patterns.
-			parts = append(parts, jsonStrings(b.Input)...)
+			parts = append(parts, toolText(b.Input)...)
 		case len(b.Content) > 0:
 			parts = append(parts, messageText(b.Content))
 		}
@@ -426,28 +425,44 @@ func messageText(raw json.RawMessage) string {
 	return strings.Join(parts, " ")
 }
 
-// jsonStrings lists the string values of a JSON document, keys in order.
-func jsonStrings(raw json.RawMessage) []string {
+// toolText is the readable text of a tool input: decoded, not raw JSON, since an escaped quote (\") hides a
+// password from the patterns; each key next to its value, since the patterns need the key; the value of a
+// secret-named key redacted whole, whatever its shape; numbers and booleans as written, keys in order.
+func toolText(raw json.RawMessage) []string {
+	d := json.NewDecoder(bytes.NewReader(raw))
+	d.UseNumber()
 	var v any
-	if json.Unmarshal(raw, &v) != nil {
+	if d.Decode(&v) != nil {
 		return nil
 	}
 	var out []string
-	var walk func(any)
-	walk = func(v any) {
+	var walk func(key string, v any)
+	walk = func(key string, v any) {
 		switch v := v.(type) {
-		case string:
-			out = append(out, v)
-		case []any:
-			for _, e := range v {
-				walk(e)
-			}
 		case map[string]any:
 			for _, k := range slices.Sorted(maps.Keys(v)) {
-				walk(v[k])
+				if redact.SecretKey(k) {
+					out = append(out, k+": [redacted]")
+					continue
+				}
+				if _, isMap := v[k].(map[string]any); isMap {
+					out = append(out, k+":")
+				}
+				walk(k, v[k])
+			}
+		case []any:
+			for _, e := range v {
+				walk(key, e)
+			}
+		case nil:
+		default:
+			if key != "" {
+				out = append(out, fmt.Sprintf("%s: %v", key, v))
+			} else {
+				out = append(out, fmt.Sprint(v))
 			}
 		}
 	}
-	walk(v)
+	walk("", v)
 	return out
 }

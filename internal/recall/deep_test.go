@@ -263,3 +263,23 @@ func TestDeepSaysWhatItSkipped(t *testing.T) {
 		t.Fatal(r.Status, r.Reasons)
 	}
 }
+
+// Review 4836329: decoded tool input keeps its keys and its numbers: the value of a secret-named key is redacted
+// whatever its shape, and keys and numbers can still be searched.
+func TestDeepToolInputKeepsKeysAndNumbers(t *testing.T) {
+	db := open(t)
+	transcript(t, db, "falcon", "s1",
+		msg("assistant", "a1", "2026-10-15T10:00:00Z", `[{"type":"tool_use","input":{"user":"bob","password":"two words hunter2xyz",`+
+			`"env":{"DB_PASSWORD":"pgsecret9"},"note":"mail stopped"}}]`),
+		msg("assistant", "a2", "2026-10-15T10:01:00Z", `[{"type":"tool_use","input":{"issue_number":7479,"draft":false,"action":"merge"}}]`))
+	r := deep(t, db, Query{Text: "mail stopped"})
+	if len(r.Hits) != 1 || strings.Contains(r.Hits[0].Text, "hunter2") || strings.Contains(r.Hits[0].Text, "words") ||
+		strings.Contains(r.Hits[0].Text, "pgsecret9") || !strings.Contains(r.Hits[0].Text, "bob") {
+		t.Fatalf("%+v", r.Hits)
+	}
+	for _, q := range []string{"7479 merge", "issue_number merge", "draft false"} {
+		if r := deep(t, db, Query{Text: q}); len(r.Hits) != 1 || r.Hits[0].ID != "a2" {
+			t.Fatalf("%s: %+v", q, r.Hits)
+		}
+	}
+}

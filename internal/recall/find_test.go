@@ -234,8 +234,11 @@ func TestFindMatchesIDsWhole(t *testing.T) {
 		r.Hits[0].Match != "list" {
 		t.Fatalf("%+v", r.Hits)
 	}
-	if r := find(t, db, Query{Text: "7dce2bdf", Kinds: []string{"session"}}); len(r.Hits) != 1 {
-		t.Fatalf("%+v", r.Hits)
+	// Review 4836329: an id lookup is no word search, alone or among other kinds.
+	for _, kinds := range [][]string{{"session"}, {"session", "commit"}} {
+		if r := find(t, db, Query{Text: "7dce2bdf", Kinds: kinds}); len(r.Hits) != 1 || r.Status != "complete" {
+			t.Fatalf("%v: %s %v %+v", kinds, r.Status, r.Reasons, r.Hits)
+		}
 	}
 	if _, err := Find(db, Query{Text: "mail", Kinds: []string{"session"}, Now: now}, store.Types); !errors.Is(err, ErrQuery) {
 		t.Fatal(err)
