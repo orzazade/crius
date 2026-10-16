@@ -149,6 +149,8 @@ func TestQuotaBelowThePaceRuleDoesNotPush(t *testing.T) {
 		if got := grepAlerts(x.alerts(), "quota pace high"); len(got) != 0 {
 			t.Fatalf("%v%%: want no pace push, got %q", c.pct, got)
 		}
+		// the runout push can stand for a pace push; the pace rule itself must not have held
+		eq(t, x.one("select count(*) from alert where key like 'quota:pace:%'"), "0")
 	}
 }
 
