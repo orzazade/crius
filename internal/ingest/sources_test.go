@@ -629,3 +629,22 @@ func TestMalformedLinesAreCountedWhenRead(t *testing.T) {
 	eq(t, x.one("select count(*) from event where kind = 'corrected'"), "1")
 	eq(t, x.one("select count(*) from event where kind = 'malformed' and project = 'demo' and ts >= '"+before+"'"), "2")
 }
+
+// Review of 7cd24aa: a configured project's role is redacted on its own only when it is a slug: a URL keeps its
+// scheme, which the credential pattern needs. A writer is redacted as one name in its row too: split, the actor
+// column kept password:hunter2's value, and a token-shaped project went to the project column as written.
+func TestNamesKeepTheContextTheirRedactionNeeds(t *testing.T) {
+	x, _, _ := busCaseWith(t, "\n[projects.redis]\npersona = \"personal\"\naccounts = [\"max\"]\ncwd = [\"/work/redis\"]\n")
+	slack := "xox" + "b-123456789012-123456789012-abcdefghijklmnopqrstuvwxyzabcdef"
+	testutil.Write(t, filepath.Join(x.home, "bus", "demo.log"),
+		"2026-10-17T02:57 VERIFIED crius:lead -> redis://:hunter2@localhost — F-1 · checked\n"+
+			"2026-10-17T02:58 INFO password:hunter2 -> crius — x\n"+
+			"2026-10-17T02:59 INFO "+slack+":lead -> crius — y\n"+
+			"2026-10-17T03:00 INFO first-order:ms-flow -> crius — z\n")
+	x.run()
+	eq(t, x.one("select count(*) from event where kind in ('verified', 'info')"), "4")
+	eq(t, x.one("select count(*) from event where coalesce(refs, '')||coalesce(actor, '')||coalesce(project, '') like '%hunter2%'"+
+		" or coalesce(project, '') like '%xoxb%'"), "0")
+	eq(t, x.one("select project||':'||actor from event where text = 'z'"), "first-order:ms-flow")
+	eq(t, x.one("select project from event where text = 'y'"), "demo")
+}

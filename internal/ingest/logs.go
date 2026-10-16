@@ -162,8 +162,13 @@ func (r *runner) logFile(path, source string, strict bool, project string) error
 			}
 			e := event{ts: t.UTC().Format("2006-01-02T15:04:05Z"), kind: strings.ToLower(p.Type), key: key,
 				project: project, actor: p.Role, text: p.Text, hasText: true}
-			if p.Project != "" {
-				e.project = p.Project
+			if p.Project != "" { // redacted as one name: split, password:hunter2 kept its value
+				n := r.name(p.Project + ":" + p.Role)
+				if role, ok := strings.CutPrefix(n, p.Project+":"); ok {
+					e.project, e.actor = p.Project, role
+				} else { // the project part was redacted too: the row stays under its log's project
+					e.actor = n
+				}
 			}
 			if len(p.Refs) > 0 {
 				e.refs = p.Refs

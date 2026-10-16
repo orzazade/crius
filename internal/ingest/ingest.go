@@ -148,12 +148,12 @@ func (r *runner) event(tx *sql.Tx, e event) error {
 	return err
 }
 
-// name redacts a bus sender or recipient. A configured project's name is not a secret, so only its role is redacted:
-// redaction of the whole would take token-service:lead for a key and its value. Any other name is redacted whole, so
-// password:hunter2 loses its value and a slug-shaped token (xoxb-…) is caught. A name is never cut: a cut would make
-// two recipients one.
+// name redacts a bus sender or recipient. A configured project's name is not a secret, so only its role is redacted
+// when the role is a slug: redaction of the whole would take token-service:lead for a key and its value. Any other
+// name is redacted whole, so password:hunter2 loses its value, a slug-shaped token (xoxb-…) is caught and a URL keeps
+// the scheme its credential pattern needs. A name is never cut: a cut would make two recipients one.
 func (r *runner) name(s string) string {
-	if p, role, ok := strings.Cut(s, ":"); ok && r.cfg.known(p) {
+	if p, role, ok := strings.Cut(s, ":"); ok && r.cfg.known(p) && store.Slug.MatchString(role) {
 		return p + ":" + r.redacted(role)
 	}
 	return r.redacted(s)
