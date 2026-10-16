@@ -178,6 +178,12 @@ func TestBusClockReviewOf944e44a(t *testing.T) {
 	testutil.Write(t, path, text) // a new file: read again from the start
 	x.run()
 	eq(t, x.one("select count(*) from alert where text like '%good:lead%'"), "0")
+	// An alert longer than a bus line (a long file name) is cut to fit and posted, as every alert is.
+	testutil.Write(t, filepath.Join(x.home, "bus", strings.Repeat("f", 200)+".log"), "2026-10-17T09:30 INFO demo:lead -> crius — x\n")
+	x.run()
+	if got := grepAlerts(x.alerts(), "bus clock: demo:lead line 2026-10-17T09:30"); len(got) != 1 {
+		t.Fatalf("%q", x.alerts())
+	}
 
 	local := time.Local
 	ny, err := time.LoadLocation("America/New_York")

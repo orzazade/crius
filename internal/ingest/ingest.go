@@ -62,6 +62,11 @@ func (r *runner) warn(partial bool, format string, args ...any) {
 func (r *runner) text(s string) string {
 	s, n := redact.Redact(strings.ToValidUTF8(s, "�"))
 	r.st.Redactions += n
+	return fit(s)
+}
+
+// fit cuts a value to a bus line's text limit.
+func fit(s string) string {
 	if utf8.RuneCountInString(s) > store.MaxLen {
 		s = string([]rune(s)[:store.MaxLen])
 	}

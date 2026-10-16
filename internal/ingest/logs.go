@@ -217,9 +217,11 @@ func (r *runner) checkClock(tx *sql.Tx, path, pathKey string, p *store.Line, t t
 		return "bus-clock:" + kind + ":" + pathKey + ":" + sha1Hex([]byte(writer))[:12] + ":" + p.Date
 	}
 	alert := func(kind, why string) error {
+		// Built from redacted parts, so not redacted again (that would take token-service:lead for a key); cut to
+		// fit a bus line, as queueAlert does.
 		_, err := tx.Exec("insert or ignore into alert (key, ts, text) values (?,?,?)", key(kind), utcNow(),
-			fmt.Sprintf("bus clock: %s line %s in %s is %s; stamps are local time, UTC ends in Z; it keeps its stamp",
-				r.name(writer), stamp, r.text(path), why))
+			fit(fmt.Sprintf("bus clock: %s line %s in %s is %s; stamps are local time, UTC ends in Z; it keeps its stamp",
+				r.name(writer), stamp, r.text(path), why)))
 		return err
 	}
 	if ahead := t.Sub(clock()); ahead > 10*time.Minute {
