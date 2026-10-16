@@ -11,6 +11,8 @@ Restarted from scratch on 2026-10-16. The March 2026 harness prototype is on bra
 - `PARKED-SESSIONS.md` — closed sessions and how to resume them
 - `research/` — research reports behind decisions
 - `bus/` — old bus folder (not in git); leads now write to `~/.crius/bus/<project>.log`
-- `criusrec/`, `bin/crius-rec` — the record store (design: `docs/MEMORY-AND-MEASUREMENT.md`). Private state lives in
-  `~/.crius/` (mode 700, outside every git tree); `bin/crius-rec init` creates it, `bin/crius-rec leak-test` checks it
-- `tests/` — `python3 -m unittest discover -s tests -t .` (Python 3.11+, stdlib only; fixtures are synthetic)
+- `cmd/`, `internal/`, `bin/crius-rec` — the record store, in Go (design: `docs/MEMORY-AND-MEASUREMENT.md`). Private
+  state lives in `~/.crius/` (mode 700, outside every git tree); `bin/crius-rec init` creates it,
+  `bin/crius-rec leak-test` checks it. `bin/crius-rec` builds the binary on demand (needs `go` on PATH)
+- Tests: `GOTOOLCHAIN=local go test ./...` (Go 1.25.6; one dependency, `modernc.org/sqlite`, pure Go; fixtures are
+  synthetic). The Python version of step 1 is on branch `archive/step1-python`

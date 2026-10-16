@@ -1,0 +1,154 @@
+package store
+
+import (
+	"path/filepath"
+	"reflect"
+	"regexp"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/orzazade/crius/internal/testutil"
+)
+
+const dated = "2026-10-16T09:20 DONE demo:leader -> crius — item=demo#41 sha=abc1234 Inc 4 QA-verified; see demo-D12"
+
+func TestParseDatedLine(t *testing.T) {
+	p := ParseLine(dated, nil, true)
+	if p == nil {
+		t.Fatal("did not parse")
+	}
+	got := []string{p.Date, p.Time, p.Type, p.Project, p.Role, p.To}
+	want := []string{"2026-10-16", "09:20", "DONE", "demo", "leader", "crius"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v want %v", got, want)
+	}
+	if !strings.HasPrefix(p.Text, "item=demo#41") || p.DatedByGuess {
+		t.Fatalf("text %q guess %v", p.Text, p.DatedByGuess)
+	}
+	wantRefs := map[string][]string{"item": {"demo#41"}, "sha": {"abc1234"}, "decision": {"demo-D12"}}
+	if !reflect.DeepEqual(p.Refs, wantRefs) {
+		t.Fatalf("refs %v", p.Refs)
+	}
+}
+
+func TestUndatedLineStillParses(t *testing.T) {
+	st := &State{Date: "2026-10-15", Time: "08:00"}
+	p := ParseLine("09:20 BLOCKED axi:leader -> crius — waiting on CI", st, true)
+	if p == nil || p.Date != "2026-10-15" || p.Time != "09:20" || p.Type != "BLOCKED" || !p.DatedByGuess {
+		t.Fatalf("%+v", p)
+	}
+}
+
+func TestUndatedLineAfterMidnightMovesToNextDay(t *testing.T) {
+	st := &State{Date: "2026-10-15", Time: "23:50"}
+	p := ParseLine("00:10 DONE axi:leader -> crius — x", st, true)
+	if p == nil || p.Date != "2026-10-16" {
+		t.Fatalf("%+v", p)
+	}
+	if *st != (State{Date: "2026-10-16", Time: "00:10"}) {
+		t.Fatalf("state %+v", *st)
+	}
+}
+
+func TestUndatedLineWithoutStateIsNotParsed(t *testing.T) {
+	if ParseLine("09:20 DONE axi:leader -> crius — x", nil, true) != nil {
+		t.Fatal("an undated line needs a date to start from")
+	}
+}
+
+func TestDatedLineResetsTheState(t *testing.T) {
+	st := &State{Date: "2026-10-01", Time: "10:00"}
+	ParseLine(dated, st, true)
+	if *st != (State{Date: "2026-10-16", Time: "09:20"}) {
+		t.Fatalf("state %+v", *st)
+	}
+}
+
+func TestMalformedLines(t *testing.T) {
+	for _, line := range []string{"hello", "09:20 DONE no arrow here", "2026-10-16T09:20 done demo:leader -> crius — x", ""} {
+		if ParseLine(line, nil, true) != nil {
+			t.Errorf("parsed %q", line)
+		}
+	}
+}
+
+func TestImpossibleDateOrTimeIsMalformedAndKeepsState(t *testing.T) {
+	st := &State{Date: "2026-10-15", Time: "08:00"}
+	for _, line := range []string{"2026-99-99T09:20 DONE demo:leader -> crius — x", "25:61 DONE demo:leader -> crius — x"} {
+		if ParseLine(line, st, true) != nil {
+			t.Errorf("parsed %q", line)
+		}
+	}
+	if *st != (State{Date: "2026-10-15", Time: "08:00"}) {
+		t.Fatalf("state %+v", *st)
+	}
+}
+
+func TestUnknownTypeStrictAndLenient(t *testing.T) {
+	line := "09:20 NEED api -> leader — schema?"
+	if ParseLine(line, &State{Date: "2026-10-16", Time: "09:00"}, true) != nil {
+		t.Fatal("strict parse took an unknown type")
+	}
+	p := ParseLine(line, &State{Date: "2026-10-16", Time: "09:00"}, false)
+	if p == nil || p.Type != "NEED" || p.Project != "" || p.Role != "api" {
+		t.Fatalf("%+v", p)
+	}
+}
+
+func TestNewTypesAreAccepted(t *testing.T) {
+	for _, typ := range []string{"NEED-OWNER", "PAUSED", "LIMIT", "ITEM", "DECISION", "RESUMED"} {
+		if ParseLine("2026-10-16T09:20 "+typ+" demo:leader -> crius — x", nil, true) == nil {
+			t.Error(typ)
+		}
+	}
+}
+
+func TestFormatIsDatedAndParsesBack(t *testing.T) {
+	line, err := FormatLine("DONE", "demo", "leader", "item=demo#41 sha=abc1234 done", "crius",
+		time.Date(2026, 10, 16, 9, 5, 0, 0, time.Local))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if line != "2026-10-16T09:05 DONE demo:leader -> crius — item=demo#41 sha=abc1234 done" {
+		t.Fatal(line)
+	}
+	if ParseLine(line, nil, true) == nil {
+		t.Fatal("does not parse back")
+	}
+}
+
+func TestFormatRefusesBadInput(t *testing.T) {
+	for _, c := range [][4]string{{"DONE", "demo", "leader", strings.Repeat("x", 301)}, {"NOPE", "demo", "leader", "x"},
+		{"DONE", "Demo!", "leader", "x"}, {"DONE", "demo", "leader", "two\nlines"}} {
+		if _, err := FormatLine(c[0], c[1], c[2], c[3], "crius", time.Now()); !IsRefused(err) {
+			t.Errorf("%v: err %v", c[:3], err)
+		}
+	}
+}
+
+func TestTextLimitCountsCharactersNotBytes(t *testing.T) {
+	if _, err := FormatLine("DONE", "demo", "leader", strings.Repeat("é", 300), "crius", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAppendLineGoesToProjectLog(t *testing.T) {
+	_, home := testutil.Temp(t)
+	initHome(t, home)
+	line, err := FormatLine("DONE", "demo", "leader", "x", "crius", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := AppendLine(home, "demo", line); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := testutil.Read(t, filepath.Join(home, "bus", "demo.log")); got != line+"\n"+line+"\n" {
+		t.Fatalf("%q", got)
+	}
+	if !regexp.MustCompile(`^\d{4}-\d\d-\d\dT\d\d:\d\d DONE `).MatchString(line) {
+		t.Fatal(line)
+	}
+}

@@ -1,8 +1,9 @@
-#!/usr/bin/env python3
-import os
-import sys
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-from criusrec.cli import main  # noqa: E402
-
-sys.exit(main())
+#!/bin/sh
+# Builds crius-rec from this checkout (Go skips the build when nothing changed) and runs it.
+# CRIUS_REPO tells `leak-test` which checkout to check. Exit codes pass through unchanged.
+set -e
+repo=$(cd "$(dirname "$(realpath "$0")")/.." && pwd -P)
+# One binary per checkout, so a worktree never runs another checkout's build.
+bin="$HOME/Library/Caches/crius/$(printf %s "$repo" | shasum | cut -c1-12)/crius-rec"
+GOTOOLCHAIN=local go -C "$repo" build -o "$bin" ./cmd/crius-rec
+CRIUS_REPO="$repo" exec "$bin" "$@"
