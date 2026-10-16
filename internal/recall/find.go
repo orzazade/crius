@@ -140,6 +140,9 @@ func Kinds(db *sql.DB, busTypes map[string]bool) ([]string, error) {
 var ErrQuery = errors.New("bad query")
 
 // Find answers one query. A bad query is an ErrQuery naming the fix.
+// idTrim is the punctuation around an id in a question ("(7dce2bdf)", "cf62176?").
+const idTrim = ".,;:?!()[]\"'"
+
 func Find(db *sql.DB, q Query, busTypes map[string]bool) (*Result, error) {
 	known, err := Kinds(db, busTypes)
 	if err != nil {
@@ -223,11 +226,15 @@ func Find(db *sql.DB, q Query, busTypes map[string]bool) (*Result, error) {
 	}
 
 	// Sessions are not in the word index (titles are not records): a word query on them alone could only say "no".
-	if slices.Equal(q.Kinds, []string{"session"}) && wordRe.MatchString(q.Text) && !slices.ContainsFunc(strings.Fields(q.Text),
-		sessionRe.MatchString) {
+	// The words as the id lookup below reads them, punctuation trimmed.
+	var toks []string
+	for _, tok := range strings.Fields(q.Text) {
+		toks = append(toks, strings.Trim(tok, idTrim))
+	}
+	if slices.Equal(q.Kinds, []string{"session"}) && wordRe.MatchString(q.Text) && !slices.ContainsFunc(toks, sessionRe.MatchString) {
 		return nil, fmt.Errorf("%w: sessions are found by id prefix or listed with no query; words do not search them", ErrQuery)
 	}
-	if slices.Contains(q.Kinds, "session") && slices.ContainsFunc(strings.Fields(q.Text), func(w string) bool {
+	if slices.Contains(q.Kinds, "session") && slices.ContainsFunc(toks, func(w string) bool {
 		return wordRe.MatchString(w) && !sessionRe.MatchString(w)
 	}) {
 		res.Status = "partial"
@@ -236,8 +243,7 @@ func Find(db *sql.DB, q Query, busTypes map[string]bool) (*Result, error) {
 	// 1. Exact ids, and the events that cite them: an item or decision id whole, a sha by prefix either way (refs
 	// hold short shas). An item, decision or event id is not searched as words: no row for it is a true "no".
 	words := q.Text
-	for _, tok := range strings.Fields(q.Text) {
-		tok = strings.Trim(tok, ".,;:?!()[]\"'")
+	for _, tok := range toks {
 		cite := `id <> '' and instr(refs, '"' || ? || '"') > 0`
 		citeSha := `id <> '' and case when json_valid(refs) then exists (select 1 from json_tree(refs) j where` +
 			` j.type = 'text' and length(j.atom) >= 7 and (j.atom like ? || '%' or ? like j.atom || '%')) end`

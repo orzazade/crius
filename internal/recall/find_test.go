@@ -236,7 +236,7 @@ func TestFindMatchesIDsWhole(t *testing.T) {
 	}
 	// Review 4836329: an id lookup is no word search, alone or among other kinds.
 	for _, kinds := range [][]string{{"session"}, {"session", "commit"}} {
-		if r := find(t, db, Query{Text: "7dce2bdf", Kinds: kinds}); len(r.Hits) != 1 || r.Status != "complete" {
+		if r := find(t, db, Query{Text: "(7dce2bdf)", Kinds: kinds}); len(r.Hits) != 1 || r.Status != "complete" {
 			t.Fatalf("%v: %s %v %+v", kinds, r.Status, r.Reasons, r.Hits)
 		}
 	}

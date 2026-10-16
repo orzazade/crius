@@ -440,8 +440,13 @@ func toolText(raw json.RawMessage) []string {
 	walk = func(key string, v any) {
 		switch v := v.(type) {
 		case map[string]any:
+			// A pair such as {"name": "DB_PASSWORD", "value": "..."} names its secret in another field.
+			pair := slices.ContainsFunc([]string{"name", "key"}, func(f string) bool {
+				s, ok := v[f].(string)
+				return ok && redact.SecretKey(s)
+			})
 			for _, k := range slices.Sorted(maps.Keys(v)) {
-				if redact.SecretKey(k) {
+				if redact.SecretKey(k) || pair && k == "value" {
 					out = append(out, k+": [redacted]")
 					continue
 				}

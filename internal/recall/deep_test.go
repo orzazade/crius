@@ -283,3 +283,21 @@ func TestDeepToolInputKeepsKeysAndNumbers(t *testing.T) {
 		}
 	}
 }
+
+// Review 9b807e4: a JSON body inside a command keeps its escaped quotes after one decode; a secret held as a
+// name/value pair (env lists) has its key in another field.
+func TestDeepToolInputNestedSecrets(t *testing.T) {
+	db := open(t)
+	transcript(t, db, "falcon", "s1",
+		msg("assistant", "a1", "2026-10-15T10:00:00Z", `[{"type":"tool_use","input":{"command":"curl -d \"{\\\"password\\\":\\\"hunter2\\\"}\" mail stopped"}}]`),
+		msg("assistant", "a2", "2026-10-15T10:01:00Z", `[{"type":"tool_use","input":{"env":[{"name":"DB_PASSWORD","value":"hunter3"}],"note":"mail stopped"}}]`))
+	r := deep(t, db, Query{Text: "mail stopped"})
+	if len(r.Hits) != 2 {
+		t.Fatalf("%+v", r.Hits)
+	}
+	for _, h := range r.Hits {
+		if strings.Contains(h.Text, "hunter") {
+			t.Error(h.Text)
+		}
+	}
+}

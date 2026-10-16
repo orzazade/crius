@@ -1,6 +1,7 @@
 package redact
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -98,5 +99,48 @@ func TestJSONRedactsTheValueOfASecretKey(t *testing.T) {
 		if SecretKey(k) != want {
 			t.Error(k, !want)
 		}
+	}
+}
+
+// Live run on 9b807e4: text that quotes code or JSON carries escaped quotes (PASSWORD=\"x\"); the value pattern
+// stopped at the backslash and the secret followed.
+func TestRedactAnEscapedQuotedValue(t *testing.T) {
+	for _, in := range []string{`export PASSWORD=\"hunter2xyz\" && echo`, `{\"api_key\": \"two words k3y\"}`,
+		`PASSWORD=\\\"hunter2xyz\\\"`, `secret_key=\'two words k3y\'`} {
+		if out, n := Redact(in); n != 1 || strings.Contains(out, "hunter2") || strings.Contains(out, "k3y") {
+			t.Errorf("%s -> %s", in, out)
+		}
+	}
+}
+
+// Review 9b807e4: common secret names; a plural that only looks like one is left alone.
+func TestRedactMoreSecretNames(t *testing.T) {
+	for _, in := range []string{"aws_secret_access_key=hunter2", "client_secret: hunter2", "token=hunter2",
+		"GITHUB_TOKEN=hunter2", "passphrase: hunter2"} {
+		if out, _ := Redact(in); strings.Contains(out, "hunter2") {
+			t.Errorf("%s -> %s", in, out)
+		}
+	}
+	if out, n := Redact("tokens: 500"); n != 0 {
+		t.Error(out)
+	}
+}
+
+// Review 9b807e4: keys are redacted too, and an array or object under a secret-named key goes whole.
+func TestJSONRedactsKeysAndWholeValues(t *testing.T) {
+	v := map[string]any{"ghp_" + strings.Repeat("D", 36): 1, "password=hunter2": 1, "passwords": []any{"hunter3"},
+		"password": map[string]any{"value": "hunter4"}, "after": "kept"}
+	b, err := JSON(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(b)
+	for _, leak := range []string{"DDDD", "hunter2", "hunter3", "hunter4"} {
+		if strings.Contains(s, leak) {
+			t.Error(leak, s)
+		}
+	}
+	if !strings.Contains(s, `"after": "kept"`) || !json.Valid(b) {
+		t.Error(s)
 	}
 }
