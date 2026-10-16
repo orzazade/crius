@@ -259,21 +259,22 @@ func TestAChangedParserRedatesStoredLines(t *testing.T) {
 		if source == "bus" {
 			path = filepath.Join(x.home, "bus", "demo.log")
 		}
-		testutil.Write(t, path, "17:53 DONE demo:leader -> crius — one\n17:52 DONE demo:leader -> crius — two\n")
+		testutil.Write(t, path, "17:53 DONE demo:leader -> crius — one\n17:52 DONE demo:leader -> crius — two\n"+
+			"18:00 DONE demo:leader -> crius — three\n")
 		x.run()
-		good := x.one("select ts from event where text='two'")
+		good := x.q("select ts from event where text in ('two', 'three') order by id")
 		db, err := store.Open(x.home)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := db.Exec("update event set ts='2000-01-01T00:00:00Z' where text='two';"+
+		if _, err := db.Exec("update event set ts='2000-01-01T00:00:00Z' where text in ('two', 'three');"+
 			" update coverage set sha='older-parser' where source=?", source); err != nil {
 			t.Fatal(err)
 		}
 		db.Close()
 		before := x.counts()
 		x.run()
-		eq(t, x.one("select ts from event where text='two'"), good)
+		eq(t, x.q("select ts from event where text in ('two', 'three') order by id"), good)
 		eq(t, x.counts(), before)
 		// The cursor keeps the parser it read with, so the next run does not read the whole file again.
 		want := datingVersion
@@ -287,13 +288,13 @@ func TestAChangedParserRedatesStoredLines(t *testing.T) {
 // A file's first undated line is on its birth date at any hour, also late in the evening.
 func TestAnEveningFirstLineIsOnTheBirthDate(t *testing.T) {
 	x, _, teamLog := busCase(t)
-	testutil.Write(t, teamLog, "23:30 NEED api -> leader — schema?\n")
+	testutil.Write(t, teamLog, "23:55 NEED api -> leader — schema?\n")
 	x.run()
 	b, err := born(teamLog)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want, _ := time.ParseInLocation("2006-01-02T15:04", b.Format("2006-01-02")+"T23:30", time.Local)
+	want, _ := time.ParseInLocation("2006-01-02T15:04", b.Format("2006-01-02")+"T23:55", time.Local)
 	eq(t, x.one("select ts from event where source_key like 'team:%'"), want.UTC().Format("2006-01-02T15:04:05Z"))
 }
 
