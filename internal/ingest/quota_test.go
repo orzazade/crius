@@ -719,3 +719,34 @@ func TestQuotaEnterprisePersonaIsNotStale(t *testing.T) {
 		t.Fatalf("work stale: %v", rep.Stale)
 	}
 }
+
+// Review of 47842ed (codex P1): a heartbeat repeats a session's last values, so it measures nothing new. A 95%
+// measured 2 h ago with heartbeats since is a stale measurement (unknown), not a fresh one (room). A Max sample
+// without a 5h window does not say 5h is 0%.
+func TestQuotaRoomCountsMeasurementsNotHeartbeats(t *testing.T) {
+	for _, c := range []struct {
+		name, limits string
+		since        time.Duration
+	}{
+		{"heartbeats", `"five_hour":{"used_percentage":40,"resets_at":%d},"seven_day":{"used_percentage":95,"resets_at":%d}`, 2 * time.Hour},
+		{"no 5h", `"seven_day":{"used_percentage":40,"resets_at":%[2]d}`, 10 * time.Minute},
+	} {
+		x := quotaCase(t)
+		if err := os.MkdirAll(filepath.Join(x.home, "spool"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		m := "mmmmmmmm-1111-2222-3333-444444444444"
+		x.session("personal", m, "/p/x", "", qNow.Add(-c.since))
+		limits := fmt.Sprintf(c.limits, qNow.Add(time.Hour).Unix(), qNow.Add(72*time.Hour).Unix())
+		in := []byte(fmt.Sprintf(`{"session_id":%q,"cost":{"total_cost_usd":1,"total_api_duration_ms":900},"rate_limits":{%s}}`, m, limits))
+		for at := qNow.Add(-c.since); !at.After(qNow.Add(-time.Minute)); at = at.Add(5 * time.Minute) {
+			if _, err := quota.Sample(x.home, "personal", in, at); err != nil {
+				t.Fatal(err)
+			}
+		}
+		x.run()
+		if v, reason := quota.Room(x.report()); v == "room" {
+			t.Errorf("%s: %s %s", c.name, v, reason)
+		}
+	}
+}

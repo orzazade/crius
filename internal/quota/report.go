@@ -33,6 +33,8 @@ type Report struct {
 	Stale              []string // personas with open sessions and no statusline line within Gap, with their last line
 	LastSample         time.Time
 	LastKind           string
+	LastMeasured       time.Time // newest sample that is not a heartbeat: a heartbeat repeats a session's last values
+	FiveKnown          bool      // a 5h window was sampled this epoch; FivePct 0 with it means the window has reset
 	Reset, FiveReset   time.Time // seven-day epoch end; zero when unknown or already past
 	Ended              time.Time // the newest sample's epoch end when it is already past (no sample since)
 	SevenPct, FivePct  float64
@@ -352,6 +354,11 @@ func Build(db Querier, p Projects, now time.Time) (*Report, error) {
 	if n := len(samples); n > 0 {
 		last := samples[n-1]
 		rep.LastSample, rep.LastKind = last.ts, last.kind
+		for _, s := range samples {
+			if s.kind != "heartbeat" {
+				rep.LastMeasured = s.ts
+			}
+		}
 		var fiveReset int64
 		for _, s := range samples {
 			if s.five.Valid {
@@ -372,6 +379,7 @@ func Build(db Querier, p Projects, now time.Time) (*Report, error) {
 			rep.Passed = math.Min(1, math.Max(0, float64(now.Sub(start))/float64(week)))
 			rep.Day = int(now.Sub(start)/(24*time.Hour)) + 1
 		}
+		rep.FiveKnown = fiveReset > 0
 		if r := time.Unix(fiveReset, 0); fiveReset > 0 && r.After(now) {
 			rep.FiveReset = r
 		} else {

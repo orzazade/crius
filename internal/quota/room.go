@@ -9,20 +9,25 @@ import (
 // Room is the verdict for starting a session on the Max account (owner's rule, Crius 10-16): "room", "full" or
 // "unknown", with a one-line reason that carries the numbers. A sample within Gap has room until a share reaches
 // 100%; an older one only while both shares are under 90%, since they may have grown since. 7d at 100% is full at
-// any age (it cannot drop within a week); a 5h window that has reset counts 0 (Build sets FivePct so).
+// any age (it cannot drop within a week); a 5h window that has reset counts 0 (Build sets FivePct so). The age is the
+// newest measurement's: a heartbeat only repeats a session's last values (review of 47842ed).
 func Room(r *Report) (verdict, reason string) {
 	switch {
 	case !r.Ended.IsZero():
 		return "unknown", "quota week ended " + day(r.Ended) + ", no sample since"
-	case r.LastSample.IsZero():
+	case r.LastMeasured.IsZero():
 		return "unknown", "no quota sample yet"
 	}
-	age := r.Now.Sub(r.LastSample)
+	age := r.Now.Sub(r.LastMeasured)
 	nums := fmt.Sprintf("7d %.0f%%, 5h %.0f%%, reset %s, sample %s old", math.Floor(r.SevenPct), math.Floor(r.FivePct),
 		day(r.Reset), ago(age))
 	switch {
 	case r.SevenPct >= 100 || r.FivePct >= 100:
 		return "full", nums
+	case age < 0:
+		return "unknown", nums + " (sample ahead of the clock)"
+	case !r.FiveKnown:
+		return "unknown", nums + " (no 5h window sampled)"
 	case age <= Gap:
 		return "room", nums
 	case r.SevenPct < 90 && r.FivePct < 90:
