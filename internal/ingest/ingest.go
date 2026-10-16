@@ -127,7 +127,7 @@ func (r *runner) event(tx *sql.Tx, e event) error {
 	}
 	_, err := tx.Exec("insert or ignore into event (ts, project, kind, actor, session, item, refs, text, taint,"+
 		" verified, source_key) values (?,?,?,?,?,?,?,?,0,0,?)", nullable(e.ts), nullable(e.project), e.kind,
-		nullable(e.actor), nullable(e.session), nullable(e.item), refs, text, e.key)
+		nullable(r.text(e.actor)), nullable(e.session), nullable(e.item), refs, text, e.key)
 	return err
 }
 

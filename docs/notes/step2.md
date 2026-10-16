@@ -23,6 +23,21 @@ Always use `GOTOOLCHAIN=local` (Go 1.25.6). Deps pinned: modernc.org/sqlite v1.5
   - P3 title-only append: the session upsert runs when only a title arrived.
   - P2 backup deletes future-dated copies / leaves temp files: `keepBackups`, `BackupIfDue` defer cleanup.
 
+## Progress (session 2, 2026-10-16)
+- [x] 1-6: git.go, logs.go, files.go, watchdog + cmd/crius-watchdog, cmd/crius-ingest, launchd/*.plist.in,
+  bin/crius-install-launchd, `[transcripts]` in projects.example.toml. Commit 9e8182f.
+- [x] 7: go vet ok; go test ./... 99 PASS / 0 FAIL. Backup temp-cleanup red check done (fails with the
+  defer's Remove(snap) commented out). Python-era store moved to ~/.crius/python-era/ (record.db + gz).
+  Real run: full pass 58 s, then 1.5 s incremental (link query rewritten: was 2.7 s, scanned all events per
+  commit). Parity: 159,169/159,174 review-1016 calls (5 missing = expired 09-16 files), cost +0.22%. Same as python.
+- [~] 8: codex review. Part 1 (git/logs/files): 1 P1 + 3 P2, all fixed red first (actor/supersedes redacted,
+  ambiguous short sha links none, symlinked artifact follows target, git -z file names). Part 2 (watchdog/launchd):
+  1 P1 + 6 P2, all fixed red first (unreadable root = error, future stamp/wake = error, symlinked roots resolved —
+  same class fixed in ingest transcript roots and artifact folders, missing-heartbeat baseline = any transcript,
+  fresh stamp re-arms, wake error posted via run() in cmd/crius-watchdog, installer refuses odd path chars).
+  Part 3 (core) timed out whole; re-running as 3a transcripts.go, 3b ingest/redact/config/prices, 3c backup.go.
+- [ ] 9: commit, clean-worktree proof, install launchd, live drill, DONE line, STOP.
+
 ## Next
 1. Write `internal/ingest/git.go` (`ingestGit`): resolve the branch to a sha FIRST, call `afterHeadHook()` if set
    (test seam), then `git log <last>..<sha>`; cursor = that sha (codex P1). Port from python `ingest_git`

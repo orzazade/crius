@@ -266,3 +266,16 @@ func TestAnAlertThatCouldNotBePostedIsPostedOnTheNextRun(t *testing.T) {
 		t.Fatal("alert lost")
 	}
 }
+
+// Codex P2 on the Go watchdog, same class in the ingest: a root that is a symlink read 0 files and said complete.
+func TestASymlinkedTranscriptRootIsRead(t *testing.T) {
+	x := newIC(t, cfg{})
+	link := filepath.Join(x.root, "link")
+	if err := os.Symlink(x.personal, link); err != nil {
+		t.Fatal(err)
+	}
+	writeConfig(t, x.home, link, x.work, cfg{})
+	testutil.Write(t, x.tx, lines(assistant(A{Req: "req_1", TS: "2026-10-16T09:00:00Z"})))
+	x.run()
+	eq(t, x.one("select count(*) from request"), "1")
+}

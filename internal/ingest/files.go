@@ -39,10 +39,12 @@ func (r *runner) ingestFiles() {
 	}
 	for _, p := range r.cfg.projects {
 		for _, dir := range p.artifactDirs {
-			if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+			real, err := filepath.EvalSymlinks(dir) // WalkDir does not follow a root that is a symlink
+			if fi, serr := os.Stat(real); err != nil || serr != nil || !fi.IsDir() {
 				r.warn(true, "artifact folder missing: %s", dir)
 				continue
 			}
+			dir := real
 			if err := r.inTx(func(tx *sql.Tx) error { return r.artifactDir(tx, p.slug, dir) }); err != nil {
 				r.warn(true, "cannot ingest %s: %v", dir, err)
 			}
@@ -67,7 +69,7 @@ func (r *runner) decisionsFile(path string, data []byte) error {
 				" values (?,?,?,?,?,?,?,?,?) on conflict(id) do update set ts=excluded.ts, title=excluded.title,"+
 				" decided_by=excluded.decided_by, supersedes=excluded.supersedes, file=excluded.file, line=excluded.line,"+
 				" taint=excluded.taint", d.ID, d.Project, d.Date, r.text(d.Title), r.text(d.DecidedBy),
-				nullable(d.Supersedes), path, d.Line, d.Taint); err != nil {
+				nullable(r.text(d.Supersedes)), path, d.Line, d.Taint); err != nil {
 				return err
 			}
 		}
@@ -96,7 +98,7 @@ func (r *runner) artifactDir(tx *sql.Tx, slug, dir string) error {
 		if d.IsDir() || !strings.HasSuffix(d.Name(), ".md") {
 			return nil
 		}
-		fi, err := d.Info()
+		fi, err := os.Stat(path) // the target, when the entry is a symlink
 		if err != nil {
 			return err
 		}

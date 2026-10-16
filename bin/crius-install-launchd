@@ -5,6 +5,10 @@
 set -euo pipefail
 repo="$(cd "$(dirname "$(realpath "$0")")/.." && pwd -P)"
 bin="$HOME/.crius/bin"
+# The paths go into sed replacements and XML; refuse anything that would need escaping in either.
+for p in "$repo" "$HOME"; do
+  case "$p" in *[!A-Za-z0-9._/-]*) echo "unsupported character in path: $p" >&2; exit 1 ;; esac
+done
 [ -d "$HOME/.crius/state" ] || { echo "~/.crius is missing; run bin/crius-rec init first" >&2; exit 1; }
 mkdir -p -m 700 "$bin"
 for cmd in crius-ingest crius-watchdog; do

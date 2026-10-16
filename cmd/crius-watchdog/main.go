@@ -5,6 +5,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,30 +28,34 @@ func main() {
 		}
 		home = filepath.Join(u, ".crius")
 	}
-	now := time.Now()
 	var wake time.Time
-	if tv, err := unix.SysctlTimeval("kern.waketime"); err != nil {
-		fmt.Fprintln(os.Stderr, "crius-watchdog: cannot read the wake time, counting from the stamp only:", err)
-	} else {
+	tv, err := unix.SysctlTimeval("kern.waketime")
+	if err == nil {
 		wake = time.Unix(tv.Unix())
 	}
+	os.Exit(run(home, time.Now(), wake, err, os.Stderr))
+}
+
+// run checks once. wakeErr is a failure to read the wake time; the check then counts from the stamp only.
+func run(home string, now, wake time.Time, wakeErr error, stderr io.Writer) int {
 	last := filepath.Join(home, "watchdog.error")
 	err := watchdog.Check(home, now, wake, maxAge)
+	if err == nil && wakeErr != nil {
+		err = fmt.Errorf("cannot read the wake time, checked from the stamp only: %v", wakeErr)
+	}
 	if err == nil {
-		if err := os.Remove(last); err != nil && !os.IsNotExist(err) {
-			fmt.Fprintln(os.Stderr, "crius-watchdog:", err)
-			os.Exit(1)
+		if err = os.Remove(last); err == nil || os.IsNotExist(err) {
+			return 0
 		}
-		return
 	}
 	msg := err.Error()
-	fmt.Fprintf(os.Stderr, "%s crius-watchdog: %s\n", now.Format(time.RFC3339), msg)
+	fmt.Fprintf(stderr, "%s crius-watchdog: %s\n", now.Format(time.RFC3339), msg)
 	if b, rerr := os.ReadFile(last); rerr != nil || strings.TrimSpace(string(b)) != msg {
 		if perr := watchdog.Post(home, now, "watchdog cannot check the ingest: "+msg); perr != nil {
-			fmt.Fprintln(os.Stderr, "crius-watchdog: cannot post the alert:", perr)
+			fmt.Fprintln(stderr, "crius-watchdog: cannot post the alert:", perr)
 		} else if werr := os.WriteFile(last, []byte(msg+"\n"), 0o600); werr != nil {
-			fmt.Fprintln(os.Stderr, "crius-watchdog:", werr)
+			fmt.Fprintln(stderr, "crius-watchdog:", werr)
 		}
 	}
-	os.Exit(1)
+	return 1
 }

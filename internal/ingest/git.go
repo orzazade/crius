@@ -50,13 +50,14 @@ func (r *runner) ingestGit() {
 			}
 		}
 	}
-	// A commit made in a session shows its short sha in the tool result; link the earliest such session.
-	// Driven from the events, with a sha range on the key (hex sorts below 'g'), so it does not scan every event
-	// for every commit.
-	if _, err := r.db.Exec("update git_commit set session=m.session from (select g.sha, e.session, row_number()" +
-		" over (partition by g.sha order by e.ts) as n from event e join git_commit g on" +
-		" g.sha >= json_extract(e.refs, '$.sha[0]') and g.sha < json_extract(e.refs, '$.sha[0]') || 'g'" +
-		" where e.kind='commit_made' and g.session is null) m where m.n=1 and git_commit.sha=m.sha"); err != nil {
+	// A commit made in a session shows its short sha in the tool result; link the earliest such session. A short
+	// sha that matches more than one commit (in any repo) links none. Driven from the events, with a sha range on
+	// the key (hex sorts below 'g'), so it does not scan every event for every commit.
+	if _, err := r.db.Exec("update git_commit set session=m.session from (select g.sha, e.session," +
+		" row_number() over (partition by g.sha order by e.ts) as n, count(*) over (partition by e.id) as k" +
+		" from event e join git_commit g on g.sha >= json_extract(e.refs, '$.sha[0]')" +
+		" and g.sha < json_extract(e.refs, '$.sha[0]') || 'g' where e.kind='commit_made') m" +
+		" where m.n=1 and m.k=1 and git_commit.sha=m.sha and git_commit.session is null"); err != nil {
 		r.warn(true, "cannot link commits to sessions: %v", err)
 	}
 }
@@ -87,7 +88,8 @@ func (r *runner) gitRepo(slug, repo string) error {
 				rng = c.sha + ".." + sha
 			}
 		}
-		out, err := gitRun(repo, "log", rng, "--no-color", "--name-only", "--format=%x1e%H%x1f%cI%x1f%P%x1f%s%x1f%b%x1f")
+		// -z: file names come NUL-separated and unquoted (git quotes tabs and non-ASCII letters otherwise).
+		out, err := gitRun(repo, "log", rng, "--no-color", "--name-only", "-z", "--format=%x1e%H%x1f%cI%x1f%P%x1f%s%x1f%b%x1f")
 		if err != nil {
 			return err
 		}
@@ -101,7 +103,8 @@ func (r *runner) gitRepo(slug, repo string) error {
 			}
 			ts := t.UTC().Format("2006-01-02T15:04:05Z")
 			files := []string{}
-			for _, name := range strings.Split(strings.TrimSpace(f[5]), "\n") {
+			for _, name := range strings.Split(f[5], "\x00") {
+				name = strings.TrimPrefix(name, "\n") // the newline between the header and the names
 				if name != "" && len(files) < 200 {
 					files = append(files, r.text(name))
 				}

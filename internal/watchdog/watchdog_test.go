@@ -138,3 +138,72 @@ func TestAStoppedIngestIsFlaggedWithin30Minutes(t *testing.T) {
 		t.Fatal(first)
 	}
 }
+
+// Codex P1 on the Go version: a root that could not be read was dropped, so the watchdog stayed quiet.
+func TestAnUnreadableRootIsAnError(t *testing.T) {
+	w := newWC(t)
+	locked := filepath.Join(filepath.Dir(w.home), "locked")
+	os.MkdirAll(filepath.Join(locked, "projects"), 0o700)
+	os.Chmod(locked, 0)
+	t.Cleanup(func() { os.Chmod(locked, 0o700) })
+	testutil.Write(t, filepath.Join(w.home, "projects.toml"), "[transcripts]\npersonal = \""+filepath.Dir(filepath.Dir(w.tx))+
+		"\"\nwork = \""+filepath.Join(locked, "projects")+"\"\n")
+	w.age(w.hb, time.Hour)
+	w.age(w.tx, 2*time.Hour)
+	if err := Check(w.home, w.now, time.Time{}, 20*time.Minute); err == nil {
+		t.Fatal("no error")
+	}
+}
+
+// Codex P2 on the Go version: after the clock moved back, a heartbeat or wake time in the future read as fresh.
+func TestAFutureHeartbeatOrWakeIsAnError(t *testing.T) {
+	w := newWC(t)
+	w.age(w.hb, -2*time.Hour)
+	if err := Check(w.home, w.now, time.Time{}, 20*time.Minute); err == nil {
+		t.Fatal("future heartbeat: no error")
+	}
+	w.age(w.hb, time.Minute)
+	if err := Check(w.home, w.now, w.now.Add(2*time.Hour), 20*time.Minute); err == nil {
+		t.Fatal("future wake: no error")
+	}
+}
+
+// Codex P2 on the Go version: a root that is a symlink was accepted but never walked.
+func TestASymlinkedRootIsWalked(t *testing.T) {
+	w := newWC(t)
+	link := filepath.Join(filepath.Dir(w.home), "link")
+	if err := os.Symlink(filepath.Dir(filepath.Dir(w.tx)), link); err != nil {
+		t.Fatal(err)
+	}
+	testutil.Write(t, filepath.Join(w.home, "projects.toml"), "[transcripts]\npersonal = \""+link+"\"\n")
+	w.age(w.hb, time.Hour)
+	w.age(w.tx, time.Minute)
+	if got := w.watch(w.now, time.Time{}); len(got) != 1 {
+		t.Fatal(got)
+	}
+}
+
+// Codex P2 on the Go version: with no heartbeat, activity during the wake grace fell out of the moving window.
+func TestAMissingHeartbeatStillAlertsAfterTheWakeGrace(t *testing.T) {
+	w := newWC(t)
+	os.Remove(w.hb)
+	w.age(w.tx, 26*time.Minute)
+	if got := w.watch(w.now, w.now.Add(-30*time.Minute)); len(got) != 1 {
+		t.Fatal(got)
+	}
+}
+
+// Codex P2 on the Go version: after a recovery, a second missing heartbeat did not alert again.
+func TestAFreshHeartbeatRearmsTheMissingAlert(t *testing.T) {
+	w := newWC(t)
+	os.Remove(w.hb)
+	w.age(w.tx, time.Minute)
+	w.watch(w.now, time.Time{})
+	testutil.Write(t, w.hb, "x")
+	w.age(w.hb, time.Minute)
+	w.watch(w.now, time.Time{})
+	os.Remove(w.hb)
+	if got := w.watch(w.now, time.Time{}); len(got) != 2 {
+		t.Fatal(got)
+	}
+}

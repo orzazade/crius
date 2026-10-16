@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/orzazade/crius/internal/store"
 	"github.com/orzazade/crius/internal/testutil"
 )
 
@@ -150,4 +151,77 @@ func TestDecisionsAndArtifacts(t *testing.T) {
 	testutil.Write(t, filepath.Join(arts, "plan.md"), "# Renamed plan\n")
 	x.run()
 	eq(t, x.q("select title from artifact"), [][]string{{"Renamed plan"}})
+}
+
+// Codex P1 on the Go version: the sender role and a Supersedes value were stored without redaction.
+func TestRolesAndSupersedesAreRedacted(t *testing.T) {
+	x, _, _ := busCase(t)
+	token := "ghp_" + strings.Repeat("B", 36)
+	testutil.Write(t, filepath.Join(x.home, "bus", "demo.log"), "2026-10-16T09:20 DONE demo:"+token+" -> crius — done\n")
+	testutil.Write(t, filepath.Join(x.home, "state", "demo", "DECISIONS.md"),
+		"## demo-D1 · 2026-10-16\nDecision: a\nWhy: b\nDecided by: crius\nSupersedes: "+token+"\nReason: r\nRefs: - · taint: no\n")
+	x.run()
+	for _, v := range []string{x.one("select actor from event where source_key like 'bus:%'"), x.one("select supersedes from decision")} {
+		if strings.Contains(v, token) {
+			t.Fatal("secret stored:", v)
+		}
+	}
+}
+
+// Codex P2 on the Go version: a short sha that matches commits in two repos linked one session to both.
+func TestAnAmbiguousShortShaLinksNoCommit(t *testing.T) {
+	x := newIC(t, cfg{})
+	x.run()
+	db, err := store.Open(x.home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("insert into git_commit (sha, repo) values ('abc1234" + strings.Repeat("0", 33) + "', 'r1')," +
+		" ('abc1234" + strings.Repeat("1", 33) + "', 'r2'), ('def5678" + strings.Repeat("0", 33) + "', 'r1');" +
+		" insert into event (ts, kind, session, refs, source_key) values" +
+		" ('2026-10-16T09:00:00Z', 'commit_made', 's1', '{\"sha\":[\"abc1234\"]}', 'k1')," +
+		" ('2026-10-16T09:00:00Z', 'commit_made', 's2', '{\"sha\":[\"def5678\"]}', 'k2')"); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	x.run()
+	eq(t, x.q("select repo, session from git_commit order by sha"), [][]string{{"r1", "<nil>"}, {"r2", "<nil>"}, {"r1", "s2"}})
+}
+
+// Codex P2 on the Go version: a symlinked artifact kept the link's stamp, so edits to its target were missed.
+func TestASymlinkedArtifactFollowsItsTarget(t *testing.T) {
+	x, arts, _ := busCase(t)
+	target := filepath.Join(x.root, "report.md")
+	testutil.Write(t, target, "# First\n")
+	if err := os.Symlink(target, filepath.Join(arts, "latest.md")); err != nil {
+		t.Fatal(err)
+	}
+	x.run()
+	testutil.Write(t, target, "# Second title\n")
+	x.run()
+	eq(t, x.q("select title from artifact"), [][]string{{"Second title"}})
+}
+
+// Codex P2 on the Go version: file names with tabs or non-ASCII letters were stored in git's quoted form.
+func TestCommitFileNamesAreStoredAsIs(t *testing.T) {
+	x, repo := gitCase(t)
+	testutil.Write(t, filepath.Join(repo, "a\tb.txt"), "1\n")
+	testutil.Write(t, filepath.Join(repo, "ü.txt"), "1\n")
+	testutil.CommitAll(t, repo)
+	x.run()
+	eq(t, x.one("select files from git_commit"), `["a\tb.txt","ü.txt"]`)
+}
+
+// Same class as the symlinked transcript root: an artifact folder that is a symlink was never walked.
+func TestASymlinkedArtifactFolderIsWalked(t *testing.T) {
+	root := t.TempDir()
+	arts := filepath.Join(root, "docs")
+	testutil.Write(t, filepath.Join(arts, "plan.md"), "# Linked plan\n")
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(arts, link); err != nil {
+		t.Fatal(err)
+	}
+	x := newIC(t, cfg{artifactDir: link})
+	x.run()
+	eq(t, x.q("select title from artifact"), [][]string{{"Linked plan"}})
 }

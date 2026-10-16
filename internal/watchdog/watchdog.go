@@ -50,9 +50,23 @@ func roots(home string) ([]string, error) {
 	}
 	sort.Strings(all)
 	for _, p := range all {
-		if fi, err := os.Stat(p); err == nil && fi.IsDir() {
-			existing = append(existing, p)
+		// A missing root is skipped (the ingest reports it); one that cannot be read is an error. Symlinks are
+		// resolved, because WalkDir does not follow a root that is a link.
+		real, err := filepath.EvalSymlinks(p)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
 		}
+		if err != nil {
+			return nil, err
+		}
+		fi, err := os.Stat(real)
+		if err != nil {
+			return nil, err
+		}
+		if !fi.IsDir() {
+			return nil, fmt.Errorf("transcript root %s is not a folder", p)
+		}
+		existing = append(existing, real)
 	}
 	if len(existing) == 0 {
 		return nil, fmt.Errorf("no transcript root exists in %v", all)
@@ -105,14 +119,26 @@ func Check(home string, now, wake time.Time, maxAge time.Duration) error {
 	if err != nil {
 		return err
 	}
-	var stamp time.Time
-	key, since := "missing", now.Add(-maxAge)
+	// With no heartbeat at all, any transcript counts: the ingest has never finished a run.
+	var stamp, since time.Time
+	key := "missing"
 	switch fi, err := os.Stat(filepath.Join(home, "heartbeat")); {
 	case err == nil:
 		stamp = fi.ModTime()
 		key, since = strconv.FormatInt(stamp.UnixNano(), 10), stamp
 	case !errors.Is(err, fs.ErrNotExist):
 		return err
+	}
+	if stamp.After(now.Add(time.Minute)) || wake.After(now.Add(time.Minute)) {
+		return fmt.Errorf("the heartbeat or the wake time is in the future; did the clock move back?")
+	}
+	seen := filepath.Join(home, "watchdog.alerted")
+	if !stamp.IsZero() && now.Sub(stamp) <= maxAge {
+		// A fresh stamp ends the episode, so a later outage alerts again.
+		if err := os.Remove(seen); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		return nil
 	}
 	ref := stamp
 	if wake.After(ref) {
@@ -125,7 +151,6 @@ func Check(home string, now, wake time.Time, maxAge time.Duration) error {
 	if err != nil || !grown {
 		return err
 	}
-	seen := filepath.Join(home, "watchdog.alerted")
 	if b, err := os.ReadFile(seen); err == nil && strings.TrimSpace(string(b)) == key {
 		return nil
 	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {

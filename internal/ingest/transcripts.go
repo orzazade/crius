@@ -111,7 +111,14 @@ func isObject(raw json.RawMessage) bool {
 
 func (r *runner) ingestTranscripts() {
 	for _, rt := range r.cfg.roots {
-		err := filepath.WalkDir(rt.path, func(path string, d fs.DirEntry, err error) error {
+		// WalkDir does not follow a root that is a symlink, so resolve it first.
+		real, err := filepath.EvalSymlinks(rt.path)
+		if err != nil {
+			r.warn(true, "cannot read %s: %v", rt.path, err)
+			continue
+		}
+		rt.path = real
+		err = filepath.WalkDir(rt.path, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				r.warn(true, "cannot read %s: %v", path, err)
 				if d != nil && d.IsDir() {
