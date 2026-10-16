@@ -164,12 +164,15 @@ titles, headings). Prompt text, tool output and assistant text are never stored:
 pointers, and allowlisted tags (§3d). **Every output sink is redacted** with the secret-scan patterns: stored text,
 CLI output, error messages, logs, digests, alerts, and helper answers. A hit is replaced by `[redacted]` and counted.
 
-**Known redaction gaps (step 4, 1eb7a34).** The patterns are hand-made; six review rounds each found a new edge of
+**Known redaction gaps (step 4, 1eb7a34 and its review fix).** The patterns are hand-made; six review rounds each found a new edge of
 key = value parsing, so step 4b swaps in a maintained ruleset (gitleaks rules) behind `redact.Redact`, tested on the
 31k real lines and the leak cases of all six rounds. Until then these are known and not fixed:
 - A YAML value on the next line (`password:` then the value below it) is printed.
 - Short flags (`-p hunter2`) are printed; only long flags (`--password x`) are redacted.
-- An unquoted value ends at a comma or space (`password=a,b` prints `,b`; a password with a space prints its tail).
+- An unquoted value ends at a comma, space or backtick (`password=a,b` prints `,b`; `password=abc`def` prints
+  `` `def``; a password with a space prints its tail).
+- A plain value that ends in another key and its operator takes that key, and the key's value is printed
+  (`password: hunter2/token: abc` prints `abc`).
 - A backtick with a space after it is read as markdown, not a value (`` token = ` hunter2` `` is printed).
 - Over-redaction: prose with `secret:`/`token:`, code with `==` or `authorization`, the name in
   `secrets.env: DB_PASSWORD = x`, and in `find --deep` tool input a field named `value`/`val` in the same object

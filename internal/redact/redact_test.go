@@ -219,3 +219,19 @@ func TestRedactKeysAsValuesAreLinear(t *testing.T) {
 		}
 	}
 }
+
+// Review of 1eb7a34: \v did not end a value before; a rescanned value whose inner value is a lone backtick was
+// printed whole. Each secret was redacted by 0d2402b.
+func TestRedactRescanAndVerticalTab(t *testing.T) {
+	for in, secret := range map[string]string{
+		"password=abc\vdef tail":             "def",
+		"password=hunter2secret:` x":         "hunter2",
+		"password=hunter2secret:`":           "hunter2",
+		"password=hunter2secret:=` x":        "hunter2",
+		"DB_PASSWORD=hunter2token:\t`\tnext": "hunter2",
+	} {
+		if out, _ := Redact(in); strings.Contains(out, secret) {
+			t.Errorf("Redact(%q) = %q: prints %q", in, out, secret)
+		}
+	}
+}

@@ -87,8 +87,8 @@ func redactPairs(s string) (string, int) {
 			pos = v
 			continue
 		}
-		lo, start := pos, pos+m[0]
-		if from >= 0 {
+		lo, start, rescan := pos, pos+m[0], from >= 0
+		if rescan {
 			lo, start = from, from // already written up to from
 		}
 		from = -1
@@ -97,6 +97,9 @@ func redactPairs(s string) (string, int) {
 			end = quoteEnd(s, end, q, end-1-v)
 		case '`':
 			e := strings.IndexAny(s[end:], "`\n")
+			if rescan && (end == len(s) || s[end] == ' ' || s[end] == '\t') {
+				break // a rescanned value is redacted whatever ends it: the text before is a value
+			}
 			if end == len(s) || s[end] == ' ' || s[end] == '\t' {
 				b.WriteString(s[lo:end]) // a lone backtick (markdown around the key) is no value
 				pos = end
@@ -112,7 +115,7 @@ func redactPairs(s string) (string, int) {
 			}
 			end += e + 1
 		default:
-			if e := strings.IndexAny(s[end:], " \t\n\r\f\v\"',;`"); e < 0 {
+			if e := strings.IndexAny(s[end:], " \t\n\r\f\"',;`"); e < 0 {
 				end = len(s)
 			} else {
 				end += e
