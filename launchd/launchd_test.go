@@ -43,6 +43,34 @@ func TestDigestJobRunsAtNineAndEighteen(t *testing.T) {
 	}
 }
 
+// Review of f0f0039: the report job runs crius-ingest, so it needs the ingest job's environment (CRIUS_REPO: without
+// it the ingest exits 2 and every scheduled run alerts). One list: the digest job's equals the ingest job's.
+func TestDigestJobHasTheIngestEnvironment(t *testing.T) {
+	env := func(name string) map[string]string {
+		in, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		plist := filepath.Join(t.TempDir(), "p.plist")
+		if err := os.WriteFile(plist, in, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		out, err := exec.Command("plutil", "-convert", "json", "-o", "-", plist).Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var job struct{ EnvironmentVariables map[string]string }
+		if err := json.Unmarshal(out, &job); err != nil {
+			t.Fatal(err)
+		}
+		return job.EnvironmentVariables
+	}
+	ingest, digest := env("space.scifilab.crius.ingest.plist.in"), env("space.scifilab.crius.digest.plist.in")
+	if ingest["CRIUS_REPO"] == "" || !reflect.DeepEqual(ingest, digest) {
+		t.Fatalf("ingest %v\ndigest %v", ingest, digest)
+	}
+}
+
 // run runs bin/crius-digest-run with stub binaries: crius-ingest exits with the codes in ingest, one per call;
 // crius-rec digest exits with digest; crius-rec record exits with record. It returns the exit code, the calls and
 // the output.

@@ -101,6 +101,16 @@ func loadConfig(home string) (*config, error) {
 }
 
 // enterpriseOK lists the projects that may run on the enterprise account (Appxite API billing).
+// known says whether slug is a configured project.
+func (c *config) known(slug string) bool {
+	for _, p := range c.projects {
+		if p.slug == slug {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *config) enterpriseOK() map[string]bool {
 	ok := map[string]bool{}
 	for _, p := range c.projects {

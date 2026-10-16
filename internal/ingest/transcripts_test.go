@@ -292,6 +292,18 @@ func TestALongStoredAlertIsCutWhenPosted(t *testing.T) {
 	}
 }
 
+// Review of 1fdfdb0: an alert built from a line type with a newline in it is posted on one line; it does not refuse
+// to post and hold back the alerts after it on every later run.
+func TestAnAlertWithANewlineDoesNotBlockTheQueue(t *testing.T) {
+	x := newIC(t, cfg{})
+	testutil.Write(t, x.tx, lines(map[string]any{"type": "new\nshape"}, map[string]any{"type": "zz-after"}))
+	x.run()
+	log := testutil.Read(t, filepath.Join(x.home, "bus", "crius.log"))
+	if !strings.Contains(log, "'new shape'") || !strings.Contains(log, "'zz-after'") {
+		t.Fatal(log)
+	}
+}
+
 // Codex P2 on the Go watchdog, same class in the ingest: a root that is a symlink read 0 files and said complete.
 func TestASymlinkedTranscriptRootIsRead(t *testing.T) {
 	x := newIC(t, cfg{})

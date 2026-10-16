@@ -59,10 +59,12 @@ func (r *runner) warn(partial bool, format string, args ...any) {
 }
 
 // text redacts and shortens a value before it is stored.
-func (r *runner) text(s string) string {
+func (r *runner) text(s string) string { return fit(r.redacted(s)) }
+
+func (r *runner) redacted(s string) string {
 	s, n := redact.Redact(strings.ToValidUTF8(s, "�"))
 	r.st.Redactions += n
-	return fit(s)
+	return s
 }
 
 // fit cuts a value to a bus line's text limit.
@@ -146,18 +148,15 @@ func (r *runner) event(tx *sql.Tx, e event) error {
 	return err
 }
 
-// name redacts a bus sender or recipient. A slug pair (project or project:role) is redacted part by part: redaction of
-// the whole would take token-service:lead for a key, and a part can still be a token (xoxb-… is a slug). Anything
-// else is redacted like all text.
+// name redacts a bus sender or recipient. A configured project's name is not a secret, so only its role is redacted:
+// redaction of the whole would take token-service:lead for a key and its value. Any other name is redacted whole, so
+// password:hunter2 loses its value and a slug-shaped token (xoxb-…) is caught. A name is never cut: a cut would make
+// two recipients one.
 func (r *runner) name(s string) string {
-	p, role, pair := strings.Cut(s, ":")
-	if !store.Slug.MatchString(p) || pair && !store.Slug.MatchString(role) {
-		return r.text(s)
+	if p, role, ok := strings.Cut(s, ":"); ok && r.cfg.known(p) {
+		return p + ":" + r.redacted(role)
 	}
-	if !pair {
-		return r.text(p)
-	}
-	return r.text(p) + ":" + r.text(role)
+	return r.redacted(s)
 }
 
 // queueAlert records an alert in the caller's transaction; flushAlerts posts it. One alert per key, ever.
@@ -188,7 +187,9 @@ func (r *runner) flushAlerts() {
 		return
 	}
 	for _, a := range pending {
-		line, err := store.FormatLine("ALERT", "crius", "ingest", fit(a[1]), "crius", time.Now()) // a long row never blocks
+		// Posted as one bus line whatever the row holds: a long or multi-line row must not block the queue.
+		text := fit(strings.NewReplacer("\r", " ", "\n", " ").Replace(a[1]))
+		line, err := store.FormatLine("ALERT", "crius", "ingest", text, "crius", time.Now())
 		if err == nil {
 			err = store.AppendLine(r.home, "crius", line)
 		}

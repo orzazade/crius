@@ -78,35 +78,49 @@ func TestAMissingRepoMakesTheRunPartial(t *testing.T) {
 	}
 }
 
-func busCase(t *testing.T) (*ic, string, string) {
+func busCase(t *testing.T) (*ic, string, string) { return busCaseWith(t, "") }
+
+// tokenService configures a project whose name reads as a secret key (token-…).
+const tokenService = "\n[projects.token-service]\npersona = \"personal\"\naccounts = [\"max\"]\ncwd = [\"/work/ts\"]\n"
+
+// busCaseWith is busCase with extra config text (more projects).
+func busCaseWith(t *testing.T, extra string) (*ic, string, string) {
 	root := t.TempDir()
 	arts := filepath.Join(root, "docs")
 	os.MkdirAll(arts, 0o755)
 	teamLog := filepath.Join(root, "BUILD-LOG.md")
-	return newIC(t, cfg{artifactDir: arts, teamLogs: teamLog}), arts, teamLog
+	return newIC(t, cfg{artifactDir: arts, teamLogs: teamLog, extra: extra}), arts, teamLog
 }
 
 // RULES 3.4: a VERIFIED line is a bus type and keeps its recipient (refs "to"), so the digest can tell which lead a
-// check is for; other lines do not (review of 636d4da). A slug recipient is stored as written: redaction would turn
-// token-service:lead into [redacted]; any other recipient is redacted like all text.
+// check is for; other lines do not (review of 636d4da). A configured project keeps its name and only its role is
+// redacted: redaction of the whole would take token-service:lead for a key and its value. Any other name is redacted
+// whole, so password:hunter2 loses its value (review of 1fdfdb0). Names are never cut: two long recipients stay two.
 func TestBusLinesKeepTheirRecipient(t *testing.T) {
-	x, _, teamLog := busCase(t)
+	x, _, teamLog := busCaseWith(t, tokenService)
+	long, ext := "demo:"+strings.Repeat("a", 300), "ext:"+strings.Repeat("a", 300) // configured, not configured
 	testutil.Write(t, filepath.Join(x.home, "bus", "demo.log"),
 		"2026-10-17T02:57 VERIFIED crius:lead -> token-service:lead — b3a87cb · step 4: 31/34\n"+
 			"2026-10-17T02:58 DONE demo:leader -> crius — done\n"+
 			"2026-10-17T03:00 VERIFIED crius:lead -> sk-ant-api03-"+strings.Repeat("A", 40)+" — F-1 · x\n"+
 			"2026-10-17T03:01 VERIFIED crius:lead -> demo:xox"+"b-123456789012-123456789012-abcdefghijklmnopqrstuvwxyzabcdef — F-2 · x\n"+
-			"2026-10-17T03:02 VERIFIED crius:lead -> xox"+"b-123456789012-123456789012-abcdefghijklmnopqrstuvwxyzabcdef — F-3 · x\n")
+			"2026-10-17T03:02 VERIFIED crius:lead -> xox"+"b-123456789012-123456789012-abcdefghijklmnopqrstuvwxyzabcdef — F-3 · x\n"+
+			"2026-10-17T03:03 VERIFIED crius:lead -> password:hunter2 — F-4 · x\n"+
+			"2026-10-17T03:04 VERIFIED crius:lead -> "+long+" — F-5 · x\n"+
+			"2026-10-17T03:05 VERIFIED crius:lead -> "+long+"b — F-6 · x\n"+
+			"2026-10-17T03:06 VERIFIED crius:lead -> "+ext+" — F-7 · x\n"+
+			"2026-10-17T03:07 VERIFIED crius:lead -> "+ext+"b — F-8 · x\n")
 	testutil.Write(t, teamLog, "2026-10-17T02:59 VERIFIED crius:lead -> demo:qa-ui — F-126 · ticks seen\n")
 	x.run()
 	if rows := x.q("select refs from event where kind = 'done'"); len(rows) != 1 || rows[0][0] != "<nil>" {
 		t.Fatal("a line other than VERIFIED keeps its recipient:", rows)
 	}
 	rows := x.q("select kind, refs from event where kind = 'verified' order by ts")
-	if len(rows) != 5 {
+	if len(rows) != 10 {
 		t.Fatal(rows)
 	}
-	for i, want := range []string{"token-service:lead", "demo:qa-ui", "[redacted]", "demo:[redacted]", "[redacted]"} {
+	for i, want := range []string{"token-service:lead", "demo:qa-ui", "[redacted]", "demo:[redacted]", "[redacted]",
+		"[redacted]", long, long + "b", ext, ext + "b"} {
 		var refs map[string][]string
 		if err := json.Unmarshal([]byte(rows[i][1]), &refs); err != nil || len(refs["to"]) != 1 || refs["to"][0] != want {
 			t.Errorf("%v: %v", rows[i], err)
@@ -156,7 +170,7 @@ func TestBusClockMistakesAreLoud(t *testing.T) {
 // alert (the redactor takes token-service:lead for a key); a re-read with a later clock does not let a line flagged
 // ahead move the newest stamp and blame good lines; a Z line in a DST fall-back hour keeps its instant.
 func TestBusClockReviewOf944e44a(t *testing.T) {
-	x, _, _ := busCase(t)
+	x, _, _ := busCaseWith(t, tokenService)
 	now := time.Date(2026, 10, 17, 3, 0, 0, 0, time.Local)
 	clock = func() time.Time { return now }
 	t.Cleanup(func() { clock = time.Now })
@@ -585,4 +599,19 @@ func TestCommitSubjectsAndBackfill(t *testing.T) {
 	db.Close()
 	x.run()
 	eq(t, x.q("select sha, subject from git_commit where sha in (?, 'gone') order by sha='gone'", sha), [][]string{{sha, "fix(clock): broker time follows DST"}, {"gone", ""}})
+}
+
+// Review of 1fdfdb0: a writer named like a key and its value (password:hunter2, not a configured project) is redacted
+// in the clock alert too.
+func TestABusClockAlertRedactsAKeyShapedWriter(t *testing.T) {
+	x, _, _ := busCase(t)
+	clock = func() time.Time { return time.Date(2026, 10, 17, 3, 0, 0, 0, time.Local) }
+	t.Cleanup(func() { clock = time.Now })
+	testutil.Write(t, filepath.Join(x.home, "bus", "demo.log"), "2026-10-17T07:00 INFO password:hunter2 -> crius — x\n")
+	x.run()
+	eq(t, x.one("select count(*) from alert where key like 'bus-clock:ahead:%'"), "1")
+	eq(t, x.one("select count(*) from alert where text like '%hunter2%'"), "0")
+	if log := testutil.Read(t, filepath.Join(x.home, "bus", "crius.log")); strings.Contains(log, "hunter2") {
+		t.Fatal(log)
+	}
 }

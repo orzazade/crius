@@ -12,6 +12,10 @@
 	<dict>
 		<key>HOME</key>
 		<string>@HOME@</string>
+		<key>PATH</key>
+		<string>/opt/homebrew/bin:/usr/bin:/bin</string>
+		<key>CRIUS_REPO</key>
+		<string>@REPO@</string>
 	</dict>
 	<key>StartCalendarInterval</key>
 	<array>
