@@ -11,6 +11,7 @@ import (
 	"github.com/orzazade/crius/internal/ingest"
 	"github.com/orzazade/crius/internal/quota"
 	"github.com/orzazade/crius/internal/recall"
+	"github.com/orzazade/crius/internal/redact"
 )
 
 // maxLines bounds the report (Crius 10-17: ≤ 60 lines, plain short sentences).
@@ -153,16 +154,28 @@ func Build(db *sql.DB, in Input, now time.Time) (*Report, error) {
 	if len(leads) == 0 {
 		body = append(body, `No leads in projects.toml (leads = { role = "file" }).`)
 	}
-	tail, err := storeSections(db, in, now)
-	if err != nil {
-		return nil, err
-	}
-	// Lines without details, then add details from the first lead down while they fit.
-	fixed := len(head) + len(body) + len(entries) + len(tail)
 	details := 0
 	for _, e := range entries {
 		if e.goal != "" {
 			details += 2
+		}
+	}
+	// The store lists give up items until the lines without details fit (with the cut note when details are cut);
+	// then details are added from the first lead down while they fit.
+	var tail []string
+	var fixed int
+	for items := maxItems; ; items-- {
+		var err error
+		if tail, err = storeSections(db, in, now, items); err != nil {
+			return nil, err
+		}
+		fixed = len(head) + len(body) + len(entries) + len(tail)
+		need := fixed
+		if details > maxLines-fixed {
+			need++
+		}
+		if need <= maxLines || items == 0 {
+			break
 		}
 	}
 	room, cut := maxLines-fixed, false
@@ -209,21 +222,25 @@ func change(prev Snapshot, lead string, now LeadSnap) string {
 // maxItems bounds each list of the store sections.
 const maxItems = 3
 
-// storeSections lists what the store saw since the last report (the last 24 h when there is none): checks that
-// passed (VERIFIED lines from Crius or a QA role, with whom they are for), blocked lines, decisions and open waits;
-// then quota pace and health.
-func storeSections(db *sql.DB, in Input, now time.Time) ([]string, error) {
+// storeSections lists what the store saw since the last report (the last 24 h when there is none), up to maxItems
+// per list: checks that passed (VERIFIED lines from Crius or a QA role, with whom they are for), blocked lines,
+// decisions (with those saved without a DECISION bus line) and open waits; then quota pace and health.
+func storeSections(db *sql.DB, in Input, now time.Time, maxItems int) ([]string, error) {
 	since, title := in.Since, "## Since the last report ("+in.Since.Format("2006-01-02 15:04")+")"
 	if since.IsZero() {
 		since, title = now.Add(-24*time.Hour), "## Since the last report (none; the last 24 h)"
 	}
 	out := []string{"", title}
-	list := func(name string, items []string) {
+	list := func(name string, items []string, capped bool) {
 		if len(items) == 0 {
 			out = append(out, name+": none")
 			return
 		}
-		out = append(out, fmt.Sprintf("%s: %d", name, len(items)))
+		n := fmt.Sprint(len(items))
+		if capped {
+			n += "+"
+		}
+		out = append(out, name+": "+n)
 		for i, it := range items {
 			if i == maxItems {
 				out = append(out, fmt.Sprintf("  +%d more", len(items)-maxItems))
@@ -274,7 +291,14 @@ func storeSections(db *sql.DB, in Input, now time.Time) ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		list(l.name, items)
+		if l.name == "Decisions" {
+			saved, err := offBus(db, since)
+			if err != nil {
+				return nil, err
+			}
+			items = append(items, saved...)
+		}
+		list(l.name, items, false)
 	}
 	w, err := recall.Find(db, recall.Query{Waiting: true, Now: now}, nil)
 	if err != nil {
@@ -288,7 +312,7 @@ func storeSections(db *sql.DB, in Input, now time.Time) ([]string, error) {
 		}
 		waits = append(waits, t.Local().Format("15:04")+" "+h.Text) // the text names the session; the project is "waits"
 	}
-	list("Open waits (last 24 h)", waits)
+	list("Open waits (last 24 h)", waits, w.More)
 
 	q := in.Quota
 	out = append(out, "", "## Quota and health")
@@ -299,7 +323,7 @@ func storeSections(db *sql.DB, in Input, now time.Time) ([]string, error) {
 		out = append(out, fmt.Sprintf("Quota: 7d used up (%.0f%%) · resets %s", q.SevenPct, q.Reset.Local().Format("Mon 01-02 15:04")))
 	default:
 		pace := fmt.Sprintf("Quota: 7d %.0f%% on day %d of 7, %.1fx the time passed · ", q.SevenPct, q.Day, q.SevenPct/100/q.Passed)
-		if ro.Before(q.Reset) {
+		if !ro.IsZero() && ro.Before(q.Reset) { // no use so far: no runout
 			out = append(out, pace+"runs out ~"+ro.Local().Format("Mon 01-02 15:04")+" at this pace")
 		} else {
 			out = append(out, pace+"lasts to the reset "+q.Reset.Local().Format("Mon 01-02 15:04"))
@@ -327,8 +351,30 @@ func storeSections(db *sql.DB, in Input, now time.Time) ([]string, error) {
 	return out, nil
 }
 
-// clip cuts s to n runes, marking the cut.
+// offBus lists the decisions saved on or after since's day that no DECISION bus line cites (record decision saved
+// the entry and its bus line failed): the decision table holds a day, no time.
+func offBus(db *sql.DB, since time.Time) ([]string, error) {
+	rows, err := db.Query("select coalesce(project, ''), ts, id, coalesce(title, '') from decision d where ts >= ? and"+
+		" not exists (select 1 from event e where e.kind = 'decision' and instr(e.refs, '\"' || d.id || '\"') > 0)"+
+		" order by ts, id", since.Format("2006-01-02"))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var project, ts, id, title string
+		if err := rows.Scan(&project, &ts, &id, &title); err != nil {
+			return nil, err
+		}
+		out = append(out, fmt.Sprintf("%s %s %s %s (no DECISION bus line)", project, ts, id, title))
+	}
+	return out, rows.Err()
+}
+
+// clip redacts s, then cuts it to n runes, marking the cut: a cut secret no longer looks like one to the redactor.
 func clip(s string, n int) string {
+	s, _ = redact.Redact(s)
 	if r := []rune(s); len(r) > n {
 		return string(r[:n-1]) + "…"
 	}

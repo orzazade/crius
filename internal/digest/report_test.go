@@ -240,3 +240,68 @@ func TestBuildAddsTheStoreSections(t *testing.T) {
 		}
 	}
 }
+
+// Review of 4b68c11: the store lists give up items before the report passes 60 lines; open waits past recall's cap
+// say so; a decision saved with no DECISION bus line is listed and says so; a clipped text is redacted before the cut
+// (a cut token no longer looks like one); a 0% quota lasts to the reset.
+func TestBuildReviewOf4b68c11(t *testing.T) {
+	db := open(t)
+	dir := t.TempDir()
+	var leads []ingest.Lead
+	for i := 0; i < 14; i++ { // with 3 checks, 60 lines before details at 3 items: no room for the cut note
+		leads = append(leads, ingest.Lead{Name: fmt.Sprintf("p%02d:lead", i),
+			StatusFile: statusFile(t, dir, fmt.Sprint(i, ".md"), block("2026-10-17 08:30", fmt.Sprint("need ", i), "- [ ] one"))})
+	}
+	since := now.Add(-9 * time.Hour)
+	for i := 1; i <= 5; i++ {
+		at := since.Add(time.Duration(i) * time.Minute)
+		if i <= 3 {
+			verified(t, db, at, "crius:lead", "p00:lead", fmt.Sprint("F-", i, " · ok"))
+		}
+		line(t, db, at, "p01:lead", "blocked", fmt.Sprint("blocked ", i))
+		line(t, db, at, "p01:lead", "decision", fmt.Sprintf("p01-D%d title %d", i, i))
+	}
+	for i := 0; i < 501; i++ {
+		if _, err := db.Exec("insert into event (ts, project, kind, actor, text, source_key) values (?,?,?,?,?,?)",
+			now.Add(-time.Hour).UTC().Format("2006-01-02T15:04:05Z"), "waits", "wait", "session",
+			fmt.Sprintf("wait idle_prompt \"p\" sid=%08d", i), fmt.Sprint("w", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	in := input(leads, nil)
+	in.Since = since
+	r, err := Build(db, in, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(r.Text, "\n"); n > 60 || !strings.Contains(r.Text, "Blocked: 5\n  p01:lead 00:01 blocked 1\n  p01:lead 00:02 blocked 2\n  +3 more\n") ||
+		!strings.Contains(r.Text, "Open waits (last 24 h): 500+\n") ||
+		!strings.Contains(r.Text, "(goal and next lines of 13 leads cut for length; see their status files)") {
+		t.Fatalf("%d lines\n%s", n, r.Text)
+	}
+
+	db = open(t)
+	id := line(t, db, since.Add(time.Minute), "p01:lead", "decision", "p01-D1 title 1")
+	if _, err := db.Exec(`update event set refs = '{"decision":["p01-D1"]}' where id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("insert into decision (id, project, ts, title) values ('p01-D1', 'p01', '2026-10-17', 'title 1')," +
+		" ('p02-D9', 'p02', '2026-10-17', 'kept off the bus'), ('p02-D8', 'p02', '2026-10-16', 'before the last report')"); err != nil {
+		t.Fatal(err)
+	}
+	reset := now.Add(5 * 24 * time.Hour)
+	r, err = Build(db, Input{Since: since, Quota: &quota.Report{Status: "complete", Now: now, Reset: reset, Day: 3, Passed: 2.0 / 7},
+		Health: &recall.Health{Status: "partial", Problems: []string{strings.Repeat("a", 95) + " ghp_" + strings.Repeat("E", 36)}}}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Decisions: 2\n  p01:lead 00:01 p01-D1 title 1\n  p02 2026-10-17 p02-D9 kept off the bus (no DECISION bus line)\n",
+		"Quota: 7d 0% on day 3 of 7, 0.0x the time passed · lasts to the reset " + reset.Format("Mon 01-02 15:04") + "\n"} {
+		if !strings.Contains(r.Text, want) {
+			t.Errorf("missing %q in\n%s", want, r.Text)
+		}
+	}
+	if strings.Contains(r.Text, "ghp_") {
+		t.Errorf("a cut token reaches the report:\n%s", r.Text)
+	}
+}
