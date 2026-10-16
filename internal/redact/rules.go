@@ -53,10 +53,10 @@ func loadRules(b []byte) []rule {
 // fragment: the Teams webhook's is 5 characters of a GUID. A rule with an entropy floor skips a lower-entropy secret,
 // as gitleaks does; its keywords
 // are a quick filter, as in gitleaks.
-func redactRules(s string) (string, int) {
+func redactRules(s string, rs []rule) (string, int) {
 	hits := 0
 	lower := strings.ToLower(s)
-	for _, r := range rules {
+	for _, r := range rs {
 		if !hasKeyword(lower, r.keywords) {
 			continue
 		}

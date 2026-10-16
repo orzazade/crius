@@ -3,7 +3,7 @@
 {"src": "r1", "in": "\"api_key\": \"abcdefghijklmnopqrstuvwxyz123456\"", "secret": "abcdefghijklmnop"}
 {"src": "r1", "in": "Authorization: Bearer bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "secret": "bbbbbbbbbbbbbbbbbbbb"}
 {"src": "r1", "in": "sk-cccccccccccccccccccccccccccccc", "secret": "cccccccccccccccccccc"}
-{"src": "r1", "in": "x -----BEGIN RSA PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCMIIEvQIBADANBgkqhkiG9w0BAQEFAASCMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n-----END RSA PRIVATE KEY----- y", "secret": "MIIEvQ"}
+{"src": "r1", "in": "x \u002d\u002d\u002d\u002d\u002dBEGIN RSA PRIVATE KEY\u002d\u002d\u002d\u002d\u002d\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCMIIEvQIBADANBgkqhkiG9w0BAQEFAASCMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n\u002d\u002d\u002d\u002d\u002dEND RSA PRIVATE KEY\u002d\u002d\u002d\u002d\u002d y", "secret": "MIIEvQ"}
 {"src": "r1", "in": "cut -----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCMIIEvQIBADANBgkqhkiG9w0BAQEFAASCMIIEvQIBADANBgkqhkiG9w0BAQEFAASC", "secret": "MIIEvQ"}
 {"src": "r2", "in": "password=hunter2", "secret": "hunter2"}
 {"src": "r2", "in": "{\"password\": \"pa ss!\"}", "secret": "pa ss"}
@@ -69,13 +69,13 @@
 {"src": "gap", "in": "password=abc`hunter2 tail", "secret": "hunter2"}
 {"src": "gap", "in": "password: x/token: hunter2", "secret": "hunter2"}
 {"src": "gap", "in": "token=>password: /token: hunter2", "secret": "hunter2"}
-{"src": "4b", "in": "stripe key sk_live_4eC39HqLyjWDarjtT1zdp7dc in the log", "secret": "4eC39HqLyjWDarjtT1zdp7dc"}
-{"src": "4b", "in": "GITLAB=glpat-Zx8vQ2mN7pL4kR9tY3wB ok", "secret": "Zx8vQ2mN7pL4kR9tY3wB"}
-{"src": "4b", "in": "npm token npm_a8Kd93LmQz7Xw2Pv5Rt1Yb6Nc4Hj0Gf8Se3U ok", "secret": "a8Kd93LmQz7Xw2Pv5Rt1Yb6Nc4Hj0Gf8Se3U"}
+{"src": "4b", "in": "stripe key sk\u005flive\u005f4eC39HqLyjWDarjtT1zdp7dc in the log", "secret": "4eC39HqLyjWDarjtT1zdp7dc"}
+{"src": "4b", "in": "GITLAB=glpat\u002dZx8vQ2mN7pL4kR9tY3wB ok", "secret": "Zx8vQ2mN7pL4kR9tY3wB"}
+{"src": "4b", "in": "npm token npm\u005fa8Kd93LmQz7Xw2Pv5Rt1Yb6Nc4Hj0Gf8Se3U ok", "secret": "a8Kd93LmQz7Xw2Pv5Rt1Yb6Nc4Hj0Gf8Se3U"}
 {"src": "4b", "in": "auth_code = 9fK2xQ7pLm4Zr8Tb", "secret": "9fK2xQ7pLm4Zr8Tb"}
 {"src": "c2353", "in": "docker login -u bob -p hunter2xyz", "secret": "hunter2xyz"}
 {"src": "c2353", "in": "mysql -u root -phunter2xyz db", "secret": "hunter2xyz"}
-{"src": "c2353", "in": "curl -u bob:hunter2xyz https://x", "secret": "hunter2xyz"}
+{"src": "c2353", "in": "curl \u002du bob:hunter2xyz https://x", "secret": "hunter2xyz"}
 {"src": "c2353", "in": "password: my pass phrase here", "secret": "phrase"}
 {"src": "c2353", "in": "podman login quay.io -p hunter2xyz -u bob", "secret": "hunter2xyz"}
 {"src": "c2353", "in": "some-new-client --user bob -p hunter2xyz", "secret": "hunter2xyz"}
@@ -87,7 +87,7 @@
 {"src": "opus-final", "in": "secrets:\n- name: a\n  value: hunter1\n- name: b\n  value: hunter2xyz", "secret": "hunter2xyz"}
 {"src": "opus-final", "in": "docker login \\\n  -u bob \\\n  -p hunter2xyz registry.io", "secret": "hunter2xyz"}
 {"src": "opus-final", "in": "mysql -h db \\\r\n  -u root \\\r\n  -phunter2xyz app", "secret": "hunter2xyz"}
-{"src": "opus-final", "in": "https://acme.webhook.office.com/webhookb2/abcdef12-abcd-abcd-abcd-abcdef123456@abcdef12-abcd-abcd-abcd-abcdef123456/IncomingWebhook/0123456789abcdef0123456789abcdef/abcdef12-abcd-abcd-abcd-abcdef123456", "secret": "0123456789abcdef0123456789abcdef"}
+{"src": "opus-final", "in": "https://acme.webhook.office.com/webhookb2/abcdef12\u002dabcd\u002dabcd\u002dabcd\u002dabcdef123456@abcdef12\u002dabcd\u002dabcd\u002dabcd\u002dabcdef123456/IncomingWebhook/0123456789abcdef0123456789abcdef/abcdef12\u002dabcd\u002dabcd\u002dabcd\u002dabcdef123456", "secret": "0123456789abcdef0123456789abcdef"}
 {"src": "opus-final", "in": "redis://:hunter2xyz@localhost:6379/0", "secret": "hunter2xyz"}
 {"src": "opus-final", "in": "password: | # from vault\n  hunter2xyz", "secret": "hunter2xyz"}
 {"src": "opus-final", "in": "password: !vault |\n  hunter2xyz", "secret": "hunter2xyz"}

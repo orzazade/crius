@@ -120,7 +120,7 @@ func Redact(s string) (string, int) {
 	}
 	s, n = redactShortFlag(s)
 	hits += n
-	s, n = redactRules(s)
+	s, n = redactRules(s, rules)
 	return s, hits + n
 }
 

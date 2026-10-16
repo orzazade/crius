@@ -174,7 +174,9 @@ continuations joined) that names a user (`-u`, `--user`) or a login, or after `m
 value glued on (`-p'x y'`) on any line; `-a`/`--pass` on a `redis-cli` line. On top, the gitleaks rules for token formats (vendored v8.30.1 in
 `internal/redact/rules/`, MIT; `bin/refresh-gitleaks-rules <tag>` refreshes them; path rules and allowlists are
 dropped; a rule without a secret group redacts its one group, else the whole match). Every leak case of the six rounds and every gap listed for step 4 is a fixture in
-`internal/redact/testdata/leaks.jsonl`. On the 31k real lines nothing the step-4 redactor caught is printed, 32
+`internal/redact/testdata/leaks.jsonl`; a token-shaped value there is written with JSON escapes (`sk\u005flive...`), as the
+repo is public and GitHub refuses a pushed token, and `TestRepoHoldsNoRawToken` fails on any file with a raw match of
+a gitleaks token rule (not the generic rule; not the vendored rule files). On the 31k real lines nothing the step-4 redactor caught is printed, 32
 lines change, 0.14% more of the text is blanked, and redaction takes about 340 ms per MB (twice step 4).
 Known gaps:
 - A secret with no key, no known prefix and no known shape (a bare word in prose) is not caught.
