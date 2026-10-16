@@ -25,7 +25,7 @@ func Room(r *Report) (verdict, reason string) {
 	switch {
 	case r.SevenPct >= 100 || r.FivePct >= 100:
 		return "full", nums
-	case age < 0:
+	case r.SevenAt.After(r.Now) || !r.FiveReset.IsZero() && r.FiveAt.After(r.Now): // each, not only the older one
 		return "unknown", nums + " (sample ahead of the clock)"
 	case !r.FiveKnown:
 		return "unknown", nums + " (no 5h window sampled)"

@@ -28,6 +28,8 @@ func TestRoom(t *testing.T) {
 		{"stale 7d full", Report{FiveKnown: true, SevenAt: now.Add(-5 * time.Hour), FiveAt: now.Add(-5 * time.Hour), SevenPct: 100, Reset: reset}, "full", "7d 100%"},
 		{"stale 5h full unexpired", Report{FiveKnown: true, SevenAt: now.Add(-time.Hour), FiveAt: now.Add(-time.Hour), SevenPct: 40, FivePct: 100, Reset: reset, FiveReset: five}, "full", "5h 100%"},
 		{"no sample", Report{}, "unknown", "no quota sample"},
+		{"7d ahead behind a 5h", Report{FiveKnown: true, SevenAt: now.Add(time.Hour), FiveAt: now.Add(-5 * time.Minute), SevenPct: 50, FivePct: 95, Reset: reset, FiveReset: five}, "unknown", "ahead"},
+		{"5h ahead behind a 7d", Report{FiveKnown: true, SevenAt: now.Add(-5 * time.Minute), FiveAt: now.Add(time.Hour), SevenPct: 50, FivePct: 20, Reset: reset, FiveReset: five}, "unknown", "ahead"},
 		{"sample ahead of the clock", Report{FiveKnown: true, SevenAt: now.Add(2 * time.Hour), FiveAt: now.Add(2 * time.Hour), SevenPct: 40, FivePct: 10, Reset: reset, FiveReset: five}, "unknown", "ahead"},
 		{"week ended", Report{FiveKnown: true, SevenAt: now.Add(-20 * time.Hour), FiveAt: now.Add(-20 * time.Hour), Ended: now.Add(-time.Hour)}, "unknown", "week ended"},
 	} {
