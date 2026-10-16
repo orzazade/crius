@@ -475,7 +475,8 @@ correct --corrects <row-id> --field project --value axi --reason`; `show <id> --
   pace (its own push, once per epoch; when it and the pace push are both due in one run, it goes alone and carries
   the pace facts), the push says: only Appxite work (quotes, AXI) may continue, on the Appxite
   enterprise account; personal and scifi work waits until the reset time. It also shows enterprise $ so far this
-  week.
+  week. Every alert fits one bus line (≤ 300 chars) by construction: in a push a name is cut to 10 chars, a list to
+  two names and "+N more", $ to 7 chars ($12.3k); in a guard or stale alert a name to 40. `quota` has them in full.
 - **During the day**: wakes on bus events (Monitor in the pilot, the Falcon bus later); reads the line and `show
   <project>` (≤ 1K tokens); acts through leads.
 - **"What happened with X?"**: Explore runs `find`; if needed `find --deep`; Crius keeps only the cited answer and

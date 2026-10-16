@@ -686,13 +686,29 @@ func (r *Report) Text() string {
 	return b.String()
 }
 
-// A push must fit a bus line (300 runes, store.MaxLen; a longer one is cut at the end), so every variable part of it
-// is bounded: a name to 10 runes, a list to two names. Full names and lists are in `crius-rec quota`.
-func short(name string) string {
-	if r := []rune(name); len(r) > 10 {
-		return string(r[:9]) + "…"
+// An alert must fit a bus line (300 runes, store.MaxLen; a longer one is cut at the end), so every variable part of
+// it is bounded: a name to 10 runes in a push (40 in a guard or stale alert), a list to two names, $ to 7 runes.
+// Full names, lists and $ are in `crius-rec quota`.
+func clip(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n-1]) + "…"
 	}
-	return name
+	return s
+}
+
+func short(name string) string { return clip(name, 10) }
+
+// cash is $ in at most 7 runes: $9999 or less as money() says it, then $10.0k, $1.0M, $1.0B, $1.0T.
+func cash(v float64) string {
+	if v < 9999.5 {
+		return money(v)
+	}
+	for _, unit := range []string{"k", "M", "B", "T"} {
+		if v /= 1000; v < 999.95 {
+			return fmt.Sprintf("$%.1f%s", v, unit)
+		}
+	}
+	return ">$999T"
 }
 
 func names(ps []string) string {
@@ -707,11 +723,15 @@ func names(ps []string) string {
 	return strings.Join(out, ", ")
 }
 
-// burners is the top n Max projects with their share of Max $.
+// burners is the top n Max projects with their share of Max $ (when there is a Max $ to share).
 func (r *Report) burners(n int) string {
 	var out []string
 	for _, s := range r.Shares[:min(n, len(r.Shares))] {
-		out = append(out, fmt.Sprintf("%s %.0f%%", short(s.Project), 100*s.USD/r.MaxUSD))
+		if r.MaxUSD > 0 {
+			out = append(out, fmt.Sprintf("%s %.0f%%", short(s.Project), 100*s.USD/r.MaxUSD))
+		} else { // all Max requests unpriced: no share to say
+			out = append(out, short(s.Project))
+		}
 	}
 	if len(out) == 0 {
 		return "none"
@@ -768,11 +788,11 @@ func (r *Report) UsedUpText(enterpriseOK map[string]bool) string {
 func (r *Report) entWeek() string {
 	switch {
 	case r.UnknownUSD == 0:
-		return fmt.Sprintf("Enterprise this week %s.", money(r.EntWeekUSD))
+		return fmt.Sprintf("Enterprise this week %s.", cash(r.EntWeekUSD))
 	case r.EntWeekUSD > 0:
-		return fmt.Sprintf("Enterprise this week ≥ %s + unknown %s.", money(r.EntWeekUSD), money(r.UnknownUSD))
+		return fmt.Sprintf("Enterprise this week ≥ %s + unknown %s.", cash(r.EntWeekUSD), cash(r.UnknownUSD))
 	}
-	return fmt.Sprintf("Enterprise this week unknown %s (account not measured).", money(r.UnknownUSD))
+	return fmt.Sprintf("Enterprise this week unknown %s (not measured).", cash(r.UnknownUSD))
 }
 
 func okList(enterpriseOK map[string]bool) []string {
@@ -792,10 +812,16 @@ func (v Violation) Text() string {
 	switch v.Kind {
 	case "s1":
 		return fmt.Sprintf("S1 personal work on the enterprise account: session %s, project %s (account from %s);"+
-			" Appxite pays for it. Stop it or move it to the Max account.", id, v.Project, v.Source)
+			" Appxite pays for it. Stop it or move it to the Max account.", id, clip(v.Project, 40), clip(v.Source, 40))
 	case "unmapped":
 		return fmt.Sprintf("enterprise session %s has no known project (account from %s): add its folder to"+
-			" projects.toml, or stop it if it is not Appxite work.", id, v.Source)
+			" projects.toml, or stop it if it is not Appxite work.", id, clip(v.Source, 40))
 	}
-	return fmt.Sprintf("account mismatch in session %s (project %s): %s.", id, v.Project, v.Source)
+	return fmt.Sprintf("account mismatch in session %s (project %s): %s.", id, clip(v.Project, 40), clip(v.Source, 80))
+}
+
+// StaleText is the alert for one stale entry of Report.Stale (design §5).
+func StaleText(entry string) string {
+	return "quota/max STALE: sessions are open but the statusline sampler wrote nothing within 45 min (" +
+		clip(entry, 80) + "); is crius-statusline in that persona's statusLine and working?"
 }

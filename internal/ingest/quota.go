@@ -99,8 +99,7 @@ func (r *runner) quotaChecks(tx *sql.Tx) error {
 		}
 	}
 	for _, st := range rep.Stale {
-		if err := r.queueAlert(tx, "quota:stale:"+st, "quota/max STALE: sessions are open but the statusline sampler"+
-			" wrote nothing within 45 min ("+st+"); is crius-statusline in that persona's statusLine and working?"); err != nil {
+		if err := r.queueAlert(tx, "quota:stale:"+st, quota.StaleText(st)); err != nil {
 			return err
 		}
 	}
