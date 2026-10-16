@@ -750,3 +750,39 @@ func TestQuotaRoomCountsMeasurementsNotHeartbeats(t *testing.T) {
 		}
 	}
 }
+
+// Review of 27cdaa1 (codex P1): a share's age is the age of the measurement that shows it. A session first seen 5 min
+// ago carrying an older 80% does not refresh the 95% measured 2 h ago; a 7d-only sample 5 min ago does not refresh a
+// 5h 95% measured 2 h ago.
+func TestQuotaRoomAgesEachShareByItsOwnMeasurement(t *testing.T) {
+	week, five := qNow.Add(72*time.Hour).Unix(), qNow.Add(time.Hour).Unix()
+	for _, c := range []struct{ name, old, recent string }{
+		{"older reading", fmt.Sprintf(`"five_hour":{"used_percentage":10,"resets_at":%d},"seven_day":{"used_percentage":95,"resets_at":%d}`, five, week),
+			fmt.Sprintf(`"five_hour":{"used_percentage":10,"resets_at":%d},"seven_day":{"used_percentage":80,"resets_at":%d}`, five, week)},
+		{"older 5h reading", fmt.Sprintf(`"five_hour":{"used_percentage":95,"resets_at":%d},"seven_day":{"used_percentage":40,"resets_at":%d}`, five, week),
+			fmt.Sprintf(`"five_hour":{"used_percentage":50,"resets_at":%d},"seven_day":{"used_percentage":40,"resets_at":%d}`, five, week)},
+		{"5h borrowed", fmt.Sprintf(`"five_hour":{"used_percentage":95,"resets_at":%d},"seven_day":{"used_percentage":40,"resets_at":%d}`, five, week),
+			fmt.Sprintf(`"seven_day":{"used_percentage":40,"resets_at":%d}`, week)},
+	} {
+		x := quotaCase(t)
+		if err := os.MkdirAll(filepath.Join(x.home, "spool"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		a, b := "aaaaaaaa-1111-2222-3333-444444444444", "bbbbbbbb-1111-2222-3333-444444444444"
+		x.session("personal", a, "/p/x", "", qNow.Add(-2*time.Hour))
+		x.session("personal", b, "/p/x", "", qNow.Add(-5*time.Minute))
+		for _, r := range []struct {
+			sid, limits string
+			at          time.Time
+		}{{a, c.old, qNow.Add(-2 * time.Hour)}, {b, c.recent, qNow.Add(-5 * time.Minute)}} {
+			in := fmt.Sprintf(`{"session_id":%q,"cost":{"total_cost_usd":1,"total_api_duration_ms":900},"rate_limits":{%s}}`, r.sid, r.limits)
+			if _, err := quota.Sample(x.home, "personal", []byte(in), r.at); err != nil {
+				t.Fatal(err)
+			}
+		}
+		x.run()
+		if v, reason := quota.Room(x.report()); v == "room" {
+			t.Errorf("%s: %s %s", c.name, v, reason)
+		}
+	}
+}

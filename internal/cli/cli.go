@@ -255,8 +255,8 @@ func roomLine(w io.Writer, verdict, reason string, r *quota.Report) {
 		Reset      string   `json:"reset"`
 		SampleAgeS *int64   `json:"sample_age_s"`
 	}{Verdict: verdict, Reason: reason}
-	if r != nil && !r.LastMeasured.IsZero() {
-		age := int64(r.Now.Sub(r.LastMeasured).Seconds())
+	if r != nil && !r.SevenAt.IsZero() {
+		age := int64(r.Now.Sub(r.MeasuredAt()).Seconds())
 		v.Seven, v.Five, v.SampleAgeS = &r.SevenPct, &r.FivePct, &age
 	}
 	if r != nil && !r.Reset.IsZero() {

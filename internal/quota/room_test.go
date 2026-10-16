@@ -19,17 +19,17 @@ func TestRoom(t *testing.T) {
 		verdict  string
 		inReason string
 	}{
-		{"fresh under 100", Report{FiveKnown: true, LastMeasured: now.Add(-10 * time.Minute), SevenPct: 99, FivePct: 98, Reset: reset, FiveReset: five}, "room", "7d 99%, 5h 98%, reset "},
-		{"fresh 7d full", Report{FiveKnown: true, LastMeasured: now.Add(-time.Minute), SevenPct: 100, FivePct: 5, Reset: reset, FiveReset: five}, "full", "7d 100%"},
-		{"fresh 5h full", Report{FiveKnown: true, LastMeasured: now.Add(-time.Minute), SevenPct: 40, FivePct: 100, Reset: reset, FiveReset: five}, "full", "5h 100%"},
-		{"stale under 90", Report{FiveKnown: true, LastMeasured: now.Add(-3 * time.Hour), SevenPct: 89, FivePct: 0, Reset: reset}, "room", "sample 3 h old (under 90%)"},
-		{"stale 5h 95", Report{FiveKnown: true, LastMeasured: now.Add(-50 * time.Minute), SevenPct: 40, FivePct: 95, Reset: reset, FiveReset: five}, "unknown", "5h 95%"},
-		{"stale 7d 90", Report{FiveKnown: true, LastMeasured: now.Add(-50 * time.Minute), SevenPct: 90, Reset: reset}, "unknown", "50 min old"},
-		{"stale 7d full", Report{FiveKnown: true, LastMeasured: now.Add(-5 * time.Hour), SevenPct: 100, Reset: reset}, "full", "7d 100%"},
-		{"stale 5h full unexpired", Report{FiveKnown: true, LastMeasured: now.Add(-time.Hour), SevenPct: 40, FivePct: 100, Reset: reset, FiveReset: five}, "full", "5h 100%"},
+		{"fresh under 100", Report{FiveKnown: true, SevenAt: now.Add(-10 * time.Minute), FiveAt: now.Add(-10 * time.Minute), SevenPct: 99, FivePct: 98, Reset: reset, FiveReset: five}, "room", "7d 99%, 5h 98%, reset "},
+		{"fresh 7d full", Report{FiveKnown: true, SevenAt: now.Add(-time.Minute), FiveAt: now.Add(-time.Minute), SevenPct: 100, FivePct: 5, Reset: reset, FiveReset: five}, "full", "7d 100%"},
+		{"fresh 5h full", Report{FiveKnown: true, SevenAt: now.Add(-time.Minute), FiveAt: now.Add(-time.Minute), SevenPct: 40, FivePct: 100, Reset: reset, FiveReset: five}, "full", "5h 100%"},
+		{"stale under 90", Report{FiveKnown: true, SevenAt: now.Add(-3 * time.Hour), FiveAt: now.Add(-3 * time.Hour), SevenPct: 89, FivePct: 0, Reset: reset}, "room", "sample 3 h old (under 90%)"},
+		{"stale 5h 95", Report{FiveKnown: true, SevenAt: now.Add(-50 * time.Minute), FiveAt: now.Add(-50 * time.Minute), SevenPct: 40, FivePct: 95, Reset: reset, FiveReset: five}, "unknown", "5h 95%"},
+		{"stale 7d 90", Report{FiveKnown: true, SevenAt: now.Add(-50 * time.Minute), FiveAt: now.Add(-50 * time.Minute), SevenPct: 90, Reset: reset}, "unknown", "50 min old"},
+		{"stale 7d full", Report{FiveKnown: true, SevenAt: now.Add(-5 * time.Hour), FiveAt: now.Add(-5 * time.Hour), SevenPct: 100, Reset: reset}, "full", "7d 100%"},
+		{"stale 5h full unexpired", Report{FiveKnown: true, SevenAt: now.Add(-time.Hour), FiveAt: now.Add(-time.Hour), SevenPct: 40, FivePct: 100, Reset: reset, FiveReset: five}, "full", "5h 100%"},
 		{"no sample", Report{}, "unknown", "no quota sample"},
-		{"sample ahead of the clock", Report{FiveKnown: true, LastMeasured: now.Add(2 * time.Hour), SevenPct: 40, FivePct: 10, Reset: reset, FiveReset: five}, "unknown", "ahead"},
-		{"week ended", Report{FiveKnown: true, LastMeasured: now.Add(-20 * time.Hour), Ended: now.Add(-time.Hour)}, "unknown", "week ended"},
+		{"sample ahead of the clock", Report{FiveKnown: true, SevenAt: now.Add(2 * time.Hour), FiveAt: now.Add(2 * time.Hour), SevenPct: 40, FivePct: 10, Reset: reset, FiveReset: five}, "unknown", "ahead"},
+		{"week ended", Report{FiveKnown: true, SevenAt: now.Add(-20 * time.Hour), FiveAt: now.Add(-20 * time.Hour), Ended: now.Add(-time.Hour)}, "unknown", "week ended"},
 	} {
 		c.r.Now = now
 		v, reason := Room(&c.r)

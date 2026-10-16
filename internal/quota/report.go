@@ -27,13 +27,15 @@ type Violation struct {
 }
 
 type Report struct {
-	Now                time.Time
-	Status             string   // complete or partial (design §4)
-	Reasons            []string // why partial: no sample, stale personas, epoch ended, unknown account, unpriced
-	Stale              []string // personas with open sessions and no statusline line within Gap, with their last line
-	LastSample         time.Time
-	LastKind           string
-	LastMeasured       time.Time // newest sample that is not a heartbeat: a heartbeat repeats a session's last values
+	Now        time.Time
+	Status     string   // complete or partial (design §4)
+	Reasons    []string // why partial: no sample, stale personas, epoch ended, unknown account, unpriced
+	Stale      []string // personas with open sessions and no statusline line within Gap, with their last line
+	LastSample time.Time
+	LastKind   string
+	// SevenAt and FiveAt: the newest measurement showing SevenPct and FivePct. A share only rises within its window,
+	// so a lower reading is an older one, and a heartbeat repeats a session's last values: neither makes a share newer.
+	SevenAt, FiveAt    time.Time
 	FiveKnown          bool      // a 5h window was sampled this epoch; FivePct 0 with it means the window has reset
 	Reset, FiveReset   time.Time // seven-day epoch end; zero when unknown or already past
 	Ended              time.Time // the newest sample's epoch end when it is already past (no sample since)
@@ -354,11 +356,6 @@ func Build(db Querier, p Projects, now time.Time) (*Report, error) {
 	if n := len(samples); n > 0 {
 		last := samples[n-1]
 		rep.LastSample, rep.LastKind = last.ts, last.kind
-		for _, s := range samples {
-			if s.kind != "heartbeat" {
-				rep.LastMeasured = s.ts
-			}
-		}
 		var fiveReset int64
 		for _, s := range samples {
 			if s.five.Valid {
@@ -369,6 +366,17 @@ func Build(db Querier, p Projects, now time.Time) (*Report, error) {
 			rep.SevenPct = math.Max(rep.SevenPct, s.seven.Float64)
 			if s.five.Valid && math.Abs(float64(s.fiveReset.Int64-fiveReset)) < 600 {
 				rep.FivePct = math.Max(rep.FivePct, s.five.Float64)
+			}
+		}
+		for _, s := range samples {
+			if s.kind == "heartbeat" {
+				continue
+			}
+			if s.seven.Float64 == rep.SevenPct {
+				rep.SevenAt = s.ts
+			}
+			if s.five.Valid && math.Abs(float64(s.fiveReset.Int64-fiveReset)) < 600 && s.five.Float64 == rep.FivePct {
+				rep.FiveAt = s.ts
 			}
 		}
 		rep.Reset = time.Unix(reset, 0)
