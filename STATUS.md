@@ -85,3 +85,11 @@ Owner answers 10-15: #28 QAs post in Teams AND add owner as ADO reviewer (no Tea
 - [x] Research: research/memory-and-measurement.md, research/claude-code-telemetry.md (OTel works on the Max login)
 - [x] Design: docs/MEMORY-AND-MEASUREMENT.md, codex-critiqued (12 findings applied), owner decisions D1-D4
 - [ ] Rollout step 1-2 (store + ingest) — waiting for the owner's "go"
+
+## Crius live state (2026-10-16 ~15:10 local) — read this after a compaction
+- Leads running: "crius · build" (Crius ws, surface:1000010063): rebuilding step 1 in GO (final language), then
+  step 2; reports to crius/bus/build.log. "axi" lead (AXI ws, surface:1000010010): resumed its first-order team at
+  owner's "start axi"; reports to ~/.crius/bus/axi.log.
+- Crius watcher: scratchpad watch-leads.sh (bus logs + screens for prompts); re-arm after each event.
+- Verify every lead DONE on a clean worktree before telling the owner.
+- Dates: 10-20 Explore share re-measure; 10-23 300K window + Sonnet member trial (stop rule in review-1016 REPORT §4).
