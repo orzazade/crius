@@ -311,6 +311,10 @@ searched, and the durable rows `find` has for the whole window follow, marked `d
 of truth for filing: each ingest run re-files a session filed by its folder, and a registered session's events from
 before its first tag, when the config now files that folder differently.
 
+**Known gap (step 4, b3a87cb; Crius 10-17).** Files are still read asked project first, so when the 2-minute limit
+cuts a scan, the unread files are the other projects' and a tight match there can be missed (the answer says
+`partial` with the count). No test pins this read order: `TestDeepIsBounded` sets the limit to 0, so no file is read.
+
 **Generated files, not commands:** digest (`state/digest/`), scorecard (`state/scorecards/`), STATE.md. Each starts
 with a freshness stamp: `built <ts> · status partial · bus 09:20 ok · git 09:30 ok · quota/max STALE 6 h`.
 
