@@ -2,97 +2,85 @@ package digest
 
 import (
 	"database/sql"
+	"encoding/json"
 	"regexp"
+	"slices"
 	"strings"
-	"time"
 )
 
 var (
-	wordRe   = regexp.MustCompile(`[0-9A-Za-z]+`)
 	shaRe    = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
 	letterRe = regexp.MustCompile(`[a-f]`)
-	busRefRe = regexp.MustCompile(`\bbus (\d{4}-\d{2}-\d{2}T\d{2}:\d{2})\b`)
-	passRe   = regexp.MustCompile(`\bchecked PASS\b`)
-	// a failure anywhere on the line, a "not" in the clause before the pass, or a question mark right after it
-	noPassRe = regexp.MustCompile(`(?i)\bfail|\bnot\b[^.;:!]*\bchecked PASS|checked PASS\s*\?`)
+	wordRe   = regexp.MustCompile(`[0-9A-Za-z]+`)
 )
 
-// Verified gives, per milestone, the id of the bus line that checked it, 0 for none (Crius 10-17: a % counts only
-// with a Crius or QA check on the bus). A check is an info, done or decision line from Crius (crius:lead) or from the
-// lead's own project's QA (role qa or qa-*) that says "checked PASS" with no "not" in the clause before it,
-// no "?" right after it and no fail on the line (any case). A done
-// milestone is verified when a check names one of its refs: a sha (7 or more hex with at least one letter, so a
-// run id is not taken for one; any case; sha= allowed) that is, or begins, a whole word of the check that is such a
-// sha too; or "bus <local YYYY-MM-DDTHH:MM>", the check at that minute when it names the lead as a whole name or is
-// the lead's own QA. Every sha on a check line counts as checked. Other refs (run
-// ids, PRs) cannot be matched, so a milestone with only those stays claimed. Milestones not done are never
-// verified. The sender is trusted as written on the line.
-func Verified(db *sql.DB, lead string, g *Goal) ([]int64, error) {
+// isSha: 7 to 40 hex with at least one letter, so a run id is not taken for one.
+func isSha(w string) bool { return shaRe.MatchString(w) && letterRe.MatchString(w) }
+
+// Verified gives, per milestone, the id of the VERIFIED line that checked it, 0 for none, and how many VERIFIED lines
+// to the lead match no done milestone (RULES 3.4). A VERIFIED line counts when it is to the lead and from Crius
+// (crius:lead) or the lead's own project's QA (role qa or qa-*); its text is "<ref> · <evidence>". The ref matches a
+// done milestone when it is a sha that is, or begins, a sha word of the milestone's refs (any case); or equals one of
+// the milestone's refs or its text (any case). The sender is trusted as written on the line.
+func Verified(db *sql.DB, lead string, g *Goal) ([]int64, int, error) {
 	project, _, _ := strings.Cut(lead, ":")
-	names := regexp.MustCompile(`(^|[^0-9a-z:_-])` + regexp.QuoteMeta(lead) + `($|[^0-9a-z:_-])`)
-	rows, err := db.Query("select id, ts, actor, text from event where kind in ('info', 'done', 'decision') and"+
-		" ((project = 'crius' and actor = 'lead') or (project = ? and (actor = 'qa' or actor like 'qa-%')))"+
-		" and text like '%checked PASS%' order by id", project)
+	rows, err := db.Query("select id, coalesce(refs, ''), text from event where kind = 'verified' and"+
+		" ((project = 'crius' and actor = 'lead') or (project = ? and (actor = 'qa' or actor like 'qa-%'))) order by id",
+		project)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
-	type check struct {
-		id           int64
-		ts, text     string
-		words        []string
-		names, ownQA bool
-	}
-	var checks []check
+	out, unmatched := make([]int64, len(g.Milestones)), 0
 	for rows.Next() {
-		var c check
-		var role string
-		if err := rows.Scan(&c.id, &c.ts, &role, &c.text); err != nil {
-			return nil, err
+		var id int64
+		var refs, text string
+		if err := rows.Scan(&id, &refs, &text); err != nil {
+			return nil, 0, err
 		}
-		if !passRe.MatchString(c.text) || noPassRe.MatchString(c.text) {
+		var r map[string][]string
+		if refs != "" {
+			if err := json.Unmarshal([]byte(refs), &r); err != nil {
+				return nil, 0, err
+			}
+		}
+		if !slices.Contains(r["to"], lead) {
 			continue
 		}
-		c.words = wordRe.FindAllString(strings.ToLower(c.text), -1)
-		c.names, c.ownQA = names.MatchString(strings.ToLower(c.text)), role == "qa" || strings.HasPrefix(role, "qa-")
-		checks = append(checks, c)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	out := make([]int64, len(g.Milestones))
-	for i, m := range g.Milestones {
-		if m.State != Done {
-			continue
-		}
-		var shas, minutes []string
-		for _, w := range wordRe.FindAllString(strings.ToLower(m.Refs), -1) {
-			if shaRe.MatchString(w) && letterRe.MatchString(w) {
-				shas = append(shas, w)
-			}
-		}
-		for _, b := range busRefRe.FindAllStringSubmatch(m.Refs, -1) {
-			if t, err := time.ParseInLocation("2006-01-02T15:04", b[1], time.Local); err == nil {
-				minutes = append(minutes, t.UTC().Format("2006-01-02T15:04"))
-			}
-		}
-	checks:
-		for _, c := range checks {
-			for _, s := range shas {
-				for _, w := range c.words {
-					if shaRe.MatchString(w) && letterRe.MatchString(w) && (strings.HasPrefix(w, s) || strings.HasPrefix(s, w)) {
-						out[i] = c.id
-						break checks
-					}
-				}
-			}
-			for _, mn := range minutes {
-				if strings.HasPrefix(c.ts, mn) && (c.names || c.ownQA) {
-					out[i] = c.id
-					break checks
+		ref, _, _ := strings.Cut(text, " · ")
+		ref = strings.ToLower(strings.TrimSpace(ref))
+		hit := false
+		for i, m := range g.Milestones {
+			if m.State == Done && matches(ref, m) {
+				hit = true
+				if out[i] == 0 {
+					out[i] = id
 				}
 			}
 		}
+		if !hit {
+			unmatched++
+		}
 	}
-	return out, nil
+	return out, unmatched, rows.Err()
+}
+
+func matches(ref string, m Milestone) bool {
+	if ref == strings.ToLower(m.Text) {
+		return true
+	}
+	for _, r := range strings.Split(m.Refs, ",") {
+		if ref == strings.ToLower(strings.TrimSpace(r)) {
+			return true
+		}
+	}
+	if !isSha(ref) {
+		return false
+	}
+	for _, w := range wordRe.FindAllString(strings.ToLower(m.Refs), -1) {
+		if isSha(w) && (strings.HasPrefix(w, ref) || strings.HasPrefix(ref, w)) {
+			return true
+		}
+	}
+	return false
 }

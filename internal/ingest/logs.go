@@ -159,6 +159,12 @@ func (r *runner) logFile(path, source string, strict bool, project string) error
 			if len(p.Refs) > 0 {
 				e.refs = p.Refs
 			}
+			if p.To != "" { // the recipient: the digest counts a VERIFIED line for the lead it is to (RULES 3.4)
+				if e.refs == nil {
+					e.refs = map[string][]string{}
+				}
+				e.refs["to"] = []string{p.To}
+			}
 			if items := p.Refs["item"]; len(items) > 0 {
 				e.item = items[0]
 			}

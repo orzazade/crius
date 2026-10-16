@@ -36,7 +36,8 @@ func TestBuildReportsEveryLeadLoudly(t *testing.T) {
 		"2026-10-17T06:58:00Z", now.Add(-2*time.Minute).UTC().Format(time.RFC3339), "complete", "{}"); err != nil {
 		t.Fatal(err)
 	}
-	line(t, db, now.Add(-time.Hour), "crius:lead", "info", "abc1234 checked PASS")
+	verified(t, db, now.Add(-time.Hour), "crius:lead", "axi:leader", "abc1234 · tests 9 ok")
+	verified(t, db, now.Add(-time.Hour), "crius:lead", "crius:build", "F-9 · a ref no milestone has")
 	dir := t.TempDir()
 	leads := []ingest.Lead{
 		{Name: "axi:leader", StatusFile: statusFile(t, dir, "axi.md", block("2026-10-17 08:00", "sandbox order needs the owner's tenant OK",
@@ -56,7 +57,7 @@ func TestBuildReportsEveryLeadLoudly(t *testing.T) {
 		"# Goal report · 2026-10-17 09:00 · status partial\n! 1 lead status file cannot be read\n",
 		"## Needs the owner\n▶ 1. axi:leader: sandbox order needs the owner's tenant OK\n",
 		"axi:leader: 50% claimed · verified 1 of 1 done (2 milestones) · no change since the last report",
-		"crius:build: 50% claimed · verified 0 of 1 done (2 milestones) · +10 since the last report",
+		"crius:build: 50% claimed · verified 0 of 1 done (2 milestones) · +10 since the last report · VERIFIED lines that match no milestone: 1\n",
 		"  Goal: ship the thing\n  Next: the second part\n",
 		"falcon:lead: LOST: " + filepath.Join(dir, "falcon.md") + " has no GOAL block",
 		"quotes:leader: UNREADABLE: " + filepath.Join(dir, "quotes.md") + ": GOAL block unreadable: line 1: heading needs (YYYY-MM-DD HH:MM)",

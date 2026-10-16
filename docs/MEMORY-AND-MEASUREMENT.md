@@ -409,7 +409,7 @@ more than a late one.
 - `<YYYY-MM-DDTHH:MM> TYPE <project>:<role> -> crius — text [refs]`, from `$(date +%FT%H:%M)`, ≤ 300 chars, append
   with `>>` (or `crius-rec record bus`). Old `HH:MM` lines still parse (date from file order and mtime).
 - Types (the one list; `internal/store` tests check the Go list equals it): `DONE`, `BLOCKED`, `NEED-OWNER`,
-  `PAUSED`, `LIMIT`, `ITEM`, `DECISION`, `RESUMED`, `ALERT`, `INFO`, `NEED`, `WAIT`, `PARKED`.
+  `PAUSED`, `LIMIT`, `ITEM`, `DECISION`, `RESUMED`, `ALERT`, `INFO`, `NEED`, `WAIT`, `PARKED`, `VERIFIED`.
 - Who writes them: ALERT only Crius's own scripts (ingest, watchdog), WAIT the wait detector, PARKED the park mod
   (via the leader). Team-only types (ACK, CLEAR-READY, QUEUE) never go on the Crius bus; any type not in the list
   above is malformed.

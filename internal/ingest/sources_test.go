@@ -85,6 +85,28 @@ func busCase(t *testing.T) (*ic, string, string) {
 	return newIC(t, cfg{artifactDir: arts, teamLogs: teamLog}), arts, teamLog
 }
 
+// RULES 3.4: a VERIFIED line is a bus type, and every bus or team-log line keeps its recipient (refs "to"), so the
+// digest can tell which lead a check is for.
+func TestBusLinesKeepTheirRecipient(t *testing.T) {
+	x, _, teamLog := busCase(t)
+	testutil.Write(t, filepath.Join(x.home, "bus", "demo.log"),
+		"2026-10-17T02:57 VERIFIED crius:lead -> demo:build — b3a87cb · step 4: 31/34\n"+
+			"2026-10-17T02:58 DONE demo:leader -> crius — done\n")
+	testutil.Write(t, teamLog, "2026-10-17T02:59 VERIFIED crius:lead -> demo:qa-ui — F-126 · ticks seen\n")
+	x.run()
+	rows := x.q("select kind, refs from event where kind in ('verified', 'done') order by ts")
+	if len(rows) != 3 {
+		t.Fatal(rows)
+	}
+	for i, want := range []string{"demo:build", "crius", "demo:qa-ui"} {
+		var refs map[string][]string
+		if err := json.Unmarshal([]byte(rows[i][1]), &refs); err != nil || len(refs["to"]) != 1 || refs["to"][0] != want {
+			t.Errorf("%v: %v", rows[i], err)
+		}
+	}
+	eq(t, rows[0][0], "verified")
+}
+
 func TestBusLinesDatedUndatedMalformedAndRedacted(t *testing.T) {
 	x, _, _ := busCase(t)
 	token := "ghp_" + strings.Repeat("A", 36)
