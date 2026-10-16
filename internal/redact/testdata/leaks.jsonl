@@ -105,3 +105,12 @@
 {"src": "opus-final2", "in": "openssl enc -aes-256-cbc -pass pass:hunter2xyz -in a", "secret": "hunter2xyz"}
 {"src": "opus-final2", "in": "openssl rsa -passin pass:hunter2xyz -in k.pem", "secret": "hunter2xyz"}
 {"src": "opus-final2", "in": "openssl pkcs12 -passout pass:hunter2xyz", "secret": "hunter2xyz"}
+{"src": "c0039", "in": "somecmd -p'hunter2 xyz' --flag", "secret": "hunter2"}
+{"src": "c0039", "in": "tool --host db -p\"hunter2 xyz\"", "secret": "hunter2"}
+{"src": "c0039", "in": "run x -p'hunter2xyz'", "secret": "hunter2xyz"}
+{"src": "c0039", "in": "redis-cli -a hunter2xyz ping", "secret": "hunter2xyz"}
+{"src": "c0039", "in": "redis-cli -h cache.local -p 6379 -a hunter2xyz info", "secret": "hunter2xyz"}
+{"src": "c0039", "in": "redis-cli --pass hunter2xyz", "secret": "hunter2xyz"}
+{"src": "c0039", "in": "REDISCLI_X=1 redis-cli -a 'hunter2 xyz' get k", "secret": "hunter2"}
+{"src": "c0039", "in": "redis-cli \\\n  -a hunter2xyz", "secret": "hunter2xyz"}
+{"src": "c0039", "in": "redis-cli --user bob -a hunter2xyz -p 6379", "secret": "hunter2xyz"}

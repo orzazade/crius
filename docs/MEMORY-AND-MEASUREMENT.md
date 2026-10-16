@@ -170,14 +170,17 @@ that closes on the same line with nothing escaped inside and a separator (space,
 other value is blanked to the end of its line (or of its JSON string or tool-input field). A key with no value, a
 block scalar (`|`, `>`, also after a tag or before a comment), an opening bracket, or a line that ends at another
 secret key also takes the next line, the lines indented under the key and list items (`- x`) at its indent. `-p` is a password on a command line (backslash
-continuations joined) that names a user (`-u`, `--user`) or a login, or after `mysql`, `mariadb` and `sshpass`. On top, the gitleaks rules for token formats (vendored v8.30.1 in
+continuations joined) that names a user (`-u`, `--user`) or a login, or after `mysql`, `mariadb` and `sshpass`; a `-p` with a quoted
+value glued on (`-p'x y'`) on any line; `-a`/`--pass` on a `redis-cli` line. On top, the gitleaks rules for token formats (vendored v8.30.1 in
 `internal/redact/rules/`, MIT; `bin/refresh-gitleaks-rules <tag>` refreshes them; path rules and allowlists are
 dropped; a rule without a secret group redacts its one group, else the whole match). Every leak case of the six rounds and every gap listed for step 4 is a fixture in
 `internal/redact/testdata/leaks.jsonl`. On the 31k real lines nothing the step-4 redactor caught is printed, 32
 lines change, 0.14% more of the text is blanked, and redaction takes about 340 ms per MB (twice step 4).
 Known gaps:
 - A secret with no key, no known prefix and no known shape (a bare word in prose) is not caught.
-- A password flag other than `-p` with no user on the line (`redis-cli -a x`) is printed.
+- A password flag other than `-p` with no user on the line, outside `redis-cli` (e.g. `psql` has none, but other
+  clients' own flags), is printed. An unquoted `-p x` with no user or login on the line is printed (`-p` there
+  usually means a port or parents).
 - A key with no operator (SQL `WITH PASSWORD 'x'`, netrc `password x`), a name after `token_` (`GITHUB_TOKEN_PROD=x`;
   `token_count` must stay), Unicode or odd spaces around the operator, and `--password` with its value on the next
   line are printed (Opus review of 09f817a, P2/P3). So are a URL password holding `/` or a quote (an `@` in a URL

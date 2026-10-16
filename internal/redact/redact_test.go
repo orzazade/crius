@@ -239,3 +239,21 @@ func TestRedactRescanAndVerticalTab(t *testing.T) {
 		}
 	}
 }
+
+// A password flag goes with the rest of its command line; the text before it stays, and other -p and -a uses stay.
+func TestRedactPasswordFlags(t *testing.T) {
+	for in, want := range map[string]string{
+		"run x -p'pw 1' y":           "run x [redacted]",
+		"docker login -u bob -p pw":  "docker login -u bob [redacted]",
+		"redis-cli -h h -a pw get k": "redis-cli -h h [redacted]",
+		"mkdir -p a/b":               "mkdir -p a/b",
+		"ssh -p 22 host":             "ssh -p 22 host",
+		"docker run -p 8080:80 img":  "docker run -p 8080:80 img",
+		"redis-cli -h h get k":       "redis-cli -h h get k",
+		"tar -a -cf x.tgz d":         "tar -a -cf x.tgz d",
+	} {
+		if got, _ := Redact(in); got != want {
+			t.Errorf("Redact(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

@@ -59,15 +59,18 @@ var secretRes = []*regexp.Regexp{
 	regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}`),
 }
 
-// A short -p is a password on a command line that names a user (-u bob, -uroot, --user, --username) or a login, or
-// after a client that takes one that way (mysql -phunter2, sshpass -p hunter2); elsewhere -p means something else.
-// Keyed on the line, not a list of clients (Crius 23:53: docker login -u bob -p x was printed). A line ending in a
-// backslash goes on below, and an argument may be quoted (["-p", "x"]). The redaction runs from the first -p to the
-// end of the command line.
-var (
-	shortFlagLine = regexp.MustCompile(`(?i)\b(?:mysql\w*|mariadb\w*|sshpass|login)\b|(?:^|[\s"'\[,])(?:-u|--user(?:name)?\b)`)
-	shortFlag     = regexp.MustCompile(`(?:^|[\s"'\[,])-p`)
-)
+// A short flag is a password on a command line where the line says so; elsewhere the flag means something else.
+// -p: the line names a user (-u bob, -uroot, --user, --username) or a login, or a client that takes one that way
+// (mysql -phunter2, sshpass -p hunter2). Keyed on the line, not a list of clients (Crius 23:53: docker login -u bob -p
+// x was printed). A -p with a quoted value glued on (-p'x y') is a password on any line (Crius 00:39): no other -p
+// takes one. -a or --pass on a redis-cli line. A line ending in a backslash goes on below, and an argument may be
+// quoted (["-p", "x"]). The redaction runs from the first such flag (group 1) to the end of the command line.
+var shortFlags = []struct{ line, flag *regexp.Regexp }{
+	{regexp.MustCompile(`(?i)\b(?:mysql\w*|mariadb\w*|sshpass|login)\b|(?:^|[\s"'\[,])(?:-u|--user(?:name)?\b)`),
+		regexp.MustCompile(`(?:^|[\s"'\[,])(-p)`)},
+	{regexp.MustCompile(``), regexp.MustCompile(`(?:^|[\s"'\[,])(-p)["']`)},
+	{regexp.MustCompile(`(?i)\bredis-cli\b`), regexp.MustCompile(`(?:^|[\s"'\[,])(-a|--pass)(?:[\s"'=,\]]|$)`)},
+}
 
 func redactShortFlag(s string) (string, int) {
 	var b strings.Builder
@@ -79,8 +82,14 @@ func redactShortFlag(s string) (string, int) {
 		}
 		l := s[pos:end]
 		body := strings.TrimRight(l, "\r")
-		if m := shortFlag.FindStringIndex(body); m != nil && shortFlagLine.MatchString(body) {
-			b.WriteString(body[:m[1]-2] + "[redacted]" + l[len(body):])
+		from := -1
+		for _, f := range shortFlags {
+			if m := f.flag.FindStringSubmatchIndex(body); m != nil && (from < 0 || m[2] < from) && f.line.MatchString(body) {
+				from = m[2]
+			}
+		}
+		if from >= 0 {
+			b.WriteString(body[:from] + "[redacted]" + l[len(body):])
 			hits++
 		} else {
 			b.WriteString(l)
