@@ -55,13 +55,21 @@ func TestPushesFitABusLine(t *testing.T) {
 func TestGuardAndStaleAlertsFitABusLine(t *testing.T) {
 	long := strings.Repeat("y", 200)
 	for _, c := range []struct{ text, must string }{
-		{Violation{Session: long, Project: long, Kind: "s1", Source: long}.Text(), "Stop it or move it to the Max account."},
-		{Violation{Session: long, Kind: "unmapped", Source: long}.Text(), "or stop it if it is not Appxite work."},
-		{Violation{Session: long, Project: long, Kind: "mismatch", Source: "tag " + long + ", statusline max"}.Text(), "account mismatch in session yyyyyyyy"},
+		{Violation{Session: long, Project: long, Kind: "s1", Source: long}.AlertText(), "Stop it or move it to the Max account."},
+		{Violation{Session: long, Kind: "unmapped", Source: long}.AlertText(), "or stop it if it is not Appxite work."},
+		{Violation{Session: long, Project: long, Kind: "mismatch", Source: "tag " + long + ", statusline max"}.AlertText(), "account mismatch in session yyyyyyyy"},
 		{StaleText(long + ": no statusline line yet"), "is crius-statusline in that persona's statusLine and working?"},
 	} {
 		if n := utf8.RuneCountInString(c.text); n > 300 || !strings.Contains(c.text, c.must) {
 			t.Errorf("%d runes, want %q in: %s", n, c.must, c.text)
 		}
+	}
+}
+
+// Codex round 10: only the alert is clipped; the `quota` report names the project in full.
+func TestReportNamesViolationsInFull(t *testing.T) {
+	long := strings.Repeat("y", 200)
+	if txt := (Violation{Session: "s", Project: long, Kind: "s1", Source: "statusline"}).Text(); !strings.Contains(txt, long) {
+		t.Fatal(txt)
 	}
 }

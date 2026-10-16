@@ -94,7 +94,7 @@ func (r *runner) quotaChecks(tx *sql.Tx) error {
 		return err
 	}
 	for _, v := range rep.Violations {
-		if err := r.queueAlert(tx, "account:"+v.Kind+":"+v.Session, v.Text()); err != nil {
+		if err := r.queueAlert(tx, "account:"+v.Kind+":"+v.Session, v.AlertText()); err != nil {
 			return err
 		}
 	}

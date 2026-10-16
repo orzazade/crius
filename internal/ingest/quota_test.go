@@ -678,3 +678,15 @@ func sqlOne(x *ic, q string, arg any, dst any) error {
 	defer db.Close()
 	return db.QueryRow(q, arg).Scan(dst)
 }
+
+// Codex round 10: a guard alert names the project clipped, so its instruction is not cut off the bus line.
+func TestQuotaGuardAlertFitsABusLine(t *testing.T) {
+	x := quotaCase(t)
+	long := strings.Repeat("p", 200)
+	x.session("work", x.sid, "/work/demo", "[crius account=enterprise project="+long+" role=lead]", qNow.Add(-20*time.Minute))
+	x.run()
+	s1 := grepAlerts(x.alerts(), "S1 personal work on the enterprise account")
+	if len(s1) != 1 || !strings.HasSuffix(s1[0], "Stop it or move it to the Max account.") {
+		t.Fatalf("%q", x.alerts())
+	}
+}

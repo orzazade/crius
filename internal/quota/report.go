@@ -804,7 +804,13 @@ func okList(enterpriseOK map[string]bool) []string {
 	return ps
 }
 
-func (v Violation) Text() string {
+// Text is the violation as the `quota` report says it, names in full.
+func (v Violation) Text() string { return v.text(1 << 30) }
+
+// AlertText is the violation as an alert: names clipped so the instruction fits a bus line.
+func (v Violation) AlertText() string { return v.text(40) }
+
+func (v Violation) text(n int) string {
 	id := v.Session
 	if len(id) > 8 {
 		id = id[:8]
@@ -812,12 +818,12 @@ func (v Violation) Text() string {
 	switch v.Kind {
 	case "s1":
 		return fmt.Sprintf("S1 personal work on the enterprise account: session %s, project %s (account from %s);"+
-			" Appxite pays for it. Stop it or move it to the Max account.", id, clip(v.Project, 40), clip(v.Source, 40))
+			" Appxite pays for it. Stop it or move it to the Max account.", id, clip(v.Project, n), clip(v.Source, n))
 	case "unmapped":
 		return fmt.Sprintf("enterprise session %s has no known project (account from %s): add its folder to"+
-			" projects.toml, or stop it if it is not Appxite work.", id, clip(v.Source, 40))
+			" projects.toml, or stop it if it is not Appxite work.", id, clip(v.Source, n))
 	}
-	return fmt.Sprintf("account mismatch in session %s (project %s): %s.", id, clip(v.Project, 40), clip(v.Source, 80))
+	return fmt.Sprintf("account mismatch in session %s (project %s): %s.", id, clip(v.Project, n), clip(v.Source, 2*n))
 }
 
 // StaleText is the alert for one stale entry of Report.Stale (design §5).
