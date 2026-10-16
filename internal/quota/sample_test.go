@@ -242,3 +242,26 @@ func TestSampleEnterprisePersonaStaysAlive(t *testing.T) {
 		t.Fatalf("got %s want %s", got, want)
 	}
 }
+
+// Crius 23:11: each line says whether a response came since the session's last render, so a reading seen for the
+// first time (a session first sighted with rate_limits, an idle repeat) is not taken for a new measurement.
+func TestSampleMarksResponses(t *testing.T) {
+	h := home(t)
+	t0 := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+	cost := func(sid string, usd float64) []byte {
+		return []byte(fmt.Sprintf(`{"session_id":%q,"cost":{"total_cost_usd":%v,"total_api_duration_ms":%v},"rate_limits":`+
+			`{"five_hour":{"used_percentage":5,"resets_at":1760630400},"seven_day":{"used_percentage":40,"resets_at":1761206400}}}`, sid, usd, usd*1000))
+	}
+	must(t, h, []byte(`{"session_id":"a","cost":{"total_cost_usd":0,"total_api_duration_ms":0}}`), t0)
+	must(t, h, cost("a", 1), t0.Add(time.Minute))    // a's first response: session, responded
+	must(t, h, cost("b", 3), t0.Add(2*time.Minute))  // b first seen already with rate_limits: session, not responded
+	must(t, h, cost("b", 3), t0.Add(40*time.Minute)) // idle: heartbeat, not responded
+	must(t, h, cost("a", 2), t0.Add(75*time.Minute)) // a responded, same values: heartbeat, responded
+	var got []string
+	for _, l := range spoolLines(t, h) {
+		got = append(got, fmt.Sprintf("%s:%s:%v", l.Session, l.Kind, l.Responded != nil && *l.Responded))
+	}
+	if want := "a:session:true b:session:false b:heartbeat:false a:heartbeat:true"; strings.Join(got, " ") != want {
+		t.Fatalf("got  %s\nwant %s", strings.Join(got, " "), want)
+	}
+}

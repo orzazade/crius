@@ -786,3 +786,71 @@ func TestQuotaRoomAgesEachShareByItsOwnMeasurement(t *testing.T) {
 		}
 	}
 }
+
+// Crius 23:11: only a line that came with a response measures (a line from before the field counts as it did). A
+// session first seen 5 min ago with the same 95% does not make a 95% from 2 h ago fresh; a heartbeat written on a
+// response does.
+func TestQuotaRoomCountsResponsesOnly(t *testing.T) {
+	limits := fmt.Sprintf(`{"five_hour":{"used_percentage":10,"resets_at":%d},"seven_day":{"used_percentage":95,"resets_at":%d}}`,
+		qNow.Add(time.Hour).Unix(), qNow.Add(72*time.Hour).Unix())
+	a, b := "aaaaaaaa-1111-2222-3333-444444444444", "bbbbbbbb-1111-2222-3333-444444444444"
+	for _, c := range []struct {
+		name    string
+		renders []struct {
+			sid string
+			usd float64
+			at  time.Duration
+		}
+		want string
+	}{
+		{"first seen", []struct {
+			sid string
+			usd float64
+			at  time.Duration
+		}{{a, 0, -121 * time.Minute}, {a, 1, -120 * time.Minute}, {b, 1, -5 * time.Minute}}, "unknown"},
+		{"heartbeat on a response", []struct {
+			sid string
+			usd float64
+			at  time.Duration
+		}{{a, 0, -56 * time.Minute}, {a, 1, -55 * time.Minute}, {a, 2, -5 * time.Minute}}, "room"},
+	} {
+		x := quotaCase(t)
+		if err := os.MkdirAll(filepath.Join(x.home, "spool"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		x.session("personal", a, "/p/x", "", qNow.Add(-2*time.Hour))
+		x.session("personal", b, "/p/x", "", qNow.Add(-5*time.Minute))
+		for _, r := range c.renders {
+			in := fmt.Sprintf(`{"session_id":%q,"cost":{"total_cost_usd":%v,"total_api_duration_ms":%v}`, r.sid, r.usd, r.usd*1000)
+			if r.usd > 0 {
+				in += `,"rate_limits":` + limits
+			}
+			if _, err := quota.Sample(x.home, "personal", []byte(in+"}"), qNow.Add(r.at)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		x.run()
+		if v, reason := quota.Room(x.report()); v != c.want {
+			t.Errorf("%s: %s %s", c.name, v, reason)
+		}
+	}
+
+	// A line from before the mark counts as it did: a session line is a measurement, a heartbeat is not.
+	x := quotaCase(t)
+	x.session("personal", a, "/p/x", "", qNow.Add(-2*time.Hour))
+	seven, five, week, fr := 95.0, 10.0, qNow.Add(72*time.Hour).Unix(), qNow.Add(time.Hour).Unix()
+	old := func(kind string, at time.Duration) quota.Line {
+		return quota.Line{TS: iso(qNow.Add(at)), Kind: kind, Session: a, Persona: "personal", RL: true, SevenPct: &seven,
+			SevenReset: &week, FivePct: &five, FiveReset: &fr}
+	}
+	x.spool(old("session", -2*time.Hour), old("heartbeat", -5*time.Minute))
+	x.run()
+	if v, reason := quota.Room(x.report()); v != "unknown" || !strings.Contains(reason, "120 min") && !strings.Contains(reason, "2 h") {
+		t.Errorf("old lines: %s %s", v, reason)
+	}
+	x.spool(old("change", -3*time.Minute))
+	x.run()
+	if v, reason := quota.Room(x.report()); v != "room" {
+		t.Errorf("old change line: %s %s", v, reason)
+	}
+}

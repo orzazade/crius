@@ -48,6 +48,9 @@ type Line struct {
 	FiveReset  *int64   `json:"five_reset,omitempty"`
 	SevenPct   *float64 `json:"seven_pct,omitempty"`
 	SevenReset *int64   `json:"seven_reset,omitempty"`
+	// Responded: a response came since the session's last render, so the values are new. False for a session first
+	// seen (its reading may be old) and an idle repeat; absent on lines from before the field.
+	Responded *bool `json:"responded,omitempty"`
 }
 
 type seen struct {
@@ -153,6 +156,7 @@ func Sample(home, persona string, in []byte, now time.Time) (string, error) {
 		n.TS, n.Lined, n.RL, n.Vals = l.TS, true, rl, vals
 	}
 	if l.Kind != "" {
+		l.Responded = &responded
 		b, err := json.Marshal(l)
 		if err != nil {
 			return "", err

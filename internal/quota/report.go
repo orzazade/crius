@@ -34,7 +34,8 @@ type Report struct {
 	LastSample time.Time
 	LastKind   string
 	// SevenAt and FiveAt: the newest measurement showing SevenPct and FivePct. A share only rises within its window,
-	// so a lower reading is an older one, and a heartbeat repeats a session's last values: neither makes a share newer.
+	// so a lower reading is an older one; a measurement is a line that came with a response (one from before that
+	// mark: not a heartbeat, which repeats a session's last values).
 	SevenAt, FiveAt    time.Time
 	FiveKnown          bool      // a 5h window was sampled this epoch; FivePct 0 with it means the window has reset
 	Reset, FiveReset   time.Time // seven-day epoch end; zero when unknown or already past
@@ -288,6 +289,7 @@ func sessions(db Querier, p Projects) (out map[string]*sess, lastLine map[string
 type sample struct {
 	ts               time.Time
 	kind             string
+	responded        sql.NullBool // null: a line from before the field
 	seven, five      sql.NullFloat64
 	reset, fiveReset sql.NullInt64
 }
@@ -312,7 +314,8 @@ func Build(db Querier, p Projects, now time.Time) (*Report, error) {
 
 	// A line without a seven-day share and reset measured nothing: it neither covers a request nor counts as a
 	// sample (it would read as 0%).
-	rows, err := db.Query("select ts, sample_kind, seven_day_pct, epoch, five_hour_pct, five_reset from quota" +
+	rows, err := db.Query("select ts, sample_kind, responded, seven_day_pct, epoch, five_hour_pct, five_reset" +
+		" from quota left join quota_response using (source_key)" +
 		" where account = 'max' and seven_day_pct is not null and epoch is not null order by ts")
 	if err != nil {
 		return nil, err
@@ -321,7 +324,7 @@ func Build(db Querier, p Projects, now time.Time) (*Report, error) {
 	for rows.Next() {
 		var s sample
 		var ts string
-		if err := rows.Scan(&ts, &s.kind, &s.seven, &s.reset, &s.five, &s.fiveReset); err != nil {
+		if err := rows.Scan(&ts, &s.kind, &s.responded, &s.seven, &s.reset, &s.five, &s.fiveReset); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -369,7 +372,9 @@ func Build(db Querier, p Projects, now time.Time) (*Report, error) {
 			}
 		}
 		for _, s := range samples {
-			if s.kind == "heartbeat" {
+			// A measurement is a line that came with a response; a line from before the field, one that is not a
+			// heartbeat (Crius 23:11).
+			if s.responded.Valid && !s.responded.Bool || !s.responded.Valid && s.kind == "heartbeat" {
 				continue
 			}
 			if s.seven.Float64 == rep.SevenPct {

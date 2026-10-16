@@ -62,6 +62,12 @@ func (r *runner) quotaFile(tx *sql.Tx, path string) error {
 				r.text(l.Kind)); err != nil {
 				return err
 			}
+			if l.Responded != nil {
+				if _, err := tx.Exec("insert or ignore into quota_response (source_key, responded) values (?,?)", key,
+					*l.Responded); err != nil {
+					return err
+				}
+			}
 		}
 		_, err = tx.Exec("insert or ignore into account_seen (source_key, session, persona, ts, rl) values (?,?,?,?,?)",
 			key, r.text(l.Session), r.text(l.Persona), l.TS, rl)

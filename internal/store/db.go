@@ -58,6 +58,8 @@ create index if not exists quota_ts on quota (ts);
 -- Every statusline line per session: rl=1 when rate_limits were present (Max), 0 when a response came without them
 -- (enterprise). The account of a request is the session's newest line by its time; the guard checks each enterprise
 -- stretch against the projects active in it.
+-- Whether a quota line came with a response (its values are new); lines from before the field have no row.
+create table if not exists quota_response (source_key text primary key, responded integer not null);
 create table if not exists account_seen (
   source_key text primary key, session text not null, persona text, ts text not null, rl integer not null);
 create index if not exists account_seen_session on account_seen (session, ts);
