@@ -1,5 +1,5 @@
 // Package cli is crius-rec, the door to the record store. Commands: init, leak-test, record bus|decision|item (step 1),
-// quota (step 3), find, show and health (step 4).
+// quota (step 3), find, show and health (step 4), digest (step 5).
 package cli
 
 import (
@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/orzazade/crius"
+	"github.com/orzazade/crius/internal/digest"
 	"github.com/orzazade/crius/internal/ingest"
 	"github.com/orzazade/crius/internal/quota"
 	"github.com/orzazade/crius/internal/recall"
@@ -41,6 +42,7 @@ const usage = `usage: crius-rec init
        crius-rec find QUERY --deep --project P [--since …] [--json]
        crius-rec show ID|PROJECT [--history] [--json]
        crius-rec health [--json]
+       crius-rec digest [--write]   (the goal report; --write saves it under state/digest/)
 `
 
 type multi []string
@@ -114,6 +116,14 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			return exitUsage
 		}
 		return healthCmd(home, time.Now(), *asJSON, stdout, stderr)
+	case "digest":
+		fs := flag.NewFlagSet("digest", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		write := fs.Bool("write", false, "save the report and its numbers under state/digest/")
+		if fs.Parse(args) != nil || fs.NArg() > 0 {
+			return exitUsage
+		}
+		return digestCmd(home, time.Now(), *write, stdout, stderr)
 	}
 	fmt.Fprint(stderr, usage)
 	return exitUsage
@@ -495,4 +505,76 @@ func answer(status string, v any, text string, asJSON bool, stdout, stderr io.Wr
 	}
 	fmt.Fprintf(stderr, "error: unknown status %q\n", status)
 	return exitError
+}
+
+// digestCmd prints the goal report (step 5), compared with the last saved one. With write it saves the report as
+// state/digest/YYYY-MM-DD-HHMM.md, redacted like every sink, and its numbers beside it as .json.
+func digestCmd(home string, now time.Time, write bool, stdout, stderr io.Writer) int {
+	if fi, err := os.Stat(filepath.Join(home, "state")); err != nil || !fi.IsDir() {
+		fmt.Fprintf(stderr, "unavailable: %s is missing; run crius-rec init\n", home)
+		return exitUnavailable
+	}
+	leads, err := ingest.Leads(home)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return exitError
+	}
+	db, err := store.Open(home)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return exitError
+	}
+	defer db.Close()
+	dir := filepath.Join(home, "state", "digest")
+	prev, err := lastSnapshot(dir)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return exitError
+	}
+	r, err := digest.Build(db, leads, prev, now)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return exitError
+	}
+	text, _ := redact.Redact(r.Text)
+	if write {
+		snap, err := redact.JSON(r.Snap)
+		if err == nil {
+			err = os.MkdirAll(dir, 0o700)
+		}
+		base := filepath.Join(dir, now.Format("2006-01-02-1504"))
+		if err == nil {
+			err = os.WriteFile(base+".md", []byte(text), 0o600)
+		}
+		if err == nil {
+			err = os.WriteFile(base+".json", snap, 0o600)
+		}
+		if err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return exitError
+		}
+	}
+	fmt.Fprint(stdout, text)
+	if r.Status != "complete" {
+		return exitPartial
+	}
+	return 0
+}
+
+// lastSnapshot reads the numbers of the newest saved report; no saved report yet is an empty snapshot, any other
+// failure an error.
+func lastSnapshot(dir string) (digest.Snapshot, error) {
+	names, err := filepath.Glob(filepath.Join(dir, "*.json"))
+	if err != nil || len(names) == 0 {
+		return digest.Snapshot{}, err
+	}
+	b, err := os.ReadFile(names[len(names)-1])
+	if err != nil {
+		return nil, err
+	}
+	var s digest.Snapshot
+	if err := json.Unmarshal(b, &s); err != nil {
+		return nil, fmt.Errorf("%s: %w", names[len(names)-1], err)
+	}
+	return s, nil
 }

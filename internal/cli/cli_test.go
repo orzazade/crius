@@ -419,3 +419,54 @@ func TestShowUnknownProjectIsNoMatch(t *testing.T) {
 		t.Fatal(rc, out)
 	}
 }
+
+// Step 5 P4: digest prints the goal report; --write saves it (redacted, like every sink) with the numbers the next
+// report compares against.
+func TestDigestWritesARedactedReportAndComparesWithTheLast(t *testing.T) {
+	home := findStore(t)
+	key := "ghp_" + strings.Repeat("F", 36)
+	status := filepath.Join(home, "lead.md")
+	testutil.Write(t, status, "## GOAL (2026-10-17 08:30)\nGoal: ship\n- [ ] one\nDone: 10% (guess)\nNext: one\nNeeds owner: rotate "+key+"\n")
+	testutil.Write(t, filepath.Join(home, "projects.toml"), "[projects.demo]\ncwd = [\"/w/demo\"]\nleads = { lead = \""+status+"\" }\n")
+	dir := filepath.Join(home, "state", "digest")
+	rc, out := run("digest")
+	if rc != 0 || !strings.Contains(out, "▶ 1. demo:lead: rotate [redacted]") || strings.Contains(out, "FFFF") ||
+		!strings.Contains(out, "demo:lead: 10% claimed · verified 0 of 0 done (1 milestones) · first report") {
+		t.Fatal(rc, out)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatal("digest without --write saved something", err)
+	}
+	if rc, out = run("digest", "--write"); rc != 0 {
+		t.Fatal(rc, out)
+	}
+	mds, _ := filepath.Glob(filepath.Join(dir, "*.md"))
+	jsons, _ := filepath.Glob(filepath.Join(dir, "*.json"))
+	if len(mds) != 1 || len(jsons) != 1 {
+		t.Fatal(mds, jsons)
+	}
+	b, _ := os.ReadFile(mds[0])
+	if string(b) != out || strings.Contains(string(b), "FFFF") {
+		t.Fatalf("saved:\n%s\nprinted:\n%s", b, out)
+	}
+	// The newest saved numbers are the ones compared with, not an older report's.
+	testutil.Write(t, filepath.Join(dir, "2026-01-01-0900.json"), `{"demo:lead":{"done":99,"verified":0}}`)
+	if rc, out = run("digest"); rc != 0 || !strings.Contains(out, "· no change since the last report") {
+		t.Fatal(rc, out)
+	}
+	// A store that is not fresh says so and exits partial, like find.
+	db, err := store.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec("insert into source_run (started, finished, status) values ('2026-10-17T08:00:00Z','2026-10-17T08:01:00Z','partial')"); err != nil {
+		t.Fatal(err)
+	}
+	if rc, out = run("digest"); rc != exitPartial || !strings.Contains(out, "· status partial") {
+		t.Fatal(rc, out)
+	}
+	if rc, out = run("digest", "extra"); rc != exitUsage {
+		t.Fatal(rc, out)
+	}
+}

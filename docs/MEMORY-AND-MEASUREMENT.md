@@ -111,7 +111,7 @@ can become a job of Falcon's Mac daemon. Callers do not change.
   bus/<project>.log                  leads append here (cmux-team §6 path changes to this)
   state/record.db                    SQLite, WAL, one writer (ingest + record via flock)
   state/<project>/LEAD.md, STATE.md, DECISIONS.md
-  state/digest/YYYY-MM-DD.md         30 days
+  state/digest/YYYY-MM-DD-HHMM.md    30 days (09:00 and 18:00; .json beside it: the numbers the next one compares)
   state/scorecards/<quota-week>.md   forever
   state/eval/recall.jsonl            recall test set
   spool/quota.jsonl                  statusline samples, 90 days
