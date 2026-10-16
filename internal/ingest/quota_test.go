@@ -542,7 +542,8 @@ func TestQuotaUnknownAccountSpendIsNotZeroEnterprise(t *testing.T) {
 	}
 	txt := rep.Text()
 	if !strings.Contains(txt, "Enterprise (Appxite API billing, list price): unknown "+fmt.Sprintf("$%.2f", rep.UnknownUSD)) ||
-		!strings.Contains(txt, "guard: not measured for 1 session") || strings.Contains(txt, "violations: none") {
+		!strings.Contains(txt, "guard: not measured for 1 session") || strings.Contains(txt, "violations: none") ||
+		strings.Contains(txt, "$0.00 (none)") {
 		t.Fatalf("unknown spend must read as unknown, not $0 or none:\n%s", txt)
 	}
 }
@@ -626,6 +627,19 @@ func TestQuotaRunsOutBeforeTheResetPushesOnce(t *testing.T) {
 				t.Fatalf("want %d, got %q", c.want, x.alerts())
 			}
 		})
+	}
+}
+
+// With some spend known to be enterprise and some unknown, the known enterprise totals print as a floor.
+func TestQuotaKnownEnterpriseBesideUnknownIsAFloor(t *testing.T) {
+	x := quotaCase(t)
+	ent, unknown := "ffffffff-2222-3333-4444-555555555555", "dddddddd-2222-3333-4444-555555555555"
+	x.session("work", ent, "/work/axi", "[crius account=enterprise project=axi role=lead]", qNow.Add(-2*time.Hour))
+	x.session("work", unknown, "/work/demo", "", qNow.Add(-2*time.Hour))
+	x.spool(sampleAt(x.sid, qNow.Add(-5*time.Minute), 20, qNow.Add(4*24*time.Hour)))
+	x.run()
+	if txt := x.report().Text(); !strings.Contains(txt, "(account not measured) · at least week $0.02 (axi $0.02)") {
+		t.Fatalf("%s", txt)
 	}
 }
 

@@ -664,11 +664,16 @@ func (r *Report) Text() string {
 		fmt.Fprintf(&b, "  unpriced: %d requests have a model with no list price; their $ is missing above\n", r.Unpriced)
 	}
 	b.WriteString("Enterprise (Appxite API billing, list price): ")
-	if r.UnknownUSD > 0 { // that spend may be enterprise: the known totals are a floor, never "$0.00 (none)"
-		fmt.Fprintf(&b, "unknown %s (account not measured) · known: ", money(r.UnknownUSD))
+	switch {
+	case r.UnknownUSD == 0:
+		fmt.Fprintf(&b, "week %s (%s) · today %s (%s)\n",
+			money(r.EntWeekUSD), list(r.EntWeek, 0, 4), money(r.EntDay), list(r.EntToday, 0, 4))
+	case r.EntWeekUSD+r.EntDay > 0: // that spend may be enterprise: the known totals are a floor
+		fmt.Fprintf(&b, "unknown %s (account not measured) · at least week %s (%s) · today %s (%s)\n",
+			money(r.UnknownUSD), money(r.EntWeekUSD), list(r.EntWeek, 0, 4), money(r.EntDay), list(r.EntToday, 0, 4))
+	default: // nothing known to be enterprise: no "$0.00 (none)" next to unmeasured spend
+		fmt.Fprintf(&b, "unknown %s (account not measured)\n", money(r.UnknownUSD))
 	}
-	fmt.Fprintf(&b, "week %s (%s) · today %s (%s)\n",
-		money(r.EntWeekUSD), list(r.EntWeek, 0, 4), money(r.EntDay), list(r.EntToday, 0, 4))
 	if r.UnknownSessions > 0 {
 		fmt.Fprintf(&b, "  guard: not measured for %d session%s (account unknown)\n", r.UnknownSessions,
 			map[bool]string{true: "", false: "s"}[r.UnknownSessions == 1])
