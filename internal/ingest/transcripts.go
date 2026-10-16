@@ -127,7 +127,7 @@ func (r *runner) ingestTranscripts() {
 				return nil
 			}
 			if d.IsDir() {
-				if strings.HasPrefix(d.Name(), "-private-tmp") {
+				if skipTranscriptDir(d.Name()) {
 					return filepath.SkipDir
 				}
 				return nil

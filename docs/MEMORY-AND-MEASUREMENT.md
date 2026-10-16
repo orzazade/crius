@@ -224,6 +224,14 @@ count and list $), a commit, an `event:<n>`, or a project's STATE.md (`unavailab
 A hex prefix that matches more than one commit or session is refused with the matches. `--history` gives a decision's
 supersede chain, oldest first; acceptance, revokes and corrections join it in step 6.
 
+**`health` as built (step 4).** The last ingest run and the runs of the last 24 h, heartbeat age, the newest backup,
+and the restore test (`never run` until step 6; shown, not a problem). Per source, expected vs seen: the ingest lists
+what a run should read by its own rules (transcripts under each root, `bus/*.log`, team logs, repos), and a file older
+than the last run's start is a problem when it has no coverage row (`never read`) or holds complete lines past its
+cursor (`behind`; a partial last line waits by design). A team is a project with a non-empty bus file or team logs;
+its lead is `SILENT` when the team's sessions made an API call within 3 h and no bus or team-log line came in that
+time. Any problem makes the answer `partial` (exit 3), each named on a `PROBLEM` line.
+
 **Bounded transcript search (`find --deep`).** Used only when the store has no answer and the question is about the
 last 30 days. A Haiku helper runs `rg` over the transcript folders of that project and time window only (max 50
 files, max 2 minutes), and returns at most 10 citations (transcript path, message uuid, time) with a one-line

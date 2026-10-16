@@ -337,3 +337,24 @@ func TestShowExitCodes(t *testing.T) {
 		t.Fatal(rc, out)
 	}
 }
+
+func TestHealthExitCodes(t *testing.T) {
+	testutil.Temp(t)
+	if rc, out := run("health"); rc != exitUnavailable {
+		t.Fatal(rc, out)
+	}
+	home := findStore(t)
+	tx := filepath.Join(home, "tx")
+	os.MkdirAll(tx, 0o700)
+	testutil.Write(t, filepath.Join(home, "projects.toml"), "[transcripts]\npersonal = \""+tx+"\"\n")
+	// No heartbeat, no backup: partial, each problem named.
+	rc, out := run("health")
+	if rc != exitPartial || !strings.Contains(out, "PROBLEM no heartbeat") || !strings.Contains(out, "PROBLEM no backup") {
+		t.Fatal(rc, out)
+	}
+	testutil.Write(t, filepath.Join(home, "heartbeat"), time.Now().UTC().Format(time.RFC3339)+"\n")
+	testutil.Write(t, filepath.Join(home, "backup", "record-2026-10-16.db.gz"), "x")
+	if rc, out = run("health", "--json"); rc != 0 || !strings.Contains(out, `"status": "complete"`) {
+		t.Fatal(rc, out)
+	}
+}

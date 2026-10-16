@@ -1,5 +1,5 @@
 // Package cli is crius-rec, the door to the record store. Commands: init, leak-test, record bus|decision|item (step 1),
-// quota (step 3), find and show (step 4).
+// quota (step 3), find, show and health (step 4).
 package cli
 
 import (
@@ -39,6 +39,7 @@ const usage = `usage: crius-rec init
        crius-rec quota [--json | --room]
        crius-rec find [QUERY] [--project P] [--since YYYY-MM-DD|Nd|Nh] [--kind K ...] [--active] [--waiting] [--json]
        crius-rec show ID|PROJECT [--history] [--json]
+       crius-rec health [--json]
 `
 
 type multi []string
@@ -104,6 +105,14 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return findCmd(home, args, time.Now(), stdout, stderr)
 	case "show":
 		return showCmd(home, args, time.Now(), stdout, stderr)
+	case "health":
+		fs := flag.NewFlagSet("health", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		asJSON := fs.Bool("json", false, "")
+		if fs.Parse(args) != nil || fs.NArg() > 0 {
+			return exitUsage
+		}
+		return healthCmd(home, time.Now(), *asJSON, stdout, stderr)
 	}
 	fmt.Fprint(stderr, usage)
 	return exitUsage
@@ -420,6 +429,26 @@ func showCmd(home string, args []string, now time.Time, stdout, stderr io.Writer
 		return exitError
 	}
 	return answer(res.Status, res, res.Text(), *asJSON, stdout, stderr)
+}
+
+// healthCmd reports per source and resource, heartbeat, backup and silent leads (design §4); a problem is partial.
+func healthCmd(home string, now time.Time, asJSON bool, stdout, stderr io.Writer) int {
+	db, rc := openStore(home, stderr)
+	if db == nil {
+		return rc
+	}
+	defer db.Close()
+	exp, err := ingest.Expected(home)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: cannot list what the ingest should read: %v\n", err)
+		return exitError
+	}
+	h, err := recall.CheckHealth(db, home, exp, now)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return exitError
+	}
+	return answer(h.Status, h, h.Text(), asJSON, stdout, stderr)
 }
 
 // answer prints a recall answer (text capped, or all of it as JSON) and returns the exit code of its status.
