@@ -93,3 +93,24 @@ Owner answers 10-15: #28 QAs post in Teams AND add owner as ADO reviewer (no Tea
 - Crius watcher: scratchpad watch-leads.sh (bus logs + screens for prompts); re-arm after each event.
 - Verify every lead DONE on a clean worktree before telling the owner.
 - Dates: 10-20 Explore share re-measure; 10-23 300K window + Sonnet member trial (stop rule in review-1016 REPORT §4).
+
+## HANDOVER to fresh Crius (2026-10-16 ~15:45) — the old Crius session (566ceee1) retires here
+Read first: this file, ~/.claude/projects/-Users-orkhanrzazade/memory/project_crius.md (+ MEMORY.md), docs/MEMORY-AND-MEASUREMENT.md §0.
+Owner rules to keep: plain English; ❓/⏳/✅ last line; no task plugin (ask in chat, clear self-contained questions);
+notifications only via Remote Control push, few; never touch Appxite prod; leads/members in bypass; after any send to
+a session idle >1h check for "Prompt dropped by a hook" (cache-tax) and resend once.
+Crius's own context must stay small: delegate routine checks (screen sweeps, verifying a DONE on a clean worktree,
+reading long logs) to helpers (Explore/Haiku, general-purpose); Crius only decides and talks to the owner.
+Running now:
+- "crius · build" (Crius ws surface:1000010063): step 2 in Go on branch wip/step2-go (step 1 done 060610f, verified).
+  Reports to crius/bus/build.log. Verify its DONE on a clean worktree before telling the owner. Do not start step 3
+  until the owner says.
+- AXI lead "axi" (AXI ws surface:1000010010) + members api-split 1000010011, devops 1000010031, qa 1000010030,
+  ms-flow 1000010014: B62 go-live on env004 (test), order-forwarding build. Bus ~/.crius/bus/axi.log. AXI lead context
+  ~350K: give it /clear + resume at a quiet point (it has watchers; ask it to write RESUME HERE first).
+- Helper building "park" mod design in crius/mods/park/ (idle 110 min + no background work + >100K → note + /compact;
+  cache-tax is third-party karanb192/claude-code-mods, do not edit). Result arrives to the OLD session; read
+  crius/mods/park/DESIGN.md when it exists.
+- Watch gap found: the old watcher covered leads only; a member (ms-flow) sat on a hook confirmation prompt. The new
+  watcher must sweep EVERY lead and member surface (cmux tree) for "Do you want to proceed" and alert.
+Open: AXI dates — none. Crius dates: 10-20 Explore share; 10-23 300K window + Sonnet member trial.
