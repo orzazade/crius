@@ -145,7 +145,7 @@ func (r *runner) ingestTranscripts() {
 		}
 	}
 	if err := r.refile(); err != nil {
-		r.warn(true, "re-filing sessions by folder: %v", err)
+		r.warn(true, "re-filing sessions by folder or title: %v", err)
 	}
 }
 
@@ -555,9 +555,6 @@ func (r *runner) rollUp(tx *sql.Tx, sid string) error {
 		sid); err != nil {
 		return err
 	}
-	if err := measuredAccount(tx, sid); err != nil {
-		return err
-	}
 	// Each event keeps the project of the assignment that was active at its time; before the first tag, the
 	// project the session is filed by (its title's or its folder's).
 	_, err = tx.Exec("update event set project=coalesce((select a.project from assignment a where a.session=event.session"+
@@ -565,13 +562,13 @@ func (r *runner) rollUp(tx *sql.Tx, sid string) error {
 	return err
 }
 
-// measuredAccount sets the account of a session (every session when sid is "") from the newest statusline line seen
-// for it, when there is one: rate limits mean Max, a response without them enterprise. What the statusline saw wins
-// over a tag (the tag's account stays on the assignment, where the guard compares the two).
-func measuredAccount(tx *sql.Tx, sid string) error {
-	_, err := tx.Exec("update session set account=(select case rl when 1 then 'max' else 'enterprise' end from"+
-		" account_seen where session=session.id order by ts desc, rowid desc limit 1) where (?1 = '' or id = ?1) and"+
-		" exists (select 1 from account_seen where session=session.id)", sid)
+// measuredAccount sets each session's account from the newest statusline line seen for it, when there is one: rate
+// limits mean Max, a response without them enterprise. What the statusline saw wins over a tag (the tag's account
+// stays on the assignment, where the guard compares the two). It runs after rollUp, which resets the account.
+func measuredAccount(tx *sql.Tx) error {
+	_, err := tx.Exec("update session set account=(select case rl when 1 then 'max' else 'enterprise' end from" +
+		" account_seen where session=session.id order by ts desc, rowid desc limit 1) where exists (select 1 from" +
+		" account_seen where session=session.id)")
 	return err
 }
 

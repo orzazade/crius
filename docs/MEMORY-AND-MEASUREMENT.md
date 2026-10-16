@@ -211,7 +211,10 @@ Known gaps:
   (clear-per-item) the resume prompt carries a new tag and starts a new `assignment` row.
 - Missing tag: the `-n` title files the session when it has the lead form `<project>[-build]: <role>` or
   `<project> · <role>` (`attrib_source=title`): the role is the part after the separator, the project the named one
-  when projects.toml has it, else the folder's. A title with no separator (`q-tutor`, `poc-web`) gives no role.
+  when projects.toml has it (as written, else without `-build`), else the folder's. The role must be one word: a
+  title with no separator (`q-tutor`, `poc-web`) or prose after it (`fix: flaky test`) gives no role. The account
+  guard (S1) still files an untagged session by its folder only: the folder is where the work ran, a title is a
+  name someone typed.
   Otherwise project may come from cwd (`attrib_source=cwd`); role and item stay `unknown`. Never guessed.
 - **Account** is what the statusline saw last for the session (`account_seen`: rl 1 = `max`, 0 = `enterprise`), and
   wins over the tag's (the tag's stays on the assignment, where the guard compares the two). Sessions before

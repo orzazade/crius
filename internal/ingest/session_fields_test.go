@@ -17,7 +17,9 @@ import (
 func TestSessionAccountFromTheStatusline(t *testing.T) {
 	x := quotaCase(t)
 	x.session("personal", x.sid, "/work/demo", "", qNow.Add(-20*time.Minute))
-	x.run()
+	if st := x.run(); st.Status != "complete" {
+		t.Fatal(st.Status, st.Warnings)
+	}
 	acc := func(sid string) string { return x.one("select account from session where id=?", sid) }
 	if a := acc(x.sid); a != "unknown" {
 		t.Fatal(a)
@@ -46,7 +48,8 @@ func TestSessionAccountFromTheStatusline(t *testing.T) {
 }
 
 // The -n title files a session with no tag: "<project>[-build]: <role>" or "<project> · <role>"; the project only
-// when it is configured, else the folder's; a tag still wins.
+// when it is configured, else the folder's; the role only when it is one word (prose like "fix: flaky test" is not a
+// role); a tag still wins.
 func TestSessionRoleAndProjectFromTheTitle(t *testing.T) {
 	x := newIC(t, cfg{extra: axiProject + `
 [projects.staffy]
@@ -56,12 +59,31 @@ cwd = ["/work/staffy"]
 repos = []
 team_logs = []
 artifact_dirs = []
+
+[projects.x]
+persona = "personal"
+accounts = ["max"]
+cwd = ["/work/x"]
+repos = []
+team_logs = []
+artifact_dirs = []
+
+[projects.x-build]
+persona = "personal"
+accounts = ["max"]
+cwd = ["/work/x-build"]
+repos = []
+team_logs = []
+artifact_dirs = []
 `})
 	at := "2026-10-16T10:00:00Z"
 	for i, c := range []struct{ cwd, tag, title, project, role, attrib string }{
 		{"/elsewhere", "", "staffy-build: backend-dev", "staffy", "backend-dev", "title"},
 		{"/work/demo", "", "first-order · QA", "demo", "qa", "title"},
-		{"/work/demo", "", "staffy: build lead", "staffy", "build-lead", "title"},
+		{"/work/demo", "", "Staffy: build-lead", "staffy", "build-lead", "title"},
+		{"/elsewhere", "", "x-build: lead", "x-build", "lead", "title"},
+		{"/work/demo", "", "fix: flaky test", "demo", "unknown", "cwd"},
+		{"/work/demo", "", "staffy: add login page", "staffy", "unknown", "title"},
 		{"/elsewhere", "", "axi", "axi", "unknown", "title"},
 		{"/work/demo", "[crius account=max project=demo role=lead]", "staffy: qa", "demo", "lead", "registered"},
 		{"/work/demo", "", "just some words", "demo", "unknown", "cwd"},
@@ -82,6 +104,9 @@ artifact_dirs = []
 		got := x.q("select coalesce(project,''), role, attrib_source from session where id=?", sid)
 		if len(got) != 1 || got[0][0] != c.project || got[0][1] != c.role || got[0][2] != c.attrib {
 			t.Errorf("%q in %s: got %v, want %s %s %s", c.title, c.cwd, got, c.project, c.role, c.attrib)
+		}
+		if ev := x.one("select coalesce(group_concat(distinct coalesce(project,'')),'') from event where session=?", sid); ev != c.project {
+			t.Errorf("%q in %s: events filed under %q", c.title, c.cwd, ev)
 		}
 	}
 }
@@ -106,6 +131,31 @@ func TestSessionFieldsFillOldSessions(t *testing.T) {
 	x.run()
 	if got := x.q("select role, attrib_source, account from session"); len(got) != 1 || got[0][0] != "scout" ||
 		got[0][1] != "title" || got[0][2] != "max" {
+		t.Fatal(got)
+	}
+}
+
+// A session filed by its title is filed again when projects.toml later names the title's project.
+func TestSessionTitleProjectAddedLater(t *testing.T) {
+	x := newIC(t, cfg{})
+	testutil.Write(t, filepath.Join(x.personal, "-p", x.sid+".jsonl"), lines(prompt("p", "2026-10-16T10:00:00Z", "hello", "", "/work/demo"),
+		map[string]any{"type": "custom-title", "customTitle": "newproj: dev", "sessionId": x.sid},
+		assistant(A{Req: "r", TS: "2026-10-16T10:00:00Z", In: 1, Out: 1})))
+	x.run()
+	if p := x.one("select project from session"); p != "demo" {
+		t.Fatal(p)
+	}
+	writeConfig(t, x.home, x.personal, x.work, cfg{extra: `
+[projects.newproj]
+persona = "personal"
+accounts = ["max"]
+cwd = ["/work/newproj"]
+repos = []
+team_logs = []
+artifact_dirs = []
+`})
+	x.run()
+	if got := x.q("select project, role from session"); len(got) != 1 || got[0][0] != "newproj" || got[0][1] != "dev" {
 		t.Fatal(got)
 	}
 }

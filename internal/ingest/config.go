@@ -118,23 +118,26 @@ func QuotaProjects(home string) (quota.Projects, error) {
 }
 
 // titleRe is a session's -n title as leads name them: "<project>[-build]: <role>" or "<project> · <role>".
-var titleRe = regexp.MustCompile(`^\s*([a-z0-9][a-z0-9-]*?)(?:-build)?\s*(?:(?::|·)\s*(.*?))?\s*$`)
+var titleRe = regexp.MustCompile(`^\s*([a-z0-9][a-z0-9-]*)\s*(?:(?::|·)\s*(.*?))?\s*$`)
 
 // filing is how a session with no tag is filed (Crius 00:18: team cost is read by project and role): the project its
-// -n title names when that project is configured, else its folder's; the role is the title's part after the
-// separator, as a slug, else unknown. byTitle says the title gave either.
+// -n title names (as written, else without "-build") when that project is configured, else its folder's; the role is
+// the title's part after the separator when it is one word, else unknown (prose like "fix: flaky test" is no role).
+// byTitle says the title gave either.
 func (c *config) filing(cwd, title string) (project, role string, byTitle bool) {
 	project, role = c.projectForCwd(cwd), "unknown"
 	m := titleRe.FindStringSubmatch(strings.ToLower(title))
 	if m == nil {
 		return project, role, false
 	}
-	for _, p := range c.projects {
-		if p.slug == m[1] {
-			project, byTitle = p.slug, true
+	for _, name := range []string{m[1], strings.TrimSuffix(m[1], "-build")} {
+		for _, p := range c.projects {
+			if !byTitle && p.slug == name {
+				project, byTitle = name, true
+			}
 		}
 	}
-	if r := strings.Join(strings.Fields(m[2]), "-"); store.Slug.MatchString(r) {
+	if r := m[2]; store.Slug.MatchString(r) {
 		role, byTitle = r, true
 	}
 	return project, role, byTitle
