@@ -2,6 +2,8 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -121,9 +123,39 @@ func TestQuotaWithNoSampleSaysSoAndExitsPartial(t *testing.T) {
 	testutil.Temp(t)
 	run("init")
 	rc, out := run("quota")
-	if rc != exitPartial || !strings.Contains(out, "status none · no quota sample yet") ||
+	if rc != exitPartial || !strings.HasPrefix(out, "partial\n  no quota sample yet\n") ||
 		!strings.Contains(out, "Enterprise (Appxite API billing") {
 		t.Fatal(rc, out)
+	}
+}
+
+// §4: --json for scripts, with the same status.
+func TestQuotaJSON(t *testing.T) {
+	testutil.Temp(t)
+	run("init")
+	rc, out := run("quota", "--json")
+	var r struct {
+		Status  string
+		Reasons []string
+	}
+	if err := json.Unmarshal([]byte(out), &r); err != nil || rc != exitPartial || r.Status != "partial" ||
+		len(r.Reasons) == 0 {
+		t.Fatal(rc, err, out)
+	}
+}
+
+// §4: text output is capped at 20 lines and says what it left out.
+func TestCapLines(t *testing.T) {
+	var long []string
+	for i := 0; i < 25; i++ {
+		long = append(long, fmt.Sprint("line ", i))
+	}
+	got := strings.Split(strings.TrimSuffix(capLines(strings.Join(long, "\n")+"\n", 20), "\n"), "\n")
+	if len(got) != 20 || got[18] != "line 18" || got[19] != "... 6 more lines (use --json)" {
+		t.Fatalf("%q", got)
+	}
+	if short := "a\nb\n"; capLines(short, 20) != short {
+		t.Fatal("short output changed")
 	}
 }
 

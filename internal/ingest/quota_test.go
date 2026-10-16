@@ -3,6 +3,7 @@ package ingest
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -132,7 +133,8 @@ func TestQuotaAtSixtyPercentOnDayThreePushesOnce(t *testing.T) {
 	eq(t, x.q("select rl from account_seen where session=?", x.sid), [][]string{{"1"}, {"1"}})
 }
 
-// 59% on day 3, and 62% on day 4: no pace push (design §8: >= 60% by day 3).
+// 59% on day 3, and 62% on day 4: no pace push (design §8: >= 60% by day 3). Both run out before the reset; that is
+// the runout push, tested on its own.
 func TestQuotaBelowThePaceRuleDoesNotPush(t *testing.T) {
 	for _, c := range []struct {
 		pct   float64
@@ -142,8 +144,8 @@ func TestQuotaBelowThePaceRuleDoesNotPush(t *testing.T) {
 		x.session("personal", x.sid, "/work/demo", "", qNow.Add(-20*time.Minute))
 		x.spool(sampleAt(x.sid, qNow.Add(-10*time.Minute), c.pct, qNow.Add(c.reset)))
 		x.run()
-		if got := grepAlerts(x.alerts(), "quota "); len(got) != 0 {
-			t.Fatalf("%v%%: want no quota push, got %q", c.pct, got)
+		if got := grepAlerts(x.alerts(), "quota pace high"); len(got) != 0 {
+			t.Fatalf("%v%%: want no pace push, got %q", c.pct, got)
 		}
 	}
 }
@@ -202,11 +204,11 @@ func TestQuotaOpenSessionsWithNoRecentSampleAreStale(t *testing.T) {
 	x.run()
 	x.run()
 	stale := grepAlerts(x.alerts(), "quota/max STALE")
-	if len(stale) != 2 || !strings.Contains(stale[0], "newest quota sample is none") {
+	if len(stale) != 2 || !strings.Contains(stale[0], "personal: no statusline line yet") {
 		t.Fatalf("want one stale alert per gap (none, then the 50-min-old sample), got %q", x.alerts())
 	}
-	if rep := x.report(); rep.Status != "stale" {
-		t.Fatalf("status %s, want stale", rep.Status)
+	if rep := x.report(); rep.Status != "partial" || len(rep.Stale) == 0 {
+		t.Fatalf("status %s stale %v, want partial and stale", rep.Status, rep.Stale)
 	}
 }
 
@@ -313,16 +315,19 @@ func TestQuotaIdleSessionRepeatingOldValuesDoesNotRollBack(t *testing.T) {
 	}
 }
 
-// Codex P2: a sample with no seven-day share measured nothing: not 0%, not a cover for requests.
+// Codex P2: a sample with no seven-day share measured nothing: not 0%, not a cover for requests, not a sign of the
+// account. Ingest counts it as a bad line.
 func TestQuotaSampleWithoutShareIsNotZeroPercent(t *testing.T) {
 	x := quotaCase(t)
 	x.session("personal", x.sid, "/work/demo", "", qNow.Add(-20*time.Minute))
 	l := sampleAt(x.sid, qNow.Add(-10*time.Minute), 0, qNow.Add(4*24*time.Hour))
 	l.SevenPct = nil
 	x.spool(l)
-	x.run()
-	if rep := x.report(); rep.Status != "stale" || !rep.LastSample.IsZero() || rep.Uncovered == 0 {
-		t.Fatalf("status %s last %v uncovered %v", rep.Status, rep.LastSample, rep.Uncovered)
+	if st := x.run(); st.BadLines != 1 {
+		t.Fatalf("the line must be counted as bad, got %+v", st)
+	}
+	if rep := x.report(); rep.Status != "partial" || len(rep.Stale) == 0 || !rep.LastSample.IsZero() || rep.UnknownUSD == 0 {
+		t.Fatalf("status %s last %v unknown %v", rep.Status, rep.LastSample, rep.UnknownUSD)
 	}
 }
 
@@ -353,7 +358,7 @@ func TestQuotaOldEpochHeartbeatIsNotACurrentSample(t *testing.T) {
 	x.spool(sampleAt(x.sid, qNow.Add(-2*time.Hour), 20, qNow.Add(4*24*time.Hour)),
 		sampleAt(other, qNow.Add(-5*time.Minute), 90, qNow.Add(-3*24*time.Hour)))
 	x.run()
-	if rep := x.report(); rep.Status != "stale" || rep.Uncovered == 0 || rep.SevenPct != 20 {
+	if rep := x.report(); rep.Status != "partial" || len(rep.Stale) == 0 || rep.Uncovered == 0 || rep.SevenPct != 20 {
 		t.Fatalf("status %s uncovered %v 7d %v", rep.Status, rep.Uncovered, rep.SevenPct)
 	}
 }
@@ -382,8 +387,8 @@ func TestQuotaUnknownSessionOfASampledPersonaCanBeStale(t *testing.T) {
 	l.Persona = "work"
 	x.spool(l)
 	x.run()
-	if rep := x.report(); rep.Status != "stale" {
-		t.Fatalf("status %s", rep.Status)
+	if rep := x.report(); rep.Status != "partial" || len(rep.Stale) == 0 {
+		t.Fatalf("status %s stale %v", rep.Status, rep.Stale)
 	}
 }
 
@@ -519,6 +524,109 @@ func TestQuotaRequestsWithoutTimeDoNotStopTheChecks(t *testing.T) {
 	}
 	db.Close()
 	x.report()
+}
+
+// Crius 18:48 P1: spend whose account is unknown may be enterprise $, so the report is partial and the enterprise
+// line says its totals are a lower bound, not "$0.00 (none)".
+func TestQuotaUnknownAccountSpendIsNotZeroEnterprise(t *testing.T) {
+	x := quotaCase(t)
+	unknown := "dddddddd-2222-3333-4444-555555555555"
+	x.session("personal", x.sid, "/work/demo", "", qNow.Add(-10*time.Minute))
+	x.session("work", unknown, "/work/demo", "", qNow.Add(-2*time.Hour)) // closed: not stale, only unknown
+	x.spool(sampleAt(x.sid, qNow.Add(-5*time.Minute), 20, qNow.Add(4*24*time.Hour)))
+	x.run()
+	rep := x.report()
+	if rep.UnknownUSD == 0 || rep.Status != "partial" || len(rep.Reasons) != 1 ||
+		!strings.Contains(rep.Reasons[0], "account unknown") {
+		t.Fatalf("unknown %v status %s reasons %q", rep.UnknownUSD, rep.Status, rep.Reasons)
+	}
+	txt := rep.Text()
+	if !strings.Contains(txt, "Enterprise (Appxite API billing, list price): unknown "+fmt.Sprintf("$%.2f", rep.UnknownUSD)) ||
+		!strings.Contains(txt, "guard: not measured for 1 session") || strings.Contains(txt, "violations: none") {
+		t.Fatalf("unknown spend must read as unknown, not $0 or none:\n%s", txt)
+	}
+}
+
+// Crius 19:04: a persona with open sessions that has never written a statusline line is stale, even while the
+// other persona samples.
+func TestQuotaPersonaThatNeverSampledIsStale(t *testing.T) {
+	x := quotaCase(t)
+	w := "eeeeeeee-2222-3333-4444-555555555555"
+	x.session("personal", x.sid, "/work/demo", "", qNow.Add(-10*time.Minute))
+	x.session("work", w, "/work/demo", "", qNow.Add(-10*time.Minute))
+	x.spool(sampleAt(x.sid, qNow.Add(-5*time.Minute), 20, qNow.Add(4*24*time.Hour)))
+	x.run()
+	if rep := x.report(); rep.Status != "partial" || len(rep.Stale) != 1 || !strings.HasPrefix(rep.Stale[0], "work") {
+		t.Fatalf("status %s stale %v", rep.Status, rep.Stale)
+	}
+	if a := grepAlerts(x.alerts(), "quota/max STALE"); len(a) != 1 || !strings.Contains(a[0], "work: no statusline line yet") {
+		t.Fatalf("%q", x.alerts())
+	}
+}
+
+// §8: the pace push also fires when this epoch burns faster per day than the last 7 days did on average. It needs 7
+// days of samples, starts on day 2, and is the one pace push of the epoch.
+func TestQuotaPaceFasterThanTheSevenDayAverage(t *testing.T) {
+	day := 24 * time.Hour
+	reset := qNow.Add(5 * day) // day 3, 2 days passed
+	for _, c := range []struct {
+		name          string
+		before, prevE float64 // the previous epoch's share 8 days ago and at its end
+		history       bool
+		want          int
+	}{
+		{"faster than average", 5, 19, true, 1},  // avg (14+20)/7 = 4.9%/day, now 10%/day
+		{"slower than average", 10, 90, true, 0}, // avg (80+20)/7 = 14.3%/day
+		{"under 7 days of samples", 5, 19, false, 0},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			x := quotaCase(t)
+			x.session("personal", x.sid, "/work/demo", "", qNow.Add(-10*time.Minute))
+			var ls []quota.Line
+			if c.history {
+				ls = append(ls, sampleAt(x.sid, qNow.Add(-8*day), c.before, qNow.Add(-2*day)))
+			}
+			ls = append(ls, sampleAt(x.sid, qNow.Add(-2*day-time.Hour), c.prevE, qNow.Add(-2*day)),
+				sampleAt(x.sid, qNow.Add(-5*time.Minute), 20, reset))
+			x.spool(ls...)
+			x.run()
+			x.run()
+			if got := grepAlerts(x.alerts(), "quota pace high"); len(got) != c.want {
+				t.Fatalf("want %d pace pushes, got %q", c.want, x.alerts())
+			} else if c.want == 1 && !strings.Contains(got[0], "faster than the 7-day average 4.9%/day") {
+				t.Fatalf("%q", got[0])
+			}
+		})
+	}
+}
+
+// §8: when the share will pass 100% before resets_at at this pace, one push (from day 2) says only Appxite work may
+// continue on the enterprise account.
+func TestQuotaRunsOutBeforeTheResetPushesOnce(t *testing.T) {
+	day := 24 * time.Hour
+	for _, c := range []struct {
+		name   string
+		passed time.Duration
+		pct    float64
+		want   int
+	}{
+		{"day 3 at 40%", 2 * day, 40, 1}, // runs out on day 6
+		{"day 3 at 25%", 2 * day, 25, 0}, // runs out after the reset
+		{"day 1 at 20%", 12 * time.Hour, 20, 0},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			x := quotaCase(t)
+			x.session("personal", x.sid, "/work/demo", "", qNow.Add(-10*time.Minute))
+			x.spool(sampleAt(x.sid, qNow.Add(-5*time.Minute), c.pct, qNow.Add(7*day-c.passed)))
+			x.run()
+			x.run()
+			got := grepAlerts(x.alerts(), "quota will run out")
+			if len(got) != c.want || c.want == 1 && (!strings.Contains(got[0], "only Appxite work (axi) may continue") ||
+				!strings.Contains(got[0], "Enterprise this week")) {
+				t.Fatalf("want %d, got %q", c.want, x.alerts())
+			}
+		})
+	}
 }
 
 func TestQuotaBadSpoolLineIsCountedNotSkippedQuietly(t *testing.T) {

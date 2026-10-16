@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -30,7 +31,7 @@ const usage = `usage: crius-rec init
        crius-rec record bus --project P --role R --type T --text TEXT
        crius-rec record decision --project P --title T --why W --by "owner|crius|lead [ref]" [--supersedes ID --reason R] [--refs R] [--taint]
        crius-rec record item --project P --title T --kind code|research|falcon|other --criteria C [--criteria C ...] [--parent ID] [--taint]
-       crius-rec quota
+       crius-rec quota [--json]
 `
 
 type multi []string
@@ -84,10 +85,11 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	case "quota":
 		fs := flag.NewFlagSet("quota", flag.ContinueOnError)
 		fs.SetOutput(stderr)
+		asJSON := fs.Bool("json", false, "print the report as JSON")
 		if fs.Parse(args) != nil || fs.NArg() > 0 {
 			return exitUsage
 		}
-		return quotaCmd(home, time.Now(), stdout, stderr)
+		return quotaCmd(home, time.Now(), *asJSON, stdout, stderr)
 	}
 	fmt.Fprint(stderr, usage)
 	return exitUsage
@@ -183,9 +185,9 @@ func recordItem(home, project, title, kind string, criteria []string, parent str
 	return id, errors.Join(err, db.Close())
 }
 
-// quotaCmd prints the two quota blocks. A stale or missing sample is said in the output and exits partial.
-// Everything it prints is redacted: errors can quote a config value.
-func quotaCmd(home string, now time.Time, stdout, stderr io.Writer) int {
+// quotaCmd prints the two quota blocks (or the report as JSON), starting with the status and its reasons; anything
+// but complete exits partial. Everything it prints is redacted: errors can quote a config value.
+func quotaCmd(home string, now time.Time, asJSON bool, stdout, stderr io.Writer) int {
 	stdout, stderr = ingest.Redacting{W: stdout}, ingest.Redacting{W: stderr}
 	if fi, err := os.Stat(filepath.Join(home, "state")); err != nil || !fi.IsDir() {
 		fmt.Fprintf(stderr, "unavailable: %s is missing; run crius-rec init\n", home)
@@ -207,9 +209,30 @@ func quotaCmd(home string, now time.Time, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return exitError
 	}
-	fmt.Fprint(stdout, rep.Text())
+	if asJSON {
+		b, err := json.MarshalIndent(rep, "", "  ")
+		if err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return exitError
+		}
+		fmt.Fprintf(stdout, "%s\n", b)
+	} else {
+		fmt.Fprint(stdout, capLines(rep.Text(), maxLines))
+	}
 	if rep.Status != "complete" {
 		return exitPartial
 	}
 	return 0
+}
+
+// maxLines caps text output (design §4); --json has everything.
+const maxLines = 20
+
+// capLines keeps the first n-1 lines of s and says how many it left out, when s has more than n lines.
+func capLines(s string, n int) string {
+	lines := strings.SplitAfter(strings.TrimSuffix(s, "\n"), "\n")
+	if len(lines) <= n {
+		return s
+	}
+	return strings.Join(lines[:n-1], "") + fmt.Sprintf("... %d more lines (use --json)\n", len(lines)-n+1)
 }

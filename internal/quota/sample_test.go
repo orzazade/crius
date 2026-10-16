@@ -140,3 +140,58 @@ func TestSampleWritesNoRateLimitsOnlyAfterAResponse(t *testing.T) {
 		t.Fatalf("got %s want %s", got, want)
 	}
 }
+
+// Crius 18:48: rate_limits that measure nothing for the 7-day window (empty, or without its share or reset) fail
+// loudly and write nothing, instead of passing as a Max sample.
+func TestSampleRateLimitsWithoutSevenDayFail(t *testing.T) {
+	h := home(t)
+	for _, rl := range []string{`{}`, `{"five_hour":{"used_percentage":5,"resets_at":1760630400}}`,
+		`{"seven_day":{"resets_at":1761206400}}`, `{"seven_day":{"used_percentage":6}}`} {
+		in := []byte(`{"session_id":"x","cost":{"total_cost_usd":0.5,"total_api_duration_ms":900},"rate_limits":` + rl + `}`)
+		if out, err := Sample(h, "personal", in, time.Now()); err == nil {
+			t.Fatalf("rate_limits %s: want an error, got %q", rl, out)
+		}
+	}
+	if ls := spoolLines(t, h); len(ls) != 0 {
+		t.Fatalf("wrote %v", kinds(ls))
+	}
+}
+
+// Each persona heartbeats on its own: personal lines must not keep an idle-valued work session from writing one, or
+// the work persona reads as stale while it is sampled.
+func TestSampleHeartbeatIsPerPersona(t *testing.T) {
+	h := home(t)
+	t0 := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+	for _, r := range []struct {
+		persona, sid string
+		at           time.Duration
+	}{{"personal", "a", 0}, {"work", "w", time.Minute}, {"personal", "a", 31 * time.Minute},
+		{"work", "w", 32 * time.Minute}} {
+		if _, err := Sample(h, r.persona, render(r.sid, 10, 40, true), t0.Add(r.at)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, want := kinds(spoolLines(t, h)), "a:session:true w:session:true a:heartbeat:true w:heartbeat:true"; got != want {
+		t.Fatalf("got %s want %s", got, want)
+	}
+}
+
+// An idle session repeating a past epoch's window does not heartbeat: its line measures nothing now, and it would
+// reset the heartbeat clock for an active session whose values did not change.
+func TestSampleOldEpochDoesNotHeartbeat(t *testing.T) {
+	h := home(t)
+	t0 := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+	old := []byte(`{"session_id":"idle","cost":{"total_cost_usd":0.5,"total_api_duration_ms":900},"rate_limits":` +
+		`{"seven_day":{"used_percentage":90,"resets_at":1760000000}}}`)
+	for _, r := range []struct {
+		in []byte
+		at time.Duration
+	}{{render("a", 10, 40, true), 0}, {old, time.Minute}, {old, 31 * time.Minute}, {render("a", 10, 40, true), 32 * time.Minute}} {
+		if _, err := Sample(h, "personal", r.in, t0.Add(r.at)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, want := kinds(spoolLines(t, h)), "a:session:true idle:session:true a:heartbeat:true"; got != want {
+		t.Fatalf("got %s want %s", got, want)
+	}
+}

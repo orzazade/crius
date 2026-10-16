@@ -38,7 +38,9 @@ func (r *runner) quotaFile(tx *sql.Tx, path string) error {
 	}
 	next, n, err := scanLines(path, c, func(pos int64, raw []byte) error {
 		var l quota.Line
-		if err := json.Unmarshal(raw, &l); err != nil || l.TS == "" || l.Session == "" || l.Kind == "" {
+		// A line with rate_limits but no seven-day share and reset measured nothing (the sampler refuses them).
+		if err := json.Unmarshal(raw, &l); err != nil || l.TS == "" || l.Session == "" || l.Kind == "" ||
+			l.RL && (l.SevenPct == nil || l.SevenReset == nil) {
 			r.st.BadLines++
 			r.warn(false, "bad quota line in %s at byte %d", path, pos)
 			return nil
@@ -86,13 +88,9 @@ func (r *runner) quotaChecks(tx *sql.Tx) error {
 			return err
 		}
 	}
-	if rep.Status == "stale" {
-		last := "none"
-		if !rep.LastSample.IsZero() {
-			last = rep.LastSample.UTC().Format(time.RFC3339)
-		}
-		if err := r.queueAlert(tx, "quota:stale:"+last, fmt.Sprintf("quota/max STALE: sessions are open but the"+
-			" newest quota sample is %s; is crius-statusline in the statusLine setting and working?", last)); err != nil {
+	for _, st := range rep.Stale {
+		if err := r.queueAlert(tx, "quota:stale:"+st, "quota/max STALE: sessions are open but the statusline sampler"+
+			" wrote nothing within 45 min ("+st+"); is crius-statusline in that persona's statusLine and working?"); err != nil {
 			return err
 		}
 	}
@@ -100,10 +98,15 @@ func (r *runner) quotaChecks(tx *sql.Tx) error {
 		return nil
 	}
 	epoch := fmt.Sprint(rep.Reset.Unix())
-	switch {
-	case rep.SevenPct >= 100:
+	if rep.SevenPct >= 100 {
 		return r.queueAlert(tx, "quota:usedup:"+epoch, rep.UsedUpText(r.cfg.enterpriseOK()))
-	case rep.SevenPct >= 60 && rep.Day <= 3:
+	}
+	if rep.RunsOut() {
+		if err := r.queueAlert(tx, "quota:runout:"+epoch, rep.RunoutText(r.cfg.enterpriseOK())); err != nil {
+			return err
+		}
+	}
+	if rep.PaceHigh() {
 		return r.queueAlert(tx, "quota:pace:"+epoch, rep.PaceText())
 	}
 	return nil

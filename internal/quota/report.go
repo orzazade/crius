@@ -28,7 +28,9 @@ type Violation struct {
 
 type Report struct {
 	Now                time.Time
-	Status             string // complete; stale (open sessions, no sample within Gap); partial (epoch ended); none
+	Status             string   // complete or partial (design §4)
+	Reasons            []string // why partial: no sample, stale personas, epoch ended, unknown account, unpriced
+	Stale              []string // personas with open sessions and no statusline line within Gap, with their last line
 	LastSample         time.Time
 	LastKind           string
 	Reset, FiveReset   time.Time // seven-day epoch end; zero when unknown or already past
@@ -38,6 +40,8 @@ type Report struct {
 	Passed             float64 // share of the epoch's time passed, 0..1
 	MaxUSD, Uncovered  float64 // list $ on the Max account in the epoch, and the part with no sample within Gap
 	UnknownUSD         float64 // list $ of sessions whose account is not known
+	UnknownSessions    int
+	AvgPerDay          float64 // seven-day share used per day over the last 7 days of samples; 0 without 7 days
 	Unpriced           int     // requests in the window with no list price (not in any $ above)
 	Shares             []Share // Max list $ by project, largest first
 	EntWeek, EntToday  []Share
@@ -183,10 +187,10 @@ func (s *sess) guard(id string, ok map[string]bool) []Violation {
 	return vs
 }
 
-// sessions loads every session the transcripts or the statusline know, with its lines and assignments; sampled
+// sessions loads every session the transcripts or the statusline know, with its lines and assignments; lastLine
 // lists the personas whose statusline has written a line.
-func sessions(db Querier, p Projects) (out map[string]*sess, sampled map[string]bool, err error) {
-	out, sampled = map[string]*sess{}, map[string]bool{}
+func sessions(db Querier, p Projects) (out map[string]*sess, lastLine map[string]time.Time, err error) {
+	out, lastLine = map[string]*sess{}, map[string]time.Time{}
 	get := func(id string) *sess {
 		if out[id] == nil {
 			out[id] = &sess{}
@@ -221,7 +225,9 @@ func sessions(db Querier, p Projects) (out map[string]*sess, sampled map[string]
 			if s.persona == "" {
 				s.persona = persona
 			}
-			sampled[persona] = true
+			if t.After(lastLine[persona]) {
+				lastLine[persona] = t
+			}
 			s.obs = append(s.obs, obs{t, rl})
 			return nil
 		}},
@@ -272,7 +278,7 @@ func sessions(db Querier, p Projects) (out map[string]*sess, sampled map[string]
 			return nil, nil, err
 		}
 	}
-	return out, sampled, nil
+	return out, lastLine, nil
 }
 
 type sample struct {
@@ -286,8 +292,8 @@ func parseTS(s string) (time.Time, error) { return time.Parse(time.RFC3339, s) }
 
 // Build makes the report as of now.
 func Build(db Querier, p Projects, now time.Time) (*Report, error) {
-	rep := &Report{Now: now, Status: "none"}
-	ss, sampled, err := sessions(db, p)
+	rep := &Report{Now: now}
+	ss, lastLine, err := sessions(db, p)
 	if err != nil {
 		return nil, err
 	}
@@ -330,6 +336,7 @@ func Build(db Querier, p Projects, now time.Time) (*Report, error) {
 	// share), so the epoch is the latest reset sampled and the share is the highest sampled for it, never the
 	// newest line's.
 	// Only samples of that epoch count as samples: an idle session's old-epoch heartbeat measures nothing now.
+	rep.AvgPerDay = avgPerDay(samples, now)
 	start := now.Add(-week)
 	var reset int64
 	for _, s := range samples {
@@ -386,7 +393,9 @@ func Build(db Querier, p Projects, now time.Time) (*Report, error) {
 		return nil, err
 	}
 	shares, entWeek, entDay := map[string]float64{}, map[string]float64{}, map[string]float64{}
-	var newestOpen time.Time // newest request of a session the sampler should cover
+	newestOpen := map[string]time.Time{} // per persona: newest request of a session the sampler should cover
+	var newestMax time.Time
+	unknown := map[string]bool{}
 	for rows.Next() {
 		var sid, ts string
 		var cost sql.NullFloat64
@@ -431,12 +440,15 @@ func Build(db Querier, p Projects, now time.Time) (*Report, error) {
 			entWeek[project] += usd
 		default:
 			rep.UnknownUSD += usd
+			unknown[sid] = true
 		}
-		// Max sessions must have a sample, and so must unknown ones of a persona whose statusline samples (personal
-		// always): a sampler broken before a session's first line leaves its account unknown.
-		if (account == "max" || account == "unknown" && (s.persona == "personal" || sampled[s.persona])) &&
-			t.After(newestOpen) {
-			newestOpen = t
+		// Every session that is not known to be on enterprise needs statusline lines: a Max session for its share,
+		// an unknown one for its account (a persona whose statusline never ran leaves all its sessions unknown).
+		if account != "enterprise" && t.After(newestOpen[s.persona]) {
+			newestOpen[s.persona] = t
+		}
+		if account == "max" && t.After(newestMax) {
+			newestMax = t
 		}
 	}
 	rows.Close()
@@ -444,13 +456,47 @@ func Build(db Querier, p Projects, now time.Time) (*Report, error) {
 		return nil, err
 	}
 	rep.Shares, rep.EntWeek, rep.EntToday = sorted(shares), sorted(entWeek), sorted(entDay)
-	switch {
-	case !newestOpen.IsZero() && now.Sub(newestOpen) <= Gap && now.Sub(rep.LastSample) > Gap:
-		rep.Status = "stale"
-	case !rep.LastSample.IsZero() && (!rep.Ended.IsZero() || rep.Unpriced > 0):
-		rep.Status = "partial" // the epoch ended with no sample since, or some $ is missing
-	case !rep.LastSample.IsZero():
-		rep.Status = "complete"
+	rep.UnknownSessions = len(unknown)
+	for persona, t := range newestOpen {
+		if now.Sub(t) > Gap {
+			continue
+		}
+		switch last := lastLine[persona]; {
+		case last.IsZero():
+			rep.Stale = append(rep.Stale, persona+": no statusline line yet")
+		case now.Sub(last) > Gap:
+			rep.Stale = append(rep.Stale, persona+": last statusline line "+when(last))
+		}
+	}
+	sort.Strings(rep.Stale)
+	// Lines can keep coming while none measures the current epoch (an idle session repeating an old window), so
+	// open Max sessions also need a current-epoch sample.
+	if len(rep.Stale) == 0 && !newestMax.IsZero() && now.Sub(newestMax) <= Gap && now.Sub(rep.LastSample) > Gap {
+		last := "none"
+		if !rep.LastSample.IsZero() {
+			last = when(rep.LastSample)
+		}
+		rep.Stale = append(rep.Stale, "max account: newest current-epoch sample "+last)
+	}
+	if rep.LastSample.IsZero() {
+		rep.Reasons = append(rep.Reasons, "no quota sample yet")
+	}
+	for _, st := range rep.Stale {
+		rep.Reasons = append(rep.Reasons, "stale sampler, open sessions of "+st)
+	}
+	if !rep.Ended.IsZero() {
+		rep.Reasons = append(rep.Reasons, "epoch ended "+when(rep.Ended)+", no sample since")
+	}
+	if rep.UnknownUSD > 0 {
+		rep.Reasons = append(rep.Reasons, fmt.Sprintf("account unknown for %s in %d sessions (not measured)",
+			money(rep.UnknownUSD), rep.UnknownSessions))
+	}
+	if rep.Unpriced > 0 {
+		rep.Reasons = append(rep.Reasons, fmt.Sprintf("%d requests with no list price", rep.Unpriced))
+	}
+	rep.Status = "complete"
+	if len(rep.Reasons) > 0 {
+		rep.Status = "partial"
 	}
 	return rep, nil
 }
@@ -479,6 +525,60 @@ func sorted(m map[string]float64) []Share {
 }
 
 // Runout is when the seven-day quota runs out at the epoch's average pace; zero when it is not known.
+// avgPerDay is the seven-day share used per day over the last 7 days of samples: per epoch, its highest share in
+// the window less its highest share before the window (0 for an epoch that began inside it). It is 0 unless samples
+// reach back 7 days, since a shorter history cannot give a 7-day average.
+func avgPerDay(samples []sample, now time.Time) float64 {
+	from := now.Add(-week)
+	if len(samples) == 0 || samples[0].ts.After(from) {
+		return 0
+	}
+	var keys []int64
+	epoch := func(reset int64) int64 { // resets of one epoch differ by seconds
+		for _, k := range keys {
+			if math.Abs(float64(k-reset)) < 3600 {
+				return k
+			}
+		}
+		keys = append(keys, reset)
+		return reset
+	}
+	before, in := map[int64]float64{}, map[int64]float64{}
+	for _, s := range samples {
+		e := epoch(s.reset.Int64)
+		if s.ts.Before(from) {
+			before[e] = math.Max(before[e], s.seven.Float64)
+		} else if !s.ts.After(now) {
+			in[e] = math.Max(in[e], s.seven.Float64)
+		}
+	}
+	used := 0.0
+	for e, v := range in {
+		used += math.Max(0, v-before[e])
+	}
+	return used / 7
+}
+
+// PerDay is this epoch's seven-day share used per day so far.
+func (r *Report) PerDay() float64 {
+	if r.Passed <= 0 {
+		return 0
+	}
+	return r.SevenPct / (r.Passed * 7)
+}
+
+// PaceHigh is the pace push rule (design §8): 60% or more by day 3, or from day 2 faster than the 7-day average.
+func (r *Report) PaceHigh() bool {
+	return !r.Reset.IsZero() && (r.SevenPct >= 60 && r.Day <= 3 ||
+		r.Day >= 2 && r.AvgPerDay > 0 && r.PerDay() > r.AvgPerDay)
+}
+
+// RunsOut: from day 2, the share passes 100% before resets_at at this pace (design §8).
+func (r *Report) RunsOut() bool {
+	ro := r.Runout()
+	return r.Day >= 2 && r.SevenPct < 100 && !ro.IsZero() && ro.Before(r.Reset)
+}
+
 func (r *Report) Runout() time.Time {
 	if r.Reset.IsZero() || r.SevenPct <= 0 {
 		return time.Time{}
@@ -518,9 +618,13 @@ func when(t time.Time) string { return t.Local().Format("Mon 01-02 15:04") }
 // Text is the `quota` command's answer (design §4: two blocks, ~200 tokens).
 func (r *Report) Text() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "quota · built %s · status %s", r.Now.Local().Format("2006-01-02 15:04"), r.Status)
+	b.WriteString(r.Status + "\n")
+	for _, why := range r.Reasons {
+		b.WriteString("  " + why + "\n")
+	}
+	fmt.Fprintf(&b, "quota · built %s", r.Now.Local().Format("2006-01-02 15:04"))
 	if r.LastSample.IsZero() {
-		b.WriteString(" · no quota sample yet\n")
+		b.WriteString("\n")
 	} else {
 		fmt.Fprintf(&b, " · last sample %s (%s, %.0f min ago)\n", when(r.LastSample), r.LastKind,
 			r.Now.Sub(r.LastSample).Minutes())
@@ -537,6 +641,9 @@ func (r *Report) Text() string {
 		fmt.Fprintf(&b, "  observed 7d %.0f%%", r.SevenPct)
 		if r.Passed > 0 {
 			fmt.Fprintf(&b, " · pace %.2fx time passed", r.SevenPct/100/r.Passed)
+		}
+		if r.AvgPerDay > 0 {
+			fmt.Fprintf(&b, " · %.1f%%/day (7-day average %.1f%%/day)", r.PerDay(), r.AvgPerDay)
 		}
 		if ro := r.Runout(); !ro.IsZero() && ro.Before(r.Reset) {
 			fmt.Fprintf(&b, " · runs out ~%s at this pace", when(ro))
@@ -556,9 +663,16 @@ func (r *Report) Text() string {
 	if r.Unpriced > 0 {
 		fmt.Fprintf(&b, "  unpriced: %d requests have a model with no list price; their $ is missing above\n", r.Unpriced)
 	}
-	fmt.Fprintf(&b, "Enterprise (Appxite API billing, list price): week %s (%s) · today %s (%s)\n",
+	b.WriteString("Enterprise (Appxite API billing, list price): ")
+	if r.UnknownUSD > 0 { // that spend may be enterprise: the known totals are a floor, never "$0.00 (none)"
+		fmt.Fprintf(&b, "unknown %s (account not measured) · known: ", money(r.UnknownUSD))
+	}
+	fmt.Fprintf(&b, "week %s (%s) · today %s (%s)\n",
 		money(r.EntWeekUSD), list(r.EntWeek, 0, 4), money(r.EntDay), list(r.EntToday, 0, 4))
-	if len(r.Violations) == 0 {
+	if r.UnknownSessions > 0 {
+		fmt.Fprintf(&b, "  guard: not measured for %d session%s (account unknown)\n", r.UnknownSessions,
+			map[bool]string{true: "", false: "s"}[r.UnknownSessions == 1])
+	} else if len(r.Violations) == 0 {
 		b.WriteString("  violations: none\n")
 	}
 	for _, v := range r.Violations {
@@ -570,7 +684,10 @@ func (r *Report) Text() string {
 // PaceText is the pace push (design §8): speed, top burners, one suggestion.
 func (r *Report) PaceText() string {
 	t := fmt.Sprintf("quota pace high: 7d %.0f%% on day %d of 7 (time passed %.0f%%, %.1f%%/day)", r.SevenPct, r.Day,
-		100*r.Passed, r.SevenPct/(r.Passed*7))
+		100*r.Passed, r.PerDay())
+	if r.AvgPerDay > 0 && r.PerDay() > r.AvgPerDay {
+		t += fmt.Sprintf(", faster than the 7-day average %.1f%%/day", r.AvgPerDay)
+	}
 	if ro := r.Runout(); !ro.IsZero() && ro.Before(r.Reset) {
 		t += "; runs out ~" + when(ro) + " at this pace, reset " + when(r.Reset)
 	}
@@ -579,6 +696,23 @@ func (r *Report) PaceText() string {
 		t += " · suggestion: slow " + r.Shares[0].Project + " (fewer parallel sessions, cheaper helpers) until the reset"
 	}
 	return t + " · enterprise this week " + money(r.EntWeekUSD)
+}
+
+// RunoutText is the push when the subscription will be used up before the reset at this pace (design §8).
+func (r *Report) RunoutText(enterpriseOK map[string]bool) string {
+	return fmt.Sprintf("quota will run out ~%s at this pace (7d %.0f%% on day %d, %.1f%%/day, reset %s). Then only"+
+		" Appxite work (%s) may continue, on the Appxite enterprise account; personal and scifi work waits until"+
+		" the reset. Enterprise this week %s (%s).", when(r.Runout()), r.SevenPct, r.Day, r.PerDay(), when(r.Reset),
+		strings.Join(okList(enterpriseOK), ", "), money(r.EntWeekUSD), list(r.EntWeek, 0, 4))
+}
+
+func okList(enterpriseOK map[string]bool) []string {
+	var ps []string
+	for p := range enterpriseOK {
+		ps = append(ps, p)
+	}
+	sort.Strings(ps)
+	return ps
 }
 
 // UsedUpText is the push when the subscription is used up (design §8, D1).

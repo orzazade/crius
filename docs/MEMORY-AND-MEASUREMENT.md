@@ -135,7 +135,7 @@ finds no `<project>-D<n>` or `<project>#<n>` id that exists only in private file
 | `assignment` | session, item, role, from_ts, to_ts, source (launch or task switch) |
 | `wait` | wait_id, session, kind, request_ref (notification or tool_use_id), opened, resolution_ref, resolved, resolved_by (`human/peer/timeout/none`), state `open/resolved` |
 | `quota` | ts, account, session, persona, epoch (seven-day `resets_at`), five_hour_pct, five_reset, seven_day_pct, sample_kind `session/change/heartbeat` |
-| `account_seen` | session, persona, rl (statusline showed `rate_limits` at least once = Max; only after-response renders without them = enterprise), first_ts, last_ts |
+| `account_seen` | source_key, session, persona, ts, rl: one row per statusline line, rl 1 = `rate_limits` present (Max), 0 = a response came without them (enterprise). A request's account is its session's newest line by the request time (2 min grace; requests before the first line take it), else its launch tag, else `unknown` |
 | `item` | id `<project>#<n>`, parent (owner outcome), kind `code/research/falcon/other`, title, criteria (set at open), opened, state, taint |
 | `acceptance` | item, revision (sha or artifact sha256), checks (refs + results), reviewer + review_ref, accepted_by, ts, state `accepted/revoked`, revoked_ts, revoked_by, revoke_reason, defect, fix_item |
 | `evidence` | id, kind (`commit/ci/gate/review/artifact/bus`), ref, revision, ts, source_key |
@@ -233,18 +233,24 @@ then hosted where §3a allows). A CLI costs nothing until called and works from 
 - Every row has a `source_key`; a cursor moves only after its transaction commits.
 - Unknown line shapes (new Claude Code version) are counted and alerted, never skipped quietly.
 
-**Account guard.** Each session's account comes from its launch tag, checked against the statusline (`rate_limits`
-present = Max). A non-Appxite project (`projects.toml` marks which may use `enterprise`) seen on the enterprise
-account is an S1 `health` problem and goes to the owner at once: personal work must never bill the employer.
+**Account guard.** A request's account is the statusline's word at that time (`rate_limits` present = Max), else
+the launch tag; a tag the statusline contradicts is a mismatch alert. Each enterprise stretch (from an enterprise line,
+or from a session's first request when that line is its first, until the next Max line) and each enterprise tag is
+checked against every project active in it. A non-Appxite project (`projects.toml` marks which may use `enterprise`)
+seen on the enterprise account is an S1 `health` problem and goes to the owner at once: personal work must never bill
+the employer. Spend whose account is unknown is not measured: `quota` says "unknown $X" and "not measured", never $0.
 Enterprise $ is list price from tokens (ESTIMATE of the employer's bill; no billing source is read).
 
 **Instrumentation order** (each only when its need is real):
 1. **Ingest + quota sampling**: a sample on each change plus a **heartbeat sample every 30 min** while a session is
    open, so "no sample" means "not measured", not "no use". `crius-statusline --persona P` is the statusLine command
    (`refreshInterval` 300 s, so idle sessions re-run it): it writes a line when a session is first seen after a
-   response, when that session's own 5h/7d values change, and a heartbeat when no line came for 30 min; an idle
-   session repeating older values writes nothing. It never touches the store, and on an error it prints `FAILED` in
-   the statusline (exit 0: Claude Code hides the output of a non-zero exit).
+   response, when that session's own 5h/7d values change, and a heartbeat when that persona wrote no current-epoch
+   line for 30 min; an idle session repeating older values writes nothing and never heartbeats. `rate_limits` without
+   the seven-day share and reset is an error, not a sample. It never touches the store, and on an error it prints
+   `FAILED` in the statusline (exit 0: Claude Code hides the output of a non-zero exit). Stale = a persona with a
+   session open (not known to be enterprise) and no line within 45 min, including one that never wrote a line, or
+   open Max sessions with no current-epoch sample within 45 min.
 2. **Minimal hooks** (Notification, Stop, SessionStart/End) only for live waits; until then waits come from transcripts.
 3. **OTel** only if permission-wait precision or hook diagnostics justify it: local collector, attribute allowlist
    (drop `user.email`, account ids, prompts, tool details), files kept 7 days.
@@ -343,8 +349,7 @@ tasks, which are not counted. Code, research and Falcon outcomes are reported ap
 | # | Metric | Definition | Source |
 |---|---|---|---|
 | M1 | Accepted outcomes | count per quota week, split code / research / Falcon, by project | `acceptance` |
-| M2 | Observed subscription quota | the one Max account (both personas), per reset epoch: the highest `seven_day_pct` sampled in the epoch (it only grows within an epoch, and an idle
-session's statusline can repeat an older value, so neither the newest value nor a sum of deltas is safe); plus **uncovered usage** = list-price $ of `max` requests with no sample on either side within 45 min | `quota`, `request` |
+| M2 | Observed subscription quota | the one Max account (both personas), per reset epoch: the highest `seven_day_pct` sampled in the epoch; plus **uncovered usage** = list-price $ of `max` requests with no sample on either side within 45 min | `quota`, `request` |
 | M2e | Enterprise $ | Appxite enterprise account: list-price $ per day and week, by project; non-Appxite sessions on it listed as violations. Real employer money, never merged with M2 | `request`, `session.account` |
 | M2b | Project share (separate) | each project's share of list-price $ per account and epoch. Never merged into M2 | `usage_day` |
 | M2c | Quota per outcome (**experimental**) | M2 x M2b share / M1 for that project and kind. **Undefined when M1 = 0** | derived |
@@ -360,6 +365,12 @@ session's statusline can repeat an older value, so neither the newest value nor 
 | M12 | Crius cost | Crius sessions' list-price share; observed quota when attributable | `session.role=crius` |
 | M13 | Memory recall | % right in top 5, seconds, negative answers that name scope | `eval/recall.jsonl` |
 | M14 | Record health | coverage %, heartbeat gaps, unknown attribution share, malformed lines, claims unverified | `coverage`, `session` |
+
+**M2 changed in step 3 (2026-10-16), for the owner:** it was "sum of positive `seven_day_pct` deltas between
+samples". The statusline re-runs every 300 s in every open session, and an idle session shows the window it last
+received, which can be older and lower. Deltas between interleaved sessions then count the same rise twice (40 -> 30
+-> 41 adds 11 instead of 1). The share only grows within an epoch, so the highest value sampled in it is the observed
+use; samples of a past epoch measure nothing now.
 
 **Cohorts.** A week's outcomes are shown **provisional** at first and **matured** 14 days later (after the reopen and
 defect window). Quality numbers are judged on matured cohorts only.
@@ -456,10 +467,12 @@ correct --corrects <row-id> --field project --value axi --reason`; `show <id> --
 - **06:30** script: ingest, STATE.md, digest (≤ 60 lines, stamped): needs the owner (top, four lines each), accepted
   yesterday, blocked, open waits, decisions, quota pace, health.
 - **Morning start**: a fresh Crius session with CRIUS.md + the digest only (target ≤ 15K tokens). If pace is high
-  (≥ 60% observed by day 3 of the epoch, or faster than the 7-day average), ONE Remote Control push: speed, top
-  burners, one suggestion. No stop. When the subscription is used up (or will be before `resets_at`), the push says:
-  only Appxite work (quotes, AXI) may continue, on the Appxite enterprise account; personal and scifi work waits
-  until the reset time. It also shows enterprise $ so far this week.
+  (≥ 60% observed by day 3 of the epoch, or from day 2 this epoch's %/day above the average %/day of the last 7
+  days of samples, which needs 7 days of samples), ONE Remote Control push per epoch: speed, top burners, one
+  suggestion. No stop. When the subscription is used up, or from day 2 will be before `resets_at` at the current
+  pace (its own push, once per epoch), the push says: only Appxite work (quotes, AXI) may continue, on the Appxite
+  enterprise account; personal and scifi work waits until the reset time. It also shows enterprise $ so far this
+  week.
 - **During the day**: wakes on bus events (Monitor in the pilot, the Falcon bus later); reads the line and `show
   <project>` (≤ 1K tokens); acts through leads.
 - **"What happened with X?"**: Explore runs `find`; if needed `find --deep`; Crius keeps only the cited answer and

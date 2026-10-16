@@ -59,8 +59,9 @@ type seen struct {
 }
 
 type state struct {
-	Last     string          `json:"last"` // newest line with rate_limits
-	Sessions map[string]seen `json:"sessions"`
+	Last     map[string]string `json:"last"`  // per persona: its newest line with rate_limits of the current epoch
+	Reset    int64             `json:"reset"` // the newest seven-day resets_at seen: the current epoch
+	Sessions map[string]seen   `json:"sessions"`
 }
 
 const tsFormat = "2006-01-02T15:04:05Z"
@@ -84,6 +85,11 @@ func Sample(home, persona string, in []byte, now time.Time) (string, error) {
 		if w := d.RateLimits.Seven; w != nil {
 			l.SevenPct, l.SevenReset = w.Pct, w.Reset
 		}
+		// rate_limits that do not give the seven-day share and reset measure nothing: an empty object or renamed
+		// fields would otherwise pass as a Max sample with no values.
+		if l.SevenPct == nil || l.SevenReset == nil {
+			return "", errors.New("statusline rate_limits has no seven_day used_percentage and resets_at")
+		}
 	}
 	vals := fmt.Sprintf("%v/%v/%v/%v", deref(l.FivePct), deref(l.FiveReset), deref(l.SevenPct), deref(l.SevenReset))
 
@@ -97,7 +103,7 @@ func Sample(home, persona string, in []byte, now time.Time) (string, error) {
 		return "", err
 	}
 	statePath := filepath.Join(spool, "quota.state.json")
-	st := state{Sessions: map[string]seen{}}
+	st := state{Sessions: map[string]seen{}, Last: map[string]string{}}
 	if b, err := os.ReadFile(statePath); err == nil {
 		if err := json.Unmarshal(b, &st); err != nil {
 			return "", fmt.Errorf("%s: %w", statePath, err)
@@ -105,20 +111,25 @@ func Sample(home, persona string, in []byte, now time.Time) (string, error) {
 		if st.Sessions == nil {
 			st.Sessions = map[string]seen{}
 		}
+		if st.Last == nil {
+			st.Last = map[string]string{}
+		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return "", err
 	}
 	s, known := st.Sessions[d.SessionID]
-	last, _ := time.Parse(tsFormat, st.Last)
+	last, _ := time.Parse(tsFormat, st.Last[persona])
 	// rate_limits come with a response, so their absence means an API-billed session only when a response arrived
 	// since the last render: a new session shows none before its first response, a resumed one shows its old cost.
 	responded := known && (d.Cost.USD > s.USD || d.Cost.APIms > s.APIms)
+	// An idle session can repeat a past epoch's window: it never heartbeats, so it cannot stand in for a live one.
+	current := rl && *l.SevenReset > st.Reset-3600
 	switch {
 	case rl && !(s.Lined && s.RL):
 		l.Kind = "session"
 	case rl && s.Vals != vals:
 		l.Kind = "change"
-	case rl && now.Sub(last) >= Heartbeat:
+	case current && now.Sub(last) >= Heartbeat:
 		l.Kind = "heartbeat"
 	case !rl && !(s.Lined && !s.RL) && responded:
 		l.Kind = "session"
@@ -143,8 +154,9 @@ func Sample(home, persona string, in []byte, now time.Time) (string, error) {
 		if err := errors.Join(err, f.Close()); err != nil {
 			return "", err
 		}
-		if rl {
-			st.Last = l.TS
+		if current {
+			st.Last[persona] = l.TS
+			st.Reset = max(st.Reset, *l.SevenReset)
 		}
 	}
 	if l.Kind != "" || n != s {
@@ -183,15 +195,10 @@ func display(l Line) string {
 	if !l.RL {
 		return "quota: no plan limits (API-billed account)"
 	}
-	out := "quota:"
+	out := "quota: "
 	if l.FivePct != nil {
-		out += fmt.Sprintf(" 5h %.0f%%", *l.FivePct)
+		out += fmt.Sprintf("5h %.0f%% · ", *l.FivePct)
 	}
-	if l.SevenPct != nil {
-		out += fmt.Sprintf(" · 7d %.0f%%", *l.SevenPct)
-		if l.SevenReset != nil {
-			out += " (resets " + time.Unix(*l.SevenReset, 0).Local().Format("Mon 15:04") + ")"
-		}
-	}
-	return out
+	// Sample refuses rate_limits without the seven-day share and reset, so both are here.
+	return out + fmt.Sprintf("7d %.0f%% (resets %s)", *l.SevenPct, time.Unix(*l.SevenReset, 0).Local().Format("Mon 15:04"))
 }
