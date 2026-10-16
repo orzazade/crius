@@ -163,3 +163,28 @@ func TestRedactMoreShapes(t *testing.T) {
 		}
 	}
 }
+
+// Review 0d2402b: a name followed by a secret key is no key with a value (grep output: "config/secrets.yaml:
+// password: x"); a value ends at the quote that matches its opener, escaped or not; a backtick needs its pair; a
+// URL credential stays inside its JSON string.
+func TestRedactValueEnds(t *testing.T) {
+	for _, in := range []string{"config/secrets.yaml:  password: hunter2", "internal/secret.go:\tpassword = \"hunter2\"",
+		"secrets.env: DB_PASSWORD = hunter2", "token.json: api_key: hunter2", "GH_TOKEN_2: password: hunter2",
+		`PASSWORD=\"ab\\\"hunter2\" tail`, `password="ab\"hunter2" tail`} {
+		if out, _ := Redact(in); strings.Contains(out, "hunter2") {
+			t.Errorf("%s -> %s", in, out)
+		}
+	}
+	for in, want := range map[string]string{
+		`password: \"abc\" in quota --json output the JSON breaks.`: `[redacted] in quota --json output the JSON breaks.`,
+		`curl -d "{\"password\":\"x\",\"user\":\"bob\"}"`:           `curl -d "{\"[redacted],\"user\":\"bob\"}"`,
+		"The key `api_key:` in config.yaml sets the limit":          "The key `api_key:` in config.yaml sets the limit",
+		`{"a":"http://h:1","b":"x@y.z","c":"keep"}`:                 `{"a":"http://h:1","b":"x@y.z","c":"keep"}`,
+		"password=\"cut off\nnext line stays":                       "[redacted]\nnext line stays",
+		"PASSWORD = `two hunter2` then more":                        "[redacted] then more",
+	} {
+		if out, _ := Redact(in); out != want {
+			t.Errorf("%s\n got %s\nwant %s", in, out, want)
+		}
+	}
+}

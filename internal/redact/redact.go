@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"io"
 	"regexp"
+	"strings"
 )
 
 // secretKey names a key whose value is a secret: the key = value pattern and SecretKey share it.
@@ -24,22 +25,26 @@ var secretKeyRe = regexp.MustCompile(`(?i)` + secretKey)
 // where the patterns would see the value apart from its key.
 func SecretKey(name string) bool { return secretKeyRe.MatchString(name) }
 
+// A whole private key block; a cut-off block is removed up to the end of the text. It goes first: a key = value
+// match on its first line would leave the rest of the block.
+var blockRe = regexp.MustCompile(`(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)`)
+
+// key = value, also as JSON ("api_key": "..."), with the start of the value as the last group; redactPairs finds
+// its end.
+// The rest of the name may follow the secret word (secret_access_key, password.prod); the key's quotes may come
+// escaped (code or JSON quoted in a command); the operator may be code's (:=, =>, ==); a scheme may lead the value
+// (Authorization: Basic ...).
+var pairRe = regexp.MustCompile(`(?i)` + secretKey + `[\w.-]*\\*["']?[ \t]*(?::=|=>|==?|:)[ \t]*` +
+	`(?:(?:basic|bearer|digest|token)[ \t]+)?` + "(\\\\*[\"']|`|[^\\s\"',;`]+)")
+
+// keyStart is a secret-named key and its operator at the start of a text.
+var keyStart = regexp.MustCompile(`(?i)^[\w.-]*?` + secretKey + `[\w.-]*\\*["']?[ \t]*(?::=|=>|==?|:)`)
+
 var secretRes = []*regexp.Regexp{
-	// A whole private key block; a cut-off block is removed up to the end of the text.
-	regexp.MustCompile(`(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)`),
-	// key = value, also as JSON ("api_key": "..."). Any length: a short password is still a password; a value
-	// with no closing quote (cut off) is removed to the end of the line.
-	// Quotes may come escaped, at any depth (code or JSON quoted in a command): \"value\", \\\"value\\\"; an
-	// escaped quote inside the value does not end it. The rest of the name may follow the secret word
-	// (secret_access_key, password.prod); the operator may be code's (:=, =>, ==); a scheme may lead the value
-	// (Authorization: Basic ...).
-	regexp.MustCompile(`(?i)` + secretKey + `[\w.-]*\\*["']?[ \t]*(?::=|=>|==?|:)[ \t]*` +
-		`(?:(?:basic|bearer|digest|token)[ \t]+)?` +
-		"(?:\\\\*\"(?:\\\\.|[^\"\\\\\\n])*\"?|\\\\*'(?:\\\\.|[^'\\\\\\n])*'?|`[^`\\n]*`?|[^\\s\"',;]+)"),
 	// A long flag and its value (--password hunter2); -p is too short to tell.
 	regexp.MustCompile(`(?i)--` + secretKey + `[\w-]*[ \t]+[^\s-]\S*`),
 	// Credentials in a URL (postgres://user:pass@host).
-	regexp.MustCompile(`\b[A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]+:[^@\s/]+@`),
+	regexp.MustCompile(`\b[A-Za-z][A-Za-z0-9+.-]*://[^/\s:@"']+:[^@\s/"']+@`),
 	regexp.MustCompile(`\b(sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{36,}|xox[bpors]-[A-Za-z0-9-]+|AKIA[0-9A-Z]{16})`),
 	regexp.MustCompile(`(?i)\bbearer\s+[A-Za-z0-9._~+/-]{20,}=*`),
 	regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}`),
@@ -48,10 +53,75 @@ var secretRes = []*regexp.Regexp{
 // Redact returns the text with each secret replaced by [redacted], and the number of secrets replaced.
 func Redact(s string) (string, int) {
 	hits := 0
+	s = blockRe.ReplaceAllStringFunc(s, func(string) string { hits++; return "[redacted]" })
+	s, n := redactPairs(s)
+	hits += n
 	for _, re := range secretRes {
 		s = re.ReplaceAllStringFunc(s, func(string) string { hits++; return "[redacted]" })
 	}
 	return s, hits
+}
+
+// redactPairs replaces the value of each secret-named key, any length: a short password is still a password. A
+// regexp cannot tell where such a value ends, so the scan does: a quoted value at the quote escaped like its opener
+// (\"a\\\"b\" ends at the last \"), or at the end of the line when cut off; a backtick value at its pair; and a
+// "value" that is itself a secret-named key means the first name had none (grep output: secrets.yaml: password: x).
+func redactPairs(s string) (string, int) {
+	var b strings.Builder
+	hits, pos := 0, 0
+	for {
+		m := pairRe.FindStringSubmatchIndex(s[pos:])
+		if m == nil {
+			break
+		}
+		v, end := pos+m[len(m)-2], pos+m[len(m)-1] // the value is the last group: secretKey has one too
+		if keyStart.MatchString(s[v:]) {
+			b.WriteString(s[pos:v])
+			pos = v
+			continue
+		}
+		switch q := s[end-1]; q {
+		case '"', '\'':
+			end = quoteEnd(s, end, q, end-1-v)
+		case '`':
+			e := strings.IndexAny(s[end:], "`\n")
+			if end == len(s) || s[end] == ' ' || s[end] == '\t' || e < 0 || s[end+e] != '`' {
+				b.WriteString(s[pos:end]) // a lone backtick (markdown around the key) is no value
+				pos = end
+				continue
+			}
+			end += e + 1
+		}
+		b.WriteString(s[pos : pos+m[0]])
+		b.WriteString("[redacted]")
+		hits++
+		pos = end
+	}
+	if hits == 0 {
+		return s, 0
+	}
+	b.WriteString(s[pos:])
+	return b.String(), hits
+}
+
+// quoteEnd is the end of a value opened by q after n backslashes: the next q after exactly n backslashes (after an
+// even number when n is 0), or the end of the line.
+func quoteEnd(s string, from int, q byte, n int) int {
+	for i := from; i < len(s); i++ {
+		switch s[i] {
+		case '\n':
+			return i
+		case q:
+			k := 0
+			for j := i - 1; j >= from && s[j] == '\\'; j-- {
+				k++
+			}
+			if n == 0 && k%2 == 0 || n > 0 && k == n {
+				return i + 1
+			}
+		}
+	}
+	return len(s)
 }
 
 // Writer passes each write through Redact: output may quote a config value, an argument or an error.
