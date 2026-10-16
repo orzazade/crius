@@ -241,6 +241,9 @@ func storeSections(db *sql.DB, in Input, now time.Time, maxItems int) ([]string,
 			n += "+"
 		}
 		out = append(out, name+": "+n)
+		if maxItems == 0 { // no room left: the count line alone
+			return
+		}
 		for i, it := range items {
 			if i == maxItems {
 				out = append(out, fmt.Sprintf("  +%d more", len(items)-maxItems))
@@ -367,7 +370,7 @@ func offBus(db *sql.DB, since time.Time) ([]string, error) {
 		if err := rows.Scan(&project, &ts, &id, &title); err != nil {
 			return nil, err
 		}
-		out = append(out, fmt.Sprintf("%s %s %s %s (no DECISION bus line)", project, ts, id, title))
+		out = append(out, fmt.Sprintf("%s %s %s (no DECISION bus line) %s", project, ts, id, title))
 	}
 	return out, rows.Err()
 }

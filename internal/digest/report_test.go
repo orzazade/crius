@@ -286,7 +286,7 @@ func TestBuildReviewOf4b68c11(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec("insert into decision (id, project, ts, title) values ('p01-D1', 'p01', '2026-10-17', 'title 1')," +
-		" ('p02-D9', 'p02', '2026-10-17', 'kept off the bus'), ('p02-D8', 'p02', '2026-10-16', 'before the last report')"); err != nil {
+		" ('p02-D9', 'p02', '2026-10-17', '" + strings.Repeat("t", 100) + "'), ('p02-D8', 'p02', '2026-10-16', 'before the last report')"); err != nil {
 		t.Fatal(err)
 	}
 	reset := now.Add(5 * 24 * time.Hour)
@@ -295,7 +295,8 @@ func TestBuildReviewOf4b68c11(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Decisions: 2\n  p01:lead 00:01 p01-D1 title 1\n  p02 2026-10-17 p02-D9 kept off the bus (no DECISION bus line)\n",
+	for _, want := range []string{"Decisions: 2\n  p01:lead 00:01 p01-D1 title 1\n  p02 2026-10-17 p02-D9 (no DECISION bus line) " +
+		strings.Repeat("t", 64) + "…\n",
 		"Quota: 7d 0% on day 3 of 7, 0.0x the time passed · lasts to the reset " + reset.Format("Mon 01-02 15:04") + "\n"} {
 		if !strings.Contains(r.Text, want) {
 			t.Errorf("missing %q in\n%s", want, r.Text)
@@ -303,5 +304,29 @@ func TestBuildReviewOf4b68c11(t *testing.T) {
 	}
 	if strings.Contains(r.Text, "ghp_") {
 		t.Errorf("a cut token reaches the report:\n%s", r.Text)
+	}
+}
+
+// Review of 05fa5b5: with no list items left, a list is its count line alone, so 21 leads that each need the owner
+// and two decisions saved off the bus still fit 60 lines.
+func TestBuildEmptiesListsToFit(t *testing.T) {
+	db := open(t)
+	dir := t.TempDir()
+	var leads []ingest.Lead
+	for i := 0; i < 21; i++ {
+		leads = append(leads, ingest.Lead{Name: fmt.Sprintf("p%02d:lead", i),
+			StatusFile: statusFile(t, dir, fmt.Sprint(i, ".md"), block("2026-10-17 08:30", fmt.Sprint("need ", i), "- [ ] one"))})
+	}
+	if _, err := db.Exec("insert into decision (id, project, ts, title) values ('p01-D1', 'p01', '2026-10-17', 'a'), ('p01-D2', 'p01', '2026-10-17', 'b')"); err != nil {
+		t.Fatal(err)
+	}
+	in := input(leads, nil)
+	in.Since = now.Add(-9 * time.Hour)
+	r, err := Build(db, in, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(r.Text, "\n"); n > 60 || !strings.Contains(r.Text, "\nDecisions: 2\nOpen waits (last 24 h): none\n") {
+		t.Fatalf("%d lines\n%s", n, r.Text)
 	}
 }

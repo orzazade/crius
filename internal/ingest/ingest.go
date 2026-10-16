@@ -146,13 +146,18 @@ func (r *runner) event(tx *sql.Tx, e event) error {
 	return err
 }
 
-// name is a bus sender or recipient as written when it is a slug (project or project:role): it carries no secret, and
-// redaction would take token-service:lead for a key. Anything else is redacted like all text.
+// name redacts a bus sender or recipient. A slug pair (project or project:role) is redacted part by part: redaction of
+// the whole would take token-service:lead for a key, and a part can still be a token (xoxb-… is a slug). Anything
+// else is redacted like all text.
 func (r *runner) name(s string) string {
-	if p, role, _ := strings.Cut(s, ":"); !store.Slug.MatchString(p) || role != "" && !store.Slug.MatchString(role) {
+	p, role, pair := strings.Cut(s, ":")
+	if !store.Slug.MatchString(p) || pair && !store.Slug.MatchString(role) {
 		return r.text(s)
 	}
-	return s
+	if !pair {
+		return r.text(p)
+	}
+	return r.text(p) + ":" + r.text(role)
 }
 
 // queueAlert records an alert in the caller's transaction; flushAlerts posts it. One alert per key, ever.
@@ -183,7 +188,7 @@ func (r *runner) flushAlerts() {
 		return
 	}
 	for _, a := range pending {
-		line, err := store.FormatLine("ALERT", "crius", "ingest", a[1], "crius", time.Now())
+		line, err := store.FormatLine("ALERT", "crius", "ingest", fit(a[1]), "crius", time.Now()) // a long row never blocks
 		if err == nil {
 			err = store.AppendLine(r.home, "crius", line)
 		}

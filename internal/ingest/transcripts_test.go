@@ -1,6 +1,7 @@
 package ingest
 
 import (
+	"database/sql"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -265,6 +266,29 @@ func TestAnAlertThatCouldNotBePostedIsPostedOnTheNextRun(t *testing.T) {
 	x.run()
 	if !strings.Contains(testutil.Read(t, filepath.Join(bus, "crius.log")), "brand-new-thing") {
 		t.Fatal("alert lost")
+	}
+}
+
+// Review of 87b7286: an alert row longer than a bus line (queued by an older build) is cut when posted, so it never
+// blocks the queue.
+func TestALongStoredAlertIsCutWhenPosted(t *testing.T) {
+	x := newIC(t, cfg{})
+	x.run()
+	db, err := sql.Open("sqlite", filepath.Join(x.home, "state", "record.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec("insert into alert (key, ts, text) values ('old', '2026-10-17T03:00:00Z', ?)", strings.Repeat("y", 400))
+	db.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	testutil.Write(t, x.tx, lines(map[string]any{"type": "brand-new-thing"}))
+	x.run()
+	log := testutil.Read(t, filepath.Join(x.home, "bus", "crius.log"))
+	if !strings.Contains(log, strings.Repeat("y", 300)+"\n") || strings.Contains(log, strings.Repeat("y", 301)) ||
+		!strings.Contains(log, "brand-new-thing") {
+		t.Fatal(log)
 	}
 }
 

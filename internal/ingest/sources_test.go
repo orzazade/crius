@@ -94,17 +94,19 @@ func TestBusLinesKeepTheirRecipient(t *testing.T) {
 	testutil.Write(t, filepath.Join(x.home, "bus", "demo.log"),
 		"2026-10-17T02:57 VERIFIED crius:lead -> token-service:lead — b3a87cb · step 4: 31/34\n"+
 			"2026-10-17T02:58 DONE demo:leader -> crius — done\n"+
-			"2026-10-17T03:00 VERIFIED crius:lead -> sk-ant-api03-"+strings.Repeat("A", 40)+" — F-1 · x\n")
+			"2026-10-17T03:00 VERIFIED crius:lead -> sk-ant-api03-"+strings.Repeat("A", 40)+" — F-1 · x\n"+
+			"2026-10-17T03:01 VERIFIED crius:lead -> demo:xox"+"b-123456789012-123456789012-abcdefghijklmnopqrstuvwxyzabcdef — F-2 · x\n"+
+			"2026-10-17T03:02 VERIFIED crius:lead -> xox"+"b-123456789012-123456789012-abcdefghijklmnopqrstuvwxyzabcdef — F-3 · x\n")
 	testutil.Write(t, teamLog, "2026-10-17T02:59 VERIFIED crius:lead -> demo:qa-ui — F-126 · ticks seen\n")
 	x.run()
 	if rows := x.q("select refs from event where kind = 'done'"); len(rows) != 1 || rows[0][0] != "<nil>" {
 		t.Fatal("a line other than VERIFIED keeps its recipient:", rows)
 	}
 	rows := x.q("select kind, refs from event where kind = 'verified' order by ts")
-	if len(rows) != 3 {
+	if len(rows) != 5 {
 		t.Fatal(rows)
 	}
-	for i, want := range []string{"token-service:lead", "demo:qa-ui", "[redacted]"} {
+	for i, want := range []string{"token-service:lead", "demo:qa-ui", "[redacted]", "demo:[redacted]", "[redacted]"} {
 		var refs map[string][]string
 		if err := json.Unmarshal([]byte(rows[i][1]), &refs); err != nil || len(refs["to"]) != 1 || refs["to"][0] != want {
 			t.Errorf("%v: %v", rows[i], err)
@@ -159,17 +161,19 @@ func TestBusClockReviewOf944e44a(t *testing.T) {
 	clock = func() time.Time { return now }
 	t.Cleanup(func() { clock = time.Now })
 	token := "ghp_" + strings.Repeat("A", 36)
+	slack := "xox" + "b-123456789012-123456789012-abcdefghijklmnopqrstuvwxyzabcdef" // passes the slug pattern
 	path := filepath.Join(x.home, "bus", "demo.log")
 	text := "2026-10-17T07:00 INFO bad:lead -> crius — bad clock\n" +
 		"2026-10-17T03:00 INFO good:lead -> crius — correct clock\n" +
 		"2026-10-17T01:30 INFO bad:lead -> crius — and behind: a second kind, a second alert\n" +
 		"2026-10-17T03:15 INFO demo:" + token + " -> crius — a token for a role\n" +
-		"2026-10-17T03:20 INFO token-service:lead -> crius — x\n"
+		"2026-10-17T03:20 INFO token-service:lead -> crius — x\n" +
+		"2026-10-17T03:25 INFO demo:" + slack + " -> crius — a token shaped like a slug\n"
 	testutil.Write(t, path, text)
 	testutil.Write(t, filepath.Join(x.home, "bus", token+".log"), "2026-10-17T03:30 INFO demo:lead -> crius — a token for a file name\n")
 	x.run()
-	eq(t, x.one("select count(*) from alert where key like 'bus-clock:%'"), "5")
-	eq(t, x.one("select count(*) from alert where key like '%ghp_%' or text like '%ghp_%'"), "0")
+	eq(t, x.one("select count(*) from alert where key like 'bus-clock:%'"), "6")
+	eq(t, x.one("select count(*) from alert where key like '%ghp_%' or text like '%ghp_%' or text like '%xoxb%'"), "0")
 	eq(t, x.one("select count(*) from alert where text like 'bus clock: token-service:lead line 2026-10-17T03:20 %'"), "1")
 	now = now.Add(5 * time.Hour)
 	if err := os.Remove(path); err != nil {
