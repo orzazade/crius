@@ -527,12 +527,28 @@ func digestCmd(home string, now time.Time, write bool, stdout, stderr io.Writer)
 	}
 	defer db.Close()
 	dir := filepath.Join(home, "state", "digest")
-	prev, err := lastSnapshot(dir)
+	in := digest.Input{Leads: leads}
+	in.Prev, in.Since, err = lastSnapshot(dir)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return exitError
 	}
-	r, err := digest.Build(db, leads, prev, now)
+	projects, err := ingest.QuotaProjects(home)
+	if err == nil {
+		in.Quota, err = quota.Build(db, projects, now)
+	}
+	var exp recall.Expected
+	if err == nil {
+		exp, err = ingest.Expected(home)
+	}
+	if err == nil {
+		in.Health, err = recall.CheckHealth(db, home, exp, now)
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return exitError
+	}
+	r, err := digest.Build(db, in, now)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return exitError
@@ -564,15 +580,15 @@ func digestCmd(home string, now time.Time, write bool, stdout, stderr io.Writer)
 
 var reportJSONRe = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}-\d{4}\.json$`)
 
-// lastSnapshot reads the numbers of the newest saved report (YYYY-MM-DD-HHMM.json); no saved report yet is an empty snapshot, any other
+// lastSnapshot reads the numbers and time of the newest saved report (YYYY-MM-DD-HHMM.json); no saved report yet is an empty snapshot, any other
 // failure an error.
-func lastSnapshot(dir string) (digest.Snapshot, error) {
+func lastSnapshot(dir string) (digest.Snapshot, time.Time, error) {
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
-		return digest.Snapshot{}, nil
+		return digest.Snapshot{}, time.Time{}, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, time.Time{}, err
 	}
 	var names []string // sorted by name, so by time
 	for _, e := range entries {
@@ -581,15 +597,20 @@ func lastSnapshot(dir string) (digest.Snapshot, error) {
 		}
 	}
 	if len(names) == 0 {
-		return digest.Snapshot{}, nil
+		return digest.Snapshot{}, time.Time{}, nil
 	}
-	b, err := os.ReadFile(names[len(names)-1])
+	last := names[len(names)-1]
+	at, err := time.ParseInLocation("2006-01-02-1504.json", filepath.Base(last), time.Local)
 	if err != nil {
-		return nil, err
+		return nil, time.Time{}, err
+	}
+	b, err := os.ReadFile(last)
+	if err != nil {
+		return nil, time.Time{}, err
 	}
 	var s digest.Snapshot
 	if err := json.Unmarshal(b, &s); err != nil {
-		return nil, fmt.Errorf("%s: %w", names[len(names)-1], err)
+		return nil, time.Time{}, fmt.Errorf("%s: %w", last, err)
 	}
-	return s, nil
+	return s, at, nil
 }

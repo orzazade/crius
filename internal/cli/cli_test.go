@@ -429,15 +429,17 @@ func TestDigestWritesARedactedReportAndComparesWithTheLast(t *testing.T) {
 	testutil.Write(t, status, "## GOAL (2026-10-17 08:30)\nGoal: ship\n- [ ] one\nDone: 10% (guess)\nNext: one\nNeeds owner: rotate "+key+"\n")
 	testutil.Write(t, filepath.Join(home, "projects.toml"), "[projects.demo]\ncwd = [\"/w/demo\"]\nleads = { lead = \""+status+"\" }\n")
 	dir := filepath.Join(home, "state", "digest")
+	// The test home has no quota sample and no heartbeat: every report here is partial, and says why.
 	rc, out := run("digest")
-	if rc != 0 || !strings.Contains(out, "▶ 1. demo:lead: rotate [redacted]") || strings.Contains(out, "FFFF") ||
+	if rc != exitPartial || !strings.Contains(out, "Quota partial: no quota sample yet") || !strings.Contains(out, "Health: partial") ||
+		!strings.Contains(out, "## Since the last report (none; the last 24 h)") || !strings.Contains(out, "▶ 1. demo:lead: rotate [redacted]") || strings.Contains(out, "FFFF") ||
 		!strings.Contains(out, "demo:lead: 10% claimed · verified 0 of 0 done (1 milestones) · first report") {
 		t.Fatal(rc, out)
 	}
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Fatal("digest without --write saved something", err)
 	}
-	if rc, out = run("digest", "--write"); rc != 0 {
+	if rc, out = run("digest", "--write"); rc != exitPartial {
 		t.Fatal(rc, out)
 	}
 	mds, _ := filepath.Glob(filepath.Join(dir, "*.md"))
@@ -449,15 +451,23 @@ func TestDigestWritesARedactedReportAndComparesWithTheLast(t *testing.T) {
 	if string(b) != out || strings.Contains(string(b), "FFFF") {
 		t.Fatalf("saved:\n%s\nprinted:\n%s", b, out)
 	}
+	// The next report covers what came since the saved one.
+	at, err := time.ParseInLocation("2006-01-02-1504.md", filepath.Base(mds[0]), time.Local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rc, out = run("digest"); !strings.Contains(out, "## Since the last report ("+at.Format("2006-01-02 15:04")+")") {
+		t.Fatal(rc, out)
+	}
 	// The newest saved numbers are the ones compared with, not an older report's.
 	testutil.Write(t, filepath.Join(dir, "2026-01-01-0900.json"), `{"demo:lead":{"done":99,"verified":0}}`)
-	if rc, out = run("digest"); rc != 0 || !strings.Contains(out, "· no change since the last report") {
+	if rc, out = run("digest"); rc != exitPartial || !strings.Contains(out, "· no change since the last report") {
 		t.Fatal(rc, out)
 	}
 	// Review of cbd8517: only report files (YYYY-MM-DD-HHMM.json) are compared with; a folder that cannot be read
 	// fails, never a quiet "first report".
 	testutil.Write(t, filepath.Join(dir, "latest.json"), `{"demo:lead":{"done":55,"verified":0}}`)
-	if rc, out = run("digest"); rc != 0 || !strings.Contains(out, "· no change since the last report") {
+	if rc, out = run("digest"); rc != exitPartial || !strings.Contains(out, "· no change since the last report") {
 		t.Fatal(rc, out)
 	}
 	if err := os.Chmod(dir, 0); err != nil {
@@ -477,7 +487,7 @@ func TestDigestWritesARedactedReportAndComparesWithTheLast(t *testing.T) {
 	if _, err := db.Exec("insert into source_run (started, finished, status) values ('2026-10-17T08:00:00Z','2026-10-17T08:01:00Z','partial')"); err != nil {
 		t.Fatal(err)
 	}
-	if rc, out = run("digest"); rc != exitPartial || !strings.Contains(out, "· status partial") {
+	if rc, out = run("digest"); rc != exitPartial || !strings.Contains(out, "· status partial\n! ") {
 		t.Fatal(rc, out)
 	}
 	if rc, out = run("digest", "extra"); rc != exitUsage {
