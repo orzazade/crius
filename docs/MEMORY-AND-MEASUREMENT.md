@@ -107,7 +107,7 @@ can become a job of Falcon's Mac daemon. Callers do not change.
 ~/Projects/scifi/crius/              git checkout; remote orzazade/crius (today's commits not pushed, FACT)
   docs/, scripts, projects.example.toml      no private data, ever
 ~/.crius/                            NOT a git work tree, mode 700, excluded from cloud sync
-  projects.toml                      slug, persona, account, cwd prefixes, repos, team log paths
+  projects.toml                      slug, persona, account, cwd prefixes, repos, team log paths, lead status files
   bus/<project>.log                  leads append here (cmux-team §6 path changes to this)
   state/record.db                    SQLite, WAL, one writer (ingest + record via flock)
   state/<project>/LEAD.md, STATE.md, DECISIONS.md

@@ -19,6 +19,7 @@ var defaultRoots = map[string]string{"personal": "~/.claude-personal/projects", 
 type project struct {
 	slug                                         string
 	accounts, cwd, repos, teamLogs, artifactDirs []string
+	leads                                        map[string]string // role -> status file holding the GOAL block
 }
 
 type root struct{ persona, path string }
@@ -56,6 +57,7 @@ func loadConfig(home string) (*config, error) {
 			Repos        []string
 			TeamLogs     []string `toml:"team_logs"`
 			ArtifactDirs []string `toml:"artifact_dirs"`
+			Leads        map[string]string
 		}
 	}
 	path := filepath.Join(home, "projects.toml")
@@ -84,8 +86,15 @@ func loadConfig(home string) (*config, error) {
 				return nil, fmt.Errorf("%s: project %s: unknown account %q", path, slug, a)
 			}
 		}
+		leads := map[string]string{}
+		for role, f := range p.Leads {
+			if !store.Slug.MatchString(role) {
+				return nil, fmt.Errorf("%s: project %s: bad lead role %q", path, slug, role)
+			}
+			leads[role] = expand(f)
+		}
 		c.projects = append(c.projects, project{slug: slug, accounts: p.Accounts, cwd: expandAll(p.CWD), repos: expandAll(p.Repos),
-			teamLogs: expandAll(p.TeamLogs), artifactDirs: expandAll(p.ArtifactDirs)})
+			teamLogs: expandAll(p.TeamLogs), artifactDirs: expandAll(p.ArtifactDirs), leads: leads})
 	}
 	sort.Slice(c.projects, func(i, j int) bool { return c.projects[i].slug < c.projects[j].slug })
 	return c, nil
@@ -115,6 +124,25 @@ func QuotaProjects(home string) (quota.Projects, error) {
 		return quota.Projects{}, err
 	}
 	return c.quotaProjects(), nil
+}
+
+// Lead is a lead as it signs bus lines (<project>:<role>) and the status file holding its GOAL block (RULES 3.1).
+type Lead struct{ Name, StatusFile string }
+
+// Leads reads projects.toml in home: every lead with its status file, sorted by name (step 5, the digest).
+func Leads(home string) ([]Lead, error) {
+	c, err := loadConfig(home)
+	if err != nil {
+		return nil, err
+	}
+	var out []Lead
+	for _, p := range c.projects {
+		for role, f := range p.leads {
+			out = append(out, Lead{p.slug + ":" + role, f})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
 }
 
 // titleRe is a session's -n title as leads name them: "<project>[-build]: <role>" or "<project> · <role>".
