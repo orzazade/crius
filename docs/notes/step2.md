@@ -50,7 +50,11 @@ Always use `GOTOOLCHAIN=local` (Go 1.25.6). Deps pinned: modernc.org/sqlite v1.5
   so no duplicate rows; 1610 old-spelling coverage rows are orphaned and unread.
   Re-review of these fixes: 1 P1 (unterminated quoted value kept) + 2 P2 (NULL model stopped every run at
   reprice; failed folder sync after rename never retried) - all fixed red first. go test: 122 PASS / 0 FAIL.
-- [ ] 9: commit, clean-worktree proof, install launchd, live drill, DONE line, STOP.
+- [x] 9: commit eaf83d0; clean worktree of eaf83d0: go vet ok, go test 122 PASS / 0 FAIL, tree clean after.
+  launchd installed (bin/crius-install-launchd): space.scifilab.crius.ingest (600 s) and .watchdog (300 s),
+  binaries in ~/.crius/bin, both first runs exit 0. Drill 15:58: ingest booted out, heartbeat set 25 min back,
+  watchdog posted one ALERT to ~/.crius/bus/crius.log; ingest bootstrapped, fresh heartbeat, watchdog re-armed
+  (marker removed). Main fast-forwarded to this branch. STEP 2 DONE; step 3 not started.
 
 ## Next
 1. Write `internal/ingest/git.go` (`ingestGit`): resolve the branch to a sha FIRST, call `afterHeadHook()` if set
