@@ -51,9 +51,29 @@ var secretRes = []*regexp.Regexp{
 	regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}`),
 }
 
-// shortFlag is -p after a client that takes a password that way (mysql -phunter2, sshpass -p hunter2); -p means
-// something else for most commands. The redaction runs from -p to the end of the line.
-var shortFlag = regexp.MustCompile(`(\b(?i:mysql\w*|mariadb\w*|sshpass)\b[^\n]*?[ \t])-p[^\n]*`)
+// A short -p is a password on a line that names a user (-u bob, -uroot, --user, --username) or a login, or after a
+// client that takes one that way (mysql -phunter2, sshpass -p hunter2); elsewhere -p means something else. Keyed on
+// the line, not a list of clients (Crius 23:53: docker login -u bob -p x was printed). The redaction runs from the
+// first -p to the end of the line.
+var (
+	shortFlagLine = regexp.MustCompile(`(?i)\b(?:mysql\w*|mariadb\w*|sshpass|login)\b|(?:^|[ \t])(?:-u|--user(?:name)?\b)`)
+	shortFlag     = regexp.MustCompile(`(?:^|[ \t])-p`)
+)
+
+func redactShortFlag(s string) (string, int) {
+	lines, hits := strings.SplitAfter(s, "\n"), 0
+	for i, l := range lines {
+		if m := shortFlag.FindStringIndex(l); m != nil && shortFlagLine.MatchString(l) {
+			end := len(l) - len(l[len(strings.TrimRight(l, "\r\n")):])
+			lines[i] = l[:m[1]-2] + "[redacted]" + l[end:]
+			hits++
+		}
+	}
+	if hits == 0 {
+		return s, 0
+	}
+	return strings.Join(lines, ""), hits
+}
 
 // Redact returns the text with each secret replaced by [redacted], and the number of secrets replaced.
 func Redact(s string) (string, int) {
@@ -64,7 +84,8 @@ func Redact(s string) (string, int) {
 	for _, re := range secretRes {
 		s = re.ReplaceAllStringFunc(s, func(string) string { hits++; return "[redacted]" })
 	}
-	s = shortFlag.ReplaceAllStringFunc(s, func(m string) string { hits++; return shortFlag.FindStringSubmatch(m)[1] + "[redacted]" })
+	s, n = redactShortFlag(s)
+	hits += n
 	s, n = redactRules(s)
 	return s, hits + n
 }

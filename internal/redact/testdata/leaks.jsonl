@@ -73,3 +73,9 @@
 {"src": "4b", "in": "GITLAB=glpat-Zx8vQ2mN7pL4kR9tY3wB ok", "secret": "Zx8vQ2mN7pL4kR9tY3wB"}
 {"src": "4b", "in": "npm token npm_a8Kd93LmQz7Xw2Pv5Rt1Yb6Nc4Hj0Gf8Se3U ok", "secret": "a8Kd93LmQz7Xw2Pv5Rt1Yb6Nc4Hj0Gf8Se3U"}
 {"src": "4b", "in": "auth_code = 9fK2xQ7pLm4Zr8Tb", "secret": "9fK2xQ7pLm4Zr8Tb"}
+{"src": "c2353", "in": "docker login -u bob -p hunter2xyz", "secret": "hunter2xyz"}
+{"src": "c2353", "in": "mysql -u root -phunter2xyz db", "secret": "hunter2xyz"}
+{"src": "c2353", "in": "curl -u bob:hunter2xyz https://x", "secret": "hunter2xyz"}
+{"src": "c2353", "in": "password: my pass phrase here", "secret": "phrase"}
+{"src": "c2353", "in": "podman login quay.io -p hunter2xyz -u bob", "secret": "hunter2xyz"}
+{"src": "c2353", "in": "some-new-client --user bob -p hunter2xyz", "secret": "hunter2xyz"}

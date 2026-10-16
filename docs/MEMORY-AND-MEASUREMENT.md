@@ -168,15 +168,15 @@ CLI output, error messages, logs, digests, alerts, and helper answers. A hit is 
 path now fails closed (Crius 23:40): after a secret-named key, a value ends early only at a quote or backtick pair
 that closes on the same line with nothing escaped inside; any other value is blanked to the end of its line (or of
 its JSON string or tool-input field). A key with no value, a block scalar (`|`, `>`) or a line that ends at another
-secret key also takes the next line and the lines indented under the key. `-p` is a password after `mysql`,
-`mariadb` and `sshpass`. On top, the gitleaks rules for token formats (vendored v8.30.1 in
+secret key also takes the next line and the lines indented under the key. `-p` is a password on a line that names a
+user (`-u`, `--user`) or a login, or after `mysql`, `mariadb` and `sshpass`. On top, the gitleaks rules for token formats (vendored v8.30.1 in
 `internal/redact/rules/`, MIT; `bin/refresh-gitleaks-rules <tag>` refreshes them; path rules and allowlists are
 dropped). Every leak case of the six rounds and every gap listed for step 4 is a fixture in
 `internal/redact/testdata/leaks.jsonl`. On the 31k real lines nothing the step-4 redactor caught is printed, 32
 lines change, 0.14% more of the text is blanked, and redaction takes about 340 ms per MB (twice step 4).
 Known gaps:
 - A secret with no key, no known prefix and no known shape (a bare word in prose) is not caught.
-- `-p` after other clients (`redis-cli -a`, a script's own flag) is printed.
+- A password flag other than `-p` with no user on the line (`redis-cli -a x`) is printed.
 - `find --deep` matches words before redaction, so a guessed secret confirms itself by being found (it is never
   printed).
 - Over-redaction: the rest of the line after any secret-named key (prose such as `password: is required`, review
