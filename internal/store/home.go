@@ -148,7 +148,7 @@ func privateIDs(home string) ([]string, error) {
 	}
 	dbf := filepath.Join(home, "state", "record.db")
 	if _, err := os.Stat(dbf); err == nil {
-		db, err := sql.Open("sqlite", sqliteURI(dbf, "mode=ro"))
+		db, err := sql.Open("sqlite", URI(dbf, "mode=ro"))
 		if err != nil {
 			return nil, err
 		}

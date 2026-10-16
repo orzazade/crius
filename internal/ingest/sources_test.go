@@ -1,0 +1,153 @@
+package ingest
+
+import (
+	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/orzazade/crius/internal/testutil"
+)
+
+func gitOut(t *testing.T, repo string, args ...string) string {
+	t.Helper()
+	out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func gitCase(t *testing.T) (*ic, string) {
+	root := t.TempDir()
+	repo := testutil.GitRepo(t, filepath.Join(root, "repo"))
+	return newIC(t, cfg{repo: repo}), repo
+}
+
+func TestCommitsRevertsAndSessionLink(t *testing.T) {
+	x, repo := gitCase(t)
+	testutil.Write(t, filepath.Join(repo, "a.txt"), "1\n")
+	testutil.CommitAll(t, repo)
+	sha1 := gitOut(t, repo, "rev-parse", "HEAD")
+	testutil.Git(t, repo, "revert", "--no-edit", "HEAD")
+	sha2 := gitOut(t, repo, "rev-parse", "HEAD")
+	testutil.Write(t, x.tx, lines(assistant(A{Req: "req_1", TS: "2026-10-16T09:00:00Z", Tools: [][2]string{{"t1", "Bash"}}}),
+		toolResult("u1", "2026-10-16T09:00:01Z", "t1", "[main "+sha1[:7]+"] first\n", false)))
+	x.run()
+	eq(t, x.q("select project, is_revert, reverts_sha, session, files from git_commit where sha=?", sha1),
+		[][]string{{"demo", "0", "<nil>", x.sid, `["a.txt"]`}})
+	eq(t, x.q("select is_revert, reverts_sha from git_commit where sha=?", sha2), [][]string{{"1", sha1}})
+	eq(t, x.one("select count(*) from evidence where kind='commit'"), "2")
+	before := x.counts()
+	x.run()
+	eq(t, x.counts(), before)
+	testutil.Write(t, filepath.Join(repo, "b.txt"), "2\n")
+	testutil.CommitAll(t, repo)
+	x.run()
+	eq(t, x.one("select count(*) from git_commit"), "3")
+}
+
+// Codex P1 on the Python version: the branch was resolved after `git log`, so a commit landing in between was
+// taken as the cursor without its row and skipped forever.
+func TestACommitLandingDuringTheRunIsNotSkipped(t *testing.T) {
+	x, repo := gitCase(t)
+	testutil.Write(t, filepath.Join(repo, "a.txt"), "1\n")
+	testutil.CommitAll(t, repo)
+	afterHeadHook = func() {
+		testutil.Write(t, filepath.Join(repo, "b.txt"), "2\n")
+		testutil.CommitAll(t, repo)
+		afterHeadHook = nil
+	}
+	defer func() { afterHeadHook = nil }()
+	x.run()
+	x.run()
+	eq(t, x.one("select count(*) from git_commit"), "2")
+}
+
+func TestAMissingRepoMakesTheRunPartial(t *testing.T) {
+	x := newIC(t, cfg{})
+	writeConfig(t, x.home, x.personal, x.work, cfg{repo: filepath.Join(x.root, "gone")})
+	st := x.run()
+	if st.Status != "partial" || !strings.Contains(strings.Join(st.Warnings, "\n"), "gone") {
+		t.Fatalf("%+v", st)
+	}
+}
+
+func busCase(t *testing.T) (*ic, string, string) {
+	root := t.TempDir()
+	arts := filepath.Join(root, "docs")
+	os.MkdirAll(arts, 0o755)
+	teamLog := filepath.Join(root, "BUILD-LOG.md")
+	return newIC(t, cfg{artifactDir: arts, teamLogs: teamLog}), arts, teamLog
+}
+
+func TestBusLinesDatedUndatedMalformedAndRedacted(t *testing.T) {
+	x, _, _ := busCase(t)
+	token := "ghp_" + strings.Repeat("A", 36)
+	testutil.Write(t, filepath.Join(x.home, "bus", "demo.log"),
+		"2026-10-16T09:20 DONE demo:leader -> crius — item=demo#4 sha=abc1234 done\n"+
+			"09:30 BLOCKED demo:leader -> crius — waiting on CI\n"+
+			"this is not a bus line\n"+
+			"2026-10-16T09:40 NEED-OWNER demo:leader -> crius — token "+token+" leaked path="+token+"\n")
+	x.run()
+	rows := x.q("select ts, kind, actor, project, text, refs from event where source_key like 'bus:%' order by id")
+	var kinds []string
+	for _, r := range rows {
+		kinds = append(kinds, r[1])
+	}
+	eq(t, kinds, []string{"done", "blocked", "malformed", "need-owner"})
+	var refs map[string][]string
+	if err := json.Unmarshal([]byte(rows[0][5]), &refs); err != nil || refs["item"][0] != "demo#4" {
+		t.Fatal(rows[0][5], err)
+	}
+	if !strings.HasPrefix(rows[1][0], "2026-10-16T") {
+		t.Fatal(rows[1][0])
+	}
+	if strings.Contains(rows[3][4], token) || !strings.Contains(rows[3][4], "[redacted]") {
+		t.Fatal(rows[3][4])
+	}
+	// Codex P1 on the Python version: refs were stored without redaction.
+	if strings.Contains(rows[3][5], token) {
+		t.Fatal("secret kept in refs:", rows[3][5])
+	}
+	eq(t, rows[2][4], "<nil>")
+	before := x.counts()
+	x.run()
+	eq(t, x.counts(), before)
+}
+
+func TestTeamLogLinesUseTheLenientGrammar(t *testing.T) {
+	x, _, teamLog := busCase(t)
+	testutil.Write(t, teamLog, "# BUILD-LOG\n09:20 NEED api -> leader — schema?\n")
+	x.run()
+	eq(t, x.q("select kind, actor, project from event where source_key like 'team:%'"), [][]string{{"need", "api", "demo"}})
+}
+
+// Codex P2 on the Python version: keys used the file's base name, so two BUILD-LOG.md files collided.
+func TestTwoTeamLogsWithTheSameNameDoNotCollide(t *testing.T) {
+	root := t.TempDir()
+	a, b := filepath.Join(root, "a", "BUILD-LOG.md"), filepath.Join(root, "b", "BUILD-LOG.md")
+	same := "2026-10-16T09:20 DONE api -> leader — shipped\n"
+	testutil.Write(t, a, same)
+	testutil.Write(t, b, same)
+	x := newIC(t, cfg{teamLogs: a + "," + b})
+	x.run()
+	eq(t, x.one("select count(*) from event where source_key like 'team:%'"), "2")
+}
+
+func TestDecisionsAndArtifacts(t *testing.T) {
+	x, arts, _ := busCase(t)
+	testutil.Write(t, filepath.Join(x.home, "state", "demo", "DECISIONS.md"),
+		"## demo-D1 · 2026-10-16\nDecision: a\nWhy: b\nDecided by: crius\nRefs: - · taint: no\n\n"+
+			"## demo-D2 · 2026-10-16\nDecision: c\nWhy: d\nDecided by: owner\nSupersedes: demo-D1\nReason: r\nRefs: - · taint: yes\n")
+	testutil.Write(t, filepath.Join(arts, "plan.md"), "# Synthetic plan\n\n## Part one\ntext\n## Part two\n")
+	x.run()
+	eq(t, x.q("select id, project, title, decided_by, supersedes, taint from decision order by id"), [][]string{
+		{"demo-D1", "demo", "a", "crius", "<nil>", "0"}, {"demo-D2", "demo", "c", "owner", "demo-D1", "1"}})
+	eq(t, x.q("select title, headings, project from artifact"), [][]string{{"Synthetic plan", "Part one | Part two", "demo"}})
+	testutil.Write(t, filepath.Join(arts, "plan.md"), "# Renamed plan\n")
+	x.run()
+	eq(t, x.q("select title from artifact"), [][]string{{"Renamed plan"}})
+}
