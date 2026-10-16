@@ -690,3 +690,32 @@ func TestQuotaGuardAlertFitsABusLine(t *testing.T) {
 		t.Fatalf("%q", x.alerts())
 	}
 }
+
+// Crius 22:12, end to end (sample -> ingest -> report): an enterprise-only work persona with one session that
+// rendered every 5 min for 3 h after its one response, and a headless session (no statusline) with a request 20 min
+// ago, which puts work among the personas that need a line, is not stale.
+func TestQuotaEnterprisePersonaIsNotStale(t *testing.T) {
+	x := quotaCase(t)
+	if err := os.MkdirAll(filepath.Join(x.home, "spool"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	e, u := "eeeeeeee-1111-2222-3333-444444444444", "dddddddd-1111-2222-3333-444444444444"
+	start := qNow.Add(-3 * time.Hour)
+	x.session("work", e, "/work/axi", "", start)
+	x.session("work", u, "/work/axi", "", qNow.Add(-20*time.Minute))
+	render := func(usd float64, at time.Time) {
+		in := fmt.Sprintf(`{"session_id":%q,"cost":{"total_cost_usd":%v,"total_api_duration_ms":%v}}`, e, usd, usd*1000)
+		if _, err := quota.Sample(x.home, "work", []byte(in), at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	render(0, start.Add(-2*time.Minute))
+	render(1, start.Add(time.Minute))
+	for at := start.Add(5 * time.Minute); !at.After(qNow); at = at.Add(5 * time.Minute) {
+		render(1, at)
+	}
+	x.run()
+	if rep := x.report(); len(rep.Stale) != 0 {
+		t.Fatalf("work stale: %v", rep.Stale)
+	}
+}
