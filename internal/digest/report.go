@@ -316,6 +316,11 @@ func storeSections(db *sql.DB, in Input, now time.Time, maxItems int) ([]string,
 		waits = append(waits, t.Local().Format("15:04")+" "+h.Text) // the text names the session; the project is "waits"
 	}
 	list("Open waits (last 24 h)", waits, w.More)
+	bad, err := malformed(db, since)
+	if err != nil {
+		return nil, err
+	}
+	bad = " · lines not read (malformed): " + bad // on the health line: no line of the 60 for it
 
 	q := in.Quota
 	out = append(out, "", "## Quota and health")
@@ -341,9 +346,9 @@ func storeSections(db *sql.DB, in Input, now time.Time, maxItems int) ([]string,
 	}
 	h := in.Health
 	if h.Status == "complete" {
-		return append(out, "Health: complete"), nil
+		return append(out, "Health: complete"+bad), nil
 	}
-	out = append(out, fmt.Sprintf("Health: %s, %d problems", h.Status, len(h.Problems)))
+	out = append(out, fmt.Sprintf("Health: %s, %d problems", h.Status, len(h.Problems))+bad)
 	for i, p := range h.Problems {
 		if i == maxItems {
 			out = append(out, fmt.Sprintf("  +%d more: crius-rec health", len(h.Problems)-maxItems))
@@ -382,4 +387,33 @@ func clip(s string, n int) string {
 		return string(r[:n-1]) + "…"
 	}
 	return s
+}
+
+// malformed counts the log lines ingest read since since and could not parse, per project: "none" or
+// "3 (axi 2, quotes 1)".
+func malformed(db *sql.DB, since time.Time) (string, error) {
+	rows, err := db.Query("select project, count(*) from event where kind = 'malformed' and ts >= ? group by project"+
+		" order by count(*) desc, project", since.UTC().Format("2006-01-02T15:04:05Z"))
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	total := 0
+	var per []string
+	for rows.Next() {
+		var project string
+		var n int
+		if err := rows.Scan(&project, &n); err != nil {
+			return "", err
+		}
+		total += n
+		per = append(per, fmt.Sprintf("%s %d", project, n))
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	if total == 0 {
+		return "none", nil
+	}
+	return fmt.Sprintf("%d (%s)", total, strings.Join(per, ", ")), nil
 }

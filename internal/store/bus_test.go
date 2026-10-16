@@ -1,6 +1,8 @@
 package store
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -155,7 +157,8 @@ func TestUnknownTypeStrictAndLenient(t *testing.T) {
 }
 
 func TestNewTypesAreAccepted(t *testing.T) {
-	for _, typ := range []string{"NEED-OWNER", "PAUSED", "LIMIT", "ITEM", "DECISION", "RESUMED", "VERIFIED"} {
+	for _, typ := range []string{"NEED-OWNER", "PAUSED", "LIMIT", "ITEM", "DECISION", "RESUMED", "VERIFIED", "CORRECTED",
+		"GO", "ACK"} {
 		if ParseLine("2026-10-16T09:20 "+typ+" demo:leader -> crius — x", nil, true) == nil {
 			t.Error(typ)
 		}
@@ -214,15 +217,76 @@ func TestAppendLineGoesToProjectLog(t *testing.T) {
 // Real ~/.crius/bus lines (INFO, NEED, WAIT) were warned as malformed: the Go list and the written list drifted.
 func TestEveryCriusBusTypeParsesStrict(t *testing.T) {
 	for _, typ := range []string{"DONE", "BLOCKED", "NEED-OWNER", "PAUSED", "LIMIT", "ITEM", "DECISION", "RESUMED",
-		"ALERT", "INFO", "NEED", "WAIT", "PARKED"} {
+		"ALERT", "INFO", "NEED", "WAIT", "PARKED", "ACK"} {
 		if ParseLine("2026-10-16T09:20 "+typ+" demo:leader -> crius — x", nil, true) == nil {
 			t.Error(typ)
 		}
 	}
-	for _, typ := range []string{"ACK", "CLEAR-READY", "QUEUE"} { // team-only: stay loud on the Crius bus
+	for _, typ := range []string{"CLEAR-READY", "QUEUE", "NEED-QA", "BUG", "LESSON"} { // team-only: loud on the Crius bus
 		if ParseLine("2026-10-16T09:20 "+typ+" demo:leader -> crius — x", nil, true) != nil {
 			t.Error("team-only type parsed strict:", typ)
 		}
+	}
+}
+
+// Crius 10-17 03:39: the types list drifted from use (RULES says post CORRECTED; the list had no CORRECTED, so those
+// lines were dropped as malformed). Every type RULES.md names is in the list.
+func TestRulesUseOnlyListedTypes(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join(testutil.RepoRoot(t), "docs", "RULES.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := 0
+	for _, m := range regexp.MustCompile("`([A-Z][A-Z-]+)[ `]").FindAllStringSubmatch(string(b), -1) {
+		found++
+		if !Types[m[1]] {
+			t.Errorf("RULES.md names %s, which is not a bus type", m[1])
+		}
+	}
+	if found == 0 {
+		t.Fatal("no types found in RULES.md: the pattern no longer reads it")
+	}
+}
+
+// The cmux-team skill's type line (section 2, team logs and the bus) names only bus types or the team-only types the
+// design doc lists. The skill lives outside the repo, in the owner's Claude config.
+func TestTeamSkillUsesOnlyListedTypes(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(home, ".claude", "skills", "cmux-team", "SKILL.md"))
+	if errors.Is(err, fs.ErrNotExist) {
+		t.Skip("no cmux-team skill on this machine")
+	} else if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := os.ReadFile(filepath.Join(testutil.RepoRoot(t), "docs", "MEMORY-AND-MEASUREMENT.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`Team-only types \(([^)]*)\)`).FindSubmatch(doc)
+	if m == nil {
+		t.Fatal("the design doc has no \"Team-only types (...)\" list")
+	}
+	teamOnly := map[string]bool{}
+	for _, typ := range strings.Split(string(m[1]), ", ") {
+		teamOnly[typ] = true
+	}
+	_, rest, ok := strings.Cut(string(b), "\nTypes: ")
+	if !ok {
+		t.Fatal("the skill has no \"Types: \" line")
+	}
+	rest, _, _ = strings.Cut(rest, "\n**")
+	found := 0
+	for _, m := range regexp.MustCompile("`([A-Z][A-Z-]+)[ `]").FindAllStringSubmatch(rest, -1) {
+		found++
+		if !Types[m[1]] && !teamOnly[m[1]] {
+			t.Errorf("the cmux-team skill names %s: not a bus type nor a team-only type in the design doc", m[1])
+		}
+	}
+	if found < 10 {
+		t.Fatalf("%d types found in the skill's type line: the pattern no longer reads it", found)
 	}
 }
 

@@ -615,3 +615,17 @@ func TestABusClockAlertRedactsAKeyShapedWriter(t *testing.T) {
 		t.Fatal(log)
 	}
 }
+
+// Crius 10-17 03:39: a malformed line is not silent. Its row carries the time it was read, so the goal report can
+// count the lines not read since the last report; a CORRECTED line is a bus type, not malformed.
+func TestMalformedLinesAreCountedWhenRead(t *testing.T) {
+	x, _, _ := busCase(t)
+	testutil.Write(t, filepath.Join(x.home, "bus", "demo.log"),
+		"2026-10-17T03:00 CORRECTED demo:lead -> crius — F-1 was wrong\n"+
+			"2026-10-17T03:01 READY-RESTART demo:lead -> crius — not a type\n"+
+			"no stamp at all\n")
+	before := time.Now().UTC().Add(-time.Second).Format("2006-01-02T15:04:05Z")
+	x.run()
+	eq(t, x.one("select count(*) from event where kind = 'corrected'"), "1")
+	eq(t, x.one("select count(*) from event where kind = 'malformed' and project = 'demo' and ts >= '"+before+"'"), "2")
+}

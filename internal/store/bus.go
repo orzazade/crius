@@ -19,7 +19,7 @@ import (
 // a test keeps the two equal. Any other type stays malformed (a loud warning), on purpose.
 var Types = map[string]bool{"DONE": true, "BLOCKED": true, "NEED-OWNER": true, "PAUSED": true, "LIMIT": true,
 	"ITEM": true, "DECISION": true, "RESUMED": true, "ALERT": true, "INFO": true, "NEED": true, "WAIT": true,
-	"PARKED": true, "VERIFIED": true}
+	"PARKED": true, "VERIFIED": true, "CORRECTED": true, "GO": true, "ACK": true}
 
 const MaxLen = 300
 

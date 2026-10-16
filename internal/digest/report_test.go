@@ -191,7 +191,7 @@ func TestBuildAddsTheStoreSections(t *testing.T) {
 		"\n## Quota and health\nQuota: 7d 54% on day 3 of 7, 1.9x the time passed · runs out ~" +
 			q.Runout().Local().Format("Mon 01-02 15:04") + " at this pace\n" +
 			"Quota partial: account unknown for $1424 in 319 sessions (not measured) (+1 more: crius-rec quota)\n" +
-			"Health: partial, 4 problems\n  no heartbeat (open hb: no such file)\n  no backup in b\n  p3\n  +1 more: crius-rec health\n",
+			"Health: partial, 4 problems · lines not read (malformed): none\n  no heartbeat (open hb: no such file)\n  no backup in b\n  p3\n  +1 more: crius-rec health\n",
 	} {
 		if !strings.Contains(r.Text, want) {
 			t.Errorf("missing %q in\n%s", want, r.Text)
@@ -217,7 +217,7 @@ func TestBuildAddsTheStoreSections(t *testing.T) {
 		t.Fatal(got)
 	}
 	for _, want := range []string{"## Since the last report (none; the last 24 h)\n", "\nsources read: none\n", "Quota: 7d 10% on day 3 of 7, 0.4x the time passed · lasts to the reset " +
-		reset.Format("Mon 01-02 15:04") + "\nHealth: complete\n", "· status complete\n"} {
+		reset.Format("Mon 01-02 15:04") + "\nHealth: complete · lines not read (malformed): none\n", "· status complete\n"} {
 		if !strings.Contains(r.Text, want) {
 			t.Errorf("missing %q in\n%s", want, r.Text)
 		}
@@ -328,5 +328,33 @@ func TestBuildEmptiesListsToFit(t *testing.T) {
 	}
 	if n := strings.Count(r.Text, "\n"); n > 60 || !strings.Contains(r.Text, "\nDecisions: 2\nOpen waits (last 24 h): none\n") {
 		t.Fatalf("%d lines\n%s", n, r.Text)
+	}
+}
+
+// Crius 10-17 03:39: lines the ingest could not read are counted per log in the report, never dropped silently.
+func TestBuildCountsMalformedLines(t *testing.T) {
+	db := open(t)
+	for i, row := range [][2]string{{"axi", "2026-10-17T05:00:00Z"}, {"axi", "2026-10-17T05:01:00Z"},
+		{"quotes", "2026-10-17T05:02:00Z"}, {"falcon", "2026-10-16T01:00:00Z"}} { // falcon: before the last report
+		if _, err := db.Exec("insert into event (ts, project, kind, source_key) values (?, ?, 'malformed', ?)",
+			row[1], row[0], fmt.Sprint("k", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	in := input(nil, nil)
+	in.Since = now.Add(-9 * time.Hour)
+	r, err := Build(db, in, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(r.Text, "\nHealth: complete · lines not read (malformed): 3 (axi 2, quotes 1)\n") {
+		t.Fatal(r.Text)
+	}
+	empty, err := Build(open(t), in, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(empty.Text, "\nHealth: complete · lines not read (malformed): none\n") {
+		t.Fatal(empty.Text)
 	}
 }

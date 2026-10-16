@@ -125,7 +125,8 @@ func (r *runner) logFile(path, source string, strict bool, project string) error
 			p := store.ParseLine(line, &st, strict)
 			if p == nil {
 				r.warn(false, "malformed line in %s at byte %d", path, pos)
-				return r.event(tx, event{kind: "malformed", key: key, project: project})
+				// Stamped when read: the goal report counts the lines not read since the last report.
+				return r.event(tx, event{kind: "malformed", key: key, project: project, ts: utcNow()})
 			}
 			if !p.DatedByGuess {
 				anchored = true
