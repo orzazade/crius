@@ -200,7 +200,9 @@ within 45 min has room until 7d or 5h reaches 100%; an older one only while both
 100% is full at any age; a 5h window that has reset counts 0. Each share is aged by the newest measurement
 showing it: a share only rises within its window, so a lower reading is an older one, and a heartbeat repeats a
 session's last values; the older of the 7d and the running 5h share's ages counts. No sample, an ended week, a sample ahead of the clock, no
-5h window sampled, or a failure is unknown, never room. It reads the store, so a sample is up to one ingest run (10 min) older than the spool.
+5h window sampled, or a failure is unknown, never room. It reads the store, so a sample is up to one ingest run (10 min) older than the spool. Known gap
+(Crius 23:11, fix next): a session first seen long after its last response, showing exactly the top share, counts
+as a fresh measurement; it can only give a wrong room at 90-99%. The fix marks lines that came with a response.
 
 **Bounded transcript search (`find --deep`).** Used only when the store has no answer and the question is about the
 last 30 days. A Haiku helper runs `rg` over the transcript folders of that project and time window only (max 50
