@@ -144,3 +144,22 @@ func TestJSONRedactsKeysAndWholeValues(t *testing.T) {
 		t.Error(s)
 	}
 }
+
+// Review 33c07fd: operators between key and value, an escaped quote inside the value, long flags, names after
+// token, dotted names, backticks, URL credentials and Authorization headers.
+func TestRedactMoreShapes(t *testing.T) {
+	for _, in := range []string{`password := "hunter2"`, `'password' => 'hunter2'`, `if PASSWORD == "hunter2"`,
+		`password="ab\"hunter2"`, `PASSWORD=\"ab\\\"hunter2\"`, `mysql --password hunter2`, "GH_TOKEN_2=hunter2",
+		"tokenValue=hunter2", "password.prod=hunter2", "PASSWORD = `two hunter2`", "postgres://user:hunter2@db/x",
+		"Authorization: Basic dXNlcjpodW50ZXIy", `"authorization": "Basic hunter2"`} {
+		if out, _ := Redact(in); strings.Contains(out, "hunter2") || strings.Contains(out, "dXNlcjpodW50ZXIy") {
+			t.Errorf("%s -> %s", in, out)
+		}
+	}
+	for _, keep := range []string{"tokens: 500", "max_tokens: 4096", "token_count=3", "https://example.com/a@b",
+		"basic setup done", "docker login --password-stdin --username bob"} {
+		if out, n := Redact(keep); n != 0 {
+			t.Errorf("%s -> %s", keep, out)
+		}
+	}
+}

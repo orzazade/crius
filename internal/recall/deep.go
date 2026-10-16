@@ -440,13 +440,17 @@ func toolText(raw json.RawMessage) []string {
 	walk = func(key string, v any) {
 		switch v := v.(type) {
 		case map[string]any:
-			// A pair such as {"name": "DB_PASSWORD", "value": "..."} names its secret in another field.
-			pair := slices.ContainsFunc([]string{"name", "key"}, func(f string) bool {
-				s, ok := v[f].(string)
-				return ok && redact.SecretKey(s)
-			})
+			// A pair such as {"name": "DB_PASSWORD", "value": "..."} names its secret in another field, in any case or
+			// naming ({"ParameterKey": ..., "ParameterValue": ...}).
+			pair := false
+			for f, fv := range v {
+				s, ok := fv.(string)
+				f = strings.ToLower(f)
+				pair = pair || ok && (strings.HasSuffix(f, "name") || strings.HasSuffix(f, "key")) && redact.SecretKey(s)
+			}
 			for _, k := range slices.Sorted(maps.Keys(v)) {
-				if redact.SecretKey(k) || pair && k == "value" {
+				lk := strings.ToLower(k)
+				if redact.SecretKey(k) || pair && (strings.HasSuffix(lk, "value") || lk == "val") {
 					out = append(out, k+": [redacted]")
 					continue
 				}
@@ -456,8 +460,19 @@ func toolText(raw json.RawMessage) []string {
 				walk(k, v[k])
 			}
 		case []any:
+			// The scalars of a list stay on one line: a flag keeps its value next to it (--password x).
+			var line []string
 			for _, e := range v {
-				walk(key, e)
+				switch e.(type) {
+				case map[string]any, []any:
+					walk(key, e)
+				case nil:
+				default:
+					line = append(line, fmt.Sprint(e))
+				}
+			}
+			if len(line) > 0 {
+				walk(key, strings.Join(line, " "))
 			}
 		case nil:
 		default:

@@ -2,6 +2,7 @@ package recall
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/orzazade/crius/internal/redact"
 	"github.com/orzazade/crius/internal/store"
 	"github.com/orzazade/crius/internal/testutil"
 )
@@ -298,6 +300,17 @@ func TestDeepToolInputNestedSecrets(t *testing.T) {
 	for _, h := range r.Hits {
 		if strings.Contains(h.Text, "hunter") {
 			t.Error(h.Text)
+		}
+	}
+}
+
+// Review 33c07fd: name/value pairs in any case or naming (AWS, CloudFormation), and a flag with its value in an
+// argument list.
+func TestDeepToolInputPairsAndArgs(t *testing.T) {
+	for _, in := range []string{`{"Name":"DB_PASSWORD","Value":"hunter2"}`, `{"ParameterKey":"DbPassword","ParameterValue":"hunter2"}`,
+		`{"key":"API_KEY","val":"hunter2"}`, `{"args":["--password","hunter2"]}`} {
+		if out, _ := redact.Redact(strings.Join(toolText(json.RawMessage(in)), " ")); strings.Contains(out, "hunter2") {
+			t.Errorf("%s -> %s", in, out)
 		}
 	}
 }

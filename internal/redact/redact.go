@@ -15,7 +15,8 @@ import (
 )
 
 // secretKey names a key whose value is a secret: the key = value pattern and SecretKey share it.
-const secretKey = `(api[_-]?key|passw(?:or)?d|passphrase|secret|token\b|private[_-]?key)`
+const secretKey = `(api[_-]?key|passw(?:or)?d|passphrase|secret|token(?:[_-]?(?:v?\d+|value|key|secret))?\b|private[_-]?key|` +
+	`authorization)`
 
 var secretKeyRe = regexp.MustCompile(`(?i)` + secretKey)
 
@@ -28,10 +29,17 @@ var secretRes = []*regexp.Regexp{
 	regexp.MustCompile(`(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)`),
 	// key = value, also as JSON ("api_key": "..."). Any length: a short password is still a password; a value
 	// with no closing quote (cut off) is removed to the end of the line.
-	// Quotes may come escaped, at any depth (code or JSON quoted in a command): \"value\", \\\"value\\\".
-	// The rest of the name may follow the secret word (secret_access_key).
-	regexp.MustCompile(`(?i)` + secretKey + `[\w-]*\\*["']?[ \t]*[=:][ \t]*` +
-		`(?:\\*"[^"\n]*"?|\\*'[^'\n]*'?|[^\s"',;]+)`),
+	// Quotes may come escaped, at any depth (code or JSON quoted in a command): \"value\", \\\"value\\\"; an
+	// escaped quote inside the value does not end it. The rest of the name may follow the secret word
+	// (secret_access_key, password.prod); the operator may be code's (:=, =>, ==); a scheme may lead the value
+	// (Authorization: Basic ...).
+	regexp.MustCompile(`(?i)` + secretKey + `[\w.-]*\\*["']?[ \t]*(?::=|=>|==?|:)[ \t]*` +
+		`(?:(?:basic|bearer|digest|token)[ \t]+)?` +
+		"(?:\\\\*\"(?:\\\\.|[^\"\\\\\\n])*\"?|\\\\*'(?:\\\\.|[^'\\\\\\n])*'?|`[^`\\n]*`?|[^\\s\"',;]+)"),
+	// A long flag and its value (--password hunter2); -p is too short to tell.
+	regexp.MustCompile(`(?i)--` + secretKey + `[\w-]*[ \t]+[^\s-]\S*`),
+	// Credentials in a URL (postgres://user:pass@host).
+	regexp.MustCompile(`\b[A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]+:[^@\s/]+@`),
 	regexp.MustCompile(`\b(sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{36,}|xox[bpors]-[A-Za-z0-9-]+|AKIA[0-9A-Z]{16})`),
 	regexp.MustCompile(`(?i)\bbearer\s+[A-Za-z0-9._~+/-]{20,}=*`),
 	regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}`),
