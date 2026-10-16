@@ -149,25 +149,28 @@ func (r *runner) ingestTranscripts() {
 	}
 }
 
-// refile re-derives the filing of sessions filed by their folder when projects.toml now files that folder
-// differently. rollUp runs only for a file with new lines, so without this a finished session keeps a stale project.
+// refile re-derives the filing of sessions filed by their folder or title when projects.toml or the title rules now
+// file them differently. rollUp runs only for a file with new lines, so without this a finished session keeps a stale
+// project or role.
 func (r *runner) refile() error {
 	// A registered session's events from before its first tag are filed by its folder too.
-	rows, err := r.db.Query("select id, coalesce(cwd,''), coalesce(project,'') from session where attrib_source in" +
-		" ('cwd','unknown') union select distinct s.id, coalesce(s.cwd,''), coalesce(e.project,'') from (select session," +
-		" min(from_ts) f from assignment group by session) a join session s on s.id = a.session join event e on" +
-		" e.session = a.session and e.ts < a.f")
+	// The role of a registered session is its tag's: '' leaves it out of the comparison.
+	rows, err := r.db.Query("select id, coalesce(cwd,''), coalesce(title,''), coalesce(project,''), role from session" +
+		" where attrib_source in ('cwd','title','unknown') union select distinct s.id, coalesce(s.cwd,''), coalesce(s.title,'')," +
+		" coalesce(e.project,''), '' from (select session, min(from_ts) f from assignment group by session) a join session s" +
+		" on s.id = a.session join event e on e.session = a.session and e.ts < a.f")
 	if err != nil {
 		return err
 	}
 	var stale []string
 	for rows.Next() {
-		var id, cwd, project string
-		if err := rows.Scan(&id, &cwd, &project); err != nil {
+		var id, cwd, title, project, role string
+		if err := rows.Scan(&id, &cwd, &title, &project, &role); err != nil {
 			rows.Close()
 			return err
 		}
-		if r.cfg.projectForCwd(cwd) != project && !slices.Contains(stale, id) {
+		filed, titleRole, _ := r.cfg.filing(cwd, title)
+		if (filed != project || role != "" && titleRole != role) && !slices.Contains(stale, id) {
 			stale = append(stale, id)
 		}
 	}
@@ -493,15 +496,15 @@ func (r *runner) rollUp(tx *sql.Tx, sid string) error {
 			return err
 		}
 	}
-	var cwd sql.NullString
-	switch err := tx.QueryRow("select cwd from session where id=?", sid).Scan(&cwd); err {
+	var cwd, title sql.NullString
+	switch err := tx.QueryRow("select cwd, title from session where id=?", sid).Scan(&cwd, &title); err {
 	case nil:
 	case sql.ErrNoRows:
 		return nil
 	default:
 		return err
 	}
-	cwdProject := r.cfg.projectForCwd(cwd.String)
+	filed, titleRole, byTitle := r.cfg.filing(cwd.String, title.String)
 	var attrib, account, project, role string
 	var parent, item sql.NullString
 	err = tx.QueryRow("select account, project, role, parent, item from assignment where session=?"+
@@ -510,8 +513,11 @@ func (r *runner) rollUp(tx *sql.Tx, sid string) error {
 	case err == nil:
 		attrib = "registered"
 	case err == sql.ErrNoRows:
-		attrib, account, project, role = "unknown", "unknown", cwdProject, "unknown"
-		if cwdProject != "" {
+		attrib, account, project, role = "unknown", "unknown", filed, titleRole
+		switch {
+		case byTitle:
+			attrib = "title"
+		case filed != "":
 			attrib = "cwd"
 		}
 	default:
@@ -549,10 +555,23 @@ func (r *runner) rollUp(tx *sql.Tx, sid string) error {
 		sid); err != nil {
 		return err
 	}
+	if err := measuredAccount(tx, sid); err != nil {
+		return err
+	}
 	// Each event keeps the project of the assignment that was active at its time; before the first tag, the
-	// project of the session's folder.
+	// project the session is filed by (its title's or its folder's).
 	_, err = tx.Exec("update event set project=coalesce((select a.project from assignment a where a.session=event.session"+
-		" and a.from_ts <= event.ts order by a.from_ts desc limit 1), ?) where session=?", nullable(cwdProject), sid)
+		" and a.from_ts <= event.ts order by a.from_ts desc limit 1), ?) where session=?", nullable(filed), sid)
+	return err
+}
+
+// measuredAccount sets the account of a session (every session when sid is "") from the newest statusline line seen
+// for it, when there is one: rate limits mean Max, a response without them enterprise. What the statusline saw wins
+// over a tag (the tag's account stays on the assignment, where the guard compares the two).
+func measuredAccount(tx *sql.Tx, sid string) error {
+	_, err := tx.Exec("update session set account=(select case rl when 1 then 'max' else 'enterprise' end from"+
+		" account_seen where session=session.id order by ts desc, rowid desc limit 1) where (?1 = '' or id = ?1) and"+
+		" exists (select 1 from account_seen where session=session.id)", sid)
 	return err
 }
 

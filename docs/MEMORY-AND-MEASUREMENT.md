@@ -131,7 +131,7 @@ finds no `<project>-D<n>` or `<project>#<n>` id that exists only in private file
 |---|---|
 | `request` | request_id (PK), session, ts_first, ts_last, model, query_source, tok_in, tok_out (max over streamed records), tok_cache_read, tok_cache_write, cost_list_usd, transcript_path, line_uuid. 90 days, then rolled into `usage_day` |
 | `usage_day` | session, day, model, query_source, calls, tokens by type, cost (forever) |
-| `session` | id, account (`max` = the one subscription, `enterprise` = Appxite API billing, `unknown`), persona, project, role, parent_id, item, each with `attrib_source` (`registered`, `cwd`, `unknown`), title, model_main, started, ended, end_reason, peak_ctx, compactions, human_prompts, peer_prompts, interrupts, hook_blocks, hook_errors, taint |
+| `session` | id, account (`max` = the one subscription, `enterprise` = Appxite API billing, `unknown`), persona, project, role, parent_id, item, each with `attrib_source` (`registered`, `title`, `cwd`, `unknown`), title, model_main, started, ended, end_reason, peak_ctx, compactions, human_prompts, peer_prompts, interrupts, hook_blocks, hook_errors, taint |
 | `assignment` | session, item, role, from_ts, to_ts, source (launch or task switch) |
 | `wait` | wait_id, session, kind, request_ref (notification or tool_use_id), opened, resolution_ref, resolved, resolved_by (`human/peer/timeout/none`), state `open/resolved` |
 | `quota` | ts, account, session, persona, epoch (seven-day `resets_at`), five_hour_pct, five_reset, seven_day_pct, sample_kind `session/change/heartbeat` |
@@ -209,7 +209,15 @@ Known gaps:
   launch `--settings` env), and its first prompt carries one tag line, `[crius account=max project=quotes role=qa
   parent=<uuid> item=quotes#41]`. The ingest extracts only that tag (allowlisted regex). **At a task switch**
   (clear-per-item) the resume prompt carries a new tag and starts a new `assignment` row.
-- Missing tag: project may come from cwd (`attrib_source=cwd`); role and item stay `unknown`. Never guessed.
+- Missing tag: the `-n` title files the session when it has the lead form `<project>[-build]: <role>` or
+  `<project> · <role>` (`attrib_source=title`): the role is the part after the separator, the project the named one
+  when projects.toml has it, else the folder's. A title with no separator (`q-tutor`, `poc-web`) gives no role.
+  Otherwise project may come from cwd (`attrib_source=cwd`); role and item stay `unknown`. Never guessed.
+- **Account** is what the statusline saw last for the session (`account_seen`: rl 1 = `max`, 0 = `enterprise`), and
+  wins over the tag's (the tag's stays on the assignment, where the guard compares the two). Sessions before
+  2026-10-16 15:43Z have no statusline line and stay `unknown`.
+- **Subagents** have no session row: their requests are counted under the parent session, so a session's cost
+  includes its subagents'. `parent_id` is set only by a launch tag.
 - **Taint**: a session becomes tainted when it reads a tainted source (Falcon mail/ticket/PR records, web pages).
   Everything it writes inherits taint: decisions, artifacts, events, items. A `find` answer or helper answer is
   tainted if any cited row is. Only the owner's own words are clean (7b).

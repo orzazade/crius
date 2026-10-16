@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -114,6 +115,29 @@ func QuotaProjects(home string) (quota.Projects, error) {
 		return quota.Projects{}, err
 	}
 	return c.quotaProjects(), nil
+}
+
+// titleRe is a session's -n title as leads name them: "<project>[-build]: <role>" or "<project> · <role>".
+var titleRe = regexp.MustCompile(`^\s*([a-z0-9][a-z0-9-]*?)(?:-build)?\s*(?:(?::|·)\s*(.*?))?\s*$`)
+
+// filing is how a session with no tag is filed (Crius 00:18: team cost is read by project and role): the project its
+// -n title names when that project is configured, else its folder's; the role is the title's part after the
+// separator, as a slug, else unknown. byTitle says the title gave either.
+func (c *config) filing(cwd, title string) (project, role string, byTitle bool) {
+	project, role = c.projectForCwd(cwd), "unknown"
+	m := titleRe.FindStringSubmatch(strings.ToLower(title))
+	if m == nil {
+		return project, role, false
+	}
+	for _, p := range c.projects {
+		if p.slug == m[1] {
+			project, byTitle = p.slug, true
+		}
+	}
+	if r := strings.Join(strings.Fields(m[2]), "-"); store.Slug.MatchString(r) {
+		role, byTitle = r, true
+	}
+	return project, role, byTitle
 }
 
 // projectForCwd maps a folder to the project with the longest matching cwd prefix.

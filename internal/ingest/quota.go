@@ -26,6 +26,10 @@ func (r *runner) ingestQuota() {
 			r.warn(true, "cannot ingest %s: %v", path, err)
 		}
 	}
+	// Every session's account, also of sessions seen by the statusline before their transcript was read.
+	if err := r.inTx(func(tx *sql.Tx) error { return measuredAccount(tx, "") }); err != nil {
+		r.warn(true, "session accounts: %v", err)
+	}
 	if err := r.inTx(r.quotaChecks); err != nil {
 		r.warn(true, "quota checks: %v", err)
 	}
