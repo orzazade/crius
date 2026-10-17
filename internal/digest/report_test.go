@@ -361,7 +361,8 @@ func TestBuildCountsMalformedLines(t *testing.T) {
 
 // Crius 10-17 04:23, 04:58 and 05:34: a lead whose Done line counts rows ("rows: 33 of 130") is shown against the
 // rows Crius or its QA verified, "verified rows N of claimed 33": the distinct ids of VERIFIED lines to it whose ref
-// is "row <id>" (RULES 3.1), whatever the id's form, in any case. Any other ref is no row: no row is guessed from a
+// is "row <id>" (RULES 3.1), the id one token of letters and digits (review of 38598e4: "F-1," or "`F-1`" made a second
+// row), in any case. Any other ref is no row: no row is guessed from a
 // ref's shape or read from the row file (four review rounds found guesses that made a false MISMATCH). A row line
 // also counts for the milestone it matches; any other line that counts for no milestone is not counted. A lead that
 // counts milestones keeps the milestone form.
@@ -380,6 +381,9 @@ func TestBuildShowsVerifiedRowsWhenDoneCountsRows(t *testing.T) {
 	verified(t, db, at, "crius:lead", "quotes:lead", "rows F-129 · nor with rows")
 	verified(t, db, at, "crius:lead", "quotes:lead", "row F-1 (again) · nor more than one id")
 	verified(t, db, at, "crius:lead", "quotes:lead", "row · nor no id")
+	verified(t, db, at, "crius:lead", "quotes:lead", "row F-126, · nor an id with a comma")
+	verified(t, db, at, "crius:lead", "quotes:lead", "row `F-126` · nor one in backticks")
+	verified(t, db, at, "crius:lead", "quotes:lead", "row F-126\u00a0x · nor one with a no-break space")
 	verified(t, db, at, "crius:lead", "quotes:lead", "c84d78c · a sha is no row")
 	verified(t, db, at, "crius:lead", "quotes:lead", "run 7 · nor a run")
 	verified(t, db, at, "crius:lead", "quotes:lead", "row F-9 · ")
@@ -423,7 +427,7 @@ func TestBuildShowsVerifiedRowsWhenDoneCountsRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"quotes:lead: 25% claimed · verified rows 5 of claimed 33, milestones 1 of 1 · verified now counts rows since the last report · VERIFIED lines not counted: 8\n",
+		"quotes:lead: 25% claimed · verified rows 5 of claimed 33, milestones 1 of 1 · verified now counts rows since the last report · VERIFIED lines not counted: 11\n",
 		"axi:leader: 50% claimed · verified 0 of 1 done (1 milestones) · first report · VERIFIED lines not counted: 2\n",
 	} {
 		if !strings.Contains(r.Text, want) {

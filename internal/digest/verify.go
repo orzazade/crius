@@ -29,8 +29,8 @@ func isSha(w string) bool { return shaRe.MatchString(w) && letterRe.MatchString(
 // lines to the lead count for no milestone (RULES 3.4). A VERIFIED line is to the lead and from Crius (crius:lead) or
 // the lead's own project's QA (role qa or qa-*); it counts when it matches exactly one done milestone, so a check that
 // does not land is seen. The sender is trusted as written on the line. When the Done line counts rows (Goal.Rows), a
-// line "row <id> · <evidence>" counts for that row, whatever the id's form, and rows gives the distinct ids in any
-// case; any other ref is no row (RULES 3.1, Crius 10-17 05:34: four review rounds found guesses at rows). The line is
+// line "row <id> · <evidence>", the id one token of letters and digits, counts for that row, and rows gives the
+// distinct ids in any case; any other ref is no row (RULES 3.1, Crius 10-17 05:34: four review rounds found guesses at rows). The line is
 // then matched to a milestone by its id.
 func Verified(db *sql.DB, lead string, g *Goal) (checked []int64, rows, notCounted int, err error) {
 	project, _, _ := strings.Cut(lead, ":")
@@ -60,7 +60,7 @@ func Verified(db *sql.DB, lead string, g *Goal) (checked []int64, rows, notCount
 		}
 		row := false
 		if ref, evidence, _ := strings.Cut(text, " · "); countsRows && strings.TrimSpace(evidence) != "" {
-			if id, ok := strings.CutPrefix(strings.TrimSpace(ref), "row "); ok && id != "" && !strings.ContainsAny(id, " \t") {
+			if id, ok := strings.CutPrefix(strings.TrimSpace(ref), "row "); ok && isID(id) {
 				seen[strings.ToUpper(id)], row = true, true
 				text = id + " · " + evidence
 			}
