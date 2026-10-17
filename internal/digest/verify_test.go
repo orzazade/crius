@@ -95,7 +95,7 @@ func TestVerifiedNeedsAVerifiedLineToTheLead(t *testing.T) {
 		{State: Done, Text: "api", Refs: "77aa77a"},
 		{State: Done, Text: "ui", Refs: "77aa77a"},
 	}}
-	got, _, notCounted, err := Verified(db, "crius:build", g, nil)
+	got, _, notCounted, err := Verified(db, "crius:build", g)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func TestVerifiedMatchesAnyIdOrShaOnTheMilestoneLine(t *testing.T) {
 		{State: Done, Text: "promotions", Refs: "ccc9039 + f651d23 (F-110)"},
 		{State: Done, Text: "merged as 9a8b7c6", Refs: "run 7"},
 	}}
-	got, _, notCounted, err := Verified(db, "quotes:lead", g, nil)
+	got, _, notCounted, err := Verified(db, "quotes:lead", g)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +149,7 @@ func TestVerifiedPrefersAnExactMatch(t *testing.T) {
 		{State: Done, Text: "UI", Refs: "UI d00d1e5f (F-200)"},
 		{State: Done, Text: "Docs, after d00d1e5", Refs: "run 8"},
 	}}
-	got, _, notCounted, err := Verified(db, "quotes:lead", g, nil)
+	got, _, notCounted, err := Verified(db, "quotes:lead", g)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,23 +160,23 @@ func TestVerifiedPrefersAnExactMatch(t *testing.T) {
 
 // Review of 178deae: the strongest match is looked for over all milestones, done or not; a line counts only when that
 // match points at one done milestone. A check of a milestone not yet done is not credited to a done one that only
-// mentions its ref. In rows mode an F-id line counts for its row and still for the milestone it matches.
+// mentions its ref. In rows mode a "row <id>" line counts for its row and still for the milestone it matches.
 func TestVerifiedLooksAtEveryMilestoneAndRowsKeepMilestones(t *testing.T) {
 	db := open(t)
 	at := time.Date(2026, 10, 17, 5, 0, 0, 0, time.Local)
 	verified(t, db, at, "crius:lead", "quotes:lead", "RB-90 · deploy checked")
-	tick := verified(t, db, at, "crius:lead", "quotes:lead", "F-126 · ticks seen")
-	verified(t, db, at, "crius:lead", "quotes:lead", "F-127 · a row only")
+	tick := verified(t, db, at, "crius:lead", "quotes:lead", "row F-126 · ticks seen")
+	verified(t, db, at, "crius:lead", "quotes:lead", "row F-127 · a row only")
 	g := &Goal{DoneHow: "rows: 33 of 130 in M1-BUILD.md", Milestones: []Milestone{
 		{State: Done, Text: "M1 build, unblocks RB-90", Refs: "RB-89"},
 		{State: Todo, Text: "M2 deploy", Refs: "RB-90"},
 		{State: Done, Text: "quotes ticks", Refs: "F-126"},
 	}}
-	got, rows, notCounted, err := Verified(db, "quotes:lead", g, map[string]bool{"RB-90": true, "F-126": true, "F-127": true})
+	got, rows, notCounted, err := Verified(db, "quotes:lead", g)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []int64{0, 0, tick}; !reflect.DeepEqual(got, want) || rows != 3 || notCounted != 0 {
-		t.Fatalf("got %v, %d rows, %d not counted; want %v, 3, 0", got, rows, notCounted, want)
+	if want := []int64{0, 0, tick}; !reflect.DeepEqual(got, want) || rows != 2 || notCounted != 1 {
+		t.Fatalf("got %v, %d rows, %d not counted; want %v, 2, 1", got, rows, notCounted, want)
 	}
 }

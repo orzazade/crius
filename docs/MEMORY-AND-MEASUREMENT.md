@@ -603,12 +603,8 @@ correct --corrects <row-id> --field project --value axi --reason`; `show <id> --
     strongest match over all milestones decides; the line counts when it points at one done milestone.
   - A lead whose Done line counts rows writes it in the RULES 3.1 form, `Done: N% (rows: X of Y in <row file>;
     <command>)`, with no other "N of M" on the line. It is shown as "verified rows N of claimed X, milestones K
-    of D", N being the distinct refs of trusted VERIFIED lines to the lead with evidence that are a row id of the
-    row file, in any case, all time. The row file is the one source of row ids: a row is a checklist item that
-    starts its line ("- [x] F-110", "1. [ ] F-111") or a table row whose first cell is the id ("| O1 |"); headings,
-    indented items, prose and code fences give none. The path is absolute, ~/, or relative to the status file's
-    folder, to a regular file of at most 10 MB. No row file named, one not read or one with no row ids is said as
-    NOT COUNTED, never as none, and the claimed % change is still shown. More than claimed
+    of D", N being the distinct ids of trusted VERIFIED lines to the lead whose ref is `row <id>` and that carry
+    evidence, in any case, all time; any other ref is no row, and the row file is never read. More than claimed
     prints MISMATCH, a withdrawn acceptance. A Done line that names rows in any other form is said as not read, never guessed.
 - **Morning start**: a fresh Crius session with CRIUS.md + the digest only (target ≤ 15K tokens). If pace is high
   (≥ 60% observed by day 3 of the epoch, or from day 2 this epoch's %/day above the average %/day of the last 7

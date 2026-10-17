@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -61,11 +60,7 @@ var (
 	rowsWordRe  = regexp.MustCompile(`(?i)\brows\b`)
 	countRe     = regexp.MustCompile(`\b\d+ of \d+\b`)
 	// The rows claim of RULES 3.1: "rows: X of Y", then the end, " in <row file>" and/or "; <command>".
-	rowsClaimRe = regexp.MustCompile(`(?i)^rows: (0|[1-9]\d*) of [1-9]\d*(?: in ([^;]+))?(?:;.*)?$`)
-	// rowLineRe: a row line of a row file, a checklist item that starts its line ("- [x] F-110", "1. [ ] F-111") or a
-	// table row whose first cell is the id ("| O1 |"), with its id.
-	rowLineRe = regexp.MustCompile(`^(?:(?:[-*+]|\d+[.)]) \[[ xX~-]\] \**([0-9A-Za-z]+(?:-[0-9A-Za-z]+)*)|` +
-		`\| *\**([0-9A-Za-z]+(?:-[0-9A-Za-z]+)*)\** *\|)`)
+	rowsClaimRe = regexp.MustCompile(`(?i)^rows: (0|[1-9]\d*) of [1-9]\d*(?: in [^;]+)?(?:;.*)?$`)
 )
 
 // ReadGoal reads the GOAL block of a status file. A file that cannot be read is an error of its own: it is never
@@ -95,55 +90,6 @@ func (g *Goal) Rows() (int, bool) {
 		return 0, false
 	}
 	return n, true
-}
-
-// RowIDs reads the row ids of the row file the rows claim names, in upper case (Crius 10-17 05:13: the row file is
-// the one source of row ids). A row is a checklist item that starts its line or a table row whose first cell is the
-// id; headings, indented items, prose and code fences give none (review of 23ad139). The path is absolute, ~/, or
-// relative to the folder of the status file; only a regular file of at most 10 MB is read. No row file named, a file
-// that cannot be read and a file with no row ids are errors: rows are then not counted, never counted as none.
-func (g *Goal) RowIDs(statusFile string) (map[string]bool, error) {
-	m := rowsClaimRe.FindStringSubmatch(g.DoneHow)
-	if m == nil || strings.TrimSpace(m[2]) == "" {
-		return nil, errors.New(`the Done line names no row file: "rows: X of Y in <row file>"`)
-	}
-	p := strings.TrimSpace(m[2])
-	switch {
-	case strings.HasPrefix(p, "~/"):
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return nil, err
-		}
-		p = filepath.Join(home, p[2:])
-	case !filepath.IsAbs(p):
-		p = filepath.Join(filepath.Dir(statusFile), p)
-	}
-	fi, err := os.Stat(p)
-	if err != nil {
-		return nil, err
-	}
-	if !fi.Mode().IsRegular() || fi.Size() > 10<<20 {
-		return nil, fmt.Errorf("row file %s is not a regular file of at most 10 MB", p)
-	}
-	b, err := os.ReadFile(p)
-	if err != nil {
-		return nil, err
-	}
-	ids, fenced := map[string]bool{}, false
-	for _, line := range strings.Split(strings.TrimPrefix(string(b), "\ufeff"), "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "```") {
-			fenced = !fenced
-		}
-		if m := rowLineRe.FindStringSubmatch(line); m != nil && !fenced {
-			if id := m[1] + m[2]; isID(id) {
-				ids[strings.ToUpper(id)] = true
-			}
-		}
-	}
-	if len(ids) == 0 {
-		return nil, fmt.Errorf("row file %s has no row ids", p)
-	}
-	return ids, nil
 }
 
 // ParseGoal reads the first GOAL block of a status file outside code fences (``` or ~~~, closed by the same mark at

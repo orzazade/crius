@@ -101,13 +101,7 @@ func Build(db *sql.DB, in Input, now time.Time) (*Report, error) {
 			cannotRead++
 			continue
 		}
-		claimed, countsRows := g.Rows()
-		var rowIDs map[string]bool
-		var rowsErr error
-		if countsRows {
-			rowIDs, rowsErr = g.RowIDs(l.StatusFile)
-		}
-		checked, rows, notCounted, err := Verified(db, l.Name, g, rowIDs)
+		checked, rows, notCounted, err := Verified(db, l.Name, g)
 		if err != nil {
 			return nil, err
 		}
@@ -121,10 +115,8 @@ func Build(db *sql.DB, in Input, now time.Time) (*Report, error) {
 			}
 		}
 		counted := fmt.Sprintf("verified %d of %d done (%d milestones)", verified, done, len(g.Milestones))
-		switch {
-		case rowsErr != nil:
-			counted = fmt.Sprintf("verified rows NOT COUNTED (%v), milestones %d of %d", rowsErr, verified, done)
-		case countsRows:
+		claimed, countsRows := g.Rows()
+		if countsRows {
 			counted = fmt.Sprintf("verified rows %d of claimed %d, milestones %d of %d", rows, claimed, verified, done)
 			if extra := rows - claimed; extra > 0 { // a withdrawn acceptance (RULES 2.3, Crius 10-17 04:41)
 				counted += fmt.Sprintf(" · MISMATCH: %d verified %s more than claimed (a verified row was un-ticked or the"+
@@ -136,13 +128,7 @@ func Build(db *sql.DB, in Input, now time.Time) (*Report, error) {
 			counted += ` · the Done line names rows but its claim was not read: write "rows: X of Y in <row file>; <command>" (RULES 3.1) and no other "N of M"`
 		}
 		snap := LeadSnap{Done: g.Done, Verified: verified, Rows: countsRows}
-		p, hadPrev := prev[l.Name]
-		if rowsErr != nil { // no rows counted: keep the last counted ones, so only the claimed % moves
-			snap.Verified, snap.Rows = p.Verified, p.Rows
-		}
-		if rowsErr == nil || hadPrev {
-			r.Snap[l.Name] = snap
-		}
+		r.Snap[l.Name] = snap
 		lost := ""
 		if notCounted > 0 {
 			lost = fmt.Sprintf(" · VERIFIED lines not counted: %d", notCounted)
