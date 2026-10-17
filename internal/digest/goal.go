@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 )
 
 // State is a milestone's mark: [x] done, [~] in progress, [ ] not started.
@@ -59,9 +58,9 @@ var (
 	milestoneRe = regexp.MustCompile(`^- \[([x~ ])\] (.+)$`)
 	doneRe      = regexp.MustCompile(`^Done: (\d{1,3})% \((.+)\)$`)
 	rowsWordRe  = regexp.MustCompile(`(?i)\brows\b`)
-	countRe     = regexp.MustCompile(`\d+ of \d+`)
-	// The fixed form of a rows claim: "rows N of M", "rows: N of M" or "N of M [word] rows".
-	rowsClaimRe = regexp.MustCompile(`(?i)\brows:? (\d+) of \d+\b|\b(\d+) of \d+ (?:[0-9A-Za-z-]+ )?rows\b`)
+	countRe     = regexp.MustCompile(`\b\d+ of \d+\b`)
+	// The rows claim of RULES 3.1: "rows: X of Y", then the end, " in <row file>" and/or "; <command>".
+	rowsClaimRe = regexp.MustCompile(`(?i)^rows: (0|[1-9]\d*) of [1-9]\d*(?: in [^;]+)?(?:;.*)?$`)
 )
 
 // ReadGoal reads the GOAL block of a status file. A file that cannot be read is an error of its own: it is never
@@ -78,24 +77,15 @@ func ReadGoal(path string) (*Goal, error) {
 	return g, nil
 }
 
-// Rows gives the rows the Done line claims when it counts rows. The claim is read only in its fixed form, as the one
-// "N of M" of the text, with no leading zero and no thousands mark before it ("1,033", "1 033"); anything else is not
-// read, and the report says so. Five review rounds found prose that a looser reading took a milestone count from.
+// Rows gives the rows the Done line claims when it counts rows. The claim is read only in the RULES 3.1 form, as the
+// one "N of M" of the text; anything else is not read, and the report says so. Five review rounds found prose that a
+// looser reading took a milestone count from.
 func (g *Goal) Rows() (int, bool) {
-	s := g.DoneHow
-	m := rowsClaimRe.FindStringSubmatchIndex(s)
-	if m == nil || len(countRe.FindAllString(s, -1)) != 1 {
+	m := rowsClaimRe.FindStringSubmatch(g.DoneHow)
+	if m == nil || len(countRe.FindAllString(g.DoneHow, -1)) != 1 {
 		return 0, false
 	}
-	at, end := m[2], m[3]
-	if at < 0 {
-		at, end = m[4], m[5]
-	}
-	before := []rune(s[:at])
-	if s[at] == '0' || len(before) >= 2 && unicode.IsDigit(before[len(before)-2]) && !unicode.IsLetter(before[len(before)-1]) {
-		return 0, false
-	}
-	n, _ := strconv.Atoi(s[at:end])
+	n, _ := strconv.Atoi(m[1])
 	return n, true
 }
 
