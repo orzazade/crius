@@ -375,30 +375,38 @@ func TestBuildShowsVerifiedRowsWhenDoneCountsRows(t *testing.T) {
 	verified(t, db, at, "crius:lead", "axi:leader", "F-1 · to another lead")
 	verified(t, db, at, "crius:lead", "axi:leader", "F-2 · a row to a lead that counts milestones")
 	dir := t.TempDir()
+	verified(t, db, at, "crius:lead", "quotes:lead", "poc/rig/STATUS.md · a milestone check in rows mode")
 	quotes := "## GOAL (2026-10-17 04:10)\nGoal: PROOF\n- [x] Rig · poc/rig/STATUS.md\n- [~] Pricing · F-110\n" +
 		"Done: 25% (M1 rows ticked with evidence: 33 of 130 in M1-BUILD.md)\nNext: F-94\nNeeds owner: nothing\n"
 	leads := []ingest.Lead{
 		{Name: "quotes:lead", StatusFile: statusFile(t, dir, "q.md", quotes)},
 		{Name: "axi:leader", StatusFile: statusFile(t, dir, "a.md", block("2026-10-17 08:00", "nothing", "- [x] inventory · F-2x"))},
 	}
-	for how, want := range map[string]bool{"33 of 130 M1 rows ticked": true, "5 of 8 required steps": false, "rows, 1 of": false} {
+	for how, want := range map[string]bool{"33 of 130 M1 rows ticked": true, "5 of 8 required steps": false, "rows, 1 of": false,
+		"Rows ticked: 33 of 130": true, "5 of 8 required steps; rows 33 of 100 ticked": true,
+		"3 of 5 milestones; seed rows loaded": false, "1,033 of 1,300 rows": false,
+		"M1 rows ticked with evidence: 33 of 130 in M1-BUILD.md; Crius has verified F-110 since": true} {
 		if n, ok := (&Goal{DoneHow: how}).Rows(); ok != want || ok && n != 33 {
 			t.Errorf("%q: %d %v", how, n, ok)
 		}
 	}
-	r, err := Build(db, input(leads, Snapshot{"quotes:lead": {Done: 25, Verified: 1}}), now)
+	r, err := Build(db, input(leads, Snapshot{"quotes:lead": {Done: 25, Verified: 1}}), now) // a milestone count
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"quotes:lead: 25% claimed · verified rows 3 of claimed 33 · verified +2 since the last report · VERIFIED lines not counted: 2\n",
+		"quotes:lead: 25% claimed · verified rows 3 of claimed 33, milestones 1 of 1 · verified now counts rows since the last report · VERIFIED lines not counted: 2\n",
 		"axi:leader: 50% claimed · verified 0 of 1 done (1 milestones) · first report · VERIFIED lines not counted: 2\n",
 	} {
 		if !strings.Contains(r.Text, want) {
 			t.Errorf("missing %q in\n%s", want, r.Text)
 		}
 	}
-	if r.Snap["quotes:lead"] != (LeadSnap{Done: 25, Verified: 3}) {
+	if r.Snap["quotes:lead"] != (LeadSnap{Done: 25, Verified: 3, Rows: true}) {
 		t.Fatalf("%+v", r.Snap)
+	}
+	if r, err = Build(db, input(leads, r.Snap), now); err != nil || !strings.Contains(r.Text,
+		"quotes:lead: 25% claimed · verified rows 3 of claimed 33, milestones 1 of 1 · no change since the last report") {
+		t.Fatal(err, r.Text)
 	}
 }

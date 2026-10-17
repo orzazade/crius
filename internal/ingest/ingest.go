@@ -150,8 +150,9 @@ func (r *runner) event(tx *sql.Tx, e event) error {
 	if err != nil {
 		return err
 	}
-	// Any stored row takes the refs the rules give now: a re-read after a lineVersion change fills what older rules left out.
-	_, err = tx.Exec("update event set refs=? where source_key=? and refs is not ?", refs, e.key, refs)
+	// A stored row of the same kind takes the refs the rules give now: a re-read after a lineVersion change fills what
+	// older rules left out. A line that reads as malformed now keeps its row and refs (review of 0f331cc).
+	_, err = tx.Exec("update event set refs=? where source_key=? and kind=? and refs is not ?", refs, e.key, e.kind, refs)
 	return err
 }
 

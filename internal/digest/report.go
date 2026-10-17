@@ -19,8 +19,9 @@ const maxLines = 60
 
 // LeadSnap is what the next report compares against: the claimed % and the verified milestones.
 type LeadSnap struct {
-	Done     int `json:"done"`
-	Verified int `json:"verified"`
+	Done     int  `json:"done"`
+	Verified int  `json:"verified"`
+	Rows     bool `json:"rows,omitempty"` // Verified counts rows (Goal.Rows), not milestones
 }
 
 // Snapshot holds each readable lead's numbers at one report.
@@ -114,10 +115,12 @@ func Build(db *sql.DB, in Input, now time.Time) (*Report, error) {
 			}
 		}
 		counted := fmt.Sprintf("verified %d of %d done (%d milestones)", verified, done, len(g.Milestones))
-		if claimed, ok := g.Rows(); ok {
-			verified, counted = rows, fmt.Sprintf("verified rows %d of claimed %d", rows, claimed)
+		claimed, countsRows := g.Rows()
+		if countsRows {
+			counted = fmt.Sprintf("verified rows %d of claimed %d, milestones %d of %d", rows, claimed, verified, done)
+			verified = rows
 		}
-		snap := LeadSnap{Done: g.Done, Verified: verified}
+		snap := LeadSnap{Done: g.Done, Verified: verified, Rows: countsRows}
 		r.Snap[l.Name] = snap
 		lost := ""
 		if notCounted > 0 {
@@ -216,7 +219,9 @@ func change(prev Snapshot, lead string, now LeadSnap) string {
 	if d := now.Done - p.Done; d != 0 {
 		parts = append(parts, fmt.Sprintf("%+d", d))
 	}
-	if d := now.Verified - p.Verified; d != 0 {
+	if p.Rows != now.Rows { // the counts are of different things
+		parts = append(parts, map[bool]string{true: "verified now counts rows", false: "verified now counts milestones"}[now.Rows])
+	} else if d := now.Verified - p.Verified; d != 0 {
 		parts = append(parts, fmt.Sprintf("verified %+d", d))
 	}
 	return strings.Join(parts, ", ") + " since the last report"

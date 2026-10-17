@@ -62,11 +62,21 @@ func Verified(db *sql.DB, lead string, g *Goal) (checked []int64, rows, notCount
 			seen[strings.TrimSpace(ref)] = true
 			continue
 		}
-		var hits []int
+		var exact, loose []int
 		for i, m := range g.Milestones {
-			if m.State == Done && matches(text, m) {
-				hits = append(hits, i)
+			if m.State != Done {
+				continue
 			}
+			switch match(text, m) {
+			case exactly:
+				exact = append(exact, i)
+			case mentioned:
+				loose = append(loose, i)
+			}
+		}
+		hits := exact
+		if len(hits) == 0 {
+			hits = loose
 		}
 		if len(hits) != 1 {
 			notCounted++
@@ -79,31 +89,48 @@ func Verified(db *sql.DB, lead string, g *Goal) (checked []int64, rows, notCount
 	return out, len(seen), notCounted, q.Err()
 }
 
-// matches: the text is "<ref> · <evidence>" with some evidence, and the ref is the milestone's text (which may hold
-// " · ") or one of its refs, exactly; or an id that is a token of the milestone line (text and refs), in the same case;
-// or a sha that is, or begins, a sha word of the line, in any case (Crius 10-17 04:23).
-func matches(text string, m Milestone) bool {
+type strength int
+
+const (
+	none      strength = iota
+	mentioned          // an id or sha anywhere on the milestone line: counts only when no milestone matches exactly
+	exactly
+)
+
+// match: the text is "<ref> · <evidence>" with some evidence. It matches exactly when the ref is the milestone's text
+// (which may hold " · ") or one of its refs, exactly, or a sha that is, or begins, a sha word of its refs, in any case.
+// The milestone mentions it when the ref is an id that is a token of the milestone line (text and refs), in the same
+// case, or a sha of the line's words (Crius 10-17 04:23; review of 2edcda5: an exact match wins).
+func match(text string, m Milestone) strength {
 	if rest, ok := strings.CutPrefix(text, m.Text+" · "); ok && strings.TrimSpace(rest) != "" {
-		return true
+		return exactly
 	}
 	ref, evidence, ok := strings.Cut(text, " · ")
 	if !ok || strings.TrimSpace(evidence) == "" {
-		return false
+		return none
 	}
 	ref = strings.TrimSpace(ref)
 	for _, r := range strings.Split(m.Refs, ",") {
 		if ref == strings.TrimSpace(r) {
-			return true
+			return exactly
 		}
 	}
-	line := m.Text + " " + m.Refs
-	if isID(ref) && slices.Contains(tokenRe.FindAllString(line, -1), ref) {
-		return true
+	if shaIn(ref, m.Refs) {
+		return exactly
 	}
+	line := m.Text + " " + m.Refs
+	if isID(ref) && slices.Contains(tokenRe.FindAllString(line, -1), ref) || shaIn(ref, line) {
+		return mentioned
+	}
+	return none
+}
+
+// shaIn: ref is a sha that is, or begins, a sha word of s, in any case.
+func shaIn(ref, s string) bool {
 	if ref = strings.ToLower(ref); !isSha(ref) {
 		return false
 	}
-	for _, w := range wordRe.FindAllString(strings.ToLower(line), -1) {
+	for _, w := range wordRe.FindAllString(strings.ToLower(s), -1) {
 		if isSha(w) && (strings.HasPrefix(w, ref) || strings.HasPrefix(ref, w)) {
 			return true
 		}

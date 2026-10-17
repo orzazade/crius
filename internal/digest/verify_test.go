@@ -131,3 +131,29 @@ func TestVerifiedMatchesAnyIdOrShaOnTheMilestoneLine(t *testing.T) {
 		t.Fatalf("got %v, %d not counted; want %v, 3", got, notCounted, want)
 	}
 }
+
+// Review of 2edcda5: an exact match (the milestone's text, one of its refs, a sha of its refs) wins over an id or sha
+// that another milestone only mentions, so a line that counted before still counts. Loose matches count only when no
+// milestone matches exactly; two loose hits are still not counted.
+func TestVerifiedPrefersAnExactMatch(t *testing.T) {
+	db := open(t)
+	at := time.Date(2026, 10, 17, 4, 50, 0, 0, time.Local)
+	exact := verified(t, db, at, "crius:lead", "quotes:lead", "F-118 · ok")
+	sha := verified(t, db, at, "crius:lead", "quotes:lead", "c84d78c · the sha in Pricing's refs")
+	verified(t, db, at, "crius:lead", "quotes:lead", "M1 · two milestones mention it")
+	prefix := verified(t, db, at, "crius:lead", "quotes:lead", "D00D1E5 · a prefix of UI's sha, which Docs only mentions")
+	g := &Goal{Milestones: []Milestone{
+		{State: Done, Text: "Pricing", Refs: "F-118, c84d78c"},
+		{State: Done, Text: "Promotions on F-118 data, rebased onto c84d78c, M1", Refs: "ccc9039"},
+		{State: Done, Text: "M1 lines", Refs: "run 7"},
+		{State: Done, Text: "UI", Refs: "UI d00d1e5f (F-200)"},
+		{State: Done, Text: "Docs, after d00d1e5", Refs: "run 8"},
+	}}
+	got, _, notCounted, err := Verified(db, "quotes:lead", g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []int64{exact, 0, 0, prefix, 0}; !reflect.DeepEqual(got, want) || notCounted != 1 || sha == 0 {
+		t.Fatalf("got %v, %d not counted; want %v, 1", got, notCounted, want)
+	}
+}

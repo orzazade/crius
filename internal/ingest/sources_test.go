@@ -150,6 +150,18 @@ func TestALineReadBeforeTheRecipientWasKeptGetsIt(t *testing.T) {
 	}
 }
 
+// Review of 0f331cc: a stored line that reads as malformed after a rule change keeps its row and its refs; only a row
+// of the same kind takes the new refs.
+func TestALineTurnedMalformedKeepsItsRefs(t *testing.T) {
+	x, _, _ := busCaseWith(t, "")
+	testutil.Write(t, filepath.Join(x.home, "bus", "demo.log"), "2026-10-17T04:08 VERIFIED crius:lead -> demo:lead — 74b5b48 · step 5\n")
+	x.run()
+	delete(store.Types, "VERIFIED")
+	t.Cleanup(func() { store.Types["VERIFIED"] = true })
+	x.run()
+	eq(t, x.q("select kind, refs from event where kind <> 'malformed'"), [][]string{{"verified", `{"to":["demo:lead"]}`}})
+}
+
 // Crius 10-17 03:03: bus stamps are local time, UTC ends in Z. A dated line more than an hour behind the newest stamp
 // before it in its file (a writer stamping UTC without Z), or more than 10 minutes ahead of the clock, is loud: one
 // alert per file, writer, day and kind (ahead, behind). The line keeps the stamp it was written with; a line flagged ahead does not move
