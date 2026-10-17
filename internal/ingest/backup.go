@@ -69,6 +69,9 @@ func BackupIfDue(home string, now time.Time) (path string, err error) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return "", err
 	}
+	if err := os.MkdirAll(dir, 0o700); err != nil { // a new home has none yet (Crius 10-17 05:47)
+		return "", err
+	}
 	snap, gzTmp := filepath.Join(dir, "."+name+".tmp"), dest+".tmp"
 	gzMade := false
 	defer func() {

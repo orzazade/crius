@@ -134,6 +134,23 @@ func listDir(t *testing.T, dir string) []string {
 	return n
 }
 
+// Crius 10-17 05:47: a home with no backup/ folder made every run partial (exit 3); the first backup makes it, mode 700.
+func TestBackupMakesItsFolder(t *testing.T) {
+	x := newIC(t, cfg{})
+	seedDB(t, x.home)
+	dir := filepath.Join(x.home, "backup")
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	p, err := BackupIfDue(x.home, time.Date(2026, 10, 16, 4, 0, 0, 0, time.Local))
+	if err != nil || filepath.Base(p) != "record-2026-10-16.db.gz" {
+		t.Fatal(p, err)
+	}
+	if fi, err := os.Stat(dir); err != nil || fi.Mode().Perm() != 0o700 {
+		t.Fatal(fi, err)
+	}
+}
+
 func TestBackupRunsOnceADayAfter3AndRestores(t *testing.T) {
 	x := newIC(t, cfg{})
 	seedDB(t, x.home)
