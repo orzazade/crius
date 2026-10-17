@@ -383,8 +383,10 @@ func TestBuildShowsVerifiedRowsWhenDoneCountsRows(t *testing.T) {
 		{Name: "axi:leader", StatusFile: statusFile(t, dir, "a.md", block("2026-10-17 08:00", "nothing", "- [x] inventory · F-2x"))},
 	}
 	for how, want := range map[string]bool{"33 of 130 M1 rows ticked": true, "5 of 8 required steps": false, "rows, 1 of": false,
-		"Rows ticked: 33 of 130": true, "5 of 8 required steps; rows 33 of 100 ticked": true,
-		"3 of 5 milestones; seed rows loaded": false, "1,033 of 1,300 rows": false,
+		"Rows ticked: 33 of 130": true, "5 of 8 required steps; rows: 33 of 100 ticked": true,
+		"3 of 5 milestones; seed rows loaded": false, "1,033 of 1,300 rows": false, "rows ticked, 2 of 5 milestones": false,
+		"3 of 6 milestones and rows pending": false, "3 of 6 milestones and 40 rows left": false,
+		"rows in phase 2: 33 of 130": true, "rows (F-1..F-130): 33 of 130": true,
 		"M1 rows ticked with evidence: 33 of 130 in M1-BUILD.md; Crius has verified F-110 since": true} {
 		if n, ok := (&Goal{DoneHow: how}).Rows(); ok != want || ok && n != 33 {
 			t.Errorf("%q: %d %v", how, n, ok)
@@ -431,6 +433,21 @@ func TestBuildSaysMoreVerifiedRowsThanClaimed(t *testing.T) {
 		t.Fatalf("missing %q in\n%s", want, r.Text)
 	}
 	if want := "axi:lead: 2% claimed · verified rows 3 of claimed 3, milestones 0 of 1 · first report\n"; !strings.Contains(r.Text, want) {
+		t.Fatalf("missing %q in\n%s", want, r.Text)
+	}
+}
+
+// Review of 178deae: a Done line that names rows but whose claim is not read ("rows: N of M", "N of M rows") is said,
+// not quietly counted as milestones.
+func TestBuildSaysARowsClaimItCannotRead(t *testing.T) {
+	db := open(t)
+	q := "## GOAL (2026-10-17 04:10)\nGoal: PROOF\n- [x] Rig · run 7\nDone: 25% (1,033 of 1,300 rows)\nNext: F-94\nNeeds owner: nothing\n"
+	r, err := Build(db, input([]ingest.Lead{{Name: "quotes:lead", StatusFile: statusFile(t, t.TempDir(), "q.md", q)}}, nil), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "quotes:lead: 25% claimed · verified 0 of 1 done (1 milestones) · the Done line names rows but no " +
+		"\"rows: N of M\" or \"N of M rows\" was read · first report\n"; !strings.Contains(r.Text, want) {
 		t.Fatalf("missing %q in\n%s", want, r.Text)
 	}
 }

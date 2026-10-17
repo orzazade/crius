@@ -30,7 +30,7 @@ func isSha(w string) bool { return shaRe.MatchString(w) && letterRe.MatchString(
 // lines to the lead count for no milestone (RULES 3.4). A VERIFIED line is to the lead and from Crius (crius:lead) or
 // the lead's own project's QA (role qa or qa-*); it counts when it matches exactly one done milestone, so a check that
 // does not land is seen. The sender is trusted as written on the line. When the Done line counts rows (Goal.Rows), a
-// line "<F-id> · <evidence>" counts for that row instead, and rows gives the distinct rows (Crius 10-17 04:23).
+// line "<F-id> · <evidence>" also counts for that row, and rows gives the distinct rows (Crius 10-17 04:23).
 func Verified(db *sql.DB, lead string, g *Goal) (checked []int64, rows, notCounted int, err error) {
 	project, _, _ := strings.Cut(lead, ":")
 	q, err := db.Query("select id, coalesce(refs, ''), text from event where kind = 'verified' and"+
@@ -57,29 +57,26 @@ func Verified(db *sql.DB, lead string, g *Goal) (checked []int64, rows, notCount
 		if !slices.Contains(r["to"], lead) {
 			continue
 		}
+		row := false
 		if ref, evidence, _ := strings.Cut(text, " · "); countsRows && rowRe.MatchString(strings.TrimSpace(ref)) &&
 			strings.TrimSpace(evidence) != "" {
-			seen[strings.TrimSpace(ref)] = true
-			continue
+			seen[strings.TrimSpace(ref)], row = true, true
 		}
-		var exact, loose []int
+		// The strongest match over all milestones decides; the line counts when it points at one done milestone.
+		best, hits := none, []int(nil)
 		for i, m := range g.Milestones {
-			if m.State != Done {
-				continue
+			s := match(text, m)
+			if s > best {
+				best, hits = s, nil
 			}
-			switch match(text, m) {
-			case exactly:
-				exact = append(exact, i)
-			case mentioned:
-				loose = append(loose, i)
+			if s == best && s != none && m.State == Done {
+				hits = append(hits, i)
 			}
-		}
-		hits := exact
-		if len(hits) == 0 {
-			hits = loose
 		}
 		if len(hits) != 1 {
-			notCounted++
+			if !row {
+				notCounted++
+			}
 			continue
 		}
 		if out[hits[0]] == 0 {

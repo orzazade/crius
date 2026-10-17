@@ -57,9 +57,11 @@ var (
 	fenceRe     = regexp.MustCompile("^(`{3,}|~{3,})")
 	milestoneRe = regexp.MustCompile(`^- \[([x~ ])\] (.+)$`)
 	doneRe      = regexp.MustCompile(`^Done: (\d{1,3})% \((.+)\)$`)
-	// The "N of M" next to the word rows, after it or before it; a number with a thousands comma is not read.
-	rowsAfterRe  = regexp.MustCompile(`(?i)\brows\b[^0-9]{0,40}?(?:^|[^\d,])(\d+) of \d`)
-	rowsBeforeRe = regexp.MustCompile(`(?i)(?:^|[^\d,])(\d+) of \d+(?: [0-9A-Za-z]+){0,3} rows\b`)
+	// A rows claim sits next to the word: "rows …: N of M" in one clause, or "N of M [word] rows"; a number with a
+	// thousands comma is not read (the report says the claim was not read).
+	rowsWordRe   = regexp.MustCompile(`(?i)\brows\b`)
+	rowsAfterRe  = regexp.MustCompile(`(?i)\brows\b[^:;]{0,40}:\s*(\d+) of \d`)
+	rowsBeforeRe = regexp.MustCompile(`(?i)(?:^|[^\d,])(\d+) of \d+ (?:[0-9A-Za-z-]+ )?rows\b`)
 )
 
 // ReadGoal reads the GOAL block of a status file. A file that cannot be read is an error of its own: it is never

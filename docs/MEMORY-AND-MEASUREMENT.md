@@ -597,8 +597,9 @@ correct --corrects <row-id> --field project --value axi --reason`; `show <id> --
 
 - **09:00 and 18:00** (launchd `space.scifilab.crius.digest`): ingest, then the goal report (≤ 60 lines, stamped):
   needs the owner on top (first marked), per lead goal, % claimed against verified milestones (a VERIFIED ref
-  matches a milestone's text or refs exactly, or else any id or sha its line mentions; a lead whose Done line counts
-  rows, "rows …: 33 of 130", is shown as "verified rows N of claimed 33, milestones K of D", N the distinct F-ids
+  matches a milestone's text or refs exactly, or else any id or sha its line mentions; the strongest match over all
+  milestones decides, and the line counts when it points at one done milestone; a lead whose Done line counts
+  rows, "rows …: 33 of 130" or "33 of 130 rows" (else the report says the claim was not read), is shown as "verified rows N of claimed 33, milestones K of D", N the distinct F-ids
   verified, all time; more than claimed prints MISMATCH, a withdrawn acceptance), change since the last report, next milestone; then checks that passed, blocked, decisions, open waits, quota pace, health. A
   failed run posts an ALERT on the crius bus.
 - **Morning start**: a fresh Crius session with CRIUS.md + the digest only (target ≤ 15K tokens). If pace is high
