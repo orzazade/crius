@@ -72,8 +72,9 @@ func TestDigestJobHasTheIngestEnvironment(t *testing.T) {
 }
 
 // run runs bin/crius-digest-run with stub binaries: crius-ingest exits with the codes in ingest, one per call;
-// crius-rec digest exits with digest; crius-rec record exits with record. It returns the exit code, the calls and
-// the output.
+// crius-rec digest exits with digest and writes a report (none when digest ends in "-nofile"; only last week's when
+// it ends in "-old"); crius-rec record exits
+// with record. It returns the exit code, the calls and the output.
 func run(t *testing.T, ingest []string, digest, record string) (int, []string, string) {
 	t.Helper()
 	home := t.TempDir()
@@ -93,7 +94,14 @@ func run(t *testing.T, ingest []string, digest, record string) (int, []string, s
 	stub(filepath.Join(bin, "crius-ingest"), `n=$(grep -c '^crius-ingest' "`+calls+`" 2>/dev/null); codes=(`+
 		strings.Join(ingest, " ")+`); echo crius-ingest >> "`+calls+`"; exit ${codes[$n]}`+"\n")
 	stub(filepath.Join(bin, "crius-rec"), `echo "crius-rec $*" >> "`+calls+`"
-case $1 in digest) exit `+digest+`;; record) exit `+record+`;; esac
+d=`+digest+`
+case $1 in
+digest) r="$HOME/.crius/state/digest/2026-10-17-0900.md"
+  [ "$d" = "${d%-nofile}" ] && mkdir -p "${r%/*}" && echo r > "$r"
+  [ "$d" = "${d%-old}" ] || touch -t 202610100900 "$r"
+  d=${d%-nofile}; exit "${d%-old}";;
+record) exit `+record+`;;
+esac
 exit 9
 `)
 	stub(filepath.Join(path, "sleep"), `echo "sleep $*" >> "`+calls+`"`+"\n")
@@ -118,6 +126,8 @@ func TestDigestRunIngestsReportsAndAlerts(t *testing.T) {
 	alert := func(text string) string {
 		return "crius-rec record bus --project crius --role digest --type ALERT --text " + text
 	}
+	done := "crius-rec record bus --project crius --role digest --type DONE --to crius:lead --text goal report " +
+		"~/.crius/state/digest/2026-10-17-0900.md"
 	for _, c := range []struct {
 		name           string
 		ingest         []string
@@ -125,19 +135,25 @@ func TestDigestRunIngestsReportsAndAlerts(t *testing.T) {
 		rc             int
 		calls          []string
 	}{
-		{"both run", []string{"0"}, "0", "0", 0, []string{"crius-ingest", "crius-rec digest --write"}},
-		{"partial is a run", []string{"3"}, "3", "0", 0, []string{"crius-ingest", "crius-rec digest --write"}},
+		{"both run", []string{"0"}, "0", "0", 0, []string{"crius-ingest", "crius-rec digest --write", done}},
+		{"partial is a run", []string{"3"}, "3", "0", 0, []string{"crius-ingest", "crius-rec digest --write",
+			done + " (partial: the report says why)"}},
 		{"ingest fails", []string{"1"}, "0", "0", 1, []string{"crius-ingest",
 			alert("goal report: crius-ingest exit 1; the report reads the last good run; see ~/.crius/logs/digest.log"),
-			"crius-rec digest --write"}},
+			"crius-rec digest --write", done}},
+		{"no report written", []string{"0"}, "0-nofile", "0", 1, []string{"crius-ingest", "crius-rec digest --write",
+			alert("goal report: crius-rec digest --write exit 0 but wrote no report in ~/.crius/state/digest")}},
+		{"only an old report", []string{"0"}, "0-old", "0", 1, []string{"crius-ingest", "crius-rec digest --write",
+			alert("goal report: crius-rec digest --write exit 0 but wrote no report in ~/.crius/state/digest")}},
+		{"done cannot be posted", []string{"0"}, "0", "2", 1, []string{"crius-ingest", "crius-rec digest --write", done}},
 		{"digest fails", []string{"0"}, "1", "0", 1, []string{"crius-ingest", "crius-rec digest --write",
 			alert("goal report: crius-rec digest --write exit 1, no report; see ~/.crius/logs/digest.log")}},
 		{"busy, then runs", []string{"75", "75", "0"}, "0", "0", 0, []string{"crius-ingest", "sleep 10", "crius-ingest",
-			"sleep 10", "crius-ingest", "crius-rec digest --write"}},
+			"sleep 10", "crius-ingest", "crius-rec digest --write", done}},
 		{"busy for a minute", []string{"75", "75", "75", "75", "75", "75"}, "0", "0", 1, []string{"crius-ingest", "sleep 10",
 			"crius-ingest", "sleep 10", "crius-ingest", "sleep 10", "crius-ingest", "sleep 10", "crius-ingest", "sleep 10",
 			"crius-ingest", alert("goal report: crius-ingest busy for a minute (lock held); the report reads the last good run"),
-			"crius-rec digest --write"}},
+			"crius-rec digest --write", done}},
 		{"alert cannot be posted", []string{"0"}, "1", "2", 1, []string{"crius-ingest", "crius-rec digest --write",
 			alert("goal report: crius-rec digest --write exit 1, no report; see ~/.crius/logs/digest.log")}},
 	} {
@@ -146,7 +162,7 @@ func TestDigestRunIngestsReportsAndAlerts(t *testing.T) {
 			if rc != c.rc || !reflect.DeepEqual(calls, c.calls) {
 				t.Fatalf("rc %d, calls\n%s\noutput\n%s", rc, strings.Join(calls, "\n"), out)
 			}
-			if lost := strings.Contains(out, "cannot post ALERT: goal report: "); lost != (c.record != "0") {
+			if lost := strings.Contains(out, "cannot post "); lost != (c.record != "0") {
 				t.Fatalf("output\n%s", out)
 			}
 		})

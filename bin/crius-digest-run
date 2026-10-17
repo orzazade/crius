@@ -1,7 +1,9 @@
 #!/bin/bash
 # The goal report at 09:00 and 18:00 (launchd space.scifilab.crius.digest): ingest first, so the report reads fresh
-# data, then crius-rec digest --write. Exit 0 or 3 (partial: the report says why) is a run. Any other exit posts an
-# ALERT on the crius bus and the job exits 1; a failed ingest still gets a report, which says how old its data is.
+# data, then crius-rec digest --write. Exit 0 or 3 (partial: the report says why) is a run, and posts DONE to
+# crius:lead with the report's path, so the lead's watch wakes and relays it. Any other exit, or a run that wrote no
+# report, posts an ALERT on the crius bus and the job exits 1; a failed ingest still gets a report, which says how old
+# its data is.
 # While the 10-minute ingest holds the lock (exit 75), the ingest is tried again for a minute.
 set -u
 bin="$HOME/.crius/bin"
@@ -22,10 +24,23 @@ case $rc in
   75) alert "goal report: crius-ingest busy for a minute (lock held); the report reads the last good run" ;;
   *) alert "goal report: crius-ingest exit $rc; the report reads the last good run; see ~/.crius/logs/digest.log" ;;
 esac
+dir="$HOME/.crius/state/digest"
+start=$(date +%s)
 "$bin/crius-rec" digest --write
 rc=$?
 case $rc in
-  0 | 3) ;;
+  0 | 3)
+    report=""
+    for f in "$dir"/*.md; do report=$f; done # YYYY-MM-DD-HHMM.md: the last name is the newest
+    if [ -e "$report" ] && [ "$(stat -f %m "$report")" -ge "$start" ]; then
+      text="goal report ~${report#"$HOME"}"
+      [ "$rc" = 3 ] && text="$text (partial: the report says why)"
+      "$bin/crius-rec" record bus --project crius --role digest --type DONE --to crius:lead --text "$text" ||
+        { failed=1; echo "$(date +%FT%H:%M) cannot post DONE: $text" >&2; }
+    else
+      alert "goal report: crius-rec digest --write exit $rc but wrote no report in ~/.crius/state/digest"
+    fi
+    ;;
   *) alert "goal report: crius-rec digest --write exit $rc, no report; see ~/.crius/logs/digest.log" ;;
 esac
 exit "$failed"

@@ -378,7 +378,8 @@ Enterprise $ is list price from tokens (ESTIMATE of the employer's bill; no bill
 
 **Schedule.** launchd every 10 minutes (ESTIMATE 1-3 s per incremental run; a full pass is 20 s, FACT). 03:00:
 re-count the last 2 days from scratch (> 1% difference = alert), prune, backup, restore test (weekly). 09:00 and
-18:00: ingest, then the goal report (`bin/crius-digest-run`; any exit but 0 or 3 posts an ALERT).
+18:00: ingest, then the goal report (`bin/crius-digest-run`; a run posts `DONE crius:digest -> crius:lead` with the
+report's path, so the lead relays it; any exit but 0 or 3, or no report written, posts an ALERT).
 After each quota reset: scorecard. No model tokens in any of these.
 
 **Failure loudness, end to end.**

@@ -35,7 +35,7 @@ const (
 
 const usage = `usage: crius-rec init
        crius-rec leak-test [--repo DIR]   (default: $CRIUS_REPO, set by bin/crius-rec)
-       crius-rec record bus --project P --role R --type T --text TEXT
+       crius-rec record bus --project P --role R --type T --text TEXT [--to crius | P:R]
        crius-rec record decision --project P --title T --why W --by "owner|crius|lead [ref]" [--supersedes ID --reason R] [--refs R] [--taint]
        crius-rec record item --project P --title T --kind code|research|falcon|other --criteria C [--criteria C ...] [--parent ID] [--taint]
        crius-rec quota [--json | --room]
@@ -139,13 +139,14 @@ func record(home string, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("record "+what, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	project := fs.String("project", "", "")
-	var role, typ, text, title, why, by, supersedes, reason, refs, kind, parent *string
+	var role, typ, text, to, title, why, by, supersedes, reason, refs, kind, parent *string
 	var taint *bool
 	var criteria multi
 	required := []string{"project"}
 	switch what {
 	case "bus":
 		role, typ, text = fs.String("role", "", ""), fs.String("type", "", ""), fs.String("text", "", "")
+		to = fs.String("to", "crius", "")
 		required = append(required, "role", "type", "text")
 	case "decision":
 		title, why, by = fs.String("title", "", ""), fs.String("why", "", ""), fs.String("by", "", "")
@@ -194,7 +195,11 @@ func record(home string, args []string, stdout, stderr io.Writer) int {
 	var err error
 	switch what {
 	case "bus":
-		out, err = store.FormatLine(*typ, *project, *role, *text, "crius", time.Now())
+		if p, r, pair := strings.Cut(*to, ":"); !store.Slug.MatchString(p) || pair && !store.Slug.MatchString(r) {
+			fmt.Fprintf(stderr, "refused: --to must be a project or project:role, got %q\n", *to)
+			return exitUsage
+		}
+		out, err = store.FormatLine(*typ, *project, *role, *text, *to, time.Now())
 		if err == nil {
 			err = store.AppendLine(home, *project, out)
 		}

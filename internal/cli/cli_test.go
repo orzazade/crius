@@ -51,6 +51,25 @@ func TestInitRecordAndLeakTest(t *testing.T) {
 	}
 }
 
+// Crius 10-17 04:08: the goal report's DONE goes to crius:lead, so a bus line can name its recipient; it is crius
+// when not given, and must be a name (project or project:role).
+func TestBusLineToARole(t *testing.T) {
+	_, home := testutil.Temp(t)
+	run("init")
+	if rc, out := run("record", "bus", "--project", "crius", "--role", "digest", "--type", "DONE", "--to", "crius:lead",
+		"--text", "goal report x"); rc != 0 {
+		t.Fatal(rc, out)
+	}
+	if log := testutil.Read(t, filepath.Join(home, "bus", "crius.log")); !strings.HasSuffix(log, " DONE crius:digest -> crius:lead — goal report x\n") {
+		t.Fatal(log)
+	}
+	for _, to := range []string{"crius lead", "Crius", "crius:", ""} {
+		if rc, _ := run("record", "bus", "--project", "crius", "--role", "digest", "--type", "DONE", "--to", to, "--text", "x"); rc != 2 {
+			t.Error(to, rc)
+		}
+	}
+}
+
 func TestBadBusLineExitsNonzero(t *testing.T) {
 	testutil.Temp(t)
 	run("init")
