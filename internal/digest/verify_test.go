@@ -176,7 +176,7 @@ func TestVerifiedLooksAtEveryMilestoneAndRowsKeepMilestones(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []int64{0, 0, tick}; !reflect.DeepEqual(got, want) || rows != 2 || notCounted != 1 {
-		t.Fatalf("got %v, %d rows, %d not counted; want %v, 2, 1", got, rows, notCounted, want)
+	if want := []int64{0, 0, tick}; !reflect.DeepEqual(got, want) || rows != 3 || notCounted != 0 {
+		t.Fatalf("got %v, %d rows, %d not counted; want %v, 3, 0", got, rows, notCounted, want)
 	}
 }
