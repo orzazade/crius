@@ -57,6 +57,8 @@ func TestGuardAndStaleAlertsFitABusLine(t *testing.T) {
 	for _, c := range []struct{ text, must string }{
 		{Violation{Session: long, Project: long, Kind: "s1", Source: long}.AlertText(), "Stop it or move it to the Max account."},
 		{Violation{Session: long, Kind: "unmapped", Source: long}.AlertText(), "or stop it if it is not Appxite work."},
+		{Violation{Session: long, Project: long, Kind: "s1", Source: long, Ended: time.Now()}.AlertText(), "Run this project on the Max account."},
+		{Violation{Session: long, Kind: "unmapped", Source: long, Ended: time.Now()}.AlertText(), "if it is Appxite work."},
 		{Violation{Session: long, Project: long, Kind: "mismatch", Source: "tag " + long + ", statusline max"}.AlertText(), "account mismatch in session yyyyyyyy"},
 		{StaleText(long + ": no statusline line yet"), "is crius-statusline in that persona's statusLine and working?"},
 	} {

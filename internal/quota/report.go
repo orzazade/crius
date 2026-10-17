@@ -23,7 +23,8 @@ type Share struct {
 // Violation is a session billed to the enterprise account that is not an Appxite project (S1), a session on it
 // with no known project, or a launch tag the statusline contradicts.
 type Violation struct {
-	Session, Project, Kind, Source string // Kind: s1, unmapped, mismatch
+	Session, Project, Kind, Source string    // Kind: s1, unmapped, mismatch
+	Ended                          time.Time // the session's last request when it is over Gap ago; zero while open
 }
 
 type Report struct {
@@ -85,7 +86,7 @@ type asg struct {
 // launch-tag assignments (asg) and the organization lines (orgs), all sorted by time.
 type sess struct {
 	persona, cwdProject string
-	first               time.Time // the session's first request
+	first, last         time.Time // the session's first and last request
 	obs                 []obs
 	asg                 []asg
 	orgs                []orgLine
@@ -288,14 +289,18 @@ func sessions(db Querier, p Projects) (out map[string]*sess, lastLine map[string
 			s.obs = append(s.obs, obs{t, rl})
 			return nil
 		}},
-		{"select session, min(coalesce(ts_first, ts_last)) from request" +
+		{"select session, min(coalesce(ts_first, ts_last)), max(coalesce(ts_last, ts_first)) from request" +
 			" where coalesce(ts_first, ts_last) is not null group by session", func(r *sql.Rows) error {
-			var id, ts string
-			if err := r.Scan(&id, &ts); err != nil {
+			var id, first, last string
+			if err := r.Scan(&id, &first, &last); err != nil {
 				return err
 			}
-			t, err := parseTS(ts)
-			get(id).first = t
+			s := get(id)
+			var err error
+			if s.first, err = parseTS(first); err != nil {
+				return err
+			}
+			s.last, err = parseTS(last)
 			return err
 		}},
 		{"select session, from_ts, coalesce(to_ts, ''), coalesce(project, ''), coalesce(account, 'unknown')" +
@@ -404,7 +409,12 @@ func Build(db Querier, p Projects, now time.Time) (*Report, error) {
 	}
 	sort.Strings(ids)
 	for _, id := range ids {
-		rep.Violations = append(rep.Violations, ss[id].guard(id, p.EnterpriseOK)...)
+		for _, v := range ss[id].guard(id, p.EnterpriseOK) {
+			if last := ss[id].last; !last.IsZero() && now.Sub(last) > Gap {
+				v.Ended = last
+			}
+			rep.Violations = append(rep.Violations, v)
+		}
 	}
 
 	// A line without a seven-day share and reset measured nothing: it neither covers a request nor counts as a
@@ -935,11 +945,19 @@ func (v Violation) text(n int) string {
 	if len(id) > 8 {
 		id = id[:8]
 	}
-	switch v.Kind {
-	case "s1":
+	ended := !v.Ended.IsZero()
+	switch {
+	case v.Kind == "s1" && ended:
+		return fmt.Sprintf("S1 personal work on the enterprise account: session %s, project %s (account from %s),"+
+			" ended %s; Appxite paid for it. Run this project on the Max account.", id, clip(v.Project, n),
+			clip(v.Source, n), when(v.Ended))
+	case v.Kind == "unmapped" && ended:
+		return fmt.Sprintf("enterprise session %s (ended %s) has no known project (account from %s): add its folder"+
+			" to projects.toml if it is Appxite work.", id, when(v.Ended), clip(v.Source, n))
+	case v.Kind == "s1":
 		return fmt.Sprintf("S1 personal work on the enterprise account: session %s, project %s (account from %s);"+
 			" Appxite pays for it. Stop it or move it to the Max account.", id, clip(v.Project, n), clip(v.Source, n))
-	case "unmapped":
+	case v.Kind == "unmapped":
 		return fmt.Sprintf("enterprise session %s has no known project (account from %s): add its folder to"+
 			" projects.toml, or stop it if it is not Appxite work.", id, clip(v.Source, n))
 	}

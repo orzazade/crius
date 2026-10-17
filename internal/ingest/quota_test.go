@@ -996,3 +996,18 @@ func TestQuotaMaxTagDoesNotHideAnEnterpriseOrganization(t *testing.T) {
 		t.Fatalf("max $%v, enterprise $%v, violations %+v", rep.MaxUSD, rep.EntWeekUSD, rep.Violations)
 	}
 }
+
+// Crius 10-17 07:41: a guard alert for a session that has ended does not say "stop it": it says when it ended.
+func TestQuotaGuardAlertForAnEndedSessionSaysItEnded(t *testing.T) {
+	x := quotaCase(t)
+	live, ended := "33333333-2222-3333-4444-555555555555", "44444444-2222-3333-4444-555555555555"
+	tag := "[crius account=enterprise project=demo role=lead]"
+	x.session("work", live, "/work/demo", tag, qNow.Add(-10*time.Minute))
+	x.session("work", ended, "/work/demo", tag, qNow.Add(-5*time.Hour))
+	x.run()
+	l, e := grepAlerts(x.alerts(), "session 33333333"), grepAlerts(x.alerts(), "session 44444444")
+	if len(l) != 1 || !strings.Contains(l[0], "Stop it") || len(e) != 1 || strings.Contains(e[0], "Stop it") ||
+		!strings.Contains(e[0], "ended "+qNow.Add(-5*time.Hour).Local().Format("Mon 01-02 15:04")) {
+		t.Fatalf("live %q\nended %q", l, e)
+	}
+}
