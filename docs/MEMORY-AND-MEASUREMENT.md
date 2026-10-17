@@ -596,12 +596,16 @@ correct --corrects <row-id> --field project --value axi --reason`; `show <id> --
 ## 8. How Crius works day to day
 
 - **09:00 and 18:00** (launchd `space.scifilab.crius.digest`): ingest, then the goal report (≤ 60 lines, stamped):
-  needs the owner on top (first marked), per lead goal, % claimed against verified milestones (a VERIFIED ref
-  matches a milestone's text or refs exactly, or else any id or sha its line mentions; the strongest match over all
-  milestones decides, and the line counts when it points at one done milestone; a lead whose Done line counts
-  rows, "rows …: 33 of 130" or "33 of 130 rows" (else the report says the claim was not read), is shown as "verified rows N of claimed 33, milestones K of D", N the distinct F-ids
-  verified, all time; more than claimed prints MISMATCH, a withdrawn acceptance), change since the last report, next milestone; then checks that passed, blocked, decisions, open waits, quota pace, health. A
+  needs the owner on top (first marked), per lead goal, % claimed against verified milestones, change since the
+  last report, next milestone; then checks that passed, blocked, decisions, open waits, quota pace, health. A
   failed run posts an ALERT on the crius bus.
+  - A VERIFIED ref matches a milestone's text or refs exactly, or else any id or sha its line mentions. The
+    strongest match over all milestones decides; the line counts when it points at one done milestone.
+  - A lead whose Done line counts rows (its one "N of M" shares a clause with the word rows) is shown as
+    "verified rows N of claimed M, milestones K of D", N the distinct F-ids verified, all time. More than claimed
+    prints MISMATCH, a withdrawn acceptance.
+  - A number read from a lead's prose is read only when exactly one candidate exists; an unclear one is said as
+    not read, never guessed (four review rounds found a guess that took a milestone count for the rows claim).
 - **Morning start**: a fresh Crius session with CRIUS.md + the digest only (target ≤ 15K tokens). If pace is high
   (≥ 60% observed by day 3 of the epoch, or from day 2 this epoch's %/day above the average %/day of the last 7
   days of samples, which needs 7 days of samples), ONE Remote Control push per epoch: speed, top burners, one

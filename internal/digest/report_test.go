@@ -382,16 +382,24 @@ func TestBuildShowsVerifiedRowsWhenDoneCountsRows(t *testing.T) {
 		{Name: "quotes:lead", StatusFile: statusFile(t, dir, "q.md", quotes)},
 		{Name: "axi:leader", StatusFile: statusFile(t, dir, "a.md", block("2026-10-17 08:00", "nothing", "- [x] inventory · F-2x"))},
 	}
-	for how, want := range map[string]bool{"33 of 130 M1 rows ticked": true, "5 of 8 required steps": false, "rows, 1 of": false,
-		"Rows ticked: 33 of 130": true, "5 of 8 required steps; rows: 33 of 100 ticked": true,
-		"3 of 5 milestones; seed rows loaded": false, "1,033 of 1,300 rows": false, "rows ticked, 2 of 5 milestones": false,
-		"3 of 6 milestones and rows pending": false, "3 of 6 milestones and 40 rows left": false,
-		"rows in phase 2: 33 of 130": false, "rows (F-1..F-130): 33 of 130": false, // a number before the claim: not read
-		"33 of 130 rows, milestones: 2 of 5": true, "33 of 130 rows ticked and milestones: 2 of 5": true,
-		"rows 33 of 130, milestones: 2 of 5": false, "40 rows left, milestones: 3 of 6": false,
-		"M1 rows ticked with evidence: 33 of 130 in M1-BUILD.md; Crius has verified F-110 since": true} {
-		if n, ok := (&Goal{DoneHow: how}).Rows(); ok != want || ok && n != 33 {
-			t.Errorf("%q: %d %v", how, n, ok)
+	// The claim is read only when the Done text has one "N of M" and it shares a clause with the word rows; anything
+	// less clear is not read (-1), never taken from another count (reviews of dfb79ba and f3dc6be).
+	for how, want := range map[string]int{
+		"33 of 130 M1 rows ticked": 33, "Rows ticked: 33 of 130": 33, "rows in phase 2: 33 of 130": 33,
+		"M1 rows ticked with evidence: 33 of 130 in poc/ui-app/M1-BUILD.md, `/usr/bin/grep -c '^- \\[x\\] F-'`; Crius has verified F-110, F-112 since": 33,
+		"3 of 42 offer type x operation rows PROVEN with a run id of the same operation; PARTIAL 15, NONE 24, n/a 3":                                   3,
+		"5 of 8 required steps": -1, "6 of 8 required steps, equal weight; 7 and 8 only if needed": -1, "rows, 1 of": -1,
+		"5 of 8 required steps; rows: 33 of 100 ticked": -1, "3 of 5 milestones; seed rows loaded": -1,
+		"1,033 of 1,300 rows": -1, "1 033 of 1 300 rows": -1, "rows: 1,033 of 1,300": -1, "rows ticked, 2 of 5 milestones": -1,
+		"3 of 6 milestones and rows pending": -1, "3 of 6 milestones and 40 rows left": -1, "rows (F-1..F-130): 33 of 130": -1,
+		"33 of 130 rows, milestones: 2 of 5": -1, "33 of 130 rows ticked and milestones: 2 of 5": -1,
+		"rows 33 of 130, milestones: 2 of 5": -1, "40 rows left, milestones: 3 of 6": -1,
+		"Rows ticked: 33 of 130 (2 of 5 seed rows still open)": -1, "rows ticked: 33 of 130 in M1-BUILD.md; 1 of 4 blocked rows re-opened": -1,
+		"rows come next. Milestones: 2 of 5": -1, "rows not started - milestones: 2 of 5": -1,
+		"seed rows loaded and milestones: 2 of 5": -1, "rows (later) and milestones: 2 of 5": -1,
+	} {
+		if n, ok := (&Goal{DoneHow: how}).Rows(); ok != (want >= 0) || ok && n != want {
+			t.Errorf("%q: %d %v, want %d", how, n, ok, want)
 		}
 	}
 	r, err := Build(db, input(leads, Snapshot{"quotes:lead": {Done: 25, Verified: 1}}), now) // a milestone count
