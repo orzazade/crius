@@ -110,10 +110,11 @@ func (s *sess) project(t time.Time) string {
 	return s.cwdProject
 }
 
-// org is the session's organization line at t: the newest by then, else the first (it comes before the first
-// request); nil when the transcript names none.
+// org is the session's organization line at t: the newest by then, else the first when it comes within Grace
+// (it is written with the first prompt); nil when the transcript names none by then. A resumed session can name it
+// days after its first requests: those do not take it.
 func (s *sess) org(t time.Time) *orgLine {
-	if len(s.orgs) == 0 {
+	if len(s.orgs) == 0 || t.Before(s.orgs[0].ts.Add(-Grace)) {
 		return nil
 	}
 	o := &s.orgs[0]
@@ -153,7 +154,8 @@ func (s *sess) account(t time.Time) string {
 }
 
 // guard lists the session's violations: every stretch billed to the enterprise account (by a statusline line
-// until the next Max line, or by an enterprise launch tag) is checked against each project active in it, and a tag
+// until the next Max line, by an enterprise organization when no statusline line exists, or by an enterprise launch
+// tag) is checked against each project active in it, and a tag
 // that a statusline line contradicts is a mismatch.
 func (s *sess) guard(id string, ok map[string]bool) []Violation {
 	var vs []Violation
@@ -208,6 +210,28 @@ func (s *sess) guard(id string, ok map[string]bool) []Violation {
 		for _, a := range s.asg {
 			if a.from.After(from) && (to.IsZero() || a.from.Before(to)) {
 				check(a.project, "statusline")
+			}
+		}
+	}
+	// With no statusline line, an organization learned as enterprise bills the stretch until one that is not.
+	for i, l := range s.orgs {
+		if len(s.obs) > 0 || l.account != "enterprise" || i > 0 && s.orgs[i-1].account == "enterprise" {
+			continue
+		}
+		from, to := l.ts, time.Time{}
+		if i == 0 {
+			from = l.ts.Add(-Grace) // org() gives the first line to requests this much before it
+		}
+		for _, x := range s.orgs[i+1:] {
+			if x.account != "enterprise" {
+				to = x.ts
+				break
+			}
+		}
+		check(s.project(from), "organization")
+		for _, a := range s.asg {
+			if a.from.After(from) && (to.IsZero() || a.from.Before(to)) {
+				check(a.project, "organization")
 			}
 		}
 	}

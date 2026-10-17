@@ -942,3 +942,39 @@ func TestQuotaOrganizationSwitchIsNotAConflict(t *testing.T) {
 		t.Fatalf("unknown %d, reasons %q", rep.UnknownSessions, rep.Reasons)
 	}
 }
+
+// Review of 8c8d844 P1: a session known to be on the enterprise account only from its organization is guarded like
+// one the statusline saw; before, it was "not measured", and the organization must not turn that into "none".
+func TestQuotaEnterpriseByOrganizationIsGuarded(t *testing.T) {
+	x := quotaCase(t)
+	ent, demo := "e0000000-2222-3333-4444-555555555555", "d1000000-2222-3333-4444-555555555555"
+	x.session("work", ent, "/work/axi", "", qNow.Add(-20*time.Minute))
+	x.session("work", demo, "/work/demo", "", qNow.Add(-2*time.Hour))
+	x.org("work", ent, "org-ent", qNow.Add(-21*time.Minute))
+	x.org("work", demo, "org-ent", qNow.Add(-2*time.Hour).Add(-time.Minute))
+	x.spool(quota.Line{TS: iso(qNow.Add(-19 * time.Minute)), Kind: "session", Session: ent, Persona: "work"})
+	x.run()
+	rep := x.report()
+	if len(rep.Violations) != 1 || rep.Violations[0].Session != demo || rep.Violations[0].Kind != "s1" ||
+		rep.Violations[0].Source != "organization" {
+		t.Fatalf("violations %+v", rep.Violations)
+	}
+}
+
+// Review of 8c8d844 P2: a resumed session can name its organization days after its first requests (the line is
+// new in Claude Code); requests more than Grace before the first organization line do not take it.
+func TestQuotaRequestsLongBeforeTheFirstOrganizationLineStayUnknown(t *testing.T) {
+	x := quotaCase(t)
+	ent, resumed := "e0000000-2222-3333-4444-555555555555", "b1000000-2222-3333-4444-555555555555"
+	x.session("work", ent, "/work/axi", "", qNow.Add(-20*time.Minute))
+	x.session("work", resumed, "/work/axi", "", qNow.Add(-5*time.Hour), qNow.Add(-2*time.Hour))
+	x.org("work", ent, "org-ent", qNow.Add(-21*time.Minute))
+	x.org("work", resumed, "org-ent", qNow.Add(-2*time.Hour).Add(-time.Minute))
+	x.spool(quota.Line{TS: iso(qNow.Add(-19 * time.Minute)), Kind: "session", Session: ent, Persona: "work"})
+	x.run()
+	rep := x.report()
+	if rep.UnknownSessions != 1 || rep.UnknownUSD == 0 || math.Abs(rep.EntWeekUSD-2*rep.UnknownUSD) > 1e-9 {
+		t.Fatalf("unknown %d $%v, enterprise $%v; want the request before the line unknown", rep.UnknownSessions,
+			rep.UnknownUSD, rep.EntWeekUSD)
+	}
+}
