@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -127,6 +128,26 @@ func TestBusLinesKeepTheirRecipient(t *testing.T) {
 		}
 	}
 	eq(t, rows[0][0], "verified")
+}
+
+// Crius 10-17 04:23: VERIFIED lines read before the recipient was kept (its team log read with the dating rules of
+// the time) never counted for their lead. A log read with older line rules is read again, and a stored row takes the
+// refs the rules give now; it keeps its id.
+func TestALineReadBeforeTheRecipientWasKeptGetsIt(t *testing.T) {
+	x, _, teamLog := busCaseWith(t, "")
+	bus := filepath.Join(x.home, "bus", "demo.log")
+	testutil.Write(t, bus, "2026-10-17T04:08 VERIFIED crius:lead -> demo:lead — 74b5b48 · step 5\n")
+	testutil.Write(t, teamLog, "2026-10-17T02:57 VERIFIED crius:lead -> demo:build — b3a87cb · step 4\n")
+	x.run()
+	before := x.q("select id, refs from event where kind = 'verified' order by ts")
+	x.q("update event set refs = null where kind = 'verified'")
+	x.q("update coverage set sha = ? where resource = ?", datingVersion, teamLog) // as the old ingest left them
+	x.q("update coverage set sha = ? where resource = ?", datingVersion+typesSum(), bus)
+	x.run()
+	if after := x.q("select id, refs from event where kind = 'verified' order by ts"); !reflect.DeepEqual(after, before) ||
+		len(after) != 2 || after[0][1] != `{"to":["demo:build"]}` || after[1][1] != `{"to":["demo:lead"]}` {
+		t.Fatalf("before %v\nafter %v", before, after)
+	}
 }
 
 // Crius 10-17 03:03: bus stamps are local time, UTC ends in Z. A dated line more than an hour behind the newest stamp
@@ -414,7 +435,7 @@ func TestAChangedParserRedatesStoredLines(t *testing.T) {
 		eq(t, x.q("select ts from event where text in ('two', 'three') order by id"), good)
 		eq(t, x.counts(), before)
 		// The cursor keeps the parser it read with, so the next run does not read the whole file again.
-		want := datingVersion
+		want := datingVersion + lineVersion
 		if source == "bus" {
 			want += typesSum()
 		}

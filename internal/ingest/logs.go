@@ -26,6 +26,10 @@ func sha1Hex(b []byte) string {
 // anchor (its first stored, not late, undated line, which keeps its date) take the new dates.
 const datingVersion = "d3" // d3: a stamp ending in Z is UTC
 
+// lineVersion names what a stored log line holds besides its date. Raise it by hand when that changes: every log is
+// read again, and its stored rows take the refs the rules give now (Crius 10-17 04:23).
+const lineVersion = "l1" // l1: a VERIFIED line keeps its recipient in refs "to"
+
 func typesSum() string {
 	ts := make([]string, 0, len(store.Types))
 	for t := range store.Types {
@@ -93,7 +97,7 @@ func (r *runner) logFile(path, source string, strict bool, project string) error
 		}
 		// A cursor keeps the dating rules (and, for the bus, the type list) it was read with; new ones read the
 		// file again from the start, and the stored dates follow.
-		want := datingVersion
+		want := datingVersion + lineVersion
 		if strict {
 			want += typesSum()
 		}

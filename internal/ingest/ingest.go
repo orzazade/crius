@@ -147,6 +147,11 @@ func (r *runner) event(tx *sql.Tx, e event) error {
 		" item=excluded.item, refs=excluded.refs, text=excluded.text where event.kind='malformed'",
 		nullable(e.ts), nullable(e.project), e.kind, nullable(r.text(e.actor)), nullable(e.session),
 		nullable(r.text(e.item)), refs, text, e.key)
+	if err != nil {
+		return err
+	}
+	// Any stored row takes the refs the rules give now: a re-read after a lineVersion change fills what older rules left out.
+	_, err = tx.Exec("update event set refs=? where source_key=? and refs is not ?", refs, e.key, refs)
 	return err
 }
 
