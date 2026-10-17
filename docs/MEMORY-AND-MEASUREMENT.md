@@ -599,7 +599,7 @@ correct --corrects <row-id> --field project --value axi --reason`; `show <id> --
   needs the owner on top (first marked), per lead goal, % claimed against verified milestones (a VERIFIED ref
   matches a milestone's text or refs exactly, or else any id or sha its line mentions; a lead whose Done line counts
   rows, "rows …: 33 of 130", is shown as "verified rows N of claimed 33, milestones K of D", N the distinct F-ids
-  verified, all time), change since the last report, next milestone; then checks that passed, blocked, decisions, open waits, quota pace, health. A
+  verified, all time; more than claimed prints MISMATCH, a withdrawn acceptance), change since the last report, next milestone; then checks that passed, blocked, decisions, open waits, quota pace, health. A
   failed run posts an ALERT on the crius bus.
 - **Morning start**: a fresh Crius session with CRIUS.md + the digest only (target ≤ 15K tokens). If pace is high
   (≥ 60% observed by day 3 of the epoch, or from day 2 this epoch's %/day above the average %/day of the last 7

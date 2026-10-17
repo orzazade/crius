@@ -410,3 +410,27 @@ func TestBuildShowsVerifiedRowsWhenDoneCountsRows(t *testing.T) {
 		t.Fatal(err, r.Text)
 	}
 }
+
+// Crius 10-17 04:41: more verified rows than claimed is never quiet: a verified row was un-ticked or the claim shrank,
+// a withdrawn acceptance (RULES 2.3).
+func TestBuildSaysMoreVerifiedRowsThanClaimed(t *testing.T) {
+	db := open(t)
+	for _, f := range []string{"F-1", "F-2", "F-3"} {
+		verified(t, db, now.Add(-time.Hour), "crius:lead", "quotes:lead", f+" · ok")
+		verified(t, db, now.Add(-time.Hour), "crius:lead", "axi:lead", f+" · ok")
+	}
+	q := "## GOAL (2026-10-17 04:10)\nGoal: PROOF\n- [x] Rig · run 7\nDone: 2% (M1 rows ticked: 2 of 130)\nNext: F-94\nNeeds owner: nothing\n"
+	dir := t.TempDir()
+	r, err := Build(db, input([]ingest.Lead{{Name: "quotes:lead", StatusFile: statusFile(t, dir, "q.md", q)},
+		{Name: "axi:lead", StatusFile: statusFile(t, dir, "a.md", strings.Replace(q, "2 of 130", "3 of 130", 1))}}, nil), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "quotes:lead: 2% claimed · verified rows 3 of claimed 2, milestones 0 of 1 · MISMATCH: 1 verified row more than " +
+		"claimed (a verified row was un-ticked or the claim shrank) · first report\n"; !strings.Contains(r.Text, want) {
+		t.Fatalf("missing %q in\n%s", want, r.Text)
+	}
+	if want := "axi:lead: 2% claimed · verified rows 3 of claimed 3, milestones 0 of 1 · first report\n"; !strings.Contains(r.Text, want) {
+		t.Fatalf("missing %q in\n%s", want, r.Text)
+	}
+}

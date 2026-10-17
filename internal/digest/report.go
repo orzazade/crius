@@ -118,6 +118,10 @@ func Build(db *sql.DB, in Input, now time.Time) (*Report, error) {
 		claimed, countsRows := g.Rows()
 		if countsRows {
 			counted = fmt.Sprintf("verified rows %d of claimed %d, milestones %d of %d", rows, claimed, verified, done)
+			if extra := rows - claimed; extra > 0 { // a withdrawn acceptance (RULES 2.3, Crius 10-17 04:41)
+				counted += fmt.Sprintf(" · MISMATCH: %d verified %s more than claimed (a verified row was un-ticked or the"+
+					" claim shrank)", extra, map[bool]string{true: "row", false: "rows"}[extra == 1])
+			}
 			verified = rows
 		}
 		snap := LeadSnap{Done: g.Done, Verified: verified, Rows: countsRows}
