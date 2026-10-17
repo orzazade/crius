@@ -978,3 +978,21 @@ func TestQuotaRequestsLongBeforeTheFirstOrganizationLineStayUnknown(t *testing.T
 			rep.UnknownUSD, rep.EntWeekUSD)
 	}
 }
+
+// Re-review of 4d1f810 P2: the organization is measured, a launch tag is only said, so a max tag does not move a
+// session logged into the enterprise organization off it: billing and the guard agree.
+func TestQuotaMaxTagDoesNotHideAnEnterpriseOrganization(t *testing.T) {
+	x := quotaCase(t)
+	ent, tagged := "e0000000-2222-3333-4444-555555555555", "d1000000-2222-3333-4444-555555555555"
+	x.session("work", ent, "/work/axi", "", qNow.Add(-20*time.Minute))
+	x.session("work", tagged, "/work/axi", "[crius account=max project=demo role=lead]", qNow.Add(-2*time.Hour))
+	x.org("work", ent, "org-ent", qNow.Add(-21*time.Minute))
+	x.org("work", tagged, "org-ent", qNow.Add(-2*time.Hour).Add(-time.Minute))
+	x.spool(quota.Line{TS: iso(qNow.Add(-19 * time.Minute)), Kind: "session", Session: ent, Persona: "work"})
+	x.run()
+	rep := x.report()
+	if rep.MaxUSD != 0 || rep.EntWeekUSD == 0 || len(rep.Violations) != 1 || rep.Violations[0].Session != tagged ||
+		rep.Violations[0].Source != "organization" {
+		t.Fatalf("max $%v, enterprise $%v, violations %+v", rep.MaxUSD, rep.EntWeekUSD, rep.Violations)
+	}
+}

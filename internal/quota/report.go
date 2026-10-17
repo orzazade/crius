@@ -128,8 +128,8 @@ func (s *sess) org(t time.Time) *orgLine {
 }
 
 // account at t: the statusline's newest line by then (a session's first line comes with its first response, so
-// earlier requests take it too), else the launch tag active then, else the account learned for its organization,
-// else unknown.
+// earlier requests take it too), else the account learned for its organization (measured, so it outranks a tag),
+// else the launch tag active then, else unknown.
 func (s *sess) account(t time.Time) string {
 	if len(s.obs) > 0 {
 		o := s.obs[0]
@@ -144,11 +144,11 @@ func (s *sess) account(t time.Time) string {
 		}
 		return "enterprise"
 	}
-	if a := s.assignment(t); a != nil && a.account != "unknown" {
-		return a.account
-	}
 	if o := s.org(t); o != nil && o.account != "" {
 		return o.account
+	}
+	if a := s.assignment(t); a != nil && a.account != "unknown" {
+		return a.account
 	}
 	return "unknown"
 }
