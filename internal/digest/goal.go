@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // State is a milestone's mark: [x] done, [~] in progress, [ ] not started.
@@ -58,8 +59,9 @@ var (
 	milestoneRe = regexp.MustCompile(`^- \[([x~ ])\] (.+)$`)
 	doneRe      = regexp.MustCompile(`^Done: (\d{1,3})% \((.+)\)$`)
 	rowsWordRe  = regexp.MustCompile(`(?i)\brows\b`)
-	countRe     = regexp.MustCompile(`(\d+) of (\d+)`)
-	clauseRe    = regexp.MustCompile(`[.;,()]|\s[-–—]\s|\band\b`)
+	countRe     = regexp.MustCompile(`\d+ of \d+`)
+	// The fixed form of a rows claim: "rows N of M", "rows: N of M" or "N of M [word] rows".
+	rowsClaimRe = regexp.MustCompile(`(?i)\brows:? (\d+) of \d+\b|\b(\d+) of \d+ (?:[0-9A-Za-z-]+ )?rows\b`)
 )
 
 // ReadGoal reads the GOAL block of a status file. A file that cannot be read is an error of its own: it is never
@@ -76,27 +78,26 @@ func ReadGoal(path string) (*Goal, error) {
 	return g, nil
 }
 
-// Rows gives the rows the Done line claims when it counts rows: the text has one "N of M" and it shares a clause with
-// the word rows ("M1 rows ticked with evidence: 33 of 130"). Anything less clear (a second count, the word in another
-// clause, a thousands mark) is not read, and the report says so: a guess once took a milestone count for the claim.
+// Rows gives the rows the Done line claims when it counts rows. The claim is read only in its fixed form, as the one
+// "N of M" of the text, with no leading zero and no thousands mark before it ("1,033", "1 033"); anything else is not
+// read, and the report says so. Five review rounds found prose that a looser reading took a milestone count from.
 func (g *Goal) Rows() (int, bool) {
-	n, counts := -1, 0
-	for _, c := range clauseRe.Split(g.DoneHow, -1) {
-		for _, m := range countRe.FindAllStringSubmatchIndex(c, -1) {
-			counts++
-			spaced := m[0] >= 2 && c[m[0]-1] == ' ' && isDigit(c[m[0]-2]) || m[1]+1 < len(c) && c[m[1]] == ' ' && isDigit(c[m[1]+1])
-			if rowsWordRe.MatchString(c) && !spaced {
-				n, _ = strconv.Atoi(c[m[2]:m[3]])
-			}
-		}
-	}
-	if counts != 1 || n < 0 {
+	s := g.DoneHow
+	m := rowsClaimRe.FindStringSubmatchIndex(s)
+	if m == nil || len(countRe.FindAllString(s, -1)) != 1 {
 		return 0, false
 	}
+	at, end := m[2], m[3]
+	if at < 0 {
+		at, end = m[4], m[5]
+	}
+	before := []rune(s[:at])
+	if s[at] == '0' || len(before) >= 2 && unicode.IsDigit(before[len(before)-2]) && !unicode.IsLetter(before[len(before)-1]) {
+		return 0, false
+	}
+	n, _ := strconv.Atoi(s[at:end])
 	return n, true
 }
-
-func isDigit(b byte) bool { return b >= '0' && b <= '9' }
 
 // ParseGoal reads the first GOAL block of a status file outside code fences (``` or ~~~, closed by the same mark at
 // least as long), in the exact form of RULES 3.1. A heading that is almost right (indented, one #, "GOAL" with no

@@ -601,11 +601,10 @@ correct --corrects <row-id> --field project --value axi --reason`; `show <id> --
   failed run posts an ALERT on the crius bus.
   - A VERIFIED ref matches a milestone's text or refs exactly, or else any id or sha its line mentions. The
     strongest match over all milestones decides; the line counts when it points at one done milestone.
-  - A lead whose Done line counts rows (its one "N of M" shares a clause with the word rows) is shown as
-    "verified rows N of claimed M, milestones K of D", N the distinct F-ids verified, all time. More than claimed
-    prints MISMATCH, a withdrawn acceptance.
-  - A number read from a lead's prose is read only when exactly one candidate exists; an unclear one is said as
-    not read, never guessed (four review rounds found a guess that took a milestone count for the rows claim).
+  - A lead whose Done line counts rows writes the claim in a fixed form, "rows: N of M" or "N of M rows", as the
+    only "N of M" on the line, without a thousands mark. It is shown as "verified rows N of claimed M, milestones
+    K of D", N the distinct F-ids verified, all time; more than claimed prints MISMATCH, a withdrawn acceptance.
+    A Done line that names rows in any other form is said as not read, never guessed from the prose.
 - **Morning start**: a fresh Crius session with CRIUS.md + the digest only (target ≤ 15K tokens). If pace is high
   (≥ 60% observed by day 3 of the epoch, or from day 2 this epoch's %/day above the average %/day of the last 7
   days of samples, which needs 7 days of samples), ONE Remote Control push per epoch: speed, top burners, one

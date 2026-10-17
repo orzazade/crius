@@ -377,26 +377,35 @@ func TestBuildShowsVerifiedRowsWhenDoneCountsRows(t *testing.T) {
 	dir := t.TempDir()
 	verified(t, db, at, "crius:lead", "quotes:lead", "poc/rig/STATUS.md · a milestone check in rows mode")
 	quotes := "## GOAL (2026-10-17 04:10)\nGoal: PROOF\n- [x] Rig · poc/rig/STATUS.md\n- [~] Pricing · F-110\n" +
-		"Done: 25% (M1 rows ticked with evidence: 33 of 130 in M1-BUILD.md)\nNext: F-94\nNeeds owner: nothing\n"
+		"Done: 25% (M1 rows: 33 of 130 ticked with evidence in M1-BUILD.md)\nNext: F-94\nNeeds owner: nothing\n"
 	leads := []ingest.Lead{
 		{Name: "quotes:lead", StatusFile: statusFile(t, dir, "q.md", quotes)},
 		{Name: "axi:leader", StatusFile: statusFile(t, dir, "a.md", block("2026-10-17 08:00", "nothing", "- [x] inventory · F-2x"))},
 	}
-	// The claim is read only when the Done text has one "N of M" and it shares a clause with the word rows; anything
-	// less clear is not read (-1), never taken from another count (reviews of dfb79ba and f3dc6be).
+	// The claim is read only in its fixed form, "rows N of M" ("rows: N of M") or "N of M [word] rows", as the one
+	// "N of M" of the Done text, with no thousands mark; anything else is not read (-1), never taken from another
+	// count (reviews of dfb79ba, f3dc6be and 0f05a4e).
 	for how, want := range map[string]int{
-		"33 of 130 M1 rows ticked": 33, "Rows ticked: 33 of 130": 33, "rows in phase 2: 33 of 130": 33,
-		"M1 rows ticked with evidence: 33 of 130 in poc/ui-app/M1-BUILD.md, `/usr/bin/grep -c '^- \\[x\\] F-'`; Crius has verified F-110, F-112 since": 33,
-		"3 of 42 offer type x operation rows PROVEN with a run id of the same operation; PARTIAL 15, NONE 24, n/a 3":                                   3,
+		"33 of 130 M1 rows ticked": 33, "M1 rows: 33 of 130 ticked with evidence in M1-BUILD.md; Crius has verified F-110 since": 33,
+		"rows 33 of 130": 33, "2 of 5 seed rows": 2, "Rows: 33 of 130": 33,
+		// prose forms, now not read: the leads write the fixed form
+		"Rows ticked: 33 of 130": -1, "rows in phase 2: 33 of 130": -1,
+		"M1 rows ticked with evidence: 33 of 130 in poc/ui-app/M1-BUILD.md, `/usr/bin/grep -c '^- \\[x\\] F-'`; Crius has verified F-110, F-112 since": -1,
+		"3 of 42 offer type x operation rows PROVEN with a run id of the same operation; PARTIAL 15, NONE 24, n/a 3":                                   -1,
 		"5 of 8 required steps": -1, "6 of 8 required steps, equal weight; 7 and 8 only if needed": -1, "rows, 1 of": -1,
 		"5 of 8 required steps; rows: 33 of 100 ticked": -1, "3 of 5 milestones; seed rows loaded": -1,
 		"1,033 of 1,300 rows": -1, "1 033 of 1 300 rows": -1, "rows: 1,033 of 1,300": -1, "rows ticked, 2 of 5 milestones": -1,
+		"1,033 of 1300 rows": -1, "1.033 of 1300 rows": -1, "1'033 of 1300 rows": -1, "1\u202f033 of 1\u202f300 rows": -1,
+		"rows: 033 of 130": -1, "1,234 of 2000 rows": -1, "1 234 of 2 000 rows": -1, "1.234 of 2000 rows": -1,
 		"3 of 6 milestones and rows pending": -1, "3 of 6 milestones and 40 rows left": -1, "rows (F-1..F-130): 33 of 130": -1,
 		"33 of 130 rows, milestones: 2 of 5": -1, "33 of 130 rows ticked and milestones: 2 of 5": -1,
 		"rows 33 of 130, milestones: 2 of 5": -1, "40 rows left, milestones: 3 of 6": -1,
 		"Rows ticked: 33 of 130 (2 of 5 seed rows still open)": -1, "rows ticked: 33 of 130 in M1-BUILD.md; 1 of 4 blocked rows re-opened": -1,
 		"rows come next. Milestones: 2 of 5": -1, "rows not started - milestones: 2 of 5": -1,
 		"seed rows loaded and milestones: 2 of 5": -1, "rows (later) and milestones: 2 of 5": -1,
+		"2 of 5 milestones done but rows not started": -1, "2 of 5 milestones done: rows come next": -1,
+		"2 of 5 milestones—rows next": -1, "2 of 5 milestones with rows pending": -1, "2 of 5 milestones And rows pending": -1,
+		"3 of 4 seed files have rows loaded": -1, "M1 rows ticked in phase 2 of 3": -1,
 	} {
 		if n, ok := (&Goal{DoneHow: how}).Rows(); ok != (want >= 0) || ok && n != want {
 			t.Errorf("%q: %d %v, want %d", how, n, ok, want)
@@ -431,7 +440,7 @@ func TestBuildSaysMoreVerifiedRowsThanClaimed(t *testing.T) {
 		verified(t, db, now.Add(-time.Hour), "crius:lead", "quotes:lead", f+" · ok")
 		verified(t, db, now.Add(-time.Hour), "crius:lead", "axi:lead", f+" · ok")
 	}
-	q := "## GOAL (2026-10-17 04:10)\nGoal: PROOF\n- [x] Rig · run 7\nDone: 2% (M1 rows ticked: 2 of 130)\nNext: F-94\nNeeds owner: nothing\n"
+	q := "## GOAL (2026-10-17 04:10)\nGoal: PROOF\n- [x] Rig · run 7\nDone: 2% (M1 rows: 2 of 130 ticked)\nNext: F-94\nNeeds owner: nothing\n"
 	dir := t.TempDir()
 	r, err := Build(db, input([]ingest.Lead{{Name: "quotes:lead", StatusFile: statusFile(t, dir, "q.md", q)},
 		{Name: "axi:lead", StatusFile: statusFile(t, dir, "a.md", strings.Replace(q, "2 of 130", "3 of 130", 1))}}, nil), now)
@@ -456,8 +465,8 @@ func TestBuildSaysARowsClaimItCannotRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "quotes:lead: 25% claimed · verified 0 of 1 done (1 milestones) · the Done line names rows but no " +
-		"\"rows: N of M\" or \"N of M rows\" was read · first report\n"; !strings.Contains(r.Text, want) {
+	if want := "quotes:lead: 25% claimed · verified 0 of 1 done (1 milestones) · the Done line names rows but its claim " +
+		"was not read: write one \"rows: N of M\" or \"N of M rows\" and no other \"N of M\" · first report\n"; !strings.Contains(r.Text, want) {
 		t.Fatalf("missing %q in\n%s", want, r.Text)
 	}
 }

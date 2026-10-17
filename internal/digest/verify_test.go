@@ -167,7 +167,7 @@ func TestVerifiedLooksAtEveryMilestoneAndRowsKeepMilestones(t *testing.T) {
 	verified(t, db, at, "crius:lead", "quotes:lead", "RB-90 · deploy checked")
 	tick := verified(t, db, at, "crius:lead", "quotes:lead", "F-126 · ticks seen")
 	verified(t, db, at, "crius:lead", "quotes:lead", "F-127 · a row only")
-	g := &Goal{DoneHow: "M1 rows ticked: 33 of 130", Milestones: []Milestone{
+	g := &Goal{DoneHow: "M1 rows: 33 of 130 ticked", Milestones: []Milestone{
 		{State: Done, Text: "M1 build, unblocks RB-90", Refs: "RB-89"},
 		{State: Todo, Text: "M2 deploy", Refs: "RB-90"},
 		{State: Done, Text: "quotes ticks", Refs: "F-126"},
