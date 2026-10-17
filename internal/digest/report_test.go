@@ -481,3 +481,21 @@ func TestBuildSaysARowsClaimItCannotRead(t *testing.T) {
 		t.Fatalf("missing %q in\n%s", want, r.Text)
 	}
 }
+
+// Crius 10-17 07:17 (P6 b): the quota line answers "how much is left and who burns it" alone: the 5h share with its
+// reset and the top project on Max; each is left out when not known.
+func TestBuildQuotaLineHasTheFiveHourShareAndTheTopProject(t *testing.T) {
+	db := open(t)
+	reset, five := now.Add(5*24*time.Hour), now.Add(90*time.Minute)
+	q := &quota.Report{Status: "complete", Now: now, Reset: reset, SevenPct: 54, Day: 3, Passed: 2.0 / 7, FivePct: 33,
+		FiveReset: five, MaxUSD: 100, Shares: []quota.Share{{Project: "crius", USD: 32}, {Project: "axi", USD: 24}}}
+	r, err := Build(db, Input{Quota: q, Health: &recall.Health{Status: "complete"}}, now)
+	if err != nil || !strings.Contains(r.Text, " at this pace · 5h 33% (resets "+five.Format("15:04")+") · top crius 32%\n") {
+		t.Fatal(err, r.Text)
+	}
+	q.FiveReset, q.Shares = time.Time{}, nil
+	r, err = Build(db, Input{Quota: q, Health: &recall.Health{Status: "complete"}}, now)
+	if err != nil || !strings.Contains(r.Text, " at this pace\n") {
+		t.Fatal(err, r.Text)
+	}
+}

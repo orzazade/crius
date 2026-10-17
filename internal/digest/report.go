@@ -352,6 +352,14 @@ func storeSections(db *sql.DB, in Input, now time.Time, maxItems int) ([]string,
 			out = append(out, pace+"lasts to the reset "+q.Reset.Local().Format("Mon 01-02 15:04"))
 		}
 	}
+	if !q.Reset.IsZero() {
+		if !q.FiveReset.IsZero() {
+			out[len(out)-1] += fmt.Sprintf(" · 5h %.0f%% (resets %s)", q.FivePct, q.FiveReset.Local().Format("15:04"))
+		}
+		if len(q.Shares) > 0 {
+			out[len(out)-1] += " · top " + q.Burners(1)
+		}
+	}
 	if q.Status != "complete" {
 		more := ""
 		if n := len(q.Reasons) - 1; n > 0 {
