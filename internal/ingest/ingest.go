@@ -336,6 +336,10 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "unavailable: %s is missing; run crius-rec init\n", home)
 		return exitUnavailable
 	}
+	if err := store.MakeSubdirs(home); err != nil {
+		fmt.Fprintf(stderr, "unavailable: %v\n", err)
+		return exitUnavailable
+	}
 	if problems := store.LeakProblems(home, *repo); len(problems) > 0 {
 		fmt.Fprintln(stderr, "unavailable: git-leak test failed; ingest refused")
 		for _, p := range problems {

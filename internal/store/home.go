@@ -46,14 +46,9 @@ func Home() string {
 	return filepath.Join(u, ".crius")
 }
 
-// InitLayout creates the home and its folders (mode 700) and writes projects.toml (mode 600) if it is missing.
-func InitLayout(home string, example []byte) error {
-	if err := os.MkdirAll(home, 0o700); err != nil {
-		return err
-	}
-	if err := os.Chmod(home, 0o700); err != nil {
-		return err
-	}
+// MakeSubdirs creates the home's missing folders (mode 700); a path there that is not a folder is an error. Init and
+// every ingest run use it, so a home that lost a folder is mended, not partial on every run (Crius 10-17 05:47).
+func MakeSubdirs(home string) error {
 	for _, sub := range Subdirs {
 		p := filepath.Join(home, sub)
 		if err := os.Mkdir(p, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
@@ -62,6 +57,20 @@ func InitLayout(home string, example []byte) error {
 		if fi, err := os.Stat(p); err != nil || !fi.IsDir() {
 			return fmt.Errorf("%s exists and is not a folder", p)
 		}
+	}
+	return nil
+}
+
+// InitLayout creates the home and its folders (mode 700) and writes projects.toml (mode 600) if it is missing.
+func InitLayout(home string, example []byte) error {
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		return err
+	}
+	if err := os.Chmod(home, 0o700); err != nil {
+		return err
+	}
+	if err := MakeSubdirs(home); err != nil {
+		return err
 	}
 	f, err := os.OpenFile(filepath.Join(home, "projects.toml"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if errors.Is(err, os.ErrExist) {

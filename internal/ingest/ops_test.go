@@ -134,20 +134,30 @@ func listDir(t *testing.T, dir string) []string {
 	return n
 }
 
-// Crius 10-17 05:47: a home with no backup/ folder made every run partial (exit 3); the first backup makes it, mode 700.
-func TestBackupMakesItsFolder(t *testing.T) {
+// Crius 10-17 05:47: a home with no backup/ folder made every run partial (exit 3), and one with no bus/ or spool/
+// fails the same way (review of 60264ce: ingest checked state/ only). Each run makes the home's missing folders, mode
+// 700, from the one list crius-rec init uses; a file where a folder should be refuses the run.
+func TestIngestMakesTheHomesMissingFolders(t *testing.T) {
 	x := newIC(t, cfg{})
-	seedDB(t, x.home)
-	dir := filepath.Join(x.home, "backup")
-	if err := os.RemoveAll(dir); err != nil {
+	for _, sub := range []string{"bus", "spool", "backup", "logs"} {
+		if err := os.RemoveAll(filepath.Join(x.home, sub)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if rc, out := mainRun(t, "--repo", testutil.RepoRoot(t)); rc != 0 {
+		t.Fatal(rc, out)
+	}
+	for _, sub := range store.Subdirs {
+		if fi, err := os.Stat(filepath.Join(x.home, sub)); err != nil || !fi.IsDir() || fi.Mode().Perm() != 0o700 {
+			t.Fatal(sub, fi, err)
+		}
+	}
+	if err := os.RemoveAll(filepath.Join(x.home, "logs")); err != nil {
 		t.Fatal(err)
 	}
-	p, err := BackupIfDue(x.home, time.Date(2026, 10, 16, 4, 0, 0, 0, time.Local))
-	if err != nil || filepath.Base(p) != "record-2026-10-16.db.gz" {
-		t.Fatal(p, err)
-	}
-	if fi, err := os.Stat(dir); err != nil || fi.Mode().Perm() != 0o700 {
-		t.Fatal(fi, err)
+	testutil.Write(t, filepath.Join(x.home, "logs"), "a file")
+	if rc, out := mainRun(t, "--repo", testutil.RepoRoot(t)); rc != 4 || !strings.Contains(out, "is not a folder") {
+		t.Fatal(rc, out)
 	}
 }
 
