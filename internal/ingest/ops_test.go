@@ -159,6 +159,16 @@ func TestIngestMakesTheHomesMissingFolders(t *testing.T) {
 	if rc, out := mainRun(t, "--repo", testutil.RepoRoot(t)); rc != 4 || !strings.Contains(out, "is not a folder") {
 		t.Fatal(rc, out)
 	}
+	// a dangling symlink says why, not "not a folder" (review of c1f5b23)
+	if err := os.Remove(filepath.Join(x.home, "logs")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(x.root, "gone"), filepath.Join(x.home, "logs")); err != nil {
+		t.Fatal(err)
+	}
+	if rc, out := mainRun(t, "--repo", testutil.RepoRoot(t)); rc != 4 || !strings.Contains(out, "no such file or directory") {
+		t.Fatal(rc, out)
+	}
 }
 
 func TestBackupRunsOnceADayAfter3AndRestores(t *testing.T) {

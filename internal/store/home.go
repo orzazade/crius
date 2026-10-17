@@ -54,7 +54,11 @@ func MakeSubdirs(home string) error {
 		if err := os.Mkdir(p, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
 			return err
 		}
-		if fi, err := os.Stat(p); err != nil || !fi.IsDir() {
+		fi, err := os.Stat(p)
+		if err != nil {
+			return err
+		}
+		if !fi.IsDir() {
 			return fmt.Errorf("%s exists and is not a folder", p)
 		}
 	}
