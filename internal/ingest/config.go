@@ -100,7 +100,6 @@ func loadConfig(home string) (*config, error) {
 	return c, nil
 }
 
-// enterpriseOK lists the projects that may run on the enterprise account (Appxite API billing).
 // KnownProjects gives the test RedactName needs: whether a slug is a project in home's projects.toml.
 func KnownProjects(home string) (func(slug string) bool, error) {
 	cfg, err := loadConfig(home)
@@ -120,6 +119,7 @@ func (c *config) known(slug string) bool {
 	return false
 }
 
+// enterpriseOK lists the projects that may run on the enterprise account (Appxite API billing).
 func (c *config) enterpriseOK() map[string]bool {
 	ok := map[string]bool{}
 	for _, p := range c.projects {
