@@ -121,10 +121,11 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fs := flag.NewFlagSet("digest", flag.ContinueOnError)
 		fs.SetOutput(stderr)
 		write := fs.Bool("write", false, "save the report and its numbers under state/digest/")
-		if fs.Parse(args) != nil || fs.NArg() > 0 {
+		printPath := fs.Bool("print-path", false, "with --write: print the saved report's path, not the report")
+		if fs.Parse(args) != nil || fs.NArg() > 0 || *printPath && !*write {
 			return exitUsage
 		}
-		return digestCmd(home, time.Now(), *write, stdout, stderr)
+		return digestCmd(home, time.Now(), *write, *printPath, stdout, stderr)
 	}
 	fmt.Fprint(stderr, usage)
 	return exitUsage
@@ -178,8 +179,15 @@ func record(home string, args []string, stdout, stderr io.Writer) int {
 	// seeing it (design §3c).
 	var secret []string
 	fs.Visit(func(f *flag.Flag) {
-		if _, n := redact.Redact(f.Value.String()); n > 0 {
-			secret = append(secret, "--"+f.Name)
+		vals := []string{f.Value.String()}
+		if f.Name == "to" { // a name: its parts one by one, as --project and --role are (token-service:lead is no key)
+			vals = strings.SplitN(vals[0], ":", 2)
+		}
+		for _, v := range vals {
+			if _, n := redact.Redact(v); n > 0 {
+				secret = append(secret, "--"+f.Name)
+				break
+			}
 		}
 	})
 	if len(secret) > 0 {
@@ -515,7 +523,7 @@ func answer(status string, v any, text string, asJSON bool, stdout, stderr io.Wr
 
 // digestCmd prints the goal report (step 5), compared with the last saved one. With write it saves the report as
 // state/digest/YYYY-MM-DD-HHMM.md, redacted like every sink, and its numbers beside it as .json.
-func digestCmd(home string, now time.Time, write bool, stdout, stderr io.Writer) int {
+func digestCmd(home string, now time.Time, write, printPath bool, stdout, stderr io.Writer) int {
 	if fi, err := os.Stat(filepath.Join(home, "state")); err != nil || !fi.IsDir() {
 		fmt.Fprintf(stderr, "unavailable: %s is missing; run crius-rec init\n", home)
 		return exitUnavailable
@@ -576,7 +584,11 @@ func digestCmd(home string, now time.Time, write bool, stdout, stderr io.Writer)
 			return exitError
 		}
 	}
-	fmt.Fprint(stdout, text)
+	if printPath {
+		fmt.Fprintln(stdout, filepath.Join(dir, now.Format("2006-01-02-1504"))+".md")
+	} else {
+		fmt.Fprint(stdout, text)
+	}
 	if r.Status != "complete" {
 		return exitPartial
 	}

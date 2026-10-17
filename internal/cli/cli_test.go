@@ -63,7 +63,13 @@ func TestBusLineToARole(t *testing.T) {
 	if log := testutil.Read(t, filepath.Join(home, "bus", "crius.log")); !strings.HasSuffix(log, " DONE crius:digest -> crius:lead — goal report x\n") {
 		t.Fatal(log)
 	}
-	for _, to := range []string{"crius lead", "Crius", "crius:", ""} {
+	// Its parts are checked for secrets one by one, as --project and --role are: whole, token-service:lead reads as a
+	// key and its value (review of eb9bc10).
+	if rc, out := run("record", "bus", "--project", "crius", "--role", "digest", "--type", "DONE", "--to", "token-service:lead",
+		"--text", "x"); rc != 0 {
+		t.Fatal(rc, out)
+	}
+	for _, to := range []string{"crius lead", "Crius", "crius:", "", "demo:xox" + "b-123456789012-123456789012-abcdefghijklmnopqrstuvwxyzabcdef"} {
 		if rc, _ := run("record", "bus", "--project", "crius", "--role", "digest", "--type", "DONE", "--to", to, "--text", "x"); rc != 2 {
 			t.Error(to, rc)
 		}
@@ -436,6 +442,24 @@ func TestShowUnknownProjectIsNoMatch(t *testing.T) {
 	}
 	if rc, out := run("show", "demo"); rc != exitUnavailable {
 		t.Fatal(rc, out)
+	}
+}
+
+// Review of eb9bc10: --print-path says which report this run wrote, so the digest job never guesses from names or
+// times (a clock that ran ahead made a later name an older report). It needs --write.
+func TestDigestPrintsThePathItWrote(t *testing.T) {
+	home := findStore(t)
+	testutil.Write(t, filepath.Join(home, "projects.toml"), "[projects.demo]\ncwd = [\"/w/demo\"]\n")
+	rc, out := run("digest", "--write", "--print-path")
+	path := strings.TrimSpace(out)
+	if rc != 0 && rc != exitPartial || filepath.Dir(path) != filepath.Join(home, "state", "digest") || !strings.HasSuffix(path, ".md") {
+		t.Fatal(rc, out)
+	}
+	if b := testutil.Read(t, path); !strings.HasPrefix(b, "# Goal report") {
+		t.Fatal(b)
+	}
+	if rc, _ := run("digest", "--print-path"); rc != exitUsage {
+		t.Fatal(rc)
 	}
 }
 
