@@ -61,7 +61,12 @@ func (r *runner) ingestLogs() {
 	}
 	sort.Strings(names)
 	for _, n := range names {
-		if err := r.logFile(filepath.Join(dir, n), "bus", true, strings.TrimSuffix(n, ".log")); err != nil {
+		project := strings.TrimSuffix(n, ".log")
+		if !store.Slug.MatchString(project) {
+			r.warn(true, "bus file %s: its name is not a project slug; not read", n) // warn redacts
+			continue
+		}
+		if err := r.logFile(filepath.Join(dir, n), "bus", true, r.name(project)); err != nil {
 			r.warn(true, "cannot ingest %s: %v", n, err)
 		}
 	}
@@ -135,7 +140,8 @@ func (r *runner) logFile(path, source string, strict bool, project string) error
 				// re-read must not move a file to a new birth date (a replaced file's birth is not its lines' date).
 				// A late line is no anchor: its date is not the state's.
 				var stored sql.NullString
-				err := tx.QueryRow("select ts from event where source_key=?", key).Scan(&stored)
+				// A malformed row's time is when it was read, not the line's date.
+				err := tx.QueryRow("select ts from event where source_key=? and kind <> 'malformed'", key).Scan(&stored)
 				if err != nil && err != sql.ErrNoRows {
 					return err
 				}
@@ -163,11 +169,15 @@ func (r *runner) logFile(path, source string, strict bool, project string) error
 			e := event{ts: t.UTC().Format("2006-01-02T15:04:05Z"), kind: strings.ToLower(p.Type), key: key,
 				project: project, actor: p.Role, text: p.Text, hasText: true}
 			if p.Project != "" { // redacted as one name: split, password:hunter2 kept its value
-				n := r.name(p.Project + ":" + p.Role)
-				if role, ok := strings.CutPrefix(n, p.Project+":"); ok {
-					e.project, e.actor = p.Project, role
-				} else { // the project part was redacted too: the row stays under its log's project
-					e.actor = n
+				writer := p.Project + ":" + p.Role
+				n := r.name(writer)
+				switch {
+				case n == writer:
+					e.project = p.Project
+				case strings.HasPrefix(n, p.Project+":"): // the role was redacted: the writer is no one (not qa-…)
+					e.project, e.actor = p.Project, "[redacted]"
+				default: // the project part too: the row stays under its log's project
+					e.actor = "[redacted]"
 				}
 			}
 			if len(p.Refs) > 0 {

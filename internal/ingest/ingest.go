@@ -146,7 +146,7 @@ func (r *runner) event(tx *sql.Tx, e event) error {
 		" project=excluded.project, kind=excluded.kind, actor=excluded.actor, session=excluded.session,"+
 		" item=excluded.item, refs=excluded.refs, text=excluded.text where event.kind='malformed'",
 		nullable(e.ts), nullable(e.project), e.kind, nullable(r.text(e.actor)), nullable(e.session),
-		nullable(e.item), refs, text, e.key)
+		nullable(r.text(e.item)), refs, text, e.key)
 	return err
 }
 

@@ -184,8 +184,14 @@ func TestBusClockReviewOf944e44a(t *testing.T) {
 		"2026-10-17T03:20 INFO token-service:lead -> crius — x\n" +
 		"2026-10-17T03:25 INFO demo:" + slack + " -> crius — a token shaped like a slug\n"
 	testutil.Write(t, path, text)
-	testutil.Write(t, filepath.Join(x.home, "bus", token+".log"), "2026-10-17T03:30 INFO demo:lead -> crius — a token for a file name\n")
-	x.run()
+	// A token for a file name: a slug-shaped one is read under [redacted]; another is not read, loudly (not a slug).
+	testutil.Write(t, filepath.Join(x.home, "bus", slack+".log"), "2026-10-17T03:30 INFO demo:lead -> crius — a token for a file name\nno stamp: filed under the file's name\n")
+	testutil.Write(t, filepath.Join(x.home, "bus", token+".log"), "2026-10-17T03:30 INFO demo:lead -> crius — x\n")
+	if w := strings.Join(x.run().Warnings, "\n"); !strings.Contains(w, "not a project slug") || strings.Contains(w, "ghp_") {
+		t.Fatal(w)
+	}
+	eq(t, x.one("select count(*) from event where project like '%xoxb%' or project like '%ghp_%'"), "0")
+	eq(t, x.one("select count(*) from event where kind = 'malformed' and project = '[redacted]'"), "1")
 	eq(t, x.one("select count(*) from alert where key like 'bus-clock:%'"), "6")
 	eq(t, x.one("select count(*) from alert where key like '%ghp_%' or text like '%ghp_%' or text like '%xoxb%'"), "0")
 	eq(t, x.one("select count(*) from alert where text like 'bus clock: token-service:lead line 2026-10-17T03:20 %'"), "1")
@@ -662,4 +668,56 @@ func TestNamesKeepTheContextTheirRedactionNeeds(t *testing.T) {
 		" or coalesce(project, '') like '%xoxb%'"), "0")
 	eq(t, x.one("select project||':'||actor from event where text = 'z'"), "first-order:ms-flow")
 	eq(t, x.one("select project from event where text = 'y'"), "demo")
+}
+
+// Review of ebbb89a/5008a61/a3e9c3e: a writer whose name redaction changed is no one: qa-password:hunter2 became actor
+// qa-[redacted], which the digest trusts as QA. An item ref is redacted like the text it came from.
+func TestARedactedWriterIsNoOne(t *testing.T) {
+	x, _, _ := busCase(t)
+	slack := "xox" + "b-123456789012-123456789012-abcdefghijklmnopqrstuvwxyzabcdef"
+	testutil.Write(t, filepath.Join(x.home, "bus", "demo.log"),
+		"2026-10-17T02:57 VERIFIED qa-password:hunter2 -> demo:lead — F-1 · checked\n"+
+			"2026-10-17T02:58 VERIFIED demo:qa-"+slack+" -> demo:lead — F-1 · checked\n"+
+			"2026-10-17T02:59 DONE demo:lead -> crius — item="+slack+"#1 done\n")
+	x.run()
+	eq(t, x.q("select project, actor from event where kind = 'verified' order by id"),
+		[][]string{{"demo", "[redacted]"}, {"demo", "[redacted]"}})
+	eq(t, x.one("select count(*) from event where coalesce(item, '') like '%xoxb%'"), "0")
+	eq(t, x.one("select count(*) from event where kind = 'done' and item is not null"), "1")
+}
+
+// Review of ebbb89a: a malformed row's time is when it was read, not the line's date, so it is no date anchor when a
+// new type list makes the line real; the lines after it keep their dates.
+func TestAMalformedRowIsNoDateAnchor(t *testing.T) {
+	x, _, _ := busCase(t)
+	testutil.Write(t, filepath.Join(x.home, "bus", "demo.log"), "09:30 NEWTYPE demo:lead -> crius — old\n"+
+		"09:40 DONE demo:lead -> crius — after\n")
+	x.run()
+	date := x.one("select ts from event where text = 'after'")
+	db, err := store.Open(x.home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec("update event set ts = '2000-01-01T00:00:00Z' where kind = 'malformed'") // read on another day
+	db.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.Types["NEWTYPE"] = true // a new type list: the file is read again
+	t.Cleanup(func() { delete(store.Types, "NEWTYPE") })
+	x.run()
+	eq(t, x.one("select count(*) from event where kind = 'newtype'"), "1")
+	eq(t, x.one("select ts from event where text = 'after'"), date)
+}
+
+// Review of ebbb89a: a bus file whose name is not a project slug (bus/.log) is not read, and says so; its rows had
+// no project and stopped the goal report.
+func TestABusFileNamedNoProjectIsLoud(t *testing.T) {
+	x, _, _ := busCase(t)
+	testutil.Write(t, filepath.Join(x.home, "bus", ".log"), "garbage\n")
+	st := x.run()
+	if st.Status != "partial" || !strings.Contains(strings.Join(st.Warnings, "\n"), "not a project slug") {
+		t.Fatal(st.Status, st.Warnings)
+	}
+	eq(t, x.one("select count(*) from event where project is null or project = ''"), "0")
 }
