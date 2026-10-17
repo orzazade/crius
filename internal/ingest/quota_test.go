@@ -1011,3 +1011,14 @@ func TestQuotaGuardAlertForAnEndedSessionSaysItEnded(t *testing.T) {
 		t.Fatalf("live %q\nended %q", l, e)
 	}
 }
+
+// Light review of 58d168a: a session known only from the statusline (no transcript read) ends by its newest line.
+func TestQuotaEndedSessionWithoutTranscriptSaysItEnded(t *testing.T) {
+	x := quotaCase(t)
+	at := qNow.Add(-5 * time.Hour)
+	x.spool(quota.Line{TS: iso(at), Kind: "session", Session: "66666666-x", Persona: "work"})
+	x.run()
+	if len(grepAlerts(x.alerts(), "enterprise session 66666666 (ended "+at.Local().Format("Mon 01-02 15:04")+")")) != 1 {
+		t.Fatalf("got %q", x.alerts())
+	}
+}

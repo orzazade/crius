@@ -409,8 +409,12 @@ func Build(db Querier, p Projects, now time.Time) (*Report, error) {
 	}
 	sort.Strings(ids)
 	for _, id := range ids {
+		last := ss[id].last // a session known only from the statusline has no request: its newest line is the last
+		if n := len(ss[id].obs); n > 0 && ss[id].obs[n-1].ts.After(last) {
+			last = ss[id].obs[n-1].ts
+		}
 		for _, v := range ss[id].guard(id, p.EnterpriseOK) {
-			if last := ss[id].last; !last.IsZero() && now.Sub(last) > Gap {
+			if !last.IsZero() && now.Sub(last) > Gap {
 				v.Ended = last
 			}
 			rep.Violations = append(rep.Violations, v)
