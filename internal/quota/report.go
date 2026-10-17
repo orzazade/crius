@@ -70,18 +70,25 @@ type obs struct {
 	rl bool
 }
 
+// orgLine is a transcript line naming the session's organization, with the account learned for it ("" when none).
+type orgLine struct {
+	ts           time.Time
+	org, account string
+}
+
 type asg struct {
 	from, to         time.Time // to is zero while the assignment is open
 	project, account string
 }
 
-// sess holds what decides a session's account and project at a given time: the statusline lines (obs) and the
-// launch-tag assignments (asg), both sorted by time.
+// sess holds what decides a session's account and project at a given time: the statusline lines (obs), the
+// launch-tag assignments (asg) and the organization lines (orgs), all sorted by time.
 type sess struct {
 	persona, cwdProject string
 	first               time.Time // the session's first request
 	obs                 []obs
 	asg                 []asg
+	orgs                []orgLine
 }
 
 // Grace: a statusline line is written just after the response it describes, so it applies from this much earlier.
@@ -103,8 +110,25 @@ func (s *sess) project(t time.Time) string {
 	return s.cwdProject
 }
 
+// org is the session's organization line at t: the newest by then, else the first (it comes before the first
+// request); nil when the transcript names none.
+func (s *sess) org(t time.Time) *orgLine {
+	if len(s.orgs) == 0 {
+		return nil
+	}
+	o := &s.orgs[0]
+	for i := range s.orgs {
+		if s.orgs[i].ts.After(t) {
+			break
+		}
+		o = &s.orgs[i]
+	}
+	return o
+}
+
 // account at t: the statusline's newest line by then (a session's first line comes with its first response, so
-// earlier requests take it too), else the launch tag active then, else unknown.
+// earlier requests take it too), else the launch tag active then, else the account learned for its organization,
+// else unknown.
 func (s *sess) account(t time.Time) string {
 	if len(s.obs) > 0 {
 		o := s.obs[0]
@@ -121,6 +145,9 @@ func (s *sess) account(t time.Time) string {
 	}
 	if a := s.assignment(t); a != nil && a.account != "unknown" {
 		return a.account
+	}
+	if o := s.org(t); o != nil && o.account != "" {
+		return o.account
 	}
 	return "unknown"
 }
@@ -193,8 +220,9 @@ func (s *sess) guard(id string, ok map[string]bool) []Violation {
 }
 
 // sessions loads every session the transcripts or the statusline know, with its lines and assignments; lastLine
-// lists the personas whose statusline has written a line.
-func sessions(db Querier, p Projects) (out map[string]*sess, lastLine map[string]time.Time, err error) {
+// lists the personas whose statusline has written a line; both lists the organizations the statusline measured on
+// both accounts.
+func sessions(db Querier, p Projects) (out map[string]*sess, lastLine map[string]time.Time, both []string, err error) {
 	out, lastLine = map[string]*sess{}, map[string]time.Time{}
 	get := func(id string) *sess {
 		if out[id] == nil {
@@ -266,24 +294,67 @@ func sessions(db Querier, p Projects) (out map[string]*sess, lastLine map[string
 			s.asg = append(s.asg, a)
 			return nil
 		}},
+		{"select session, ts, org from org_seen order by ts", func(r *sql.Rows) error {
+			var id, ts, org string
+			if err := r.Scan(&id, &ts, &org); err != nil {
+				return err
+			}
+			t, err := parseTS(ts)
+			if err != nil {
+				return err
+			}
+			s := get(id)
+			s.orgs = append(s.orgs, orgLine{ts: t, org: org})
+			return nil
+		}},
 	}
 	for _, l := range loads {
 		rows, err := db.Query(l.q)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		for rows.Next() {
 			if err := l.scan(rows); err != nil {
 				rows.Close()
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 		}
 		rows.Close()
 		if err := rows.Err(); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 	}
-	return out, lastLine, nil
+	// An organization's account is the one the statusline measured in its sessions; measured on both, it is none.
+	// A line within Grace of a switch to another organization is not paired: after a new login the statusline can
+	// write before the transcript names the new organization.
+	measured := map[string]map[bool]bool{}
+	for _, s := range out {
+		for _, o := range s.obs {
+			if l := s.org(o.ts); l != nil && s.org(o.ts.Add(Grace)).org == l.org {
+				if measured[l.org] == nil {
+					measured[l.org] = map[bool]bool{}
+				}
+				measured[l.org][o.rl] = true
+			}
+		}
+	}
+	for org, rl := range measured {
+		if len(rl) > 1 {
+			both = append(both, org)
+		}
+	}
+	sort.Strings(both)
+	for _, s := range out {
+		for i := range s.orgs {
+			if rl := measured[s.orgs[i].org]; len(rl) == 1 {
+				s.orgs[i].account = "enterprise"
+				if rl[true] {
+					s.orgs[i].account = "max"
+				}
+			}
+		}
+	}
+	return out, lastLine, both, nil
 }
 
 type sample struct {
@@ -299,7 +370,7 @@ func parseTS(s string) (time.Time, error) { return time.Parse(time.RFC3339, s) }
 // Build makes the report as of now.
 func Build(db Querier, p Projects, now time.Time) (*Report, error) {
 	rep := &Report{Now: now}
-	ss, lastLine, err := sessions(db, p)
+	ss, lastLine, both, err := sessions(db, p)
 	if err != nil {
 		return nil, err
 	}
@@ -507,6 +578,10 @@ func Build(db Querier, p Projects, now time.Time) (*Report, error) {
 	}
 	if !rep.Ended.IsZero() {
 		rep.Reasons = append(rep.Reasons, "epoch ended "+when(rep.Ended)+", no sample since")
+	}
+	for _, org := range both {
+		rep.Reasons = append(rep.Reasons, fmt.Sprintf("organization %s seen on both accounts: its sessions stay unknown",
+			org[:min(8, len(org))]))
 	}
 	if rep.UnknownUSD > 0 {
 		rep.Reasons = append(rep.Reasons, fmt.Sprintf("account unknown for %s in %d sessions (not measured)",
@@ -744,8 +819,8 @@ func names(ps []string) string {
 	return strings.Join(out, ", ")
 }
 
-// burners is the top n Max projects with their share of Max $ (when there is a Max $ to share).
-func (r *Report) burners(n int) string {
+// Burners is the top n Max projects with their share of Max $ (when there is a Max $ to share).
+func (r *Report) Burners(n int) string {
 	var out []string
 	for _, s := range r.Shares[:min(n, len(r.Shares))] {
 		if r.MaxUSD > 0 {
@@ -778,7 +853,7 @@ func (r *Report) suggestion() string {
 
 // PaceText is the pace push (design §8): speed, top burners, one suggestion.
 func (r *Report) PaceText() string {
-	return "quota pace high: " + r.pace() + " · top burners: " + r.burners(2) + r.suggestion() + ". " + r.entWeek()
+	return "quota pace high: " + r.pace() + " · top burners: " + r.Burners(2) + r.suggestion() + ". " + r.entWeek()
 }
 
 // RunoutText is the push when the subscription will be used up before the reset at this pace (design §8). It also
@@ -790,7 +865,7 @@ func (r *Report) RunoutText(enterpriseOK map[string]bool) string {
 		t += fmt.Sprintf(" (7-day avg %.1f)", r.AvgPerDay)
 	}
 	if len(r.Shares) > 0 {
-		t += " · top burner " + r.burners(1) + ", slow it"
+		t += " · top burner " + r.Burners(1) + ", slow it"
 	}
 	return t + fmt.Sprintf(" · only Appxite work (%s) may continue, on enterprise; personal/scifi work waits until %s · %s",
 		names(okList(enterpriseOK)), when(r.Reset), r.entWeek())

@@ -1,6 +1,7 @@
 package ingest
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -137,6 +138,9 @@ func (r *runner) ingestTranscripts() {
 				if err := r.transcriptFile(rt, path); err != nil {
 					r.warn(true, "cannot ingest %s: %v", path, err)
 				}
+				if err := r.orgFile(rt, path); err != nil {
+					r.warn(true, "cannot read the organization lines of %s: %v", path, err)
+				}
 			}
 			return nil
 		})
@@ -147,6 +151,52 @@ func (r *runner) ingestTranscripts() {
 	if err := r.refile(); err != nil {
 		r.warn(true, "re-filing sessions by folder or title: %v", err)
 	}
+}
+
+// orgFile reads the lines of a main transcript that name the session's organization (credential_org) into org_seen.
+// It keeps its own cursor, so transcripts read before it existed are read once more, for these lines only.
+func (r *runner) orgFile(rt root, path string) error {
+	rel, err := filepath.Rel(rt.path, path)
+	if err != nil {
+		return err
+	}
+	if slices.Contains(strings.Split(rel, string(filepath.Separator)), "subagents") {
+		return nil // a subagent runs on its session's login
+	}
+	sid := strings.TrimSuffix(filepath.Base(path), ".jsonl")
+	pathKey := sha1Hex([]byte(path))[:12]
+	return r.inTx(func(tx *sql.Tx) error {
+		c, err := getCursor(tx, "transcript-org", path)
+		if err != nil {
+			return err
+		}
+		next, n, err := scanLines(path, c, func(pos int64, raw []byte) error {
+			if !bytes.Contains(raw, []byte(`"credential_org"`)) {
+				return nil
+			}
+			var o struct {
+				Type, Timestamp string
+				Attachment      struct {
+					Type string
+					Org  string `json:"organizationUuid"`
+				}
+			}
+			if json.Unmarshal(raw, &o) != nil || o.Type != "attachment" || o.Attachment.Type != "credential_org" {
+				return nil // bad JSON is counted by transcriptFile; another line only mentions the word
+			}
+			if o.Attachment.Org == "" || o.Timestamp == "" {
+				r.warn(true, "%s: a credential_org line without its organization or time", filepath.Base(path))
+				return nil
+			}
+			_, err := tx.Exec("insert or ignore into org_seen (source_key, session, ts, org) values (?,?,?,?)",
+				fmt.Sprintf("org:%s:%d", pathKey, pos), sid, o.Timestamp, o.Attachment.Org)
+			return err
+		})
+		if err != nil || next == c {
+			return err
+		}
+		return saveCursor(tx, "transcript-org", path, next, n)
+	})
 }
 
 // refile re-derives the filing of sessions filed by their folder or title when projects.toml or the title rules now

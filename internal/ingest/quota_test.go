@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -859,5 +860,85 @@ func TestQuotaRoomCountsResponsesOnly(t *testing.T) {
 	x.run()
 	if v, reason := quota.Room(x.report()); v != "room" {
 		t.Errorf("old change line: %s %s", v, reason)
+	}
+}
+
+// org appends the transcript line that names the session's organization (Claude Code's credential_org attachment).
+func (x *ic) org(persona, sid, id string, at time.Time) {
+	x.t.Helper()
+	root := x.personal
+	if persona == "work" {
+		root = x.work
+	}
+	appendFile(x.t, filepath.Join(root, "-p", sid+".jsonl"), lines(map[string]any{"type": "attachment", "uuid": "o-" + sid,
+		"timestamp": iso(at), "attachment": map[string]any{"type": "credential_org", "organizationUuid": id}}))
+}
+
+// Crius 10-17 07:17 (P6 a): a session the statusline never saw takes its account from the organization its
+// transcript names, learned from the sessions the statusline did see; one that names none stays unknown.
+func TestQuotaAccountFromTheTranscriptsOrganization(t *testing.T) {
+	x := quotaCase(t)
+	ent, onMax, onEnt, none := "e0000000-2222-3333-4444-555555555555", "a1000000-2222-3333-4444-555555555555",
+		"b1000000-2222-3333-4444-555555555555", "c1000000-2222-3333-4444-555555555555"
+	x.session("personal", x.sid, "/work/demo", "", qNow.Add(-10*time.Minute))
+	x.session("work", ent, "/work/axi", "", qNow.Add(-20*time.Minute))
+	closed := qNow.Add(-2 * time.Hour) // not open: only the account is in question, not a stale sampler
+	x.session("work", onMax, "/work/demo", "", closed)
+	x.session("work", onEnt, "/work/axi", "", closed)
+	x.session("work", none, "/work/demo", "", closed)
+	x.org("personal", x.sid, "org-max", qNow.Add(-11*time.Minute))
+	x.org("work", ent, "org-ent", qNow.Add(-21*time.Minute))
+	x.org("work", onMax, "org-max", closed.Add(-time.Minute))
+	x.org("work", onEnt, "org-ent", closed.Add(-time.Minute))
+	x.spool(sampleAt(x.sid, qNow.Add(-5*time.Minute), 20, qNow.Add(4*24*time.Hour)),
+		quota.Line{TS: iso(qNow.Add(-19 * time.Minute)), Kind: "session", Session: ent, Persona: "work"})
+	x.run()
+	rep := x.report()
+	one := rep.UnknownUSD
+	if rep.UnknownSessions != 1 || one == 0 || math.Abs(rep.MaxUSD-2*one) > 1e-9 || math.Abs(rep.EntWeekUSD-2*one) > 1e-9 {
+		t.Fatalf("unknown %d sessions $%v, max $%v, enterprise $%v; want 1 unknown, 2 each", rep.UnknownSessions, one,
+			rep.MaxUSD, rep.EntWeekUSD)
+	}
+}
+
+// An organization the statusline saw on both accounts tells nothing: its sessions stay unknown, and the report
+// says why.
+func TestQuotaOrganizationOnBothAccountsIsLoud(t *testing.T) {
+	x := quotaCase(t)
+	ent, other := "e0000000-2222-3333-4444-555555555555", "a1000000-2222-3333-4444-555555555555"
+	x.session("personal", x.sid, "/work/demo", "", qNow.Add(-10*time.Minute))
+	x.session("work", ent, "/work/axi", "", qNow.Add(-20*time.Minute))
+	x.session("work", other, "/work/demo", "", qNow.Add(-2*time.Hour))
+	for _, s := range []string{x.sid, ent, other} {
+		x.org("work", s, "org-both", qNow.Add(-3*time.Hour))
+	}
+	x.spool(sampleAt(x.sid, qNow.Add(-5*time.Minute), 20, qNow.Add(4*24*time.Hour)),
+		quota.Line{TS: iso(qNow.Add(-19 * time.Minute)), Kind: "session", Session: ent, Persona: "work"})
+	x.run()
+	rep := x.report()
+	if rep.UnknownSessions != 1 || !strings.Contains(strings.Join(rep.Reasons, "\n"), "organization org-both seen on both accounts") {
+		t.Fatalf("unknown %d, reasons %q", rep.UnknownSessions, rep.Reasons)
+	}
+}
+
+// Live store 10-17: a login switch puts the statusline's first Max line 14 s before the transcript's new organization
+// line. A line that close to a switch is not paired with either organization, so the switch is not a conflict.
+func TestQuotaOrganizationSwitchIsNotAConflict(t *testing.T) {
+	x := quotaCase(t)
+	switched, other := "e0000000-2222-3333-4444-555555555555", "b1000000-2222-3333-4444-555555555555"
+	x.session("work", switched, "/work/axi", "", qNow.Add(-60*time.Minute), qNow.Add(-10*time.Minute))
+	x.session("work", other, "/work/axi", "", qNow.Add(-3*time.Hour))
+	x.org("work", switched, "org-ent", qNow.Add(-61*time.Minute))
+	x.org("work", other, "org-ent", qNow.Add(-3*time.Hour).Add(-time.Minute))
+	x.spool(quota.Line{TS: iso(qNow.Add(-59 * time.Minute)), Kind: "session", Session: switched, Persona: "work"},
+		sampleAt(switched, qNow.Add(-30*time.Minute), 20, qNow.Add(4*24*time.Hour)),
+		sampleAt(switched, qNow.Add(-5*time.Minute), 20, qNow.Add(4*24*time.Hour)))
+	appendFile(t, filepath.Join(x.work, "-p", switched+".jsonl"), lines(map[string]any{"type": "attachment",
+		"uuid": "o2", "timestamp": iso(qNow.Add(-30*time.Minute + 14*time.Second)),
+		"attachment": map[string]any{"type": "credential_org", "organizationUuid": "org-max"}}))
+	x.run()
+	rep := x.report()
+	if rep.UnknownSessions != 0 || len(grepAlerts(rep.Reasons, "both accounts")) != 0 {
+		t.Fatalf("unknown %d, reasons %q", rep.UnknownSessions, rep.Reasons)
 	}
 }

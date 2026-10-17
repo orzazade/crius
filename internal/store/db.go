@@ -64,6 +64,10 @@ create table if not exists quota_response (source_key text primary key, responde
 create table if not exists account_seen (
   source_key text primary key, session text not null, persona text, ts text not null, rl integer not null);
 create index if not exists account_seen_session on account_seen (session, ts);
+-- Every transcript line that names the session's organization (Claude Code's credential_org attachment). The
+-- quota report learns each organization's account from the sessions the statusline measured (Crius 10-17 07:17).
+create table if not exists org_seen (source_key text primary key, session text not null, ts text not null, org text not null);
+create index if not exists org_seen_session on org_seen (session, ts);
 create table if not exists source_run (
   id integer primary key, started text, finished text, status text, stats text);
 -- One row per distinct alert, written in the same transaction as the rows that raised it; sent is set once the
