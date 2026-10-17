@@ -57,10 +57,11 @@ var (
 	fenceRe     = regexp.MustCompile("^(`{3,}|~{3,})")
 	milestoneRe = regexp.MustCompile(`^- \[([x~ ])\] (.+)$`)
 	doneRe      = regexp.MustCompile(`^Done: (\d{1,3})% \((.+)\)$`)
-	// A rows claim sits next to the word: "rows …: N of M" in one clause, or "N of M [word] rows"; a number with a
-	// thousands comma is not read (the report says the claim was not read).
+	// A rows claim sits next to the word: "N of M [word] rows", or "rows …: N of M" with no comma or number between
+	// the word and the colon, so a later clause ("milestones: 2 of 5") is never read as the claim. A number with a
+	// thousands comma is not read either; the report says when a claim was not read.
 	rowsWordRe   = regexp.MustCompile(`(?i)\brows\b`)
-	rowsAfterRe  = regexp.MustCompile(`(?i)\brows\b[^:;]{0,40}:\s*(\d+) of \d`)
+	rowsAfterRe  = regexp.MustCompile(`(?i)\brows\b[^:;,0-9]{0,40}:\s*(\d+) of \d`)
 	rowsBeforeRe = regexp.MustCompile(`(?i)(?:^|[^\d,])(\d+) of \d+ (?:[0-9A-Za-z-]+ )?rows\b`)
 )
 
@@ -80,9 +81,9 @@ func ReadGoal(path string) (*Goal, error) {
 
 // Rows gives the rows the Done line claims when it counts rows, not milestones ("M1 rows ticked …: 33 of 130").
 func (g *Goal) Rows() (int, bool) {
-	m := rowsAfterRe.FindStringSubmatch(g.DoneHow)
+	m := rowsBeforeRe.FindStringSubmatch(g.DoneHow)
 	if m == nil {
-		m = rowsBeforeRe.FindStringSubmatch(g.DoneHow)
+		m = rowsAfterRe.FindStringSubmatch(g.DoneHow)
 	}
 	if m == nil {
 		return 0, false

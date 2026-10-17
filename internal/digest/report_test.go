@@ -386,7 +386,9 @@ func TestBuildShowsVerifiedRowsWhenDoneCountsRows(t *testing.T) {
 		"Rows ticked: 33 of 130": true, "5 of 8 required steps; rows: 33 of 100 ticked": true,
 		"3 of 5 milestones; seed rows loaded": false, "1,033 of 1,300 rows": false, "rows ticked, 2 of 5 milestones": false,
 		"3 of 6 milestones and rows pending": false, "3 of 6 milestones and 40 rows left": false,
-		"rows in phase 2: 33 of 130": true, "rows (F-1..F-130): 33 of 130": true,
+		"rows in phase 2: 33 of 130": false, "rows (F-1..F-130): 33 of 130": false, // a number before the claim: not read
+		"33 of 130 rows, milestones: 2 of 5": true, "33 of 130 rows ticked and milestones: 2 of 5": true,
+		"rows 33 of 130, milestones: 2 of 5": false, "40 rows left, milestones: 3 of 6": false,
 		"M1 rows ticked with evidence: 33 of 130 in M1-BUILD.md; Crius has verified F-110 since": true} {
 		if n, ok := (&Goal{DoneHow: how}).Rows(); ok != want || ok && n != 33 {
 			t.Errorf("%q: %d %v", how, n, ok)
