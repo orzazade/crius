@@ -1002,7 +1002,7 @@ func TestQuotaGuardAlertForAnEndedSessionSaysItEnded(t *testing.T) {
 	x := quotaCase(t)
 	live, ended := "33333333-2222-3333-4444-555555555555", "44444444-2222-3333-4444-555555555555"
 	tag := "[crius account=enterprise project=demo role=lead]"
-	x.session("work", live, "/work/demo", tag, qNow.Add(-10*time.Minute))
+	x.session("work", live, "/work/demo", tag, qNow.Add(-6*time.Hour), qNow.Add(-10*time.Minute)) // open: its last request counts
 	x.session("work", ended, "/work/demo", tag, qNow.Add(-5*time.Hour))
 	x.run()
 	l, e := grepAlerts(x.alerts(), "session 33333333"), grepAlerts(x.alerts(), "session 44444444")
