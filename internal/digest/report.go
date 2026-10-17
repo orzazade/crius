@@ -136,13 +136,11 @@ func Build(db *sql.DB, in Input, now time.Time) (*Report, error) {
 			counted += ` · the Done line names rows but its claim was not read: write "rows: X of Y in <row file>; <command>" (RULES 3.1) and no other "N of M"`
 		}
 		snap := LeadSnap{Done: g.Done, Verified: verified, Rows: countsRows}
-		moved := change(prev, l.Name, snap)
-		if rowsErr != nil { // no rows counted: the next report compares with the last counted ones
-			if p, ok := prev[l.Name]; ok {
-				r.Snap[l.Name] = p
-			}
-			moved = "change not known: rows not counted"
-		} else {
+		p, hadPrev := prev[l.Name]
+		if rowsErr != nil { // no rows counted: keep the last counted ones, so only the claimed % moves
+			snap.Verified, snap.Rows = p.Verified, p.Rows
+		}
+		if rowsErr == nil || hadPrev {
 			r.Snap[l.Name] = snap
 		}
 		lost := ""
@@ -150,7 +148,7 @@ func Build(db *sql.DB, in Input, now time.Time) (*Report, error) {
 			lost = fmt.Sprintf(" · VERIFIED lines not counted: %d", notCounted)
 		}
 		entries = append(entries, entry{
-			line: fmt.Sprintf("%s: %d%% claimed · %s · %s%s", l.Name, g.Done, counted, moved, lost),
+			line: fmt.Sprintf("%s: %d%% claimed · %s · %s%s", l.Name, g.Done, counted, change(prev, l.Name, snap), lost),
 			goal: "  Goal: " + g.Goal,
 			next: "  Next: " + g.Next,
 		})
