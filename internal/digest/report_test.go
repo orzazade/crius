@@ -361,7 +361,7 @@ func TestBuildCountsMalformedLines(t *testing.T) {
 
 // Crius 10-17 04:23, 04:58 and 05:34: a lead whose Done line counts rows ("rows: 33 of 130") is shown against the
 // rows Crius or its QA verified, "verified rows N of claimed 33": the distinct ids of VERIFIED lines to it whose ref
-// is "row <id>" (RULES 3.1), the id one token of letters and digits (review of 38598e4: "F-1," or "`F-1`" made a second
+// is "row <id>" (RULES 3.1), the id one token with a letter and a digit (review of 38598e4: "F-1," or "`F-1`" made a second
 // row), in any case. Any other ref is no row: no row is guessed from a
 // ref's shape or read from the row file (four review rounds found guesses that made a false MISMATCH). A row line
 // also counts for the milestone it matches; any other line that counts for no milestone is not counted. A lead that
