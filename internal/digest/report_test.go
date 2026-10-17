@@ -360,9 +360,11 @@ func TestBuildCountsMalformedLines(t *testing.T) {
 }
 
 // Crius 10-17 04:23 and 04:58: a lead whose Done line counts rows ("rows: 33 of 130") is shown against the rows Crius
-// or its QA verified: the distinct refs of VERIFIED lines to it that are not shas, whatever their form (F-118, an AXI
-// inventory id), "verified rows N of claimed 33". A row line also counts for the milestone it matches; a sha line that
-// counts for no milestone is not counted, as before. A lead that counts milestones keeps the milestone form.
+// or its QA verified: the distinct refs of VERIFIED lines to it that are one id that is not a sha, whatever its form
+// (F-118, an AXI inventory id), in any case, "verified rows N of claimed 33". A milestone check ("poc/rig/STATUS.md"),
+// "run 7" or a sha is no row (review of fa0c4d0: they made a false MISMATCH). A row line also counts for the
+// milestone it matches; any other line that counts for no milestone is not counted. A lead that counts milestones
+// keeps the milestone form.
 func TestBuildShowsVerifiedRowsWhenDoneCountsRows(t *testing.T) {
 	db := open(t)
 	at := now.Add(-time.Hour)
@@ -374,6 +376,9 @@ func TestBuildShowsVerifiedRowsWhenDoneCountsRows(t *testing.T) {
 	verified(t, db, at, "crius:lead", "quotes:lead", "INV-7731 · an inventory id")
 	verified(t, db, at, "crius:lead", "quotes:lead", "c84d78c · a sha is no row")
 	verified(t, db, at, "crius:lead", "quotes:lead", "C84D78C1 · nor in capitals")
+	verified(t, db, at, "crius:lead", "quotes:lead", "f-110 · the same row in lower case")
+	verified(t, db, at, "crius:lead", "quotes:lead", "run 7 · not one id")
+	verified(t, db, at, "crius:lead", "quotes:lead", "F-1 (again) · not one id")
 	verified(t, db, at, "crius:lead", "quotes:lead", "F-9 · ")
 	verified(t, db, at, "crius:lead", "axi:leader", "F-1 · to another lead")
 	verified(t, db, at, "crius:lead", "axi:leader", "F-2 · a row to a lead that counts milestones")
@@ -396,7 +401,10 @@ func TestBuildShowsVerifiedRowsWhenDoneCountsRows(t *testing.T) {
 		"rows: 2 of 5 milestones done": -1, "rows: 1 of 2 of 3": -1, "1 of 2 of 3 rows": -1, "rows: 007 of 130": -1,
 		"rows: 33 of 130 in M1-BUILD.md; 2 of 5 milestones": -1, "milestones 2 of 5 and rows not started": -1,
 		"Milestones: 2 of 5 and rows pending": -1, "rows 2 of 5 milestones done": -1, "phase 2 of 3 M1 rows": -1,
-		"rows: 1,033 of 1,300": -1, "rows: 1 033 of 1 300": -1, "rows: 1, 234 of 2000": -1, "rows: 1\u02bc234 of 2000": -1,
+		"rows: 1,033 of 1,300": -1, "rows: 99999999999999999999 of 99999999999999999999": -1,
+		"3 of 6 milestones and 40 rows left": -1, "1.033 of 1300 rows": -1, "1\u202f033 of 1\u202f300 rows": -1,
+		"rows: 033 of 130": -1, "rows ticked: 33 of 130 in M1-BUILD.md; 1 of 4 blocked rows re-opened": -1,
+		"rows: 3 of 42 in ROWS.md; count.py --top 5 of 10": -1, "rows: 1 033 of 1 300": -1, "rows: 1, 234 of 2000": -1, "rows: 1\u02bc234 of 2000": -1,
 		"Rows ticked: 33 of 130": -1, "rows in phase 2: 33 of 130": -1,
 		"M1 rows ticked with evidence: 33 of 130 in poc/ui-app/M1-BUILD.md, `/usr/bin/grep -c '^- \\[x\\] F-'`; Crius has verified F-110, F-112 since": -1,
 		"3 of 42 offer type x operation rows PROVEN with a run id of the same operation; PARTIAL 15, NONE 24, n/a 3":                                   -1,
@@ -412,18 +420,18 @@ func TestBuildShowsVerifiedRowsWhenDoneCountsRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"quotes:lead: 25% claimed · verified rows 6 of claimed 33, milestones 1 of 1 · verified now counts rows since the last report · VERIFIED lines not counted: 3\n",
+		"quotes:lead: 25% claimed · verified rows 5 of claimed 33, milestones 1 of 1 · verified now counts rows since the last report · VERIFIED lines not counted: 5\n",
 		"axi:leader: 50% claimed · verified 0 of 1 done (1 milestones) · first report · VERIFIED lines not counted: 2\n",
 	} {
 		if !strings.Contains(r.Text, want) {
 			t.Errorf("missing %q in\n%s", want, r.Text)
 		}
 	}
-	if r.Snap["quotes:lead"] != (LeadSnap{Done: 25, Verified: 6, Rows: true}) {
+	if r.Snap["quotes:lead"] != (LeadSnap{Done: 25, Verified: 5, Rows: true}) {
 		t.Fatalf("%+v", r.Snap)
 	}
 	if r, err = Build(db, input(leads, r.Snap), now); err != nil || !strings.Contains(r.Text,
-		"quotes:lead: 25% claimed · verified rows 6 of claimed 33, milestones 1 of 1 · no change since the last report") {
+		"quotes:lead: 25% claimed · verified rows 5 of claimed 33, milestones 1 of 1 · no change since the last report") {
 		t.Fatal(err, r.Text)
 	}
 }
@@ -462,7 +470,7 @@ func TestBuildSaysARowsClaimItCannotRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	if want := "quotes:lead: 25% claimed · verified 0 of 1 done (1 milestones) · the Done line names rows but its claim " +
-		"was not read: write \"rows: X of Y in <row file>; <command>\" (RULES 3.1) · first report\n"; !strings.Contains(r.Text, want) {
+		"was not read: write \"rows: X of Y in <row file>; <command>\" (RULES 3.1) and no other \"N of M\" · first report\n"; !strings.Contains(r.Text, want) {
 		t.Fatalf("missing %q in\n%s", want, r.Text)
 	}
 }

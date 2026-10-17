@@ -85,7 +85,10 @@ func (g *Goal) Rows() (int, bool) {
 	if m == nil || len(countRe.FindAllString(g.DoneHow, -1)) != 1 {
 		return 0, false
 	}
-	n, _ := strconv.Atoi(m[1])
+	n, err := strconv.Atoi(m[1])
+	if err != nil { // too large for an int: not the claim
+		return 0, false
+	}
 	return n, true
 }
 

@@ -125,7 +125,7 @@ func Build(db *sql.DB, in Input, now time.Time) (*Report, error) {
 			verified = rows
 		}
 		if !countsRows && rowsWordRe.MatchString(g.DoneHow) {
-			counted += ` · the Done line names rows but its claim was not read: write "rows: X of Y in <row file>; <command>" (RULES 3.1)`
+			counted += ` · the Done line names rows but its claim was not read: write "rows: X of Y in <row file>; <command>" (RULES 3.1) and no other "N of M"`
 		}
 		snap := LeadSnap{Done: g.Done, Verified: verified, Rows: countsRows}
 		r.Snap[l.Name] = snap
