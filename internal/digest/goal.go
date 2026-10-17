@@ -57,6 +57,8 @@ var (
 	fenceRe     = regexp.MustCompile("^(`{3,}|~{3,})")
 	milestoneRe = regexp.MustCompile(`^- \[([x~ ])\] (.+)$`)
 	doneRe      = regexp.MustCompile(`^Done: (\d{1,3})% \((.+)\)$`)
+	rowsRe      = regexp.MustCompile(`\brows\b`)
+	ofRe        = regexp.MustCompile(`\b(\d+) of \d+\b`)
 )
 
 // ReadGoal reads the GOAL block of a status file. A file that cannot be read is an error of its own: it is never
@@ -77,6 +79,16 @@ func ReadGoal(path string) (*Goal, error) {
 // least as long), in the exact form of RULES 3.1. A heading that is almost right (indented, one #, "GOAL" with no
 // date, "Goal (" in another case) is an unreadable block, not LOST; a prose heading like "## Goal" is not a try. Blank lines in the
 // block are skipped; the block ends at its "Needs owner:" line.
+// Rows gives the rows the Done line claims when it counts rows, not milestones ("M1 rows ticked …: 33 of 130").
+func (g *Goal) Rows() (int, bool) {
+	m := ofRe.FindStringSubmatch(g.DoneHow)
+	if m == nil || !rowsRe.MatchString(g.DoneHow) {
+		return 0, false
+	}
+	n, _ := strconv.Atoi(m[1])
+	return n, true
+}
+
 func ParseGoal(text string) (*Goal, error) {
 	lines := strings.Split(strings.TrimPrefix(text, "\ufeff"), "\n")
 	at, fence := -1, "" // fence: the open code fence's marker

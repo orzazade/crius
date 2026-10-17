@@ -100,7 +100,7 @@ func Build(db *sql.DB, in Input, now time.Time) (*Report, error) {
 			cannotRead++
 			continue
 		}
-		checked, notCounted, err := Verified(db, l.Name, g)
+		checked, rows, notCounted, err := Verified(db, l.Name, g)
 		if err != nil {
 			return nil, err
 		}
@@ -113,6 +113,10 @@ func Build(db *sql.DB, in Input, now time.Time) (*Report, error) {
 				}
 			}
 		}
+		counted := fmt.Sprintf("verified %d of %d done (%d milestones)", verified, done, len(g.Milestones))
+		if claimed, ok := g.Rows(); ok {
+			verified, counted = rows, fmt.Sprintf("verified rows %d of claimed %d", rows, claimed)
+		}
 		snap := LeadSnap{Done: g.Done, Verified: verified}
 		r.Snap[l.Name] = snap
 		lost := ""
@@ -120,8 +124,7 @@ func Build(db *sql.DB, in Input, now time.Time) (*Report, error) {
 			lost = fmt.Sprintf(" · VERIFIED lines not counted: %d", notCounted)
 		}
 		entries = append(entries, entry{
-			line: fmt.Sprintf("%s: %d%% claimed · verified %d of %d done (%d milestones) · %s%s", l.Name, g.Done, verified, done,
-				len(g.Milestones), change(prev, l.Name, snap), lost),
+			line: fmt.Sprintf("%s: %d%% claimed · %s · %s%s", l.Name, g.Done, counted, change(prev, l.Name, snap), lost),
 			goal: "  Goal: " + g.Goal,
 			next: "  Next: " + g.Next,
 		})

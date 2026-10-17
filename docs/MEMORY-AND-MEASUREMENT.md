@@ -596,8 +596,9 @@ correct --corrects <row-id> --field project --value axi --reason`; `show <id> --
 ## 8. How Crius works day to day
 
 - **09:00 and 18:00** (launchd `space.scifilab.crius.digest`): ingest, then the goal report (≤ 60 lines, stamped):
-  needs the owner on top (first marked), per lead goal, % claimed against verified milestones, change since the
-  last report, next milestone; then checks that passed, blocked, decisions, open waits, quota pace, health. A
+  needs the owner on top (first marked), per lead goal, % claimed against verified milestones (a VERIFIED ref
+  matches any id or sha on the milestone line; a lead whose Done line counts rows, "rows …: 33 of 130", is shown as
+  "verified rows N of claimed 33", N the distinct F-ids verified), change since the last report, next milestone; then checks that passed, blocked, decisions, open waits, quota pace, health. A
   failed run posts an ALERT on the crius bus.
 - **Morning start**: a fresh Crius session with CRIUS.md + the digest only (target ≤ 15K tokens). If pace is high
   (≥ 60% observed by day 3 of the epoch, or from day 2 this epoch's %/day above the average %/day of the last 7

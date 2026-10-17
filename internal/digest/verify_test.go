@@ -95,11 +95,39 @@ func TestVerifiedNeedsAVerifiedLineToTheLead(t *testing.T) {
 		{State: Done, Text: "api", Refs: "77aa77a"},
 		{State: Done, Text: "ui", Refs: "77aa77a"},
 	}}
-	got, notCounted, err := Verified(db, "crius:build", g)
+	got, _, notCounted, err := Verified(db, "crius:build", g)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if want := []int64{sha, tick, byText, 0, 0, 0, 0, 0}; !reflect.DeepEqual(got, want) || notCounted != 9 {
 		t.Fatalf("got %v, %d not counted; want %v, 9", got, notCounted, want)
+	}
+}
+
+// Crius 10-17 04:23: a VERIFIED ref matches any sha (prefix either way) or id token on the milestone line, in its
+// text or its refs, not only a whole ref: quotes' refs read "UI c84d78c (F-118, on rig data, RB-89)". An id has a
+// letter and a digit, in the same case; a plain word or number is no id.
+func TestVerifiedMatchesAnyIdOrShaOnTheMilestoneLine(t *testing.T) {
+	db := open(t)
+	at := time.Date(2026, 10, 17, 4, 23, 0, 0, time.Local)
+	inRefs := verified(t, db, at, "crius:lead", "quotes:lead", "F-118 · on rig data")
+	inText := verified(t, db, at, "crius:lead", "quotes:lead", "F-97 · markup edit")
+	sha := verified(t, db, at, "crius:lead", "quotes:lead", "F651D23A · prefix of a sha in a ref")
+	textSha := verified(t, db, at, "crius:lead", "quotes:lead", "9a8b7c6 · a sha in the text")
+	verified(t, db, at, "crius:lead", "quotes:lead", "rig · a word, no id")
+	verified(t, db, at, "crius:lead", "quotes:lead", "2 · a number, no id")
+	verified(t, db, at, "crius:lead", "quotes:lead", "rb-89 · an id in another case")
+	g := &Goal{Milestones: []Milestone{
+		{State: Done, Text: "Pricing", Refs: "UI c84d78c (F-118, on rig data, RB-89)"},
+		{State: Done, Text: "B3 rest: distributor markup edit (F-97)", Refs: "waits 2 days"},
+		{State: Done, Text: "promotions", Refs: "ccc9039 + f651d23 (F-110)"},
+		{State: Done, Text: "merged as 9a8b7c6", Refs: "run 7"},
+	}}
+	got, _, notCounted, err := Verified(db, "quotes:lead", g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []int64{inRefs, inText, sha, textSha}; !reflect.DeepEqual(got, want) || notCounted != 3 {
+		t.Fatalf("got %v, %d not counted; want %v, 3", got, notCounted, want)
 	}
 }

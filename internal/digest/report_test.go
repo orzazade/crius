@@ -358,3 +358,47 @@ func TestBuildCountsMalformedLines(t *testing.T) {
 		t.Fatal(empty.Text)
 	}
 }
+
+// Crius 10-17 04:23: a lead whose Done line counts rows ("rows ...: 33 of 130") is shown against the rows Crius or
+// its QA verified: distinct F-ids from VERIFIED lines to it, "verified rows N of claimed 33"; its milestones say
+// nothing. An F-id line counts as a row even when a milestone also carries the id; anything else that counts for no
+// milestone is not counted, as before. A lead that counts milestones keeps the milestone form.
+func TestBuildShowsVerifiedRowsWhenDoneCountsRows(t *testing.T) {
+	db := open(t)
+	at := now.Add(-time.Hour)
+	verified(t, db, at, "crius:lead", "quotes:lead", "F-126 · ticks seen")
+	verified(t, db, at, "crius:lead", "quotes:lead", "F-110 · npm 120/120")
+	verified(t, db, at, "crius:lead", "quotes:lead", "F-126 · checked again: one row")
+	verified(t, db, at, "quotes:qa", "quotes:lead", "F-222 · QA of its own project")
+	verified(t, db, at, "crius:lead", "quotes:lead", "POC-47 · an id that is no row")
+	verified(t, db, at, "crius:lead", "quotes:lead", "F-9 · ")
+	verified(t, db, at, "crius:lead", "axi:leader", "F-1 · to another lead")
+	verified(t, db, at, "crius:lead", "axi:leader", "F-2 · a row to a lead that counts milestones")
+	dir := t.TempDir()
+	quotes := "## GOAL (2026-10-17 04:10)\nGoal: PROOF\n- [x] Rig · poc/rig/STATUS.md\n- [~] Pricing · F-110\n" +
+		"Done: 25% (M1 rows ticked with evidence: 33 of 130 in M1-BUILD.md)\nNext: F-94\nNeeds owner: nothing\n"
+	leads := []ingest.Lead{
+		{Name: "quotes:lead", StatusFile: statusFile(t, dir, "q.md", quotes)},
+		{Name: "axi:leader", StatusFile: statusFile(t, dir, "a.md", block("2026-10-17 08:00", "nothing", "- [x] inventory · F-2x"))},
+	}
+	for how, want := range map[string]bool{"33 of 130 M1 rows ticked": true, "5 of 8 required steps": false, "rows, 1 of": false} {
+		if n, ok := (&Goal{DoneHow: how}).Rows(); ok != want || ok && n != 33 {
+			t.Errorf("%q: %d %v", how, n, ok)
+		}
+	}
+	r, err := Build(db, input(leads, Snapshot{"quotes:lead": {Done: 25, Verified: 1}}), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"quotes:lead: 25% claimed · verified rows 3 of claimed 33 · verified +2 since the last report · VERIFIED lines not counted: 2\n",
+		"axi:leader: 50% claimed · verified 0 of 1 done (1 milestones) · first report · VERIFIED lines not counted: 2\n",
+	} {
+		if !strings.Contains(r.Text, want) {
+			t.Errorf("missing %q in\n%s", want, r.Text)
+		}
+	}
+	if r.Snap["quotes:lead"] != (LeadSnap{Done: 25, Verified: 3}) {
+		t.Fatalf("%+v", r.Snap)
+	}
+}
