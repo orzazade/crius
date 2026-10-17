@@ -56,6 +56,7 @@ func TestInitRecordAndLeakTest(t *testing.T) {
 func TestBusLineToARole(t *testing.T) {
 	_, home := testutil.Temp(t)
 	run("init")
+	testutil.Write(t, filepath.Join(home, "projects.toml"), "[projects.crius]\ncwd = [\"/w/crius\"]\n[projects.token-service]\ncwd = [\"/w/ts\"]\n")
 	if rc, out := run("record", "bus", "--project", "crius", "--role", "digest", "--type", "DONE", "--to", "crius:lead",
 		"--text", "goal report x"); rc != 0 {
 		t.Fatal(rc, out)
@@ -63,13 +64,15 @@ func TestBusLineToARole(t *testing.T) {
 	if log := testutil.Read(t, filepath.Join(home, "bus", "crius.log")); !strings.HasSuffix(log, " DONE crius:digest -> crius:lead — goal report x\n") {
 		t.Fatal(log)
 	}
-	// Its parts are checked for secrets one by one, as --project and --role are: whole, token-service:lead reads as a
-	// key and its value (review of eb9bc10).
+	// It is checked by the one name rule (ingest.RedactName): a configured project's slug role on its own, as whole
+	// token-service:lead reads as a key and its value (review of eb9bc10); anything else whole, so password:hunter2 is
+	// refused (review of 4ee140b).
 	if rc, out := run("record", "bus", "--project", "crius", "--role", "digest", "--type", "DONE", "--to", "token-service:lead",
 		"--text", "x"); rc != 0 {
 		t.Fatal(rc, out)
 	}
-	for _, to := range []string{"crius lead", "Crius", "crius:", "", "demo:xox" + "b-123456789012-123456789012-abcdefghijklmnopqrstuvwxyzabcdef"} {
+	for _, to := range []string{"crius lead", "Crius", "crius:", "", "demo:xox" + "b-123456789012-123456789012-abcdefghijklmnopqrstuvwxyzabcdef",
+		"password:hunter2", "crius:xox" + "b-123456789012-123456789012-abcdefghijklmnopqrstuvwxyzabcdef"} {
 		if rc, _ := run("record", "bus", "--project", "crius", "--role", "digest", "--type", "DONE", "--to", to, "--text", "x"); rc != 2 {
 			t.Error(to, rc)
 		}

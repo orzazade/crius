@@ -43,7 +43,8 @@ const usage = `usage: crius-rec init
        crius-rec find QUERY --deep --project P [--since …] [--json]
        crius-rec show ID|PROJECT [--history] [--json]
        crius-rec health [--json]
-       crius-rec digest [--write]   (the goal report; --write saves it under state/digest/)
+       crius-rec digest [--write [--print-path]]   (the goal report; --write saves it under state/digest/,
+                 --print-path prints the saved path instead of the report)
 `
 
 type multi []string
@@ -179,17 +180,24 @@ func record(home string, args []string, stdout, stderr io.Writer) int {
 	// seeing it (design §3c).
 	var secret []string
 	fs.Visit(func(f *flag.Flag) {
-		vals := []string{f.Value.String()}
-		if f.Name == "to" { // a name: its parts one by one, as --project and --role are (token-service:lead is no key)
-			vals = strings.SplitN(vals[0], ":", 2)
+		if f.Name == "to" {
+			return // a name: the name rule below
 		}
-		for _, v := range vals {
-			if _, n := redact.Redact(v); n > 0 {
-				secret = append(secret, "--"+f.Name)
-				break
-			}
+		if _, n := redact.Redact(f.Value.String()); n > 0 {
+			secret = append(secret, "--"+f.Name)
 		}
 	})
+	if given["to"] {
+		known, err := ingest.KnownProjects(home)
+		if err != nil {
+			fmt.Fprintf(stderr, "unavailable: --to needs the projects in projects.toml: %v\n", err)
+			return exitUnavailable
+		}
+		red := func(s string) string { s, _ = redact.Redact(s); return s }
+		if ingest.RedactName(*to, known, red) != *to {
+			secret = append(secret, "--to")
+		}
+	}
 	if len(secret) > 0 {
 		fmt.Fprintf(stderr, "refused: %s looks like a secret; remove it or rephrase\n", strings.Join(secret, ", "))
 		return exitUsage

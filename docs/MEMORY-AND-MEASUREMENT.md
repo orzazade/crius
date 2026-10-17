@@ -163,6 +163,9 @@ transcript commit results; no commit trailers. Refs are validated; a bad ref is 
 titles, headings). Prompt text, tool output and assistant text are never stored: only lengths, counts, timestamps,
 pointers, and allowlisted tags (§3d). **Every output sink is redacted** with the secret-scan patterns: stored text,
 CLI output, error messages, logs, digests, alerts, and helper answers. A hit is replaced by `[redacted]` and counted.
+A bus sender or recipient goes through one rule, `ingest.RedactName` (ingest and `crius-rec record bus --to`): a
+configured project keeps its name and its slug role is redacted alone; any other name is redacted whole. A name is
+never split before redaction: twice a split let `password:hunter2` through.
 
 **Redaction since step 4b.** Six review rounds each found a new edge of exact value-end parsing, so the key = value
 path now fails closed (Crius 23:40): after a secret-named key, a value ends early only at a quote or backtick pair

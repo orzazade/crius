@@ -150,16 +150,19 @@ func (r *runner) event(tx *sql.Tx, e event) error {
 	return err
 }
 
-// name redacts a bus sender or recipient. A configured project's name is not a secret, so only its role is redacted
-// when the role is a slug: redaction of the whole would take token-service:lead for a key and its value. Any other
-// name is redacted whole, so password:hunter2 loses its value, a slug-shaped token (xoxb-…) is caught and a URL keeps
-// the scheme its credential pattern needs. A name is never cut: a cut would make two recipients one.
-func (r *runner) name(s string) string {
-	if p, role, ok := strings.Cut(s, ":"); ok && r.cfg.known(p) && store.Slug.MatchString(role) {
-		return p + ":" + r.redacted(role)
+// RedactName is the one rule for a bus sender or recipient; never split a name before redacting it (twice a split
+// let password:hunter2 through). A configured project's name is not a secret, so only its role is redacted when the
+// role is a slug: redaction of the whole would take token-service:lead for a key and its value. Any other name is
+// redacted whole, so password:hunter2 loses its value, a slug-shaped token (xoxb-…) is caught and a URL keeps the
+// scheme its credential pattern needs. A name is never cut: a cut would make two recipients one.
+func RedactName(s string, known func(slug string) bool, redacted func(string) string) string {
+	if p, role, ok := strings.Cut(s, ":"); ok && known(p) && store.Slug.MatchString(role) {
+		return p + ":" + redacted(role)
 	}
-	return r.redacted(s)
+	return redacted(s)
 }
+
+func (r *runner) name(s string) string { return RedactName(s, r.cfg.known, r.redacted) }
 
 // queueAlert records an alert in the caller's transaction; flushAlerts posts it. One alert per key, ever.
 func (r *runner) queueAlert(tx *sql.Tx, key, text string) error {
