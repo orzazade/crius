@@ -64,7 +64,7 @@ Details: [docs/MEMORY-AND-MEASUREMENT.md](MEMORY-AND-MEASUREMENT.md) §7b, `~/.c
    A lead that counts rows instead of milestones writes the Done line as
    `Done: N% (rows: X of Y in <row file>; <command that counts them>)`. That is the only "X of Y" on the line.
    `<row file>` is absolute, `~/…`, or relative to the folder of the status file.
-   Each row has a stable id (F-118, an inventory row id, …). A VERIFIED line for a row writes `row <id>` as its
+   Each row has a stable id: one token with at least one letter and one digit (F-118, O1). A VERIFIED line for a row writes `row <id>` as its
    `<ref>` (e.g. `row F-118`); the digest counts distinct row ids from those lines and never parses the row file.
 2. A **report** to the owner is: goal, % done, what is done, what remains. Not a ticket log.
 3. A lead that cannot name its goal asks the owner (NEED-OWNER). A lead with no goal is lost.
