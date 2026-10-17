@@ -95,7 +95,7 @@ func TestVerifiedNeedsAVerifiedLineToTheLead(t *testing.T) {
 		{State: Done, Text: "api", Refs: "77aa77a"},
 		{State: Done, Text: "ui", Refs: "77aa77a"},
 	}}
-	got, _, notCounted, err := Verified(db, "crius:build", g)
+	got, _, notCounted, err := Verified(db, "crius:build", g, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func TestVerifiedMatchesAnyIdOrShaOnTheMilestoneLine(t *testing.T) {
 		{State: Done, Text: "promotions", Refs: "ccc9039 + f651d23 (F-110)"},
 		{State: Done, Text: "merged as 9a8b7c6", Refs: "run 7"},
 	}}
-	got, _, notCounted, err := Verified(db, "quotes:lead", g)
+	got, _, notCounted, err := Verified(db, "quotes:lead", g, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +149,7 @@ func TestVerifiedPrefersAnExactMatch(t *testing.T) {
 		{State: Done, Text: "UI", Refs: "UI d00d1e5f (F-200)"},
 		{State: Done, Text: "Docs, after d00d1e5", Refs: "run 8"},
 	}}
-	got, _, notCounted, err := Verified(db, "quotes:lead", g)
+	got, _, notCounted, err := Verified(db, "quotes:lead", g, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +172,7 @@ func TestVerifiedLooksAtEveryMilestoneAndRowsKeepMilestones(t *testing.T) {
 		{State: Todo, Text: "M2 deploy", Refs: "RB-90"},
 		{State: Done, Text: "quotes ticks", Refs: "F-126"},
 	}}
-	got, rows, notCounted, err := Verified(db, "quotes:lead", g)
+	got, rows, notCounted, err := Verified(db, "quotes:lead", g, map[string]bool{"RB-90": true, "F-126": true, "F-127": true})
 	if err != nil {
 		t.Fatal(err)
 	}

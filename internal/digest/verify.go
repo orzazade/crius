@@ -28,11 +28,11 @@ func isSha(w string) bool { return shaRe.MatchString(w) && letterRe.MatchString(
 // Verified gives, per milestone, the id of the first VERIFIED line that checked it, 0 for none, and how many VERIFIED
 // lines to the lead count for no milestone (RULES 3.4). A VERIFIED line is to the lead and from Crius (crius:lead) or
 // the lead's own project's QA (role qa or qa-*); it counts when it matches exactly one done milestone, so a check that
-// does not land is seen. The sender is trusted as written on the line. When the Done line counts rows (Goal.Rows), a
-// line "<ref> · <evidence>" whose ref is one id that is not a sha also counts for that row, whatever the id's form,
-// and rows gives the distinct rows in any case (Crius 10-17 04:23, 04:58; review of fa0c4d0: milestone checks, "run 7"
-// and prefixed shas are no rows).
-func Verified(db *sql.DB, lead string, g *Goal) (checked []int64, rows, notCounted int, err error) {
+// does not land is seen. The sender is trusted as written on the line. When the Done line counts rows, rowIDs holds the
+// row ids of its row file (Goal.RowIDs); a line "<ref> · <evidence>" whose ref is one of them, in any case, also counts
+// for that row, and rows gives the distinct rows (Crius 10-17 04:23, 04:58, 05:13; reviews of fa0c4d0 and 9072051: a
+// row guessed from the ref's shape made a false MISMATCH).
+func Verified(db *sql.DB, lead string, g *Goal, rowIDs map[string]bool) (checked []int64, rows, notCounted int, err error) {
 	project, _, _ := strings.Cut(lead, ":")
 	q, err := db.Query("select id, coalesce(refs, ''), text from event where kind = 'verified' and"+
 		" ((project = 'crius' and actor = 'lead') or (project = ? and (actor = 'qa' or actor like 'qa-%'))) order by id",
@@ -41,7 +41,6 @@ func Verified(db *sql.DB, lead string, g *Goal) (checked []int64, rows, notCount
 		return nil, 0, 0, err
 	}
 	defer q.Close()
-	_, countsRows := g.Rows()
 	out, seen := make([]int64, len(g.Milestones)), map[string]bool{}
 	for q.Next() {
 		var id int64
@@ -59,9 +58,9 @@ func Verified(db *sql.DB, lead string, g *Goal) (checked []int64, rows, notCount
 			continue
 		}
 		row := false
-		if ref, evidence, _ := strings.Cut(text, " · "); countsRows && strings.TrimSpace(evidence) != "" {
-			if ref = strings.TrimSpace(ref); isID(ref) && !isSha(strings.ToLower(ref)) {
-				seen[strings.ToUpper(ref)], row = true, true
+		if ref, evidence, _ := strings.Cut(text, " · "); strings.TrimSpace(evidence) != "" {
+			if ref = strings.ToUpper(strings.TrimSpace(ref)); rowIDs[ref] {
+				seen[ref], row = true, true
 			}
 		}
 		// The strongest match over all milestones decides; the line counts when it points at one done milestone.

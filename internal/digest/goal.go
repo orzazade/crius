@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -60,7 +61,9 @@ var (
 	rowsWordRe  = regexp.MustCompile(`(?i)\brows\b`)
 	countRe     = regexp.MustCompile(`\b\d+ of \d+\b`)
 	// The rows claim of RULES 3.1: "rows: X of Y", then the end, " in <row file>" and/or "; <command>".
-	rowsClaimRe = regexp.MustCompile(`(?i)^rows: (0|[1-9]\d*) of [1-9]\d*(?: in [^;]+)?(?:;.*)?$`)
+	rowsClaimRe = regexp.MustCompile(`(?i)^rows: (0|[1-9]\d*) of [1-9]\d*(?: in ([^;]+))?(?:;.*)?$`)
+	// rowIDRe: the id a row line starts with, after list, table, quote or checkbox marks ("- [x] F-110", "| O1 |").
+	rowIDRe = regexp.MustCompile(`^[\s*+>|#-]*(?:\[[ xX~]\]\s*)?\**([0-9A-Za-z]+(?:-[0-9A-Za-z]+)*)`)
 )
 
 // ReadGoal reads the GOAL block of a status file. A file that cannot be read is an error of its own: it is never
@@ -90,6 +93,42 @@ func (g *Goal) Rows() (int, bool) {
 		return 0, false
 	}
 	return n, true
+}
+
+// RowIDs reads the row ids of the row file the rows claim names, in upper case (Crius 10-17 05:13: the row file is
+// the one source of row ids). A row id is the id a line starts with, after list, table, quote or checkbox marks. The
+// path is absolute, ~/, or relative to the folder of the status file. No row file named, a file that cannot be read
+// and a file with no row ids are errors: rows are then not counted, never counted as none.
+func (g *Goal) RowIDs(statusFile string) (map[string]bool, error) {
+	m := rowsClaimRe.FindStringSubmatch(g.DoneHow)
+	if m == nil || strings.TrimSpace(m[2]) == "" {
+		return nil, errors.New(`the Done line names no row file: "rows: X of Y in <row file>"`)
+	}
+	p := strings.TrimSpace(m[2])
+	switch {
+	case strings.HasPrefix(p, "~/"):
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, err
+		}
+		p = filepath.Join(home, p[2:])
+	case !filepath.IsAbs(p):
+		p = filepath.Join(filepath.Dir(statusFile), p)
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return nil, err
+	}
+	ids := map[string]bool{}
+	for _, line := range strings.Split(string(b), "\n") {
+		if id := rowIDRe.FindStringSubmatch(line); id != nil && isID(id[1]) {
+			ids[strings.ToUpper(id[1])] = true
+		}
+	}
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("row file %s has no row ids", p)
+	}
+	return ids, nil
 }
 
 // ParseGoal reads the first GOAL block of a status file outside code fences (``` or ~~~, closed by the same mark at

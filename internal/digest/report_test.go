@@ -359,12 +359,13 @@ func TestBuildCountsMalformedLines(t *testing.T) {
 	}
 }
 
-// Crius 10-17 04:23 and 04:58: a lead whose Done line counts rows ("rows: 33 of 130") is shown against the rows Crius
-// or its QA verified: the distinct refs of VERIFIED lines to it that are one id that is not a sha, whatever its form
-// (F-118, an AXI inventory id), in any case, "verified rows N of claimed 33". A milestone check ("poc/rig/STATUS.md"),
-// "run 7" or a sha is no row (review of fa0c4d0: they made a false MISMATCH). A row line also counts for the
-// milestone it matches; any other line that counts for no milestone is not counted. A lead that counts milestones
-// keeps the milestone form.
+// Crius 10-17 04:23, 04:58 and 05:13: a lead whose Done line counts rows ("rows: 33 of 130 in M1-BUILD.md") is shown
+// against the rows Crius or its QA verified: the distinct refs of VERIFIED lines to it that are a row id of the row
+// file, in any case, "verified rows N of claimed 33". A row id is the id a line of the row file starts with, after
+// list, table or checkbox marks (F-110, an AXI inventory id). An id elsewhere in the file (PR-42), one not in it
+// (sha-e2b67fa), a milestone check or a sha is no row (reviews of fa0c4d0 and 9072051: shape-guessing made a false
+// MISMATCH). A row line also counts for the milestone it matches; any other line that counts for no milestone is not
+// counted. A lead that counts milestones keeps the milestone form.
 func TestBuildShowsVerifiedRowsWhenDoneCountsRows(t *testing.T) {
 	db := open(t)
 	at := now.Add(-time.Hour)
@@ -379,10 +380,15 @@ func TestBuildShowsVerifiedRowsWhenDoneCountsRows(t *testing.T) {
 	verified(t, db, at, "crius:lead", "quotes:lead", "f-110 · the same row in lower case")
 	verified(t, db, at, "crius:lead", "quotes:lead", "run 7 · not one id")
 	verified(t, db, at, "crius:lead", "quotes:lead", "F-1 (again) · not one id")
+	verified(t, db, at, "crius:lead", "quotes:lead", "PR-42 · in the row file, but no row starts with it")
+	verified(t, db, at, "crius:lead", "quotes:lead", "sha-e2b67fa · not in the row file")
+	verified(t, db, at, "crius:lead", "quotes:lead", "env004 · not a row id either")
 	verified(t, db, at, "crius:lead", "quotes:lead", "F-9 · ")
 	verified(t, db, at, "crius:lead", "axi:leader", "F-1 · to another lead")
 	verified(t, db, at, "crius:lead", "axi:leader", "F-2 · a row to a lead that counts milestones")
 	dir := t.TempDir()
+	statusFile(t, dir, "M1-BUILD.md", "# M1\n- [x] F-126 ticks\n- [x] **F-110** npm\n  - [ ] F-222 qa\n| POC-47 | x |\n"+
+		"|inv-7731|y|\n- [x] F-9 no evidence\n- [x] Scout D2: PR-42 merged, c84d78c, v2\nStatus: env004 is no row\n")
 	verified(t, db, at, "crius:lead", "quotes:lead", "poc/rig/STATUS.md · a milestone check in rows mode")
 	quotes := "## GOAL (2026-10-17 04:10)\nGoal: PROOF\n- [x] Rig · poc/rig/STATUS.md\n- [~] Pricing · F-110\n" +
 		"Done: 25% (rows: 33 of 130 in M1-BUILD.md; grep -c)\nNext: F-94\nNeeds owner: nothing\n"
@@ -420,7 +426,7 @@ func TestBuildShowsVerifiedRowsWhenDoneCountsRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"quotes:lead: 25% claimed · verified rows 5 of claimed 33, milestones 1 of 1 · verified now counts rows since the last report · VERIFIED lines not counted: 5\n",
+		"quotes:lead: 25% claimed · verified rows 5 of claimed 33, milestones 1 of 1 · verified now counts rows since the last report · VERIFIED lines not counted: 8\n",
 		"axi:leader: 50% claimed · verified 0 of 1 done (1 milestones) · first report · VERIFIED lines not counted: 2\n",
 	} {
 		if !strings.Contains(r.Text, want) {
@@ -446,6 +452,7 @@ func TestBuildSaysMoreVerifiedRowsThanClaimed(t *testing.T) {
 	}
 	q := "## GOAL (2026-10-17 04:10)\nGoal: PROOF\n- [x] Rig · run 7\nDone: 2% (rows: 2 of 130 in M1-BUILD.md)\nNext: F-94\nNeeds owner: nothing\n"
 	dir := t.TempDir()
+	statusFile(t, dir, "M1-BUILD.md", "- [x] F-1\n- [x] F-2\n- [x] F-3\n")
 	r, err := Build(db, input([]ingest.Lead{{Name: "quotes:lead", StatusFile: statusFile(t, dir, "q.md", q)},
 		{Name: "axi:lead", StatusFile: statusFile(t, dir, "a.md", strings.Replace(q, "2 of 130", "3 of 130", 1))}}, nil), now)
 	if err != nil {
@@ -472,5 +479,50 @@ func TestBuildSaysARowsClaimItCannotRead(t *testing.T) {
 	if want := "quotes:lead: 25% claimed · verified 0 of 1 done (1 milestones) · the Done line names rows but its claim " +
 		"was not read: write \"rows: X of Y in <row file>; <command>\" (RULES 3.1) and no other \"N of M\" · first report\n"; !strings.Contains(r.Text, want) {
 		t.Fatalf("missing %q in\n%s", want, r.Text)
+	}
+}
+
+// Crius 10-17 05:13: the row file is the one source of row ids. Its path is absolute, ~/, or relative to the folder of
+// the status file. A Done line that names no row file, a file that cannot be read or one with no row ids is said, and
+// no rows are counted; the snapshot keeps the last counted rows.
+func TestBuildSaysARowFileItCannotRead(t *testing.T) {
+	db := open(t)
+	verified(t, db, now.Add(-time.Hour), "crius:lead", "quotes:lead", "F-1 · ok")
+	dir, home := t.TempDir(), t.TempDir()
+	t.Setenv("HOME", home)
+	statusFile(t, home, "rows.md", "- [x] F-1\n")
+	statusFile(t, dir, "empty.md", "# no rows yet\n")
+	abs := statusFile(t, t.TempDir(), "abs.md", "| F-1 | ok |\n")
+	sub := filepath.Join(dir, "docs")
+	if err := os.Mkdir(sub, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	statusFile(t, sub, "R.md", "- [x] F-1\n")
+	q := func(in string) string {
+		return "## GOAL (2026-10-17 04:10)\nGoal: PROOF\n- [x] Rig · run 7\nDone: 2% (rows: 1 of 130" + in + ")\nNext: F-94\nNeeds owner: nothing\n"
+	}
+	prev := Snapshot{"quotes:lead": {Done: 2, Verified: 4, Rows: true}}
+	for in, want := range map[string]string{
+		" in ~/rows.md":     "verified rows 1 of claimed 1, milestones 0 of 1 · verified -3 since the last report",
+		" in " + abs:        "verified rows 1 of claimed 1, milestones 0 of 1 · verified -3 since the last report",
+		" in docs/R.md":     "verified rows 1 of claimed 1, milestones 0 of 1 · verified -3 since the last report",
+		" in nowhere.md":    "verified rows NOT COUNTED (open " + filepath.Join(dir, "nowhere.md") + ": no such file or directory), milestones 0 of 1 · change not known: rows not counted",
+		" in empty.md":      "verified rows NOT COUNTED (row file " + filepath.Join(dir, "empty.md") + " has no row ids), milestones 0 of 1 · change not known: rows not counted",
+		"; grep -c F- x.md": `verified rows NOT COUNTED (the Done line names no row file: "rows: X of Y in <row file>"), milestones 0 of 1 · change not known: rows not counted`,
+	} {
+		r, err := Build(db, input([]ingest.Lead{{Name: "quotes:lead", StatusFile: statusFile(t, dir, "q.md", q(in))}}, prev), now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		line := "quotes:lead: 2% claimed · " + want + "\n"
+		if strings.Contains(want, "NOT COUNTED") { // the F-1 line then counts for nothing
+			line = strings.Replace(line, "\n", " · VERIFIED lines not counted: 1\n", 1)
+		}
+		if !strings.Contains(r.Text, line) {
+			t.Errorf("%q: missing %q in\n%s", in, line, r.Text)
+		}
+		if counted := !strings.Contains(want, "NOT COUNTED"); !counted && r.Snap["quotes:lead"] != prev["quotes:lead"] {
+			t.Errorf("%q: snapshot %+v, want the last counted %+v", in, r.Snap["quotes:lead"], prev["quotes:lead"])
+		}
 	}
 }
