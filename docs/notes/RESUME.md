@@ -1,8 +1,8 @@
 # crius:build — RESUME (contract: docs/notes/COST-LEVER3-FRESH.md §2, max 120 lines)
 
-Updated 2026-10-19 18:42 by session 11838a67 (P6 config applied after owner GO 18:40; FINDINGS ingest next). Last bus line read: 2026-10-19T18:40 GO crius:lead.
+Updated 2026-10-19 19:10 by session 9f01299b (P6b FINDINGS ingest shipped and proven). Last bus line read: 2026-10-19T18:43 ORDER crius:lead.
 Last owner message seen: 2026-10-19 ~17:25 (child roll-up answer, via Crius).
-main = origin/main = 3f93098 (P5) + this RESUME commit. Local main ref is behind: it is checked out in Crius's worktree main-rules. History: docs/notes/RESUME-HISTORY.md.
+main = origin/main = this RESUME commit (P6b). Local main ref is behind: it is checked out in Crius's worktree main-rules. History: docs/notes/RESUME-HISTORY.md.
 
 ## OWNER DECISIONS (append-only, verbatim, dated)
 
@@ -33,7 +33,7 @@ main = origin/main = 3f93098 (P5) + this RESUME commit. Local main ref is behind
   after the work statusline, red first. Status: done (main c133717, 27c2a73; scorecard def v2).
 - Standing (memory): personal repo, push to main after review; effort medium/high only; no AI attribution.
 
-## GOAL (2026-10-19 18:42)
+## GOAL (2026-10-19 19:10)
 
 Goal: build the Crius record (design §9 steps 1-9) so Crius answers the owner's questions from its own store
 - [x] 1 store layout, leak test, decisions, items, bus grammar · 060610f
@@ -43,34 +43,25 @@ Goal: build the Crius record (design §9 steps 1-9) so Crius answers the owner's
 - [x] 4b fail-closed key=value + gitleaks rules · 86a776a
 - [x] 5 digest + Crius daily start (09:00/18:00 goal report) · 23052fe .. 50e2384
 - [x] 3b Enterprise fallback: included usage + spend limit (owner 10-19 14:44, Crius NEED 15:06) · 72e9793, 97dc0d1
-- [ ] 6 record accept + scorecard (P1-P5, P3c done; P3b, P6, P7 open)
+- [ ] 6 record accept + scorecard (P1-P6, P3c done; P3b, P7 open)
 - [ ] 9 Falcon source
 Done: 70% (7 of 10 required steps incl. 3b, equal weight; 7 and 8 only if needed)
-Next: step 6 P6b: ingest FINDINGS as review evidence (red first), then prove with a real quick-review run
+Next: step 6 P7 descriptive read on 10-23 (after the 10-22 02:00 reset); P3b open
 Needs owner: nothing
 
 ## NOW
 
-Digest stale-RESUME fix DONE: main de68f7e, VERIFIED by Crius 18:35. ~/.crius/projects.toml crius build lead =
-git:~/Projects/scifi/crius#origin/main:docs/notes/RESUME.md. Update this file's GOAL stamp on every write, before the DONE.
+P6b DONE (this session 9f01299b): main f095c93 (ingest), 7a38fdc + 063b163 + the commit after it (review fixes),
+83c4278 (git reads origin's branch when ahead). Installed clean. Rows: evidence kind review ref
+"<agent> P1=n P2=n P3=n <commit=sha|uncommitted|base=x|target=unknown> session=<id>", revision bound after git
+ingest (bindReviews); kind review-uncounted = no FINDINGS line or lines that disagree. health line "reviews last 7 d".
+Rule (after 3 review rounds of shell-regex cases): a review's commit is never guessed; unknown is visible, not wrong.
+Real-run proof 2026-10-19: quick-review of 7a38fdc + 063b163 and codex of f095c93, 83c4278 all stored and bound;
+a timed-out codex review of another session stored as review-uncounted (not zero).
+Found + fixed: git ingest read local main only; crius local main sat at 50e2384 (10-17), so the store missed every
+step 6 commit while health said complete. Now the newer of main and origin/main; diverged: local + partial warning.
 
-P6 config DONE (owner GO via Crius 18:40, bus line): ~/.claude/agents/codex.md + quick-review.md patched exactly with
-~/.crius/state/p6-findings.diff (cmp equal); backups *.md.bak-20261019-p6 beside them. Real quick-review of de68f7e
-(this session, 18:4x) printed `FINDINGS P1=0 P2=0 P3=1`, but BEFORE its list, not last: parse the line anywhere.
-
-NEXT P6b (the GO also asks: "prove one real quick-review run ends with the FINDINGS line and the store counts it"):
-- Nothing parses FINDINGS yet. evidence table (internal/store/db.go:46) takes kind 'review' with no DDL change.
-- Source: subagent transcripts (internal/ingest/transcripts.go:244-272 transcriptFile; meta agentType codex or
-  quick-review). Take the last line matching ^FINDINGS P1=(\d+) P2=(\d+) P3=(\d+)$ in the agent's final answer.
-- Reviewed sha: quick-review `REVIEWED: commit <sha>` line; codex: `--commit <sha>` in its codex-ask Bash command.
-  Resolve unique against git_commit (like accept.go bind). --uncommitted / --base / unresolved: revision NULL
-  (counted for M10, never bound) - say so in the row's ref, not silently dropped.
-- Row: evidence(kind review, ref "<agentType> P1=n P2=n P3=n session=<id>", revision, ts, source_key review:...).
-- Red: a fixture subagent file with FINDINGS -> one review row bound to the sha; a list with no FINDINGS -> none,
-  and a reviewer answer without the line is counted somewhere visible (health?) - decide, ask Crius if unsure.
-- Then codex review, ship (<scratchpad 11838a67>/ship.sh, branch fix/digest-stale), real quick-review run,
-  show the store row, DONE.
-
+Next: P7 on 10-23 (after the 10-22 02:00 reset); P3b open; step 9 paused with Falcon.
 
 ## Open work (step 6 checklist; each part red first, then build, codex review, one DONE with evidence + commit)
 
@@ -82,8 +73,8 @@ Spec: design §9 row 6, §3c tables (acceptance, defect, correction), §7 (M1, M
 3c. [x] P3c (c133717 + 27c2a73) child defect/revoke lowers the parent outcome's week (owner 10-19 ~17:25).
 4. [x] P4 (e304c4d) parity with review-1016 REPORT §4: store numbers within 2%.
 5. [x] P5 (3f93098) restore-after-expiry test, weekly launchd Thu 04:00, `health` shows it.
-6. [~] P6 FINDINGS line: config applied after owner GO 18:40; P6b ingest `FINDINGS P1=n P2=n P3=n` as evidence
-   kind review bound to the reviewed sha is open (plan in NOW).
+6. [x] P6 FINDINGS line: config (owner GO 18:40) + P6b ingest as evidence kind review bound to the reviewed sha
+   (f095c93 .. 063b163 + next, 83c4278); real runs stored and bound (NOW).
 7. [ ] P7 first descriptive read on 10-23 next to the review-1016 scripts (after the 10-22 02:00 reset).
 
 ## Waiting on
