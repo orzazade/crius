@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -217,3 +218,79 @@ func TestCorrectionLeavesTheRowAndChangesTheView(t *testing.T) {
 		t.Fatal("events:", n)
 	}
 }
+
+// Codex review of d4d9f61: taint, guard identity, corrected project on later writes, revision after a revoke, a
+// moved defect, parent cycles.
+func TestReviewOfD4d9f61(t *testing.T) {
+	db := acceptedFixture(t)
+	if _, err := db.Exec("update item set taint = 1 where id = 'demo#1'"); err != nil {
+		t.Fatal(err)
+	}
+	defect(t, db, "demo#1", "missing test") // D-1
+	if _, err := RecordCorrect(db, CorrectInput{Target: "demo#1", Field: "title", Value: "t2", Reason: "r",
+		By: "crius"}); err != nil {
+		t.Fatal(err)
+	}
+	if n := count(t, db, "select count(*) from event where kind in ('defect', 'correction') and taint = 0"); n != 0 {
+		t.Error("events about a tainted item are clean:", n)
+	}
+	// 5: a defect after the revoke keeps the revision.
+	if _, err := RecordRevoke(db, RevokeInput{Item: "demo#1", Defect: "D-1", Reason: "r", By: "crius",
+		Criteria: []string{"x"}}); err != nil { // opens demo#2
+		t.Fatal(err)
+	}
+	defect(t, db, "demo#1", "missing test") // D-2: opens guard demo#3 for missing test
+	if n := count(t, db, "select count(*) from defect where id = 2 and revision = ?", shaA); n != 1 {
+		t.Error("a defect after the revoke lost its revision")
+	}
+	// 2: a defect moved to another class does not carry its guard to that class.
+	if _, err := RecordCorrect(db, CorrectInput{Target: "D-2", Field: "cause_class", Value: "bad data", Reason: "r",
+		By: "crius"}); err != nil {
+		t.Fatal(err)
+	}
+	defect(t, db, "demo#1", "bad data") // D-3: the second bad data defect opens its own guard
+	if n := count(t, db, "select count(*) from defect where id = 3 and guard_item = 'demo#3'"); n != 0 {
+		t.Error("bad data joined the missing test guard")
+	}
+	if n := count(t, db, "select count(*) from item where title like 'guard: bad data%'"); n != 1 {
+		t.Error("no bad data guard")
+	}
+	// 6: moving a defect names both items.
+	if _, err := RecordCorrect(db, CorrectInput{Target: "D-1", Field: "item", Value: "demo#2", Reason: "r",
+		By: "crius"}); err != nil {
+		t.Fatal(err)
+	}
+	if n := count(t, db, `select count(*) from event where kind = 'correction' and instr(refs, '"demo#1"') > 0 and`+
+		` instr(refs, '"demo#2"') > 0`); n != 1 {
+		t.Error("the move does not name both items")
+	}
+	// 7: a parent correction cannot make a cycle (demo#2's parent is demo#1).
+	if _, err := RecordCorrect(db, CorrectInput{Target: "demo#1", Field: "parent", Value: "demo#2", Reason: "r",
+		By: "crius"}); !IsRefused(err) {
+		t.Error("cycle accepted:", err)
+	}
+	// 3: a corrected project governs a later acceptance's event.
+	if _, err := RecordCorrect(db, CorrectInput{Target: "demo#2", Field: "project", Value: "axi", Reason: "r",
+		By: "crius"}); err != nil {
+		t.Fatal(err)
+	}
+	ev := map[string]string{}
+	for _, name := range []string{"ci", "rev"} {
+		r, err := db.Exec("insert into event (ts, kind, session, text, source_key) values ('t', ?, 's-rev', ?, ?)",
+			map[string]string{"ci": "done", "rev": "verified"}[name], "on def5678", "r:"+name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		n, _ := r.LastInsertId()
+		ev[name] = "event:" + itoa(n)
+	}
+	if _, err := RecordAccept(db, AcceptInput{Item: "demo#2", Revision: "def5678", Checks: []string{"1=" + ev["ci"]},
+		Review: ev["rev"], By: "crius"}); err != nil {
+		t.Fatal(err)
+	}
+	if n := count(t, db, "select count(*) from event where kind = 'accepted' and item = 'demo#2' and project = 'axi'"); n != 1 {
+		t.Error("the acceptance event ignores the corrected project")
+	}
+}
+
+func itoa(n int64) string { return strconv.FormatInt(n, 10) }

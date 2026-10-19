@@ -106,7 +106,7 @@ insert into temp.doc select kind, 'event:'||id, project, ts, taint, '', coalesce
   coalesce(text,'') <> '', '', coalesce(text,'') from event;
 insert into temp.doc select 'decision', id, project, ts, taint, coalesce(supersedes,''), '', 1, '', coalesce(title,'')
   from decision;
-insert into temp.doc select 'item', id, project, opened, taint, '', '', 1, '', title||' · '||criteria from item;
+insert into temp.doc select 'item', id, project, opened, taint, '', '', 1, '', title||' · '||criteria from item_v;
 insert into temp.doc select 'artifact', path, project, mtime, taint, '', '', 1, '',
   coalesce(title,'')||' · '||coalesce(headings,'') from artifact;
 insert into temp.doc select 'commit', sha, project, ts, 0, '', '', 0,

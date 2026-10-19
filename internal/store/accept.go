@@ -169,7 +169,7 @@ func RecordAccept(db *sql.DB, in AcceptInput) (string, error) {
 		}
 	}()
 	var project, criteria, state string
-	switch err := conn.QueryRowContext(ctx, "select project, criteria, state from item where id = ?", in.Item).
+	switch err := conn.QueryRowContext(ctx, "select project, criteria, state from item_v where id = ?", in.Item).
 		Scan(&project, &criteria, &state); err {
 	case nil:
 	case sql.ErrNoRows:

@@ -53,10 +53,10 @@ create table if not exists acceptance (
   revoked_ts text, revoked_by text, revoke_reason text, defect text, fix_item text);
 create index if not exists acceptance_item on acceptance (item);
 -- A confirmed defect (design §7b), on the item's accepted revision when it has one; guard_item is the guard its
--- class opened or joined.
+-- class (guard_class, as it was then) opened or joined.
 create table if not exists defect (
   id integer primary key, item text not null, revision text, title text not null, found_by text not null,
-  found_ts text not null, severity text not null, cause_class text not null, guard_item text);
+  found_ts text not null, severity text not null, cause_class text not null, guard_item text, guard_class text);
 -- A correction of one field of an item or a defect (target <project>#<n> or D-<n>): item_v and defect_v apply the
 -- newest per field; the target row is never edited.
 create table if not exists correction (

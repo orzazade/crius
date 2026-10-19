@@ -294,19 +294,20 @@ made the commit, when both sessions are known (bus lines carry none today). One 
 acceptance with its checks.
 
 **`record defect`, `revoke`, `correct` as built (step 6).** `record defect ITEM --title T --found-by us|owner|others
---severity S1|S2|S3 --class C` writes a confirmed `defect` row `D-<n>` on the item's accepted revision (none if it
-has no acceptance) and a `defect` event; C is one of the §7b classes, refused otherwise. The second defect of a class
+--severity S1|S2|S3 --class C` writes a confirmed `defect` row `D-<n>` on the revision of the item's newest acceptance,
+revoked or not (none if it has none), and a `defect` event; C is one of the §7b classes, refused otherwise. The second defect of a class
 opens a guard item (`guard: <class> (D-a, D-b)`, criteria: a check goes red on each of them; config or hook changes
 need the owner), in the defects' project or `crius` when they span projects; while that guard is open, later defects
-of the class join it; once it is closed, the next one opens a new guard naming every defect of the class. `record
+of the class join it (a guard keeps the class it was opened for, even when a defect's class is corrected later); once it is closed, the next one opens a new guard naming every defect of the class. `record
 revoke ITEM --defect D-N --reason R --criteria C … --by crius|owner` needs the item accepted and the defect on it:
 the acceptance row stays (state `revoked`, time, by, reason, defect, fix item), the item becomes `revoked`, and a fix
 item opens with the given criteria under the owner outcome (the item's parent, or the item itself). `record correct
 --corrects ITEM|D-N --field F --value V --reason R --by crius|owner` adds a `correction` row `C-<n>` (old value read
 from the view) and a `correction` event; the row is never edited. Correctable: an item's project, kind, title,
-parent; a defect's item, found_by, severity, cause_class. The views `item_v` and `defect_v` give each such field its
-newest correction; they are built from the same Go list at open and rebuilt when it changes. `show` reads items
-through `item_v`. Not built: a defect's signal refs, incident id and locked_output; corrections of sessions or events
+parent (no cycles); a defect's item (the event names both items), found_by, severity, cause_class. Record
+events carry the item's taint. The views `item_v` and `defect_v` give each such field its
+newest correction; they are built from the same Go list at open and rebuilt when it changes. `show`, `find` and
+`record accept` read items through `item_v`. Not built: a defect's signal refs, incident id and locked_output; corrections of sessions or events
 (added when the scorecard needs them); a class corrected after the fact does not open a guard by itself.
 
 **`health` as built (step 4).** The last ingest run and the runs of the last 24 h, heartbeat age, the newest backup,

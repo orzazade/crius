@@ -217,3 +217,18 @@ func TestShowItemHistoryListsTheChain(t *testing.T) {
 		t.Fatal(s.Text())
 	}
 }
+
+// Codex review of d4d9f61: find reads items as corrected.
+func TestFindReadsCorrectedItems(t *testing.T) {
+	db := open(t)
+	if _, err := store.RecordItem(db, "demo", "mail fix", "code", []string{"c"}, "", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RecordCorrect(db, store.CorrectInput{Target: "demo#1", Field: "project", Value: "axi",
+		Reason: "r", By: "crius"}); err != nil {
+		t.Fatal(err)
+	}
+	if r := find(t, db, Query{Kinds: []string{"item"}, Project: "axi"}); len(r.Hits) != 1 {
+		t.Fatal(r)
+	}
+}

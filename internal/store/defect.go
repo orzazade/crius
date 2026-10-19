@@ -65,14 +65,15 @@ func writeTx(db *sql.DB, f func(ctx context.Context, conn *sql.Conn) (string, er
 	return out, nil
 }
 
+// addEvent writes a record event; taint is the item's, as its text can quote the item (design §3d).
 func addEvent(ctx context.Context, conn *sql.Conn, ts, project, kind, actor, item string, refs map[string][]string,
-	text, key string) error {
+	text, key string, taint int) error {
 	rj, err := json.Marshal(refs)
 	if err != nil {
 		return err
 	}
-	_, err = conn.ExecContext(ctx, "insert into event (ts, project, kind, actor, item, refs, text, verified, source_key)"+
-		" values (?,?,?,?,?,?,?,1,?)", ts, project, kind, actor, item, string(rj), truncate(text, MaxLen), key)
+	_, err = conn.ExecContext(ctx, "insert into event (ts, project, kind, actor, item, refs, text, verified, source_key,"+
+		" taint) values (?,?,?,?,?,?,?,1,?,?)", ts, project, kind, actor, item, string(rj), truncate(text, MaxLen), key, taint)
 	return err
 }
 
@@ -91,7 +92,9 @@ func RecordDefect(db *sql.DB, in DefectInput) (string, error) {
 	}
 	return writeTx(db, func(ctx context.Context, conn *sql.Conn) (string, error) {
 		var project string
-		switch err := conn.QueryRowContext(ctx, "select project from item_v where id = ?", in.Item).Scan(&project); err {
+		var taint int
+		switch err := conn.QueryRowContext(ctx, "select project, taint from item_v where id = ?", in.Item).
+			Scan(&project, &taint); err {
 		case nil:
 		case sql.ErrNoRows:
 			return "", refused("%s is not a known item", in.Item)
@@ -99,8 +102,9 @@ func RecordDefect(db *sql.DB, in DefectInput) (string, error) {
 			return "", err
 		}
 		var rev sql.NullString
-		if err := conn.QueryRowContext(ctx, "select revision from acceptance where item = ? and state = 'accepted'"+
-			" order by id desc limit 1", in.Item).Scan(&rev); err != nil && err != sql.ErrNoRows {
+		// the newest acceptance, revoked or not: a defect found after a revoke is still on that revision
+		if err := conn.QueryRowContext(ctx, "select revision from acceptance where item = ? order by id desc limit 1",
+			in.Item).Scan(&rev); err != nil && err != sql.ErrNoRows {
 			return "", err
 		}
 		ts := now()
@@ -136,7 +140,7 @@ func RecordDefect(db *sql.DB, in DefectInput) (string, error) {
 		}
 		text += ": " + title
 		if err := addEvent(ctx, conn, ts, project, "defect", in.FoundBy, in.Item,
-			map[string][]string{"item": items, "defect": {did}}, text, "defect:"+did); err != nil {
+			map[string][]string{"item": items, "defect": {did}}, text, "defect:"+did, taint); err != nil {
 			return "", err
 		}
 		return text, nil
@@ -147,8 +151,9 @@ func RecordDefect(db *sql.DB, in DefectInput) (string, error) {
 // returns the guard ("" for the first defect of a class) and whether it opened it.
 func guardFor(ctx context.Context, conn *sql.Conn, class string, id int64) (string, bool, error) {
 	var guard string
-	err := conn.QueryRowContext(ctx, "select d.guard_item from defect_v d join item g on g.id = d.guard_item"+
-		" where d.cause_class = ? and g.state = 'open' order by d.id desc limit 1", class).Scan(&guard)
+	// A guard belongs to the class it was opened or joined for (guard_class), whatever its defects are corrected to.
+	err := conn.QueryRowContext(ctx, "select d.guard_item from defect d join item g on g.id = d.guard_item"+
+		" where d.guard_class = ? and g.state = 'open' order by d.id desc limit 1", class).Scan(&guard)
 	if err != nil && err != sql.ErrNoRows {
 		return "", false, err
 	}
@@ -195,12 +200,12 @@ func guardFor(ctx context.Context, conn *sql.Conn, class string, id int64) (stri
 		}
 		opened = true
 		// The defects no guard covers yet; this one is among them.
-		if _, err := conn.ExecContext(ctx, "update defect set guard_item = ? where guard_item is null and id in"+
-			" (select id from defect_v where cause_class = ?)", guard, class); err != nil {
+		if _, err := conn.ExecContext(ctx, "update defect set guard_item = ?1, guard_class = ?2 where guard_item is null"+
+			" and id in (select id from defect_v where cause_class = ?2)", guard, class); err != nil {
 			return "", false, err
 		}
 	}
-	_, err = conn.ExecContext(ctx, "update defect set guard_item = ? where id = ?", guard, id)
+	_, err = conn.ExecContext(ctx, "update defect set guard_item = ?, guard_class = ? where id = ?", guard, class, id)
 	return guard, opened, err
 }
 
@@ -276,7 +281,7 @@ func RecordRevoke(db *sql.DB, in RevokeInput) (string, error) {
 		text := fmt.Sprintf("revoked %s on %s (%s, by %s); opened fix %s: %s", in.Item, short(rev), in.Defect, in.By,
 			fix, reason)
 		if err := addEvent(ctx, conn, ts, project, "revoked", in.By, in.Item, map[string][]string{
-			"item": {in.Item, fix}, "defect": {in.Defect}, "sha": {rev}}, text, fmt.Sprint("revoke:", accID)); err != nil {
+			"item": {in.Item, fix}, "defect": {in.Defect}, "sha": {rev}}, text, fmt.Sprint("revoke:", accID), taint); err != nil {
 			return "", err
 		}
 		return text, nil
@@ -305,10 +310,22 @@ var correctable = []struct {
 			return nil
 		},
 		"parent": func(ctx context.Context, conn *sql.Conn, target, v string) error {
-			if v == target {
-				return refused("an item cannot be its own parent")
+			if err := knownItem(ctx, conn, v); err != nil {
+				return err
 			}
-			return knownItem(ctx, conn, v)
+			// v's ancestors, as corrected, must not include the target
+			for p, seen := v, map[string]bool{}; p != "" && !seen[p]; {
+				if p == target {
+					return refused("%s under %s makes a parent cycle", target, v)
+				}
+				seen[p] = true
+				var next sql.NullString
+				if err := conn.QueryRowContext(ctx, "select parent from item_v where id = ?", p).Scan(&next); err != nil {
+					return err
+				}
+				p = next.String
+			}
+			return nil
 		},
 	}},
 	{"defect", "'D-' || defect.id", "defect.item", defectRe, map[string]func(context.Context, *sql.Conn, string, string) error{
@@ -377,7 +394,9 @@ func RecordCorrect(db *sql.DB, in CorrectInput) (string, error) {
 			return "", refused("%s %s is %q already", in.Target, in.Field, in.Value)
 		}
 		var project string
-		if err := conn.QueryRowContext(ctx, "select project from item_v where id = ?", item).Scan(&project); err != nil {
+		var taint int
+		if err := conn.QueryRowContext(ctx, "select project, taint from item_v where id = ?", item).
+			Scan(&project, &taint); err != nil {
 			return "", err
 		}
 		ts := now()
@@ -395,8 +414,12 @@ func RecordCorrect(db *sql.DB, in CorrectInput) (string, error) {
 		refs := map[string][]string{"item": {item}, "correction": {cid}}
 		if c.table == "defect" {
 			refs["defect"] = []string{in.Target}
+			if in.Field == "item" { // a moved defect is in both items' history
+				refs["item"] = append(refs["item"], in.Value)
+			}
 		}
-		if err := addEvent(ctx, conn, ts, project, "correction", in.By, item, refs, text, "correct:"+cid); err != nil {
+		if err := addEvent(ctx, conn, ts, project, "correction", in.By, item, refs, text, "correct:"+cid,
+			taint); err != nil {
 			return "", err
 		}
 		return text, nil
