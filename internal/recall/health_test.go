@@ -181,3 +181,18 @@ func TestHealthShowsWhatCouldNotBeListed(t *testing.T) {
 		t.Fatal(h.Text())
 	}
 }
+
+// Step 6 P6b: health counts the last 7 days of review answers, and a reviewer answer without a FINDINGS line shows
+// as not counted, never as a zero-finding review.
+func TestHealthCountsReviewsAndNotCountedOnes(t *testing.T) {
+	db, home, exp := healthy(t)
+	exec(t, db, "insert into evidence (kind, ref, revision, ts, source_key) values"+
+		" ('review', 'codex P1=0 P2=1 P3=0 commit=abc1234 session=s1', 'abc1234', '2026-10-16T10:00:00Z', 'review:a'),"+
+		" ('review', 'codex P1=0 P2=0 P3=0 uncommitted session=s1', null, '2026-10-15T10:00:00Z', 'review:b'),"+
+		" ('review', 'codex P1=0 P2=0 P3=0 uncommitted session=s1', null, '2026-10-01T10:00:00Z', 'review:old'),"+
+		" ('review-uncounted', 'quick-review no FINDINGS line session=s1', null, '2026-10-16T11:00:00Z', 'review:c')")
+	h := health(t, db, home, exp)
+	if want := "reviews last 7 d: 2 counted (1 on a commit), 1 not counted (no usable FINDINGS line)"; !strings.Contains(h.Text(), want) {
+		t.Fatalf("want %q in\n%s", want, h.Text())
+	}
+}

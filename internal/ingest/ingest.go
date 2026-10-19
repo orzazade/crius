@@ -291,6 +291,7 @@ func Run(home string) (*Stats, error) {
 	started := utcNow()
 	r.ingestTranscripts()
 	r.ingestGit()
+	r.bindReviews()
 	r.ingestLogs()
 	r.ingestFiles()
 	r.ingestQuota()

@@ -49,6 +49,14 @@ type TeamHealth struct {
 	Silent   bool   `json:"silent"`
 }
 
+// ReviewHealth counts reviewer answers (step 6 P6b): with a FINDINGS line, of those bound to a commit, and without a
+// usable one.
+type ReviewHealth struct {
+	Counted    int `json:"counted"`
+	OnCommit   int `json:"on_commit"`
+	NotCounted int `json:"not_counted"`
+}
+
 type Health struct {
 	Status      string         `json:"status"`
 	Problems    []string       `json:"problems,omitempty"`
@@ -60,6 +68,7 @@ type Health struct {
 	RestoreTest string         `json:"restore_test"`
 	Sources     []SourceHealth `json:"sources"`
 	Teams       []TeamHealth   `json:"teams"`
+	Reviews     ReviewHealth   `json:"reviews_7d"`
 }
 
 func short(d time.Duration) string {
@@ -109,6 +118,12 @@ func CheckHealth(db *sql.DB, home string, exp Expected, now time.Time) (*Health,
 		return nil, err
 	}
 	if err := h.teams(db, exp, now); err != nil {
+		return nil, err
+	}
+	if err := db.QueryRow("select count(*) filter (where kind = 'review'), count(*) filter (where kind = 'review' and"+
+		" revision is not null), count(*) filter (where kind = 'review-uncounted') from evidence where kind in"+
+		" ('review', 'review-uncounted') and ts >= ?", stamp(now.Add(-7*24*time.Hour))).Scan(&h.Reviews.Counted,
+		&h.Reviews.OnCommit, &h.Reviews.NotCounted); err != nil {
 		return nil, err
 	}
 	h.Status = "complete"
@@ -365,6 +380,8 @@ func (h *Health) Text() string {
 		}
 		b.WriteString("\n")
 	}
+	fmt.Fprintf(&b, "reviews last 7 d: %d counted (%d on a commit), %d not counted (no usable FINDINGS line)\n",
+		h.Reviews.Counted, h.Reviews.OnCommit, h.Reviews.NotCounted)
 	for _, t := range h.Teams {
 		fmt.Fprintf(&b, "team %s · last line %s · last call %s", t.Project, or(t.LastLine, "never"), or(t.LastCall, "never"))
 		if t.Silent {

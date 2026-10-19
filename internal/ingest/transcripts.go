@@ -252,7 +252,7 @@ func (r *runner) transcriptFile(rt root, path string) error {
 		sub = sub || p == "subagents"
 	}
 	sid := strings.TrimSuffix(filepath.Base(path), ".jsonl")
-	qsrc := "main"
+	qsrc, agent := "main", ""
 	if sub {
 		if len(parts) < 2 {
 			return fmt.Errorf("subagent file outside a session folder")
@@ -264,7 +264,8 @@ func (r *runner) transcriptFile(rt root, path string) error {
 		}
 		if b, err := os.ReadFile(strings.TrimSuffix(path, ".jsonl") + ".meta.json"); err == nil &&
 			json.Unmarshal(b, &meta) == nil && meta.AgentType != "" {
-			qsrc = "subagent:" + truncate(r.text(meta.AgentType), 40)
+			agent = truncate(r.text(meta.AgentType), 40)
+			qsrc = "subagent:" + agent
 		}
 	}
 	return r.inTx(func(tx *sql.Tx) error {
@@ -376,6 +377,11 @@ func (r *runner) transcriptFile(rt root, path string) error {
 				" ended=coalesce(max(session.ended, excluded.ended), session.ended, excluded.ended),"+
 				" cwd=coalesce(session.cwd, excluded.cwd), title=coalesce(excluded.title, session.title)",
 				sid, rt.persona, nullable(first), nullable(last), nullable(cwd), nullable(title), path); err != nil {
+				return err
+			}
+		}
+		if reviewers[agent] {
+			if err := r.reviewAnswers(tx, path, sid, agent); err != nil {
 				return err
 			}
 		}
