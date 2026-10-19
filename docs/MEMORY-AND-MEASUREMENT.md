@@ -280,7 +280,8 @@ hides quotes from the patterns).
 read from its DECISIONS.md; `Status: SUPERSEDED by <id> (<date>): <title>` or `active`), a session (with its request
 count and list $), a commit, an `event:<n>`, or a project's STATE.md (`unavailable` until the digest step builds it).
 A hex prefix that matches more than one commit or session is refused with the matches. `--history` gives a decision's
-supersede chain, oldest first; acceptance, revokes and corrections join it in step 6.
+supersede chain, oldest first. Since step 6, `show ITEM --history` gives the item's chain in time order: its
+opening, then every event naming it or a fix item opened for it (accepted, defect, revoked, correction).
 
 **`record accept` as built (step 6).** `record accept ITEM --revision R --check N=REF … --review event:<n> --by
 crius|owner`. The item must be open. R is a commit sha prefix naming exactly one commit, or an artifact sha256. Every
@@ -291,6 +292,22 @@ line that also cites another sha does not count. A refusal writes nothing. `--pr
 made the commit, when both sessions are known (bus lines carry none today). One transaction writes the
 `acceptance` row, an `accepted` event (refs item + sha) and the item state `accepted`. `show ITEM` lists each
 acceptance with its checks.
+
+**`record defect`, `revoke`, `correct` as built (step 6).** `record defect ITEM --title T --found-by us|owner|others
+--severity S1|S2|S3 --class C` writes a confirmed `defect` row `D-<n>` on the item's accepted revision (none if it
+has no acceptance) and a `defect` event; C is one of the §7b classes, refused otherwise. The second defect of a class
+opens a guard item (`guard: <class> (D-a, D-b)`, criteria: a check goes red on each of them; config or hook changes
+need the owner), in the defects' project or `crius` when they span projects; while that guard is open, later defects
+of the class join it; once it is closed, the next one opens a new guard naming every defect of the class. `record
+revoke ITEM --defect D-N --reason R --criteria C … --by crius|owner` needs the item accepted and the defect on it:
+the acceptance row stays (state `revoked`, time, by, reason, defect, fix item), the item becomes `revoked`, and a fix
+item opens with the given criteria under the owner outcome (the item's parent, or the item itself). `record correct
+--corrects ITEM|D-N --field F --value V --reason R --by crius|owner` adds a `correction` row `C-<n>` (old value read
+from the view) and a `correction` event; the row is never edited. Correctable: an item's project, kind, title,
+parent; a defect's item, found_by, severity, cause_class. The views `item_v` and `defect_v` give each such field its
+newest correction; they are built from the same Go list at open and rebuilt when it changes. `show` reads items
+through `item_v`. Not built: a defect's signal refs, incident id and locked_output; corrections of sessions or events
+(added when the scorecard needs them); a class corrected after the fact does not open a guard by itself.
 
 **`health` as built (step 4).** The last ingest run and the runs of the last 24 h, heartbeat age, the newest backup,
 and the restore test (`never run` until step 6; shown, not a problem). Per source, expected vs seen: the ingest lists

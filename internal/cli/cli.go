@@ -1,5 +1,5 @@
 // Package cli is crius-rec, the door to the record store. Commands: init, leak-test, record bus|decision|item (step 1),
-// quota (step 3), find, show and health (step 4), digest (step 5), record accept (step 6).
+// quota (step 3), find, show and health (step 4), digest (step 5), record accept|defect|revoke|correct (step 6).
 package cli
 
 import (
@@ -40,6 +40,13 @@ const usage = `usage: crius-rec init
        crius-rec record item --project P --title T --kind code|research|falcon|other --criteria C [--criteria C ...] [--parent ID] [--taint]
        crius-rec record accept ITEM --revision SHA|SHA256 --check N=REF [--check N=REF ...] --review event:N --by crius|owner
                  (every criterion N needs a check; each REF, a commit sha or event:N, must name the revision)
+       crius-rec record defect ITEM --title T --found-by us|owner|others --severity S1|S2|S3 --class C
+                 (C: missing test, wrong assumption, stale context, silent failure, misread request,
+                 harness or tool, review gap, bad data; the 2nd defect of a class opens a guard item)
+       crius-rec record revoke ITEM --defect D-N --reason R --criteria C [--criteria C ...] --by crius|owner
+                 (the acceptance row stays, revoked; a fix item opens with these criteria)
+       crius-rec record correct --corrects ITEM|D-N --field F --value V --reason R --by crius|owner
+                 (the row stays; show and the views read the new value)
        crius-rec quota [--json | --room]
        crius-rec find [QUERY] [--project P] [--since YYYY-MM-DD|Nd|Nh] [--kind K ...] [--active] [--waiting] [--json]
        crius-rec find QUERY --deep --project P [--since …] [--json]
@@ -144,6 +151,7 @@ func record(home string, args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	project := fs.String("project", "", "")
 	var role, typ, text, to, title, why, by, supersedes, reason, refs, kind, parent, revision, review *string
+	var foundBy, severity, class, defect, corrects, field, value *string
 	var taint *bool
 	var criteria, checks multi
 	required := []string{"project"}
@@ -163,15 +171,30 @@ func record(home string, args []string, stdout, stderr io.Writer) int {
 		fs.Var(&criteria, "criteria", "")
 		taint = fs.Bool("taint", false, "")
 		required = append(required, "title", "kind", "criteria")
-	case "accept":
+	case "accept", "defect", "revoke":
 		if len(args) == 0 || strings.HasPrefix(args[0], "-") {
-			fmt.Fprintln(stderr, "record accept needs the item first: record accept ITEM --revision …")
+			fmt.Fprintf(stderr, "record %s needs the item first: record %s ITEM --…\n", what, what)
 			return exitUsage
 		}
 		item, args = args[0], args[1:]
-		revision, review, by = fs.String("revision", "", ""), fs.String("review", "", ""), fs.String("by", "", "")
-		fs.Var(&checks, "check", "")
-		required = []string{"revision", "check", "review", "by"}
+		switch what {
+		case "accept":
+			revision, review, by = fs.String("revision", "", ""), fs.String("review", "", ""), fs.String("by", "", "")
+			fs.Var(&checks, "check", "")
+			required = []string{"revision", "check", "review", "by"}
+		case "defect":
+			title, foundBy = fs.String("title", "", ""), fs.String("found-by", "", "")
+			severity, class = fs.String("severity", "", ""), fs.String("class", "", "")
+			required = []string{"title", "found-by", "severity", "class"}
+		case "revoke":
+			defect, reason, by = fs.String("defect", "", ""), fs.String("reason", "", ""), fs.String("by", "", "")
+			fs.Var(&criteria, "criteria", "")
+			required = []string{"defect", "reason", "criteria", "by"}
+		}
+	case "correct":
+		corrects, field, value = fs.String("corrects", "", ""), fs.String("field", "", ""), fs.String("value", "", "")
+		reason, by = fs.String("reason", "", ""), fs.String("by", "", "")
+		required = []string{"corrects", "field", "value", "reason", "by"}
 	default:
 		fmt.Fprint(stderr, usage)
 		return exitUsage
@@ -181,8 +204,8 @@ func record(home string, args []string, stdout, stderr io.Writer) int {
 	}
 	given := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { given[f.Name] = true })
-	if what == "accept" && given["project"] {
-		fmt.Fprintln(stderr, "record accept takes no --project: the item names it")
+	if required[0] != "project" && given["project"] {
+		fmt.Fprintf(stderr, "record %s takes no --project: the item names it\n", what)
 		return exitUsage
 	}
 	for _, name := range required {
@@ -243,6 +266,21 @@ func record(home string, args []string, stdout, stderr io.Writer) int {
 	case "accept":
 		out, err = recordAccept(home, store.AcceptInput{Item: item, Revision: *revision, Checks: checks, Review: *review,
 			By: *by})
+	case "defect":
+		out, err = recordWith(home, func(db *sql.DB) (string, error) {
+			return store.RecordDefect(db, store.DefectInput{Item: item, Title: *title, FoundBy: *foundBy,
+				Severity: *severity, Class: *class})
+		})
+	case "revoke":
+		out, err = recordWith(home, func(db *sql.DB) (string, error) {
+			return store.RecordRevoke(db, store.RevokeInput{Item: item, Defect: *defect, Reason: *reason, By: *by,
+				Criteria: criteria})
+		})
+	case "correct":
+		out, err = recordWith(home, func(db *sql.DB) (string, error) {
+			return store.RecordCorrect(db, store.CorrectInput{Target: *corrects, Field: *field, Value: *value,
+				Reason: *reason, By: *by})
+		})
 	}
 	switch {
 	case err == nil:
@@ -284,6 +322,21 @@ func recordAccept(home string, in store.AcceptInput) (string, error) {
 		return "", err
 	}
 	out, err := store.RecordAccept(db, in)
+	return out, errors.Join(err, db.Close())
+}
+
+// recordWith runs one store write under the writer lock.
+func recordWith(home string, f func(*sql.DB) (string, error)) (string, error) {
+	unlock, err := store.WriterLock(home, true)
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
+	db, err := store.Open(home)
+	if err != nil {
+		return "", err
+	}
+	out, err := f(db)
 	return out, errors.Join(err, db.Close())
 }
 

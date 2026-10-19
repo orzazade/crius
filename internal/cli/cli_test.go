@@ -596,3 +596,72 @@ func TestRecordAcceptAndShow(t *testing.T) {
 		t.Fatal(out)
 	}
 }
+
+// Step 6 P2: defect, revoke and correct take the item (or --corrects) and refuse --project; show --history lists the
+// chain.
+func TestRecordDefectRevokeCorrectAndHistory(t *testing.T) {
+	_, home := testutil.Temp(t)
+	if rc, out := run("init"); rc != 0 {
+		t.Fatal(rc, out)
+	}
+	if rc, out := run("record", "item", "--project", "demo", "--title", "mail fix", "--kind", "code",
+		"--criteria", "CI pass"); rc != 0 {
+		t.Fatal(rc, out)
+	}
+	db, err := store.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("insert into git_commit (sha, repo) values (?, 'r');"+
+		" insert into event (ts, project, kind, actor, session, text, source_key) values"+
+		" ('2026-10-19T11:00:00Z', 'crius', 'verified', 'lead', 's-rev', 'abc1234 review clean', 'k1')",
+		"abc1234"+strings.Repeat("0", 33)); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	if rc, out := run("record", "accept", "demo#1", "--revision", "abc1234", "--check", "1=event:1", "--review",
+		"event:1", "--by", "crius"); rc != 0 {
+		t.Fatal(rc, out)
+	}
+	for _, args := range [][]string{
+		{"record", "defect", "--title", "x"},
+		{"record", "defect", "demo#1", "--project", "demo", "--title", "t", "--found-by", "us", "--severity", "S2",
+			"--class", "bad data"},
+		{"record", "defect", "demo#1", "--title", "t", "--found-by", "us", "--severity", "S2"},
+		{"record", "defect", "demo#1", "--title", "t", "--found-by", "us", "--severity", "S2", "--class", "typo"},
+		{"record", "revoke", "demo#1", "--defect", "D-1", "--reason", "r", "--by", "crius"},
+		{"record", "correct", "--corrects", "demo#1", "--field", "state", "--value", "open", "--reason", "r", "--by", "crius"},
+	} {
+		if rc, out := run(args...); rc != exitUsage {
+			t.Errorf("%v: want %d, got %d %s", args, exitUsage, rc, out)
+		}
+	}
+	for _, args := range [][]string{
+		{"record", "defect", "demo#1", "--title", "mail sent twice", "--found-by", "owner", "--severity", "S2",
+			"--class", "missing test"},
+		{"record", "revoke", "demo#1", "--defect", "D-1", "--reason", "sends twice", "--criteria", "regression test",
+			"--by", "crius"},
+		{"record", "correct", "--corrects", "D-1", "--field", "severity", "--value", "S1", "--reason", "a user saw it",
+			"--by", "owner"},
+	} {
+		if rc, out := run(args...); rc != 0 {
+			t.Fatal(args, rc, out)
+		}
+	}
+	rc, out := run("show", "demo#1", "--history")
+	if rc != exitPartial {
+		t.Fatal(rc, out)
+	}
+	at := 0
+	for _, want := range []string{"opened demo#1", "accepted demo#1", "defect D-1 on demo#1", "opened fix demo#2",
+		"correction C-1: D-1 severity S2 -> S1"} {
+		i := strings.Index(out[at:], want)
+		if i < 0 {
+			t.Fatalf("%q not after offset %d in:\n%s", want, at, out)
+		}
+		at += i + len(want)
+	}
+	if rc, out := run("find", "--kind", "revoked"); rc != exitPartial || !strings.Contains(out, "revoked demo#1") {
+		t.Fatal(rc, out)
+	}
+}

@@ -52,6 +52,17 @@ create table if not exists acceptance (
   review_ref text not null, accepted_by text not null, ts text not null, state text not null default 'accepted',
   revoked_ts text, revoked_by text, revoke_reason text, defect text, fix_item text);
 create index if not exists acceptance_item on acceptance (item);
+-- A confirmed defect (design §7b), on the item's accepted revision when it has one; guard_item is the guard its
+-- class opened or joined.
+create table if not exists defect (
+  id integer primary key, item text not null, revision text, title text not null, found_by text not null,
+  found_ts text not null, severity text not null, cause_class text not null, guard_item text);
+-- A correction of one field of an item or a defect (target <project>#<n> or D-<n>): item_v and defect_v apply the
+-- newest per field; the target row is never edited.
+create table if not exists correction (
+  id integer primary key, target text not null, field text not null, old_value text, new_value text not null,
+  reason text not null, by text not null, ts text not null);
+create index if not exists correction_target on correction (target, field);
 create table if not exists artifact (
   path text primary key, project text, sha256 text, title text, headings text, mtime text,
   taint integer not null default 0);
@@ -102,6 +113,10 @@ func Open(home string) (*sql.DB, error) {
 		return nil, err
 	}
 	if err := addColumn(db, "git_commit", "subject", "text"); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := ensureViews(db); err != nil {
 		db.Close()
 		return nil, err
 	}

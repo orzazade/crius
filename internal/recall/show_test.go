@@ -127,8 +127,8 @@ func TestShowNotFoundNamesWhereItLookedAndABadIDIsRefused(t *testing.T) {
 	if _, err := Show(db, home, "Hello World", false, now); !errors.Is(err, ErrQuery) {
 		t.Fatal(err)
 	}
-	if _, err := Show(db, home, "demo#1", true, now); !errors.Is(err, ErrQuery) {
-		t.Fatal("--history before step 6 covers decisions only", err)
+	if _, err := Show(db, home, "event:1", true, now); !errors.Is(err, ErrQuery) {
+		t.Fatal("--history covers decisions and items only", err)
 	}
 }
 
@@ -154,5 +154,66 @@ func TestShowAProjectKnownByCommitsOnly(t *testing.T) {
 	s, err := Show(db, os.Getenv("CRIUS_HOME"), "infra", false, now)
 	if err != nil || s.Status != "unavailable" {
 		t.Fatal(s, err)
+	}
+}
+
+// §9: show ITEM --history lists the chain in order: open, accept, defect, revoke and the fix item, its acceptance,
+// and a correction.
+func TestShowItemHistoryListsTheChain(t *testing.T) {
+	db := open(t)
+	home := os.Getenv("CRIUS_HOME")
+	a, b := "abc1234"+strings.Repeat("0", 33), "def5678"+strings.Repeat("0", 33)
+	if _, err := store.RecordItem(db, "demo", "mail fix", "code", []string{"CI pass"}, "", false); err != nil {
+		t.Fatal(err)
+	}
+	exec(t, db, "insert into git_commit (sha, repo) values (?, 'r'), (?, 'r')", a, b)
+	ci := event(t, db, "2026-10-15T10:00:00Z", "demo", "done", "CI green on abc1234", "")
+	rev := event(t, db, "2026-10-15T10:01:00Z", "demo", "verified", "abc1234 review clean", "")
+	ciB := event(t, db, "2026-10-15T11:00:00Z", "demo", "done", "CI green on def5678", "")
+	revB := event(t, db, "2026-10-15T11:01:00Z", "demo", "verified", "def5678 review clean", "")
+	ev := func(n int64) string { return fmt.Sprint("event:", n) }
+	steps := []func() (string, error){
+		func() (string, error) {
+			return store.RecordAccept(db, store.AcceptInput{Item: "demo#1", Revision: "abc1234",
+				Checks: []string{"1=" + ev(ci)}, Review: ev(rev), By: "crius"})
+		},
+		func() (string, error) {
+			return store.RecordDefect(db, store.DefectInput{Item: "demo#1", Title: "mail sent twice", FoundBy: "owner",
+				Severity: "S2", Class: "missing test"})
+		},
+		func() (string, error) {
+			return store.RecordRevoke(db, store.RevokeInput{Item: "demo#1", Defect: "D-1", Reason: "sends twice",
+				By: "crius", Criteria: []string{"CI pass"}})
+		},
+		func() (string, error) {
+			return store.RecordAccept(db, store.AcceptInput{Item: "demo#2", Revision: "def5678",
+				Checks: []string{"1=" + ev(ciB)}, Review: ev(revB), By: "owner"})
+		},
+		func() (string, error) {
+			return store.RecordCorrect(db, store.CorrectInput{Target: "demo#1", Field: "title", Value: "mail dedupe",
+				Reason: "named the cause", By: "crius"})
+		},
+	}
+	for i, f := range steps {
+		if out, err := f(); err != nil {
+			t.Fatal(i, out, err)
+		}
+	}
+	s := show(t, home, "demo#1", true)
+	text := s.Text()
+	at := 0
+	for _, want := range []string{"opened demo#1", "accepted demo#1 on abc1234", "defect D-1 on demo#1",
+		"revoked demo#1", "opened fix demo#2", "accepted demo#2 on def5678", "correction C-1"} {
+		i := strings.Index(text[at:], want)
+		if i < 0 {
+			t.Fatalf("%q not after offset %d in:\n%s", want, at, text)
+		}
+		at += i + len(want)
+	}
+	if !strings.Contains(text, "Title: mail dedupe") || strings.Contains(text, "Title: mail fix") {
+		t.Fatal("the view applies the correction:\n" + text)
+	}
+	if s := show(t, home, "demo#1", false); !strings.Contains(s.Text(), "revoked on abc123400000") {
+		t.Fatal(s.Text())
 	}
 }

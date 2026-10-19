@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -91,9 +92,9 @@ func Show(db *sql.DB, home, id string, history bool, now time.Time) (*Shown, err
 		return nil, fmt.Errorf("%w: %q is not an item (<project>#<n>), decision (<project>-D<n>), session or commit "+
 			"prefix, event:<n> or project", ErrQuery, id)
 	}
-	if history && s.Kind != "decision" {
-		return nil, fmt.Errorf("%w: --history covers decisions (their supersede chain); acceptance and corrections "+
-			"come with step 6", ErrQuery)
+	if history && s.Kind != "decision" && s.Kind != "item" {
+		return nil, fmt.Errorf("%w: --history covers decisions (their supersede chain) and items (acceptance, defects,"+
+			" revokes, fixes, corrections)", ErrQuery)
 	}
 	var err error
 	if s.Status, s.Reasons, err = Freshness(db, now); err != nil {
@@ -102,7 +103,7 @@ func Show(db *sql.DB, home, id string, history bool, now time.Time) (*Shown, err
 	ctx := context.Background()
 	switch s.Kind {
 	case "item":
-		err = showItem(ctx, db, s)
+		err = showItem(ctx, db, s, history)
 	case "decision":
 		err = showDecision(ctx, db, s, history)
 	case "event":
@@ -115,10 +116,12 @@ func Show(db *sql.DB, home, id string, history bool, now time.Time) (*Shown, err
 	return s, err
 }
 
-func showItem(ctx context.Context, db *sql.DB, s *Shown) error {
+// showItem reads the item as corrected (item_v). With history, the lines after its children are the chain in time
+// order: its opening, then every event naming it or a fix item opened for it.
+func showItem(ctx context.Context, db *sql.DB, s *Shown, history bool) error {
 	var project, kind, title, criteria, opened, state, parent sql.NullString
 	var taint int
-	err := db.QueryRowContext(ctx, "select project, kind, title, criteria, opened, state, parent, taint from item where id = ?",
+	err := db.QueryRowContext(ctx, "select project, kind, title, criteria, opened, state, parent, taint from item_v where id = ?",
 		s.ID).Scan(&project, &kind, &title, &criteria, &opened, &state, &parent, &taint)
 	if err == sql.ErrNoRows {
 		s.Kind = "items"
@@ -144,7 +147,7 @@ func showItem(ctx context.Context, db *sql.DB, s *Shown) error {
 	if taint != 0 {
 		s.add("Taint", "tainted")
 	}
-	rows, err := db.QueryContext(ctx, "select id, state, title from item where parent = ? order by n", s.ID)
+	rows, err := db.QueryContext(ctx, "select id, state, title from item_v where parent = ? order by n", s.ID)
 	if err != nil {
 		return err
 	}
@@ -159,23 +162,51 @@ func showItem(ctx context.Context, db *sql.DB, s *Shown) error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
+	if history {
+		s.Lines = append(s.Lines, strings.Replace(opened.String, "T", " ", 1)[:min(16, len(opened.String))]+
+			" opened "+s.ID)
+		ids := []string{s.ID}
+		for i := 0; i < len(ids); i++ {
+			fixes, err := db.QueryContext(ctx, "select fix_item from acceptance where item = ? and fix_item is not null"+
+				" order by id", ids[i])
+			if err != nil {
+				return err
+			}
+			for fixes.Next() {
+				var f string
+				if err := fixes.Scan(&f); err != nil {
+					fixes.Close()
+					return err
+				}
+				if !slices.Contains(ids, f) {
+					ids = append(ids, f)
+				}
+			}
+			fixes.Close()
+			if err := fixes.Err(); err != nil {
+				return err
+			}
+		}
+		return citing(ctx, db, s, ids...)
+	}
 	if err := acceptances(ctx, db, s); err != nil {
 		return err
 	}
-	return citing(ctx, db, s)
+	return citing(ctx, db, s, s.ID)
 }
 
 // acceptances adds one line per acceptance of the item, oldest first, with the check for each criterion.
 func acceptances(ctx context.Context, db *sql.DB, s *Shown) error {
-	rows, err := db.QueryContext(ctx, "select ts, revision, checks, review_ref, accepted_by, state from acceptance"+
-		" where item = ? order by id", s.ID)
+	rows, err := db.QueryContext(ctx, "select ts, revision, checks, review_ref, accepted_by, state, coalesce(revoked_ts,"+
+		" ''), coalesce(revoked_by, ''), coalesce(defect, ''), coalesce(fix_item, '') from acceptance where item = ? order by id",
+		s.ID)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var ts, rev, checks, review, by, state string
-		if err := rows.Scan(&ts, &rev, &checks, &review, &by, &state); err != nil {
+		var ts, rev, checks, review, by, state, revokedTS, revokedBy, defect, fix string
+		if err := rows.Scan(&ts, &rev, &checks, &review, &by, &state, &revokedTS, &revokedBy, &defect, &fix); err != nil {
 			return err
 		}
 		var cs []store.AcceptCheck
@@ -190,16 +221,25 @@ func acceptances(ctx context.Context, db *sql.DB, s *Shown) error {
 			}
 			parts = append(parts, fmt.Sprintf("%d=%s", c.Criterion, ref))
 		}
-		s.Lines = append(s.Lines, fmt.Sprintf("%s %s on %s by %s · checks %s · review %s", ts, state,
-			rev[:min(len(rev), 12)], by, strings.Join(parts, " "), review))
+		line := fmt.Sprintf("%s %s on %s by %s · checks %s · review %s", ts, state, rev[:min(len(rev), 12)], by,
+			strings.Join(parts, " "), review)
+		if state == "revoked" {
+			line += fmt.Sprintf(" · revoked %s by %s (%s), fix %s", revokedTS, revokedBy, defect, fix)
+		}
+		s.Lines = append(s.Lines, line)
 	}
 	return rows.Err()
 }
 
-// citing adds the events whose refs name the id exactly, oldest first.
-func citing(ctx context.Context, db *sql.DB, s *Shown) error {
+// citing adds the events whose refs name one of the ids exactly, oldest first.
+func citing(ctx context.Context, db *sql.DB, s *Shown, ids ...string) error {
+	var where []string
+	var args []any
+	for _, id := range ids {
+		where, args = append(where, "instr(refs, ?) > 0"), append(args, `"`+id+`"`)
+	}
 	rows, err := db.QueryContext(ctx, "select id, ts, kind, coalesce(project,''), text, refs, taint from event"+
-		" where instr(refs, ?) > 0 order by "+norm+", id", `"`+s.ID+`"`)
+		" where "+strings.Join(where, " or ")+" order by "+norm+", id", args...)
 	if err != nil {
 		return err
 	}

@@ -122,7 +122,7 @@ func stamp(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05.000Z
 
 // Kinds are the kinds find accepts: every event kind in the store, the bus types, and the other sources.
 func Kinds(db *sql.DB, busTypes map[string]bool) ([]string, error) {
-	known := []string{"decision", "item", "artifact", "commit", "session"}
+	known := []string{"decision", "item", "artifact", "commit", "session", "accepted", "defect", "revoked", "correction"}
 	for t := range busTypes {
 		known = append(known, strings.ToLower(t))
 	}
