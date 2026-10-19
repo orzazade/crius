@@ -14,10 +14,12 @@ var reviewers = map[string]bool{"codex": true, "quick-review": true}
 
 var (
 	// The line is found by its form anywhere in the answer: the first real run printed it before its list.
-	findingsRe  = regexp.MustCompile("(?m)^[ \t*`]*FINDINGS P1=(\\d+) P2=(\\d+) P3=(\\d+)[ \t*`]*$")
-	reviewedRe  = regexp.MustCompile(`(?m)^REVIEWED:\s*(?:commit\s+([0-9a-f]{7,40})\b|(uncommitted)\b|\S+\s+vs\s+([^\s,]+))`)
-	codexAskRe  = regexp.MustCompile(`\bcodex-ask\s+\S+\s+(review|ask)\b(.*)`)
-	codexTargRe = regexp.MustCompile(`--commit\s+([0-9a-f]{7,40})\b|--(uncommitted)\b|--base\s+(\S+)`)
+	findingsRe = regexp.MustCompile("(?m)^[ \t*`]*FINDINGS P1=(\\d+) P2=(\\d+) P3=(\\d+)[ \t*`]*$")
+	// A sha ends at a space, comma, quote or the line's end: abc1234^ names another commit.
+	reviewedRe  = regexp.MustCompile(`(?m)^REVIEWED:\s*(?:commit\s+([0-9a-f]{7,40})(?:[\s,'"]|$)|(uncommitted)\b|\S+\s+vs\s+([^\s,]+))`)
+	codexAskRe  = regexp.MustCompile(`\bcodex-ask\s+(?:"[^"]*"|'[^']*'|\S+)\s+(review|ask)\b([^;&|\n]*)`)
+	codexTargRe = regexp.MustCompile(`--commit\s+([0-9a-f]{7,40})(?:[\s'"]|$)|--(uncommitted)\b|--base\s+(\S+)`)
+	heredocRe   = regexp.MustCompile(`<<-?\s*['"]?(\w+)['"]?`)
 	boundShaRe  = regexp.MustCompile(` commit=([0-9a-f]{7,40}) `)
 )
 
@@ -33,6 +35,30 @@ func target(m []string, r *runner) string {
 		return "uncommitted"
 	}
 	return "base=" + strings.ReplaceAll(truncate(r.text(m[3]), 100), " ", "_")
+}
+
+// codexCall returns the newest codex-ask call in a Bash command (its mode and its arguments, up to a shell separator), or nil. A line
+// continuation joins its lines; a here-document body is the caller's text, not a command.
+func codexCall(command string) []string {
+	var cmd []string
+	delim := ""
+	for _, l := range strings.Split(strings.ReplaceAll(command, "\\\n", " "), "\n") {
+		if delim != "" {
+			if strings.TrimSpace(l) == delim {
+				delim = ""
+			}
+			continue
+		}
+		cmd = append(cmd, l)
+		if m := heredocRe.FindStringSubmatch(l); m != nil {
+			delim = m[1]
+		}
+	}
+	all := codexAskRe.FindAllStringSubmatch(strings.Join(cmd, "\n"), -1)
+	if len(all) == 0 {
+		return nil
+	}
+	return all[len(all)-1]
 }
 
 // reviewAnswers reads a reviewer's subagent file whole and stores each final answer (stop_reason end_turn) as
@@ -63,7 +89,7 @@ func (r *runner) reviewAnswers(tx *sql.Tx, path, sid, agent string) error {
 			if b.Type == "text" {
 				text = append(text, b.Text)
 			}
-			if c := codexAskRe.FindStringSubmatch(b.Input.Command); b.Type == "tool_use" && b.Name == "Bash" && c != nil {
+			if c := codexCall(b.Input.Command); b.Type == "tool_use" && b.Name == "Bash" && c != nil {
 				codex = c
 			}
 		}

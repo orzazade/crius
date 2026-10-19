@@ -116,3 +116,37 @@ func TestAReviewIsBoundOnceItsCommitIsKnown(t *testing.T) {
 	x.run()
 	eq(t, x.q("select revision from evidence where kind = 'review' order by ts"), [][]string{{"<nil>"}, {reviewedSha}})
 }
+
+// Codex review of f095c93: the newest codex-ask call names the target, not the first; a revision expression
+// (abc1234^) is not its commit; a quoted folder and a line continuation still parse. A here-document body is the
+// caller's text, so a codex-ask quoted in it is no call.
+func TestTheNewestCodexAskCallNamesTheTarget(t *testing.T) {
+	x := newIC(t, cfg{})
+	x.run()
+	x.commit(reviewedSha)
+	x.commit("bbb2222" + strings.Repeat("0", 33))
+	for i, c := range []struct{ command, answer string }{
+		{"codex-ask /w review --commit de68f7e && codex-ask /w review --commit bbb2222", "FINDINGS P1=1 P2=0 P3=0"},
+		{"codex-ask /w ask <<'Q'\nplan\nQ\ncodex-ask /w review --commit bbb2222", "FINDINGS P1=2 P2=0 P3=0"},
+		{"codex-ask /w review --commit de68f7e^", "FINDINGS P1=3 P2=0 P3=0"},
+		{`codex-ask "/w/my project" ask`, "No review."},
+		{"codex-ask /w review \\\n  --commit de68f7e", "FINDINGS P1=4 P2=0 P3=0"},
+		{"codex-ask /w review --commit de68f7e <<'Q'\nlast time: codex-ask /w review --commit bbb2222\nQ", "FINDINGS P1=5 P2=0 P3=0"},
+	} {
+		n := strings.Repeat("x", i+1)
+		x.subagent("agent-"+n, "codex", answer(n+"a", "2026-10-19T18:30:00Z", "tool_use", "", bash("t", c.command)),
+			answer(n+"b", "2026-10-19T18:3"+string(rune('0'+i))+":00Z", "end_turn", c.answer))
+	}
+	x.subagent("agent-q", "quick-review", answer("qb", "2026-10-19T18:39:00Z", "end_turn",
+		"REVIEWED: commit de68f7e~1, 3 files\nFINDINGS P1=6 P2=0 P3=0"))
+	x.run()
+	s := " session=" + x.sid
+	eq(t, x.q("select kind, ref, coalesce(substr(revision, 1, 7), '') from evidence where kind like 'review%' order by ts"),
+		[][]string{
+			{"review", "codex P1=1 P2=0 P3=0 commit=bbb2222" + s, "bbb2222"},
+			{"review", "codex P1=2 P2=0 P3=0 commit=bbb2222" + s, "bbb2222"},
+			{"review", "codex P1=3 P2=0 P3=0 target=unknown" + s, ""},
+			{"review", "codex P1=4 P2=0 P3=0 commit=de68f7e" + s, "de68f7e"},
+			{"review", "codex P1=5 P2=0 P3=0 commit=de68f7e" + s, "de68f7e"},
+			{"review", "quick-review P1=6 P2=0 P3=0 target=unknown" + s, ""}})
+}
