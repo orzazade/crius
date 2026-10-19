@@ -1,6 +1,6 @@
 # crius:build — RESUME (contract: docs/notes/COST-LEVER3-FRESH.md §2, max 120 lines)
 
-Updated 2026-10-19 18:34 by session 11838a67 (digest stale-RESUME fix shipped; next P6 NEED). Last bus line read: 2026-10-19T18:25 ORDER crius:lead.
+Updated 2026-10-19 18:42 by session 11838a67 (P6 config applied after owner GO 18:40; FINDINGS ingest next). Last bus line read: 2026-10-19T18:40 GO crius:lead.
 Last owner message seen: 2026-10-19 ~17:25 (child roll-up answer, via Crius).
 main = origin/main = 3f93098 (P5) + this RESUME commit. Local main ref is behind: it is checked out in Crius's worktree main-rules. History: docs/notes/RESUME-HISTORY.md.
 
@@ -33,7 +33,7 @@ main = origin/main = 3f93098 (P5) + this RESUME commit. Local main ref is behind
   after the work statusline, red first. Status: done (main c133717, 27c2a73; scorecard def v2).
 - Standing (memory): personal repo, push to main after review; effort medium/high only; no AI attribution.
 
-## GOAL (2026-10-19 18:34)
+## GOAL (2026-10-19 18:42)
 
 Goal: build the Crius record (design §9 steps 1-9) so Crius answers the owner's questions from its own store
 - [x] 1 store layout, leak test, decisions, items, bus grammar · 060610f
@@ -46,45 +46,44 @@ Goal: build the Crius record (design §9 steps 1-9) so Crius answers the owner's
 - [ ] 6 record accept + scorecard (P1-P5, P3c done; P3b, P6, P7 open)
 - [ ] 9 Falcon source
 Done: 70% (7 of 10 required steps incl. 3b, equal weight; 7 and 8 only if needed)
-Next: step 6 P6: NEED to Crius with the agent-file diff, apply only after GO
+Next: step 6 P6b: ingest FINDINGS as review evidence (red first), then prove with a real quick-review run
 Needs owner: nothing
 
 ## NOW
 
-Digest stale-RESUME fix DONE (this commit; Crius NEED 18:00, GO 18:25). projects.toml lead value may be
-`git:<repo>#<rev>:<path>` (read with git cat-file --end-of-options; failure = ERROR, partial). STALE = the lead has a
-DONE or CLEAR-READY on the Crius bus newer than its GOAL stamp (later reading of a repeated DST hour). CLEAR-READY is
-now a Crius-bus type (it was malformed; the bus is re-read on install). This file's heading carries the stamp: update
-it on every write, before the DONE. ~/.crius/projects.toml crius build -> git:~/Projects/scifi/crius#origin/main:...
-codex FINDINGS P1=0 P2=1 P3=1, both fixed red first.
+Digest stale-RESUME fix DONE: main de68f7e, VERIFIED by Crius 18:35. ~/.crius/projects.toml crius build lead =
+git:~/Projects/scifi/crius#origin/main:docs/notes/RESUME.md. Update this file's GOAL stamp on every write, before the DONE.
 
-NEXT P6: NEED to Crius with the exact diff (draft <scratchpad 11838a67>/p6/p6.diff: codex relay counts [P1-3] tags,
-quick-review tags each finding and ends with FINDINGS). Apply only after GO, then ingest FINDINGS as review evidence.
+P6 config DONE (owner GO via Crius 18:40, bus line): ~/.claude/agents/codex.md + quick-review.md patched exactly with
+~/.crius/state/p6-findings.diff (cmp equal); backups *.md.bak-20261019-p6 beside them. Real quick-review of de68f7e
+(this session, 18:4x) printed `FINDINGS P1=0 P2=0 P3=1`, but BEFORE its list, not last: parse the line anywhere.
+
+NEXT P6b (the GO also asks: "prove one real quick-review run ends with the FINDINGS line and the store counts it"):
+- Nothing parses FINDINGS yet. evidence table (internal/store/db.go:46) takes kind 'review' with no DDL change.
+- Source: subagent transcripts (internal/ingest/transcripts.go:244-272 transcriptFile; meta agentType codex or
+  quick-review). Take the last line matching ^FINDINGS P1=(\d+) P2=(\d+) P3=(\d+)$ in the agent's final answer.
+- Reviewed sha: quick-review `REVIEWED: commit <sha>` line; codex: `--commit <sha>` in its codex-ask Bash command.
+  Resolve unique against git_commit (like accept.go bind). --uncommitted / --base / unresolved: revision NULL
+  (counted for M10, never bound) - say so in the row's ref, not silently dropped.
+- Row: evidence(kind review, ref "<agentType> P1=n P2=n P3=n session=<id>", revision, ts, source_key review:...).
+- Red: a fixture subagent file with FINDINGS -> one review row bound to the sha; a list with no FINDINGS -> none,
+  and a reviewer answer without the line is counted somewhere visible (health?) - decide, ask Crius if unsure.
+- Then codex review, ship (<scratchpad 11838a67>/ship.sh, branch fix/digest-stale), real quick-review run,
+  show the store row, DONE.
 
 
 ## Open work (step 6 checklist; each part red first, then build, codex review, one DONE with evidence + commit)
 
 Spec: design §9 row 6, §3c tables (acceptance, defect, correction), §7 (M1, M6, M10, scorecard shape), §7b.
-1. [x] P1 (3c86343, bus DONE 14:31) `record accept ITEM --revision SHA|SHA256 --check N=REF ... --review REF --by crius|owner`: acceptance
-   table, ACCEPTED event, item state. A check/review ref (commit sha or event:<n>) must name the same revision.
-   Red: a check naming another sha -> refused, no row; a criterion with no check -> refused; reviewer = the
-   revision's own session -> refused. Code: internal/store (new accept.go), cli.go record switch, recall/show.go.
-2. [x] P2 (d4d9f61 + 4a102aa) `record defect` / `revoke` / `correct` + guard item + `show ITEM --history`. Red: revoke keeps the row
-   (state revoked, reason, defect) and opens a fix item; 2nd confirmed defect of one class opens a guard item;
-   a correction leaves the target row as it was; history lists open -> accept -> defect -> revoke -> fix in order.
-3. [x] P3 (61fdb75 + 93957fc) scorecard `crius-rec scorecard [--week EPOCH] [--write]` -> state/scorecards/<week>.md (~40 lines,
-   stamped, 0 model tokens). Red: a revoke lowers the original week, not the week found; a correction changes the
-   view; re-writing a changed week appends `revised <date>: …` and keeps the old value.
+1. [x] P1 (3c86343) `record accept` with revision-bound checks/review (spec in design §4 "record accept as built").
+2. [x] P2 (d4d9f61 + 4a102aa) `record defect` / `revoke` / `correct` + guard item + `show ITEM --history`.
+3. [x] P3 (61fdb75 + 93957fc) `crius-rec scorecard [--week EPOCH] [--write]` -> state/scorecards/<week>.md.
 3b. [ ] P3b per-week enterprise $ + project shares in the scorecard (needs a quota.Build for a past epoch).
-3c. [x] P3c (c133717 + 27c2a73) child roll-up (owner 10-19 ~17:25): a defect/revoke on an accepted child task lowers the parent
-   outcome's week. Red: child revoke shows on the outcome week's scorecard.
-4. [x] P4 (e304c4d) parity with review-1016 (tools/agent-cost/review-1016 REPORT §4: $/main call on weekdays, compactions,
-   10-10..10-16 personal): store numbers within 2%. Red: the compare fails on a number moved by 3%.
-5. [x] P5 (3f93098) restore-after-expiry test (design §3c): newest backup -> scratch DB, transcripts > 30 d hidden,
-   regenerate a matured week, compare with its file; weekly launchd; `health` shows the result. Red: a changed
-   scorecard file fails the test.
-6. [ ] P6 FINDINGS line (D3 config change): NEED to Crius with the exact diff of the codex + quick-review agent
-   files BEFORE applying; ingest `FINDINGS P1=n P2=n P3=n` as evidence kind review bound to the reviewed sha.
+3c. [x] P3c (c133717 + 27c2a73) child defect/revoke lowers the parent outcome's week (owner 10-19 ~17:25).
+4. [x] P4 (e304c4d) parity with review-1016 REPORT §4: store numbers within 2%.
+5. [x] P5 (3f93098) restore-after-expiry test, weekly launchd Thu 04:00, `health` shows it.
+6. [~] P6 FINDINGS line: config applied after owner GO 18:40; P6b ingest `FINDINGS P1=n P2=n P3=n` as evidence
+   kind review bound to the reviewed sha is open (plan in NOW).
 7. [ ] P7 first descriptive read on 10-23 next to the review-1016 scripts (after the 10-22 02:00 reset).
 
 ## Waiting on
