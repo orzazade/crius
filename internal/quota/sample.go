@@ -226,9 +226,12 @@ func deref[T any](p *T) any {
 	return *p
 }
 
+// NoPlanLimits is the quota text of an API-billed session.
+const NoPlanLimits = "quota: no plan limits (API-billed account)"
+
 func display(l Line) string {
 	if !l.RL {
-		return "quota: no plan limits (API-billed account)"
+		return NoPlanLimits
 	}
 	out := "quota: "
 	if l.FivePct != nil {

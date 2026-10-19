@@ -355,15 +355,7 @@ func recordWith(home string, f func(*sql.DB) (string, error)) (string, error) {
 
 // readEnt reads the Enterprise account with the ~/.claude-work login (a variable so tests never reach the keychain
 // or the network).
-var readEnt = func(now time.Time) quota.EntUsage {
-	u, err := os.UserHomeDir()
-	if err != nil {
-		return quota.EntUsage{Reason: fmt.Sprintf("home: %v", err)}
-	}
-	return quota.WithDeadline(func() quota.EntUsage {
-		return quota.ReadEntUsage(quota.KeychainLogin(filepath.Join(u, ".claude-work")), quota.UsageGet, now)
-	}, quota.EntBudget)
-}
+var readEnt = quota.ReadWorkEnt
 
 // quotaCmd prints the two quota blocks (or the report as JSON), starting with the status and its reasons; anything
 // but complete exits partial. The Enterprise account not read makes the report partial.
