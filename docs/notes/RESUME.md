@@ -1,8 +1,8 @@
 # crius:build — RESUME (contract: docs/notes/COST-LEVER3-FRESH.md §2, max 120 lines)
 
-Updated 2026-10-19T14:49 by session ff09d323 (CLEAR-READY after P2). Bus read to crius.log line 51 (my P2 DONE).
+Updated 2026-10-19 by session a1f147b5 (step 3b shipped). Bus read to crius.log line 60.
 Last owner message seen: 2026-10-19 ~14:30 (via Crius brief ~/.crius/state/crius/BRIEF-build-2026-10-19.md).
-main = origin/main = 4a102aa (P2) + this RESUME commit. Local main ref is behind: it is checked out in Crius's worktree main-rules. History: docs/notes/RESUME-HISTORY.md.
+main = origin/main = 8f47462 (step 3b) + this RESUME commit. Local main ref is behind: it is checked out in Crius's worktree main-rules. History: docs/notes/RESUME-HISTORY.md.
 
 ## OWNER DECISIONS (append-only, verbatim, dated)
 
@@ -21,7 +21,7 @@ main = origin/main = 4a102aa (P2) + this RESUME commit. Local main ref is behind
   sampling (step 3). Show used vs this month's limit and the reset date in quota output, and let 'quota --room' report
   whether the fallback has room. Add it to the RESUME checklist as step 3b, after step 6 P2. Read-only: reuse the
   session's existing login, no new sign-in; the Enterprise login expires ~2026-10-21, so a missing or expired login
-  must be a loud 'cannot read', not 0%. Red check first." Status: queued after P2.
+  must be a loud 'cannot read', not 0%. Red check first." Status: done (main 8f47462).
 - Standing (memory): personal repo, push to main after review; effort medium/high only; no AI attribution.
 
 ## GOAL
@@ -33,23 +33,23 @@ Goal: build the Crius record (design §9 steps 1-9) so Crius answers the owner's
 - [x] 4 find/show/health/--deep, redaction, recall eval 31/34 · b3a87cb, bus 2026-10-17T02:27
 - [x] 4b fail-closed key=value + gitleaks rules · 86a776a
 - [x] 5 digest + Crius daily start (09:00/18:00 goal report) · 23052fe .. 50e2384
-- [ ] 3b Enterprise monthly limit (owner 10-19 14:44): used vs limit + reset in `quota`, fallback room in
-      `quota --room`; read-only with the existing ~/.claude-work login; missing/expired login = loud "cannot read",
-      never 0%. Red first: an expired login gives "cannot read" and no room verdict. Build after P2, before P3.
+- [x] 3b Enterprise monthly limit (owner 10-19 14:44) · b87bf61, 8f47462
 - [ ] 6 record accept + scorecard
 - [ ] 9 Falcon source
-Done: 67% (6 of 9 required steps, equal weight; 7 and 8 only if needed)
-Next: step 3b (Enterprise monthly limit), then step 6 P3 scorecard
+Done: 70% (7 of 10 required steps incl. 3b, equal weight; 7 and 8 only if needed)
+Next: step 6 P3 scorecard
 Needs owner: nothing
 
 ## NOW
 
-P2 DONE: main 4a102aa pushed + installed clean (vcs.modified=false). d4d9f61 = feature, 4a102aa = codex fixes (7 P2,
-all red first in internal/store/defect_test.go TestReviewOfD4d9f61 + recall TestFindReadsCorrectedItems). Live:
-tables defect/correction + views item_v/defect_v built, `record defect nope#1` refused rc 2, 0 rows.
-Next session: step 3b from a fresh worktree off origin/main. Start by finding where Claude Code keeps the
-~/.claude-work login and how the monthly Enterprise limit can be read with it (read-only, no new sign-in); hand
-that search to Explore. Red first: expired/missing login -> "cannot read", no room verdict, never 0%.
+Step 3b DONE: main 8f47462 pushed + installed clean (vcs.modified=false). b87bf61 = feature, 8f47462 = codex fixes
+(P1 1.5 s budget for aitch's 3 s; P2 HTTP/1.1 only so http2debug cannot log the token; P2 undecodable limit =
+cannot read), all red first. Source: keychain item "Claude Code-credentials-"+sha256(dir)[:8] of ~/.claude-work,
+GET api.anthropic.com/api/oauth/usage; the limit is the one object with limit_dollars/used_dollars/resets_at (key
+is a code name, "copper_kite" on 10-19). Live: $707 of $2000, resets 14 Nov; --room has a fallback field, exit
+code still the Max verdict's. The access token lasts ~8 h and only a ~/.claude-work session renews it: no work
+session for 8 h = "cannot read" (by design, read-only).
+Next session: step 6 P3 scorecard from a fresh worktree off origin/main.
 
 ## Open work (step 6 checklist; each part red first, then build, codex review, one DONE with evidence + commit)
 
@@ -90,10 +90,10 @@ Spec: design §9 row 6, §3c tables (acceptance, defect, correction), §7 (M1, M
 
 ## Running things
 
-- Worktree <scratchpad ff09d323>/wt on feat/step6-p2 (= main). No watchers, no background jobs. Ship script:
-  <scratchpad ff09d323>/ship.sh (branch feat/step6-p2). Mutation script: <scratchpad ff09d323>/mut.py (12/12 red on P2).
-- launchd: space.scifilab.crius.{ingest,watchdog,digest,wait-sweep} run ~/.crius/bin (installed from 4a102aa;
-  previous binaries kept as <scratchpad ff09d323>/crius-*.before-4a102aa).
+- Worktree <scratchpad a1f147b5>/wt on feat/step3b (= main). No watchers, no background jobs. Ship script:
+  <scratchpad a1f147b5>/ship.sh (branch feat/step3b).
+- launchd: space.scifilab.crius.{ingest,watchdog,digest,wait-sweep} run ~/.crius/bin (installed from 8f47462;
+  previous binaries kept as <scratchpad a1f147b5>/crius-*.before-8f47462).
 - Old worktrees from earlier sessions (git worktree list): not mine to remove; listed for Crius.
 
 ## Not in this file
