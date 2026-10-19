@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/orzazade/crius/internal/ingest"
+	"github.com/orzazade/crius/internal/scorecard"
 	"github.com/orzazade/crius/internal/store"
 	"github.com/orzazade/crius/internal/testutil"
 )
@@ -407,6 +409,8 @@ func TestHealthExitCodes(t *testing.T) {
 	}
 	testutil.Write(t, filepath.Join(home, "heartbeat"), time.Now().UTC().Format(time.RFC3339)+"\n")
 	testutil.Write(t, filepath.Join(home, "backup", "record-2026-10-16.db.gz"), "x")
+	testutil.Write(t, filepath.Join(home, "state", "restore-test.json"), `{"Ran": "`+
+		time.Now().UTC().Format(time.RFC3339)+`", "Status": "pass"}`)
 	if rc, out = run("health", "--json"); rc != 0 || !strings.Contains(out, `"status": "complete"`) {
 		t.Fatal(rc, out)
 	}
@@ -712,5 +716,48 @@ func TestDriversCompare(t *testing.T) {
 	if rc, got := run("drivers", "--from", "2026-10-09", "--to", "2026-10-11T00:00:00Z"); rc != 0 ||
 		!strings.Contains(got, "personal all") || !strings.Contains(got, "main $4.00") {
 		t.Fatal(rc, got)
+	}
+}
+
+// Step 6 P5: `scorecard --write` with no --week writes the week that ended last (the weekly job's call), and
+// restore-test exits 1 on a failed test (here: no backup), 0 when it ran and saved its result.
+func TestScorecardWriteDefaultsToTheEndedWeekAndRestoreTest(t *testing.T) {
+	_, home := testutil.Temp(t)
+	if rc, out := run("init"); rc != 0 {
+		t.Fatal(rc, out)
+	}
+	db, err := store.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("insert into quota (source_key, ts, account, epoch, seven_day_pct, sample_kind) values" +
+		" ('q1', '2026-09-15T10:00:00Z', 'max', 1789603200, 71, 'session')"); err != nil {
+		t.Fatal(err)
+	}
+	running, err := scorecard.WeekOf(db, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ended, err := scorecard.WeekOf(db, running.Start.Add(-time.Nanosecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	want := filepath.Join(home, "state", "scorecards", scorecard.Name(ended)+".md")
+	if rc, out := run("scorecard", "--write"); rc != 3 || out != "wrote "+want+"\n" {
+		t.Fatalf("rc %d: %s (want %s)", rc, out, want)
+	}
+
+	if rc, out := run("restore-test"); rc != 1 || !strings.HasPrefix(out, "restore test fail: no backup") {
+		t.Fatal(rc, out)
+	}
+	if _, err := ingest.BackupIfDue(home, time.Date(2026, 10, 2, 10, 0, 0, 0, time.Local)); err != nil {
+		t.Fatal(err)
+	}
+	if rc, out := run("restore-test"); rc != 0 || !strings.HasPrefix(out, "restore test none: ") {
+		t.Fatal(rc, out)
+	}
+	if rc, out := run("health"); !strings.Contains(out, "restore test: none, ran") {
+		t.Fatal(rc, out)
 	}
 }

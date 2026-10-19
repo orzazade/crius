@@ -12,6 +12,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/orzazade/crius/internal/scorecard"
 )
 
 // Expected is what one ingest run should read (from projects.toml and the folders it names): files per coverage
@@ -27,6 +29,9 @@ const silentAfter = 3 * time.Hour
 
 // backupAge is the newest backup's limit: the backup runs daily after 03:00, so 26 h allows for a late run.
 const backupAge = 26 * time.Hour
+
+// restoreAge is the restore test's limit: it runs weekly, so 8 days allows for a late run.
+const restoreAge = 8 * 24 * time.Hour
 
 type SourceHealth struct {
 	Name     string   `json:"name"`
@@ -66,7 +71,7 @@ func short(d time.Duration) string {
 
 // CheckHealth reports per source and per resource (design §4 `health`). Any problem makes it partial.
 func CheckHealth(db *sql.DB, home string, exp Expected, now time.Time) (*Health, error) {
-	h := &Health{RestoreTest: "never run (the weekly restore-after-expiry test comes with step 6)"}
+	h := &Health{}
 	status, reasons, err := Freshness(db, now)
 	if err != nil {
 		return nil, err
@@ -95,6 +100,9 @@ func CheckHealth(db *sql.DB, home string, exp Expected, now time.Time) (*Health,
 	}
 	h.heartbeat(home, now)
 	if err := h.backup(home, now); err != nil {
+		return nil, err
+	}
+	if err := h.restoreTest(home, now); err != nil {
 		return nil, err
 	}
 	if err := h.sources(db, exp, runStart); err != nil {
@@ -161,6 +169,32 @@ func (h *Health) backup(home string, now time.Time) error {
 
 // sources compares what a run should read with the coverage rows. A file is only judged when it is older than the
 // last run's start: newer data belongs to the next run.
+// restoreTest shows the weekly restore-after-expiry test (step 6 P5): a problem when it failed, never ran, or has not
+// run for 8 days; "none" (no matured week written yet) is shown, not a problem.
+func (h *Health) restoreTest(home string, now time.Time) error {
+	r, err := scorecard.ReadRestore(home)
+	if err != nil {
+		return err
+	}
+	if r == nil {
+		h.RestoreTest = "never run"
+		h.Problems = append(h.Problems, "restore test never run (weekly job space.scifilab.crius.weekly)")
+		return nil
+	}
+	ran, err := time.Parse(time.RFC3339, r.Ran)
+	if err != nil {
+		return fmt.Errorf("restore test result: bad time %q", r.Ran)
+	}
+	h.RestoreTest = fmt.Sprintf("%s, ran %s (%s ago): %s", r.Status, r.Ran, short(now.Sub(ran)), r.Text)
+	switch {
+	case r.Status != "pass" && r.Status != "none":
+		h.Problems = append(h.Problems, "restore test "+h.RestoreTest)
+	case now.Sub(ran) > restoreAge:
+		h.Problems = append(h.Problems, fmt.Sprintf("restore test last ran %s ago (weekly)", short(now.Sub(ran))))
+	}
+	return nil
+}
+
 func (h *Health) sources(db *sql.DB, exp Expected, runStart time.Time) error {
 	type cov struct {
 		inode, offset int64

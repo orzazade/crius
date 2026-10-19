@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // Step 5 P5 (Crius 02:29): the goal report runs at 09:00 and 18:00, and does not run at load.
@@ -163,5 +164,153 @@ func TestDigestRunIngestsReportsAndAlerts(t *testing.T) {
 				t.Fatalf("output\n%s", out)
 			}
 		})
+	}
+}
+
+// Step 6 P5: the weekly job runs Thursday 04:00 (after the Max reset at 02:00 and the 03:00 backup), not at load, with
+// the ingest job's environment.
+func TestWeeklyJobRunsThursdayAtFour(t *testing.T) {
+	in, err := os.ReadFile("space.scifilab.crius.weekly.plist.in")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plist := filepath.Join(t.TempDir(), "weekly.plist")
+	text := strings.NewReplacer("@HOME@", "/Users/x", "@REPO@", "/r").Replace(string(in))
+	if err := os.WriteFile(plist, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command("plutil", "-convert", "json", "-o", "-", plist).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var job struct {
+		Label                string
+		ProgramArguments     []string
+		RunAtLoad            bool
+		Calendar             map[string]int `json:"StartCalendarInterval"`
+		EnvironmentVariables map[string]string
+	}
+	if err := json.Unmarshal(out, &job); err != nil {
+		t.Fatal(err)
+	}
+	if job.Label != "space.scifilab.crius.weekly" || job.RunAtLoad ||
+		!reflect.DeepEqual(job.Calendar, map[string]int{"Weekday": 4, "Hour": 4, "Minute": 0}) ||
+		!reflect.DeepEqual(job.ProgramArguments, []string{"/Users/x/.crius/bin/crius-weekly-run"}) ||
+		job.EnvironmentVariables["HOME"] != "/Users/x" {
+		t.Fatalf("%+v", job)
+	}
+}
+
+// longOut is appended to the stub's `scorecard --write` output.
+var longOut string
+
+// weekly runs bin/crius-weekly-run with a stub crius-rec: `scorecard --write` exits with write[0] and prints
+// "wrote <path>", `scorecard --write --week W` exits with write[1] and prints "unchanged <path>", restore-test exits
+// with restore and prints its two lines, record exits with record. weeks are the written weeks (.json files).
+func weekly(t *testing.T, write [2]string, restore, record string, weeks ...string) (int, []string, string) {
+	t.Helper()
+	home := t.TempDir()
+	bin := filepath.Join(home, ".crius", "bin")
+	cards := filepath.Join(home, ".crius", "state", "scorecards")
+	calls := filepath.Join(home, "calls")
+	for _, d := range []string{bin, cards} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, w := range weeks {
+		if err := os.WriteFile(filepath.Join(cards, w+".json"), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stub := `#!/bin/bash
+echo "crius-rec $*" >> "` + calls + `"
+case "$1 $2 $3" in
+"scorecard --write ") echo "wrote $HOME/.crius/state/scorecards/2026-10-22.md` + longOut + `"; exit ` + write[0] + `;;
+"scorecard --write --week") echo "unchanged $HOME/.crius/state/scorecards/$4.md"; exit ` + write[1] + `;;
+"restore-test  ") echo "restore test pass: 1 matured week same as its file (2026-10-08)"; echo "2026-10-08 same"; exit ` + restore + `;;
+"record bus --project") exit ` + record + `;;
+esac
+exit 9
+`
+	if err := os.WriteFile(filepath.Join(bin, "crius-rec"), []byte(stub), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("bash", "../bin/crius-weekly-run")
+	cmd.Env = []string{"HOME=" + home, "PATH=/usr/bin:/bin"}
+	out, err := cmd.CombinedOutput()
+	rc := 0
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		rc = exit.ExitCode()
+	} else if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(calls)
+	return rc, strings.Split(strings.TrimSpace(string(b)), "\n"), string(out)
+}
+
+// Step 6 P5: write the ended week, write every written week again, run the restore test; one DONE names the new
+// scorecard and the result. A step that fails posts an ALERT (and no DONE) and the job exits 1.
+func TestWeeklyRunWritesRestoresAndReports(t *testing.T) {
+	post := "crius-rec record bus --project crius --role weekly --type "
+	done := post + "DONE --to crius:lead --text weekly: wrote ~/.crius/state/scorecards/2026-10-22.md · restore test " +
+		"pass: 1 matured week same as its file (2026-10-08)"
+	for _, c := range []struct {
+		name         string
+		write        [2]string
+		restore, rec string
+		weeks        []string
+		rc           int
+		calls        []string
+	}{
+		{"all run", [2]string{"0", "0"}, "0", "0", []string{"2026-10-08", "2026-10-15"}, 0, []string{
+			"crius-rec scorecard --write", "crius-rec scorecard --write --week 2026-10-08",
+			"crius-rec scorecard --write --week 2026-10-15", "crius-rec restore-test", done}},
+		{"no Max sample is a run", [2]string{"3", "3"}, "0", "0", nil, 0, []string{
+			"crius-rec scorecard --write", "crius-rec restore-test", done}},
+		{"write fails", [2]string{"1", "0"}, "0", "0", nil, 1, []string{"crius-rec scorecard --write",
+			post + "ALERT --text weekly: crius-rec scorecard --write exit 1: wrote " +
+				"~/.crius/state/scorecards/2026-10-22.md; see ~/.crius/logs/weekly.log", "crius-rec restore-test"}},
+		{"rewrite fails", [2]string{"0", "1"}, "0", "0", []string{"2026-10-08"}, 1, []string{
+			"crius-rec scorecard --write", "crius-rec scorecard --write --week 2026-10-08",
+			post + "ALERT --text weekly: crius-rec scorecard --write --week 2026-10-08 exit 1: unchanged " +
+				"~/.crius/state/scorecards/2026-10-08.md; see ~/.crius/logs/weekly.log", "crius-rec restore-test"}},
+		{"restore fails", [2]string{"0", "0"}, "1", "0", nil, 1, []string{"crius-rec scorecard --write",
+			"crius-rec restore-test", post + "ALERT --text weekly: restore test exit 1: restore test pass: 1 matured " +
+				"week same as its file (2026-10-08); see crius-rec health"}},
+		{"done cannot be posted", [2]string{"0", "0"}, "0", "2", nil, 1, []string{"crius-rec scorecard --write",
+			"crius-rec restore-test", done}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			rc, calls, out := weekly(t, c.write, c.restore, c.rec, c.weeks...)
+			if rc != c.rc || !reflect.DeepEqual(calls, c.calls) {
+				t.Fatalf("rc %d, calls\n%s\noutput\n%s", rc, strings.Join(calls, "\n"), out)
+			}
+			if lost := strings.Contains(out, "cannot post "); lost != (c.rec != "0") {
+				t.Fatalf("output\n%s", out)
+			}
+		})
+	}
+}
+
+// Review of P5: a long output still fits the bus (300 characters, cut on a character, not a byte), and a failed
+// step's whole output lands in the job's log, not only the cut ALERT.
+func TestWeeklyRunCutsLongTextsAndLogsWholeOutput(t *testing.T) {
+	longOut = " " + strings.Repeat("·é", 200) + " END"
+	defer func() { longOut = "" }()
+	for _, write := range []string{"0", "1"} {
+		_, calls, out := weekly(t, [2]string{write, "0"}, "0", "0")
+		post := calls[len(calls)-1]
+		if write == "1" {
+			post = calls[1]
+			if !strings.Contains(out, "·é END") {
+				t.Fatalf("whole output not logged:\n%s", out)
+			}
+		}
+		text := post[strings.Index(post, "--text ")+len("--text "):]
+		if n := utf8.RuneCountInString(text); n > 290 || !utf8.ValidString(text) {
+			t.Fatalf("write %s: %d runes, valid %v: %q", write, n, utf8.ValidString(text), text)
+		}
 	}
 }

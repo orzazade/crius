@@ -456,6 +456,7 @@ type written struct {
 	Children []string `json:",omitempty"`
 	Written  string   // when Numbers were last written
 	Event    int64    // the newest event id of that build: events after it explain a revision
+	MD       string   // sha256 of the .md as last written: the restore test fails on a file changed since (P5)
 }
 
 // Write saves an ended week as <dir>/<end date>.md with its numbers in .json. A week already written keeps its text;
@@ -469,7 +470,12 @@ func Write(db *sql.DB, dir string, c *Card, now time.Time) (path, what string, e
 	base := filepath.Join(dir, Name(c.Week))
 	path = base + ".md"
 	save := func() error {
-		b, err := json.MarshalIndent(written{Def, c.Numbers, c.Items, c.Children, now.UTC().Format(stamp), c.Event}, "", " ")
+		md, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		b, err := json.MarshalIndent(written{Def, c.Numbers, c.Items, c.Children, now.UTC().Format(stamp), c.Event,
+			mdHash(md)}, "", " ")
 		if err != nil {
 			return err
 		}
@@ -498,6 +504,12 @@ func Write(db *sql.DB, dir string, c *Card, now time.Time) (path, what string, e
 	}
 	if old.Def != Def {
 		return "", "", fmt.Errorf("%s was written with def %s, not %s: not compared", path, old.Def, Def)
+	}
+	// a revision must not make a hand-edited file the trusted copy (review of P5)
+	if md, err := os.ReadFile(path); err != nil {
+		return "", "", err
+	} else if mdHash(md) != old.MD {
+		return "", "", fmt.Errorf("%s changed since crius-rec wrote it: not revised", path)
 	}
 	diff := changes(old.Numbers, c.Numbers)
 	if diff == "" {

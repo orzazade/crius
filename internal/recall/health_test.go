@@ -21,6 +21,8 @@ func healthy(t *testing.T) (db *sql.DB, home string, exp Expected) {
 	backup := filepath.Join(home, "backup", "record-2026-10-16.db.gz")
 	testutil.Write(t, backup, "x")
 	os.Chtimes(backup, now.Add(-8*time.Hour), now.Add(-8*time.Hour))
+	testutil.Write(t, filepath.Join(home, "state", "restore-test.json"), `{"Ran": "2026-10-15T02:00:00Z",`+
+		` "Backup": "record-2026-10-15.db.gz", "Status": "pass", "Text": "matured weeks same as their files: 2026-09-17"}`)
 	tx := filepath.Join(home, "tx", "-p", "s1.jsonl")
 	testutil.Write(t, tx, "{}\n{}\n")
 	old := now.Add(-time.Hour)
@@ -55,13 +57,43 @@ func TestHealthCompleteWhenAllIsWell(t *testing.T) {
 	h := health(t, db, home, exp)
 	txt := h.Text()
 	for _, want := range []string{"complete · health", "heartbeat 2026-10-16T11:59:00Z (1m old)", "record-2026-10-16.db.gz (8h0m old)",
-		"restore test: never run", "transcript 1/2 read", "bus 1/1 read", "team demo"} {
+		"restore test: pass, ran 2026-10-15T02:00:00Z (34h0m ago): matured weeks same as their files", "transcript 1/2 read", "bus 1/1 read", "team demo"} {
 		if !strings.Contains(txt, want) {
 			t.Fatalf("missing %q in\n%s", want, txt)
 		}
 	}
 	if h.Status != "complete" || strings.Contains(txt, "PROBLEM") {
 		t.Fatal(txt)
+	}
+}
+
+// Step 6 P5: the weekly restore-after-expiry test is a problem when it failed, never ran or has not run for 8 days;
+// "none" (no matured week written yet) is shown, not a problem.
+func TestRestoreTestInHealth(t *testing.T) {
+	for _, c := range []struct{ json, want string }{
+		{"", "PROBLEM restore test never run"},
+		{`{"Ran": "2026-10-15T02:00:00Z", "Status": "fail", "Text": "week 2026-09-17: code 2 -> 1"}`,
+			"PROBLEM restore test fail, ran 2026-10-15T02:00:00Z (34h0m ago): week 2026-09-17: code 2 -> 1"},
+		{`{"Ran": "2026-10-08T02:00:00Z", "Status": "pass", "Text": "same"}`, "PROBLEM restore test last ran 202h0m ago (weekly)"},
+		{`{"Ran": "2026-10-15T02:00:00Z", "Status": "none", "Text": "no matured week written yet"}`, ""},
+	} {
+		db, home, exp := healthy(t)
+		path := filepath.Join(home, "state", "restore-test.json")
+		if c.json == "" {
+			os.Remove(path)
+		} else {
+			testutil.Write(t, path, c.json)
+		}
+		h := health(t, db, home, exp)
+		if c.want == "" {
+			if h.Status != "complete" || !strings.Contains(h.Text(), "restore test: none, ran") {
+				t.Fatal(h.Text())
+			}
+			continue
+		}
+		if h.Status != "partial" || !strings.Contains(h.Text(), c.want) {
+			t.Fatalf("want %q in\n%s", c.want, h.Text())
+		}
 	}
 }
 

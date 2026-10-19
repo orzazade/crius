@@ -152,7 +152,15 @@ artifact titles and headings), daily and weekly rollups, `STATE.md`, digest, sco
 **Backup and restore.** Nightly `sqlite3 .backup` into `~/.crius/backup/` (Time Machine covers it if on). A
 **restore-after-expiry test** runs weekly: restore the newest backup into a scratch DB, remove access to transcripts
 older than 30 days, regenerate a matured week's scorecard, and compare it with that file's latest revision (§7b).
-Any difference fails. **Disk budget:** `~/.crius` ≤ 1 GB; nightly prune of fine events and `request` rows after 90
+Any difference fails. *As built (step 6 P5):* `crius-rec restore-test` gunzips the newest `record-*.db.gz` into an
+empty scratch home (so no transcript is in reach; the scorecard reads only the store), checks integrity, and for every
+written week that has matured regenerates the numbers, outcomes and child tasks and compares them with the week's
+`.json`, and the `.md` with the sha256 saved when it was last written. A difference names the record events since the
+file was written, or says the file is newer than the backup. Result: `pass`, `fail` or `none` (no matured week yet)
+in `state/restore-test.json`; `health` shows it, and a fail, a result older than 8 days or none at all is a problem.
+launchd `space.scifilab.crius.weekly` (Thursday 04:00, `bin/crius-weekly-run`) writes the week that ended, writes
+every written week again (revised lines), runs the test, and posts one DONE (or an ALERT per failed step).
+**Disk budget:** `~/.crius` ≤ 1 GB; nightly prune of fine events and `request` rows after 90
 days, after rollup.
 
 **Links.** Item `<project>#<n>` (children point to their owner outcome); decision `<project>-D<n>`; team rulings

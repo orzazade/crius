@@ -1,6 +1,6 @@
 // Package cli is crius-rec, the door to the record store. Commands: init, leak-test, record bus|decision|item (step 1),
 // quota (step 3), find, show and health (step 4), digest (step 5), record accept|defect|revoke|correct, scorecard and
-// drivers (step 6).
+// drivers, restore-test (step 6).
 package cli
 
 import (
@@ -58,7 +58,10 @@ const usage = `usage: crius-rec init
        crius-rec digest [--write [--print-path]]   (the goal report; --write saves it under state/digest/,
                  --print-path prints the saved path instead of the report)
        crius-rec scorecard [--week YYYY-MM-DD] [--write]   (the quota week ending that UTC day, default the running one;
-                 --write saves an ended week under state/scorecards/, a changed one gets a revised line)
+                 --write saves an ended week under state/scorecards/, default the one that ended last; a changed
+                 one gets a revised line)
+       crius-rec restore-test   (the weekly restore-after-expiry test: the newest backup regenerates every matured
+                 written week the same as its file; saved for health; exit 1 when it fails)
        crius-rec drivers --from YYYY-MM-DD|RFC3339 --to YYYY-MM-DD|RFC3339 [--json | --compare REF.jsonl]
                  (M11 per persona, all days and UTC weekdays, in [from, to); --compare checks each number against
                  the reference rows within 2%: exit 1 on a miss)
@@ -153,6 +156,11 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			return exitUsage
 		}
 		return scorecardCmd(home, time.Now(), *day, *write, stdout, stderr)
+	case "restore-test":
+		if len(args) > 0 {
+			return exitUsage
+		}
+		return restoreTestCmd(home, time.Now(), stdout, stderr)
 	case "drivers":
 		fs := flag.NewFlagSet("drivers", flag.ContinueOnError)
 		fs.SetOutput(stderr)
@@ -750,6 +758,9 @@ func scorecardCmd(home string, now time.Time, day string, write bool, stdout, st
 		w, err = scorecard.WeekEnding(db, day)
 	} else {
 		w, err = scorecard.WeekOf(db, now)
+		if err == nil && write {
+			w, err = scorecard.WeekOf(db, w.Start.Add(-time.Nanosecond)) // the running week cannot be written
+		}
 	}
 	switch {
 	case errors.Is(err, scorecard.ErrNoWeeks):
@@ -783,6 +794,27 @@ func scorecardCmd(home string, now time.Time, day string, write bool, stdout, st
 	}
 	if c.Numbers.MaxPct < 0 {
 		return exitPartial
+	}
+	return 0
+}
+
+// restoreTestCmd runs the restore-after-expiry test (step 6 P5) and prints its result.
+func restoreTestCmd(home string, now time.Time, stdout, stderr io.Writer) int {
+	if fi, err := os.Stat(filepath.Join(home, "state")); err != nil || !fi.IsDir() {
+		fmt.Fprintf(stderr, "unavailable: %s is missing; run crius-rec init\n", home)
+		return exitUnavailable
+	}
+	r, err := scorecard.RestoreTest(home, now)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return exitError
+	}
+	fmt.Fprintf(stdout, "restore test %s: %s\n", r.Status, r.Text)
+	for _, w := range r.Weeks {
+		fmt.Fprintf(stdout, "%s %s\n", w.Week, w.Result)
+	}
+	if r.Status == "fail" {
+		return exitError
 	}
 	return 0
 }
