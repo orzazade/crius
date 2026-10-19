@@ -347,7 +347,9 @@ var readMonth = func(now time.Time) quota.Monthly {
 	if err != nil {
 		return quota.Monthly{Reason: fmt.Sprintf("home: %v", err)}
 	}
-	return quota.ReadMonthly(quota.KeychainLogin(filepath.Join(u, ".claude-work")), quota.UsageGet, now)
+	return quota.WithDeadline(func() quota.Monthly {
+		return quota.ReadMonthly(quota.KeychainLogin(filepath.Join(u, ".claude-work")), quota.UsageGet, now)
+	}, quota.MonthBudget)
 }
 
 // quotaCmd prints the two quota blocks (or the report as JSON), starting with the status and its reasons; anything

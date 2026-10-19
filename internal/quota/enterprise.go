@@ -2,6 +2,7 @@ package quota
 
 import (
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -71,7 +72,8 @@ func ReadMonthly(login func() ([]byte, error), get func(token string) (int, []by
 		return no("usage reply is not a JSON object")
 	}
 	// The limit's key is a code name that may change: it is the one object with a dollar limit, the dollars used and
-	// a reset. None, or more than one, is a reply this code does not know: cannot read, never a guess.
+	// a reset. None, or more than one, is a reply this code does not know: cannot read, never a guess. An object is a
+	// candidate by its field names, before decoding, so one that does not decode is not skipped (codex review of 3b).
 	type limit struct {
 		Limit  *float64 `json:"limit_dollars"`
 		Used   *float64 `json:"used_dollars"`
@@ -81,10 +83,21 @@ func ReadMonthly(login func() ([]byte, error), get func(token string) (int, []by
 	var found []limit
 	var keys []string
 	for k, raw := range top {
-		var l limit
-		if json.Unmarshal(raw, &l) == nil && l.Limit != nil && l.Used != nil && l.Resets != nil {
-			found, keys = append(found, l), append(keys, k)
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(raw, &fields) != nil {
+			continue // not an object: null, a number, a list
 		}
+		_, hasLimit := fields["limit_dollars"]
+		_, hasUsed := fields["used_dollars"]
+		_, hasResets := fields["resets_at"]
+		if !hasLimit || !hasUsed || !hasResets {
+			continue
+		}
+		var l limit
+		if err := json.Unmarshal(raw, &l); err != nil || l.Limit == nil || l.Used == nil || l.Resets == nil {
+			return no("monthly limit %s in the usage reply does not decode", k)
+		}
+		found, keys = append(found, l), append(keys, k)
 	}
 	switch len(found) {
 	case 0:
@@ -160,6 +173,33 @@ func KeychainLogin(dir string) func() ([]byte, error) {
 	}
 }
 
+// MonthBudget bounds the whole read (keychain and endpoint): aitch gives `quota --room` 3 s in all, and the Max
+// verdict must not be lost to a slow fallback read (codex review of 3b).
+const MonthBudget = 1500 * time.Millisecond
+
+// WithDeadline is read's answer, or "cannot read" when it takes over d.
+func WithDeadline(read func() Monthly, d time.Duration) Monthly {
+	ch := make(chan Monthly, 1)
+	go func() { ch <- read() }()
+	select {
+	case m := <-ch:
+		return m
+	case <-time.After(d):
+		return Monthly{Reason: fmt.Sprintf("the read took over %v", d)}
+	}
+}
+
+// usageClient speaks HTTP/1.1 only: Go's HTTP/2 debug log (GODEBUG=http2debug) prints every request header, the
+// token among them (codex review of 3b). A fresh TLS config: the default transport's offers h2 by ALPN, which the
+// server then speaks even with Protocols set to HTTP/1 only (seen live 10-19).
+var usageClient = func() *http.Client {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.TLSClientConfig = &tls.Config{}
+	tr.Protocols = new(http.Protocols)
+	tr.Protocols.SetHTTP1(true)
+	return &http.Client{Timeout: MonthBudget, Transport: tr}
+}()
+
 // UsageGet asks the usage endpoint with the token.
 func UsageGet(token string) (int, []byte, error) {
 	req, err := http.NewRequest(http.MethodGet, UsageURL, nil)
@@ -168,7 +208,7 @@ func UsageGet(token string) (int, []byte, error) {
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("anthropic-beta", "oauth-2025-04-20")
-	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	resp, err := usageClient.Do(req)
 	if err != nil {
 		return 0, nil, err
 	}

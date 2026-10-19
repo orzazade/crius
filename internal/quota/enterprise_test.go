@@ -2,6 +2,8 @@ package quota
 
 import (
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -118,5 +120,50 @@ func TestMonthlyFullAtLimitOrLocked(t *testing.T) {
 func TestKeychainService(t *testing.T) {
 	if got := keychainService("/Users/orkhanrzazade/.claude-work"); got != "Claude Code-credentials-5313dd96" {
 		t.Fatal(got)
+	}
+}
+
+// Codex 3b P1: aitch gives `quota --room` 3 s in all; a slow read must not cost the Max verdict.
+func TestMonthlyReadHasADeadline(t *testing.T) {
+	slow := func() Monthly { time.Sleep(300 * time.Millisecond); return Monthly{Read: true, LimitUSD: 1} }
+	start := time.Now()
+	m := WithDeadline(slow, 30*time.Millisecond)
+	if el := time.Since(start); el > 200*time.Millisecond {
+		t.Fatal("waited", el)
+	}
+	cannotRead(t, m, "took over")
+	if m := WithDeadline(func() Monthly { return Monthly{Read: true, LimitUSD: 1} }, time.Second); !m.Read {
+		t.Fatal(m)
+	}
+}
+
+// Codex 3b P2: an object with the limit's fields that does not decode is not skipped: the reply is not understood.
+func TestMonthlyMalformedCandidateCannotRead(t *testing.T) {
+	ok := login(monthNow.Add(time.Hour))
+	two := `{"a":{"limit_dollars":2000,"used_dollars":5,"resets_at":"2026-11-14T18:28:47Z","locked_reason":null},` +
+		`"b":{"limit_dollars":2000,"used_dollars":5,"resets_at":"2026-11-14T18:28:47Z","locked_reason":{"x":1}}}`
+	cannotRead(t, ReadMonthly(ok, reply(200, two), monthNow), "b")
+	one := `{"a":{"limit_dollars":"2000","used_dollars":5,"resets_at":"2026-11-14T18:28:47Z"}}`
+	cannotRead(t, ReadMonthly(ok, reply(200, one), monthNow), "a")
+}
+
+// Codex 3b P2: Go's HTTP/2 debug log (GODEBUG=http2debug) prints every request header, the token among them; the
+// usage client speaks HTTP/1.1 only, whose transport logs no headers.
+func TestUsageClientSpeaksHTTP1(t *testing.T) {
+	var proto int
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { proto = r.ProtoMajor }))
+	srv.EnableHTTP2 = true
+	srv.StartTLS()
+	defer srv.Close()
+	tr := usageClient.Transport.(*http.Transport).Clone()
+	// The client's own TLS config (its ALPN offer decides the protocol), trusting the test server only.
+	tr.TLSClientConfig.RootCAs = srv.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs
+	resp, err := (&http.Client{Transport: tr}).Get(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if proto != 1 {
+		t.Fatal("HTTP", proto)
 	}
 }
