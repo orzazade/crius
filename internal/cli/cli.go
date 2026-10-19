@@ -1,6 +1,6 @@
 // Package cli is crius-rec, the door to the record store. Commands: init, leak-test, record bus|decision|item (step 1),
-// quota (step 3), find, show and health (step 4), digest (step 5), record accept|defect|revoke|correct and scorecard
-// (step 6).
+// quota (step 3), find, show and health (step 4), digest (step 5), record accept|defect|revoke|correct, scorecard and
+// drivers (step 6).
 package cli
 
 import (
@@ -19,6 +19,7 @@ import (
 
 	"github.com/orzazade/crius"
 	"github.com/orzazade/crius/internal/digest"
+	"github.com/orzazade/crius/internal/drivers"
 	"github.com/orzazade/crius/internal/ingest"
 	"github.com/orzazade/crius/internal/quota"
 	"github.com/orzazade/crius/internal/recall"
@@ -58,6 +59,9 @@ const usage = `usage: crius-rec init
                  --print-path prints the saved path instead of the report)
        crius-rec scorecard [--week YYYY-MM-DD] [--write]   (the quota week ending that UTC day, default the running one;
                  --write saves an ended week under state/scorecards/, a changed one gets a revised line)
+       crius-rec drivers --from YYYY-MM-DD|RFC3339 --to YYYY-MM-DD|RFC3339 [--json | --compare REF.jsonl]
+                 (M11 per persona, all days and UTC weekdays, in [from, to); --compare checks each number against
+                 the reference rows within 2%: exit 1 on a miss)
 `
 
 type multi []string
@@ -149,6 +153,16 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			return exitUsage
 		}
 		return scorecardCmd(home, time.Now(), *day, *write, stdout, stderr)
+	case "drivers":
+		fs := flag.NewFlagSet("drivers", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		from, to := fs.String("from", "", ""), fs.String("to", "", "")
+		asJSON, ref := fs.Bool("json", false, ""), fs.String("compare", "", "")
+		if fs.Parse(args) != nil || fs.NArg() > 0 || *from == "" || *to == "" || *asJSON && *ref != "" {
+			fmt.Fprint(stderr, usage)
+			return exitUsage
+		}
+		return driversCmd(home, *from, *to, *asJSON, *ref, stdout, stderr)
 	}
 	fmt.Fprint(stderr, usage)
 	return exitUsage
@@ -769,6 +783,76 @@ func scorecardCmd(home string, now time.Time, day string, write bool, stdout, st
 	}
 	if c.Numbers.MaxPct < 0 {
 		return exitPartial
+	}
+	return 0
+}
+
+// driversCmd prints M11 for a window, or checks it against reference rows (P4: the review-1016 numbers).
+func driversCmd(home, fromArg, toArg string, asJSON bool, refPath string, stdout, stderr io.Writer) int {
+	var bounds [2]time.Time
+	for i, a := range []string{fromArg, toArg} {
+		t, err := time.Parse(time.RFC3339, a)
+		if err != nil {
+			if t, err = time.Parse("2006-01-02", a); err != nil {
+				fmt.Fprintf(stderr, "refused: %q is neither YYYY-MM-DD nor RFC3339\n", a)
+				return exitUsage
+			}
+		}
+		bounds[i] = t
+	}
+	var ref []drivers.Row
+	if refPath != "" {
+		b, err := os.ReadFile(refPath)
+		if err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return exitError
+		}
+		for n, l := range strings.Split(string(b), "\n") {
+			if strings.TrimSpace(l) == "" {
+				continue
+			}
+			var r drivers.Row
+			if err := json.Unmarshal([]byte(l), &r); err != nil {
+				fmt.Fprintf(stderr, "refused: %s line %d: %v\n", refPath, n+1, err)
+				return exitUsage
+			}
+			ref = append(ref, r)
+		}
+		if len(ref) == 0 {
+			fmt.Fprintf(stderr, "refused: %s has no reference rows\n", refPath)
+			return exitUsage
+		}
+	}
+	db, rc := openStore(home, stderr)
+	if db == nil {
+		return rc
+	}
+	defer db.Close()
+	rows, err := drivers.Build(db, bounds[0], bounds[1])
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return exitError
+	}
+	switch {
+	case ref != nil:
+		lines, ok := drivers.Compare(ref, rows, 0.02)
+		fmt.Fprintln(stdout, strings.Join(lines, "\n"))
+		if !ok {
+			fmt.Fprintln(stdout, "FAIL: the store is more than 2% off the reference")
+			return exitError
+		}
+		fmt.Fprintln(stdout, "PASS: every number within 2% of the reference")
+	case asJSON:
+		for _, r := range rows {
+			b, _ := json.Marshal(r)
+			fmt.Fprintln(stdout, string(b))
+		}
+	default:
+		for _, r := range rows {
+			fmt.Fprintf(stdout, "%s %s: main calls %d · main $%.2f · $/main call %.4f · compactions %d (%.2f per 100 calls)"+
+				" · main $ above 267K %.1f%% · mean context %.0fK\n", r.Persona, r.Days, r.MainCalls, r.MainUSD,
+				r.USDPerMainCall, r.Compactions, r.CompactionsPer100, 100*r.ShareAbove267K, r.MeanCtx/1000)
+		}
 	}
 	return 0
 }

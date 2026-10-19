@@ -665,3 +665,52 @@ func TestRecordDefectRevokeCorrectAndHistory(t *testing.T) {
 		t.Fatal(rc, out)
 	}
 }
+
+// drivers --compare is the P4 parity gate: the store's M11 rows against a reference file, 2% bar, exit 1 on a miss.
+func TestDriversCompare(t *testing.T) {
+	_, home := testutil.Temp(t)
+	if rc, out := run("init"); rc != 0 {
+		t.Fatal(rc, out)
+	}
+	db, err := store.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		"insert into session (id, persona) values ('p1', 'personal')",
+		"insert into request (request_id, session, ts_first, query_source, tok_cache_read, cost_list_usd) values" +
+			" ('r1', 'p1', '2026-10-09T10:00:00Z', 'main', 100000, 1), ('r2', 'p1', '2026-10-10T10:00:00Z', 'main', 300000, 3)",
+		"insert into event (ts, kind, session, source_key) values ('2026-10-09T10:30:00Z', 'compaction', 'p1', 'c1')",
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Close()
+	rc, out := run("drivers", "--from", "2026-10-09", "--to", "2026-10-11T00:00:00Z", "--json")
+	if rc != 0 {
+		t.Fatal(rc, out)
+	}
+	ref := filepath.Join(home, "ref.jsonl")
+	testutil.Write(t, ref, out)
+	if rc, out := run("drivers", "--from", "2026-10-09", "--to", "2026-10-11T00:00:00Z", "--compare", ref); rc != 0 ||
+		!strings.Contains(out, "PASS") {
+		t.Fatal(rc, out)
+	}
+	moved := strings.Replace(out, `"main_usd":4,`, `"main_usd":4.12,`, 1) // 3% off
+	if moved == out {
+		t.Fatalf("no main_usd 4 in %s", out)
+	}
+	testutil.Write(t, ref, moved)
+	if rc, got := run("drivers", "--from", "2026-10-09", "--to", "2026-10-11T00:00:00Z", "--compare", ref); rc != 1 ||
+		!strings.Contains(got, "FAIL personal all main_usd") {
+		t.Fatal(rc, got)
+	}
+	if rc, got := run("drivers", "--from", "2026-10-09"); rc != 2 {
+		t.Fatal("no --to: ", rc, got)
+	}
+	if rc, got := run("drivers", "--from", "2026-10-09", "--to", "2026-10-11T00:00:00Z"); rc != 0 ||
+		!strings.Contains(got, "personal all") || !strings.Contains(got, "main $4.00") {
+		t.Fatal(rc, got)
+	}
+}
