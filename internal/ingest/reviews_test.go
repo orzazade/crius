@@ -170,3 +170,17 @@ func TestAShaInPunctuationIsBoundAndAShiftIsNoHereDocument(t *testing.T) {
 		[][]string{{"commit=de68f7e", "de68f7e"}})
 	eq(t, x.one("select count(*) from evidence where kind = 'review'"), "4")
 }
+
+// Quick-review of 063b163: a codex-ask call that cannot be parsed (an escaped space in the folder) must not leave an
+// earlier call's target in place; the review has no target.
+func TestAnUnparsedCodexAskCallClearsTheTarget(t *testing.T) {
+	x := newIC(t, cfg{})
+	x.run()
+	x.commit(reviewedSha)
+	x.subagent("agent-c", "codex", answer("ca", "2026-10-19T18:30:00Z", "tool_use", "", bash("t1", "codex-ask /w review --commit de68f7e")),
+		answer("cb", "2026-10-19T18:31:00Z", "tool_use", "", bash("t2", `codex-ask /w/my\ project review --commit bbb2222`)),
+		answer("cc", "2026-10-19T18:32:00Z", "end_turn", "FINDINGS P1=0 P2=0 P3=0"))
+	x.run()
+	eq(t, x.q("select ref, revision from evidence where kind = 'review'"), [][]string{
+		{"codex P1=0 P2=0 P3=0 target=unknown session=" + x.sid, "<nil>"}})
+}

@@ -19,6 +19,7 @@ var (
 	reviewedRe  = regexp.MustCompile(`(?m)^REVIEWED:\s*(?:commit\s+([^\s,]+)|(uncommitted)\b|\S+\s+vs\s+([^\s,]+))`)
 	codexAskRe  = regexp.MustCompile(`\bcodex-ask\s+(?:"[^"]*"|'[^']*'|\S+)\s+(review|ask)\b([^;&|\n]*)`)
 	codexTargRe = regexp.MustCompile(`--commit\s+([^\s;&|()<>]+)|--(uncommitted)\b|--base\s+(\S+)`)
+	codexWordRe = regexp.MustCompile(`\bcodex-ask\b`)
 	shaRe       = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
 	boundShaRe  = regexp.MustCompile(` commit=([0-9a-f]{7,40}) `)
 )
@@ -50,9 +51,14 @@ func target(m []string, r *runner) string {
 
 // codexCall reads the codex-ask calls in one Bash command (calls is 0 when it has none). Calls that disagree (two
 // calls, or one quoted in a here-document) give no target; the command is a plan critique only when every call is
-// an ask. A line continuation joins its lines.
+// an ask. A codex-ask the pattern cannot read (an escaped space in the folder) is a call with no target, so an
+// earlier call's target never stands in for it. A line continuation joins its lines.
 func codexCall(command string) (calls int, ask bool, where []string) {
-	all := codexAskRe.FindAllStringSubmatch(strings.ReplaceAll(command, "\\\n", " "), -1)
+	command = strings.ReplaceAll(command, "\\\n", " ")
+	all := codexAskRe.FindAllStringSubmatch(command, -1)
+	if n := len(codexWordRe.FindAllString(command, -1)); n > len(all) {
+		return n, false, nil
+	}
 	ask = true
 	for i, c := range all {
 		ask = ask && c[1] == "ask"
