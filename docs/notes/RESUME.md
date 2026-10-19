@@ -1,6 +1,6 @@
 # crius:build — RESUME (contract: docs/notes/COST-LEVER3-FRESH.md §2, max 120 lines)
 
-Written 2026-10-19 14:45 by session f33ce11c. Bus read to ~/.crius/bus/crius.log line 34 (14:16 ORDER).
+Updated 2026-10-19T14:24 by session f33ce11c. Bus read to ~/.crius/bus/crius.log line 38 (my 14:19 INFO).
 Last owner message seen: 2026-10-19 ~14:30 (via Crius brief ~/.crius/state/crius/BRIEF-build-2026-10-19.md).
 Branch feat/step6 (worktree <scratchpad>/wt) off main 50e2384. History: docs/notes/RESUME-HISTORY.md.
 
@@ -35,12 +35,14 @@ Needs owner: nothing
 
 ## NOW
 
-14:55 plan written; P1 next. Store today: 0 items, no acceptance/defect/correction tables, evidence = 4416 commits.
+P1 built: 43067a2 on feat/step6 (tests red on a stub first; 6 mutants red; full suite green). Codex review of
+43067a2 running; then fix, DONE on the bus, merge to main + push, clean install (see Do not redo).
+Store today: 0 items, evidence = 4416 commits (kind commit only); VERIFIED bus lines name shas in text, no session.
 
 ## Open work (step 6 checklist; each part red first, then build, codex review, one DONE with evidence + commit)
 
 Spec: design §9 row 6, §3c tables (acceptance, defect, correction), §7 (M1, M6, M10, scorecard shape), §7b.
-1. [ ] P1 `record accept ITEM --revision SHA|SHA256 --check N=REF ... --review REF --by crius|owner`: acceptance
+1. [~] P1 (43067a2, review pending) `record accept ITEM --revision SHA|SHA256 --check N=REF ... --review REF --by crius|owner`: acceptance
    table, ACCEPTED event, item state. A check/review ref (commit sha or event:<n>) must name the same revision.
    Red: a check naming another sha -> refused, no row; a criterion with no check -> refused; reviewer = the
    revision's own session -> refused. Code: internal/store (new accept.go), cli.go record switch, recall/show.go.
