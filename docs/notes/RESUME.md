@@ -1,8 +1,8 @@
 # crius:build — RESUME (contract: docs/notes/COST-LEVER3-FRESH.md §2, max 120 lines)
 
-Updated 2026-10-19T14:24 by session f33ce11c. Bus read to ~/.crius/bus/crius.log line 38 (my 14:19 INFO).
+Updated 2026-10-19T14:33 by session f33ce11c (CLEAR-READY after P1). Bus read to crius.log line 39 (my 14:31 DONE).
 Last owner message seen: 2026-10-19 ~14:30 (via Crius brief ~/.crius/state/crius/BRIEF-build-2026-10-19.md).
-Branch feat/step6 (worktree <scratchpad>/wt) off main 50e2384. History: docs/notes/RESUME-HISTORY.md.
+main = origin/main = 3c86343 (P1). Local main ref is behind: it is checked out in Crius's worktree main-rules. History: docs/notes/RESUME-HISTORY.md.
 
 ## OWNER DECISIONS (append-only, verbatim, dated)
 
@@ -35,14 +35,14 @@ Needs owner: nothing
 
 ## NOW
 
-P1 built: 43067a2 on feat/step6 (tests red on a stub first; 6 mutants red; full suite green). Codex review of
-43067a2 running; then fix, DONE on the bus, merge to main + push, clean install (see Do not redo).
+P1 DONE 14:31: main 3c86343 pushed + installed clean (vcs.modified=false), live refusal rc 2. Codex 3 P1 + 3 P2 fixed.
+Next session: start P2 from a fresh worktree off origin/main (`git worktree add -b feat/step6-p2 <scratch>/wt origin/main`).
 Store today: 0 items, evidence = 4416 commits (kind commit only); VERIFIED bus lines name shas in text, no session.
 
 ## Open work (step 6 checklist; each part red first, then build, codex review, one DONE with evidence + commit)
 
 Spec: design §9 row 6, §3c tables (acceptance, defect, correction), §7 (M1, M6, M10, scorecard shape), §7b.
-1. [~] P1 (43067a2, review pending) `record accept ITEM --revision SHA|SHA256 --check N=REF ... --review REF --by crius|owner`: acceptance
+1. [x] P1 (3c86343, bus DONE 14:31) `record accept ITEM --revision SHA|SHA256 --check N=REF ... --review REF --by crius|owner`: acceptance
    table, ACCEPTED event, item state. A check/review ref (commit sha or event:<n>) must name the same revision.
    Red: a check naming another sha -> refused, no row; a criterion with no check -> refused; reviewer = the
    revision's own session -> refused. Code: internal/store (new accept.go), cli.go record switch, recall/show.go.
@@ -72,12 +72,15 @@ Spec: design §9 row 6, §3c tables (acceptance, defect, correction), §7 (M1, M
 - Install: clean clone of the main commit, then bin/crius-install-launchd (or install-bins.sh); check
   `go version -m ~/.crius/bin/crius-ingest` shows vcs.modified=false.
 - Bus lines under ~240 chars (300 hard limit); format `$(date +%FT%H:%M) TYPE crius:build -> crius:lead — text`.
+- P1 binding rules (codex 43067a2): every sha an event names must resolve uniquely to the revision; see design §4
+  "record accept as built". Ship script pattern: <scratch f33ce11c>/ship.sh (push, clean clone tests, install).
 - Mutation testing: never wrap mut4.py-style scripts in `timeout` (SIGTERM leaves the mutant in the repo).
 
 ## Running things
 
-- Worktree: <scratchpad f33ce11c>/wt on feat/step6. No watchers, no background jobs.
-- launchd: space.scifilab.crius.{ingest,watchdog,digest} run ~/.crius/bin (installed from main 50e2384).
+- Worktree <scratchpad f33ce11c>/wt on feat/step6 (= main 3c86343 + this RESUME). No watchers, no background jobs.
+- launchd: space.scifilab.crius.{ingest,watchdog,digest,wait-sweep} run ~/.crius/bin (installed from 3c86343;
+  previous binaries kept as <scratch f33ce11c>/crius-*.before-3c86343).
 - Old worktrees from earlier sessions (git worktree list): not mine to remove; listed for Crius.
 
 ## Not in this file
