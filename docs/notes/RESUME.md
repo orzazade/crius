@@ -1,8 +1,8 @@
 # crius:build — RESUME (contract: docs/notes/COST-LEVER3-FRESH.md §2, max 120 lines)
 
-Updated 2026-10-19T14:33 by session f33ce11c (CLEAR-READY after P1). Bus read to crius.log line 39 (my 14:31 DONE).
+Updated 2026-10-19T14:49 by session ff09d323 (CLEAR-READY after P2). Bus read to crius.log line 51 (my P2 DONE).
 Last owner message seen: 2026-10-19 ~14:30 (via Crius brief ~/.crius/state/crius/BRIEF-build-2026-10-19.md).
-main = origin/main = 3c86343 (P1). Local main ref is behind: it is checked out in Crius's worktree main-rules. History: docs/notes/RESUME-HISTORY.md.
+main = origin/main = 4a102aa (P2) + this RESUME commit. Local main ref is behind: it is checked out in Crius's worktree main-rules. History: docs/notes/RESUME-HISTORY.md.
 
 ## OWNER DECISIONS (append-only, verbatim, dated)
 
@@ -39,14 +39,17 @@ Goal: build the Crius record (design §9 steps 1-9) so Crius answers the owner's
 - [ ] 6 record accept + scorecard
 - [ ] 9 Falcon source
 Done: 67% (6 of 9 required steps, equal weight; 7 and 8 only if needed)
-Next: step 6 P2 ship (d4d9f61 in codex review), then 3b, then P3
+Next: step 3b (Enterprise monthly limit), then step 6 P3 scorecard
 Needs owner: nothing
 
 ## NOW
 
-P1 DONE 14:31: main 3c86343 pushed + installed clean (vcs.modified=false), live refusal rc 2. Codex 3 P1 + 3 P2 fixed.
-Next session: start P2 from a fresh worktree off origin/main (`git worktree add -b feat/step6-p2 <scratch>/wt origin/main`).
-Store today: 0 items, evidence = 4416 commits (kind commit only); VERIFIED bus lines name shas in text, no session.
+P2 DONE: main 4a102aa pushed + installed clean (vcs.modified=false). d4d9f61 = feature, 4a102aa = codex fixes (7 P2,
+all red first in internal/store/defect_test.go TestReviewOfD4d9f61 + recall TestFindReadsCorrectedItems). Live:
+tables defect/correction + views item_v/defect_v built, `record defect nope#1` refused rc 2, 0 rows.
+Next session: step 3b from a fresh worktree off origin/main. Start by finding where Claude Code keeps the
+~/.claude-work login and how the monthly Enterprise limit can be read with it (read-only, no new sign-in); hand
+that search to Explore. Red first: expired/missing login -> "cannot read", no room verdict, never 0%.
 
 ## Open work (step 6 checklist; each part red first, then build, codex review, one DONE with evidence + commit)
 
@@ -55,7 +58,7 @@ Spec: design §9 row 6, §3c tables (acceptance, defect, correction), §7 (M1, M
    table, ACCEPTED event, item state. A check/review ref (commit sha or event:<n>) must name the same revision.
    Red: a check naming another sha -> refused, no row; a criterion with no check -> refused; reviewer = the
    revision's own session -> refused. Code: internal/store (new accept.go), cli.go record switch, recall/show.go.
-2. [ ] P2 `record defect` / `revoke` / `correct` + guard item + `show ITEM --history`. Red: revoke keeps the row
+2. [x] P2 (d4d9f61 + 4a102aa) `record defect` / `revoke` / `correct` + guard item + `show ITEM --history`. Red: revoke keeps the row
    (state revoked, reason, defect) and opens a fix item; 2nd confirmed defect of one class opens a guard item;
    a correction leaves the target row as it was; history lists open -> accept -> defect -> revoke -> fix in order.
 3. [ ] P3 scorecard `crius-rec scorecard [--week EPOCH] [--write]` -> state/scorecards/<week>.md (~40 lines,
@@ -87,9 +90,10 @@ Spec: design §9 row 6, §3c tables (acceptance, defect, correction), §7 (M1, M
 
 ## Running things
 
-- Worktree <scratchpad f33ce11c>/wt on feat/step6 (= main 3c86343 + this RESUME). No watchers, no background jobs.
-- launchd: space.scifilab.crius.{ingest,watchdog,digest,wait-sweep} run ~/.crius/bin (installed from 3c86343;
-  previous binaries kept as <scratch f33ce11c>/crius-*.before-3c86343).
+- Worktree <scratchpad ff09d323>/wt on feat/step6-p2 (= main). No watchers, no background jobs. Ship script:
+  <scratchpad ff09d323>/ship.sh (branch feat/step6-p2). Mutation script: <scratchpad ff09d323>/mut.py (12/12 red on P2).
+- launchd: space.scifilab.crius.{ingest,watchdog,digest,wait-sweep} run ~/.crius/bin (installed from 4a102aa;
+  previous binaries kept as <scratchpad ff09d323>/crius-*.before-4a102aa).
 - Old worktrees from earlier sessions (git worktree list): not mine to remove; listed for Crius.
 
 ## Not in this file
