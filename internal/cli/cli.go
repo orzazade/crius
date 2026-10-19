@@ -1,5 +1,5 @@
 // Package cli is crius-rec, the door to the record store. Commands: init, leak-test, record bus|decision|item (step 1),
-// quota (step 3), find, show and health (step 4), digest (step 5).
+// quota (step 3), find, show and health (step 4), digest (step 5), record accept (step 6).
 package cli
 
 import (
@@ -38,6 +38,8 @@ const usage = `usage: crius-rec init
        crius-rec record bus --project P --role R --type T --text TEXT [--to crius | P:R]
        crius-rec record decision --project P --title T --why W --by "owner|crius|lead [ref]" [--supersedes ID --reason R] [--refs R] [--taint]
        crius-rec record item --project P --title T --kind code|research|falcon|other --criteria C [--criteria C ...] [--parent ID] [--taint]
+       crius-rec record accept ITEM --revision SHA|SHA256 --check N=REF [--check N=REF ...] --review event:N --by crius|owner
+                 (every criterion N needs a check; each REF, a commit sha or event:N, must name the revision)
        crius-rec quota [--json | --room]
        crius-rec find [QUERY] [--project P] [--since YYYY-MM-DD|Nd|Nh] [--kind K ...] [--active] [--waiting] [--json]
        crius-rec find QUERY --deep --project P [--since …] [--json]
@@ -141,10 +143,11 @@ func record(home string, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("record "+what, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	project := fs.String("project", "", "")
-	var role, typ, text, to, title, why, by, supersedes, reason, refs, kind, parent *string
+	var role, typ, text, to, title, why, by, supersedes, reason, refs, kind, parent, revision, review *string
 	var taint *bool
-	var criteria multi
+	var criteria, checks multi
 	required := []string{"project"}
+	item := ""
 	switch what {
 	case "bus":
 		role, typ, text = fs.String("role", "", ""), fs.String("type", "", ""), fs.String("text", "", "")
@@ -160,6 +163,15 @@ func record(home string, args []string, stdout, stderr io.Writer) int {
 		fs.Var(&criteria, "criteria", "")
 		taint = fs.Bool("taint", false, "")
 		required = append(required, "title", "kind", "criteria")
+	case "accept":
+		if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+			fmt.Fprintln(stderr, "record accept needs the item first: record accept ITEM --revision …")
+			return exitUsage
+		}
+		item, args = args[0], args[1:]
+		revision, review, by = fs.String("revision", "", ""), fs.String("review", "", ""), fs.String("by", "", "")
+		fs.Var(&checks, "check", "")
+		required = []string{"revision", "check", "review", "by"}
 	default:
 		fmt.Fprint(stderr, usage)
 		return exitUsage
@@ -224,6 +236,9 @@ func record(home string, args []string, stdout, stderr io.Writer) int {
 			DecidedBy: *by, Supersedes: *supersedes, Reason: *reason, Refs: *refs, Taint: *taint})
 	case "item":
 		out, err = recordItem(home, *project, *title, *kind, criteria, *parent, *taint)
+	case "accept":
+		out, err = recordAccept(home, store.AcceptInput{Item: item, Revision: *revision, Checks: checks, Review: *review,
+			By: *by})
 	}
 	switch {
 	case err == nil:
@@ -252,6 +267,20 @@ func recordItem(home, project, title, kind string, criteria []string, parent str
 	}
 	id, err := store.RecordItem(db, project, title, kind, criteria, parent, taint)
 	return id, errors.Join(err, db.Close())
+}
+
+func recordAccept(home string, in store.AcceptInput) (string, error) {
+	unlock, err := store.WriterLock(home, true)
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
+	db, err := store.Open(home)
+	if err != nil {
+		return "", err
+	}
+	out, err := store.RecordAccept(db, in)
+	return out, errors.Join(err, db.Close())
 }
 
 // quotaCmd prints the two quota blocks (or the report as JSON), starting with the status and its reasons; anything

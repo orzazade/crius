@@ -282,6 +282,15 @@ count and list $), a commit, an `event:<n>`, or a project's STATE.md (`unavailab
 A hex prefix that matches more than one commit or session is refused with the matches. `--history` gives a decision's
 supersede chain, oldest first; acceptance, revokes and corrections join it in step 6.
 
+**`record accept` as built (step 6).** `record accept ITEM --revision R --check N=REF … --review event:<n> --by
+crius|owner`. The item must be open. R is a commit sha prefix naming exactly one commit, or an artifact sha256. Every
+criterion N needs at least one check. A REF is a commit sha (its evidence row must be on R) or `event:<n>` (a sha in
+its refs or text, 7+ hex with a letter, must be a prefix of R). A ref that names another revision, or none, is
+refused, and nothing is written. The review must be a VERIFIED line on R, and it cannot come from the session that
+made the commit, when both sessions are known (bus lines carry none today). One transaction writes the
+`acceptance` row, an `accepted` event (refs item + sha) and the item state `accepted`. `show ITEM` lists each
+acceptance with its checks.
+
 **`health` as built (step 4).** The last ingest run and the runs of the last 24 h, heartbeat age, the newest backup,
 and the restore test (`never run` until step 6; shown, not a problem). Per source, expected vs seen: the ingest lists
 what a run should read by its own rules (transcripts under each root, `bus/*.log`, team logs, repos), and a file older

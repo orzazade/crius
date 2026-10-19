@@ -159,7 +159,37 @@ func showItem(ctx context.Context, db *sql.DB, s *Shown) error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
+	if err := acceptances(ctx, db, s); err != nil {
+		return err
+	}
 	return citing(ctx, db, s)
+}
+
+// acceptances adds one line per acceptance of the item, oldest first, with the check for each criterion.
+func acceptances(ctx context.Context, db *sql.DB, s *Shown) error {
+	rows, err := db.QueryContext(ctx, "select ts, revision, checks, review_ref, accepted_by, state from acceptance"+
+		" where item = ? order by id", s.ID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var ts, rev, checks, review, by, state string
+		if err := rows.Scan(&ts, &rev, &checks, &review, &by, &state); err != nil {
+			return err
+		}
+		var cs []store.AcceptCheck
+		if err := json.Unmarshal([]byte(checks), &cs); err != nil {
+			return fmt.Errorf("acceptance of %s has bad checks %q: %w", s.ID, checks, err)
+		}
+		var parts []string
+		for _, c := range cs {
+			parts = append(parts, fmt.Sprintf("%d=%s", c.Criterion, c.Ref[:min(len(c.Ref), 12)]))
+		}
+		s.Lines = append(s.Lines, fmt.Sprintf("%s %s on %s by %s · checks %s · review %s", ts, state,
+			rev[:min(len(rev), 12)], by, strings.Join(parts, " "), review))
+	}
+	return rows.Err()
 }
 
 // citing adds the events whose refs name the id exactly, oldest first.

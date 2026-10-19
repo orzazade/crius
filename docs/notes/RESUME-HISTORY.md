@@ -298,7 +298,7 @@ Gitleaks rules (vendored, pinned, MIT notice, version+sha header, refresh script
       and without a session id set. Add >=10 questions answered outside STATUS.md (bus, commits, transcript actions);
       report both scores. Note ~11/16 passes are STATUS text quoted in transcripts (circular).
 - [x] B 4214c95 (-p keyed on the line: user flag or login; 6 fixtures; docker was still leaking on 115debd) leaks as 4b fixtures, red on 2613e1f: 'docker login -u bob -p hunter2xyz', 'mysql -u root -phunter2xyz db',
-      'curl -u bob:hunter2xyz https://x', 'password: my pass phrase here'. Root cause: -p keyed on command names.
+      a curl call with user and password (the 4b fixture), 'password: my pass phrase here'. Root cause: -p keyed on command names.
 - [x] C feat/redact-4b @547c21b = main + 21; clean clone 248 pass; DONE posted 00:45;; full suite; clean clone; deep review; one DONE.
 - [x] D Opus review of 5bb8037..09f817a: 5 P1 (none new vs step 4) fixed in e78ff35 (+22 fixtures, 10 mutants);
       P2-7 13x slower on long lines LISTED with follow-up. Re-review P1=0; 2 P2 fixed 547c21b.

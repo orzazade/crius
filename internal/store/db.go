@@ -45,6 +45,13 @@ create table if not exists git_commit (
   reverts_sha text, ci text, subject text);
 create table if not exists evidence (
   id integer primary key, kind text not null, ref text, revision text, ts text, source_key text not null unique);
+-- One row per acceptance of an item on one revision (design §7): checks = [{criterion, ref}], every ref bound to
+-- the revision. A revoke (step 6 P2) sets state and the revoke fields; the row is never deleted.
+create table if not exists acceptance (
+  id integer primary key, item text not null, revision text not null, checks text not null, reviewer text,
+  review_ref text not null, accepted_by text not null, ts text not null, state text not null default 'accepted',
+  revoked_ts text, revoked_by text, revoke_reason text, defect text, fix_item text);
+create index if not exists acceptance_item on acceptance (item);
 create table if not exists artifact (
   path text primary key, project text, sha256 text, title text, headings text, mtime text,
   taint integer not null default 0);

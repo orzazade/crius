@@ -540,3 +540,42 @@ func TestDigestWritesARedactedReportAndComparesWithTheLast(t *testing.T) {
 		t.Fatal(rc, out)
 	}
 }
+
+// Step 6: record accept takes the item first; a check on another sha is refused (exit 2) and show lists the row
+// (partial: no ingest run in this home).
+func TestRecordAcceptAndShow(t *testing.T) {
+	_, home := testutil.Temp(t)
+	if rc, out := run("init"); rc != 0 {
+		t.Fatal(rc, out)
+	}
+	if rc, out := run("record", "item", "--project", "demo", "--title", "mail fix", "--kind", "code",
+		"--criteria", "CI pass"); rc != 0 {
+		t.Fatal(rc, out)
+	}
+	a, b := "abc1234"+strings.Repeat("0", 33), "def5678"+strings.Repeat("0", 33)
+	db, err := store.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("insert into git_commit (sha, repo) values (?, 'r'), (?, 'r');"+
+		" insert into event (ts, project, kind, actor, session, text, source_key) values"+
+		" ('2026-10-19T11:00:00Z', 'crius', 'done', 'build', null, 'CI green on def5678', 'k1'),"+
+		" ('2026-10-19T11:00:00Z', 'crius', 'verified', 'lead', 's-rev', 'abc1234 review clean', 'k2')", a, b); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	if rc, out := run("record", "accept", "demo#1", "--revision", "abc1234", "--check", "1=event:1", "--review",
+		"event:2", "--by", "crius"); rc != exitUsage || !strings.Contains(out, "not on abc1234") {
+		t.Fatal(rc, out)
+	}
+	if rc, out := run("record", "accept", "--revision", "abc1234"); rc != exitUsage {
+		t.Fatal(rc, out)
+	}
+	if rc, out := run("record", "accept", "demo#1", "--revision", "abc1234", "--check", "1=event:2", "--review",
+		"event:2", "--by", "crius"); rc != 0 || !strings.Contains(out, "accepted demo#1 on abc123400000") {
+		t.Fatal(rc, out)
+	}
+	if rc, out := run("show", "demo#1"); rc != exitPartial || !strings.Contains(out, "accepted on abc123400000 by crius · checks 1=event:2") {
+		t.Fatal(rc, out)
+	}
+}
