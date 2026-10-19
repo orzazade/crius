@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"regexp"
@@ -26,9 +27,11 @@ func gitRun(repo string, args ...string) (string, error) {
 	return out.String(), nil
 }
 
+var errDiverged = errors.New("branches diverged")
+
 // defaultBranch returns the default branch and its sha: origin's HEAD, then main, then master. Of the local branch
-// and origin's copy, the newer one: work pushed from a worktree branch leaves the local branch behind. When they have
-// diverged neither is newer, and that is an error, not a guess.
+// and origin's copy, the newer one: work pushed from a worktree branch leaves the local branch behind. When neither
+// contains the other (diverged, or a shallow fetch hides the link) it returns the local branch and errDiverged.
 func defaultBranch(repo string) (name, sha string, err error) {
 	var names []string
 	if out, err := gitRun(repo, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"); err == nil {
@@ -54,7 +57,8 @@ func defaultBranch(repo string) (name, sha string, err error) {
 		if _, err := gitRun(repo, "merge-base", "--is-ancestor", remote, local); err == nil {
 			return n, local, nil
 		}
-		return "", "", fmt.Errorf("%s and origin/%s have diverged; neither is read until one contains the other", n, n)
+		return n, local, fmt.Errorf("%w: %s and origin/%s have diverged (or the fetch is shallow); read %s only", errDiverged,
+			n, n, n)
 	}
 	return "", "", fmt.Errorf("no default branch (origin HEAD, main, master)")
 }
@@ -85,7 +89,9 @@ func (r *runner) gitRepo(slug, repo string) error {
 	}
 	// Resolve the branch to a sha first: a commit landing after this is read by the next run, never skipped.
 	_, sha, err := defaultBranch(repo)
-	if err != nil {
+	if errors.Is(err, errDiverged) {
+		r.warn(true, "git %s: %v", repo, err)
+	} else if err != nil {
 		return err
 	}
 	if afterHeadHook != nil {

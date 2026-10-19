@@ -757,7 +757,8 @@ func TestABusFileNamedNoProjectIsLoud(t *testing.T) {
 
 // Step 6 P6b real run: commits pushed to origin/main from a worktree branch left the local main behind, and the
 // store read local main only, so it missed every commit since 2026-10-17 and reported complete. The newer of the
-// local branch and origin's is read; when they have diverged the run is partial and says so.
+// local branch and origin's is read; when neither contains the other (diverged, or a shallow fetch: codex review of
+// 83c4278) the local branch is read as before and the run is partial, saying so.
 func TestCommitsPushedFromAWorktreeBranchAreRead(t *testing.T) {
 	x, repo := gitCase(t)
 	testutil.Write(t, filepath.Join(repo, "a.txt"), "1\n")
@@ -777,4 +778,5 @@ func TestCommitsPushedFromAWorktreeBranchAreRead(t *testing.T) {
 	if len(st.Warnings) != 1 || !strings.Contains(st.Warnings[0], "main and origin/main have diverged") {
 		t.Fatal(st.Warnings)
 	}
+	eq(t, x.one("select count(*) from git_commit"), "3")
 }

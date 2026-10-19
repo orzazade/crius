@@ -117,10 +117,10 @@ func TestAReviewIsBoundOnceItsCommitIsKnown(t *testing.T) {
 	eq(t, x.q("select revision from evidence where kind = 'review' order by ts"), [][]string{{"<nil>"}, {reviewedSha}})
 }
 
-// Codex review of f095c93: the newest codex-ask call names the target, not the first; a revision expression
-// (abc1234^) is not its commit; a quoted folder and a line continuation still parse. A here-document body is the
-// caller's text, so a codex-ask quoted in it is no call.
-func TestTheNewestCodexAskCallNamesTheTarget(t *testing.T) {
+// Codex reviews of f095c93 and 83c4278: a target is never guessed. Calls in one command that disagree (two calls, an
+// ask then a review, a call quoted in a here-document) give a review with no target; a revision expression
+// (abc1234^, "abc1234"^) is not that commit; a quoted folder and a line continuation still parse.
+func TestCodexAskCallsThatDisagreeGiveNoTarget(t *testing.T) {
 	x := newIC(t, cfg{})
 	x.run()
 	x.commit(reviewedSha)
@@ -128,10 +128,10 @@ func TestTheNewestCodexAskCallNamesTheTarget(t *testing.T) {
 	for i, c := range []struct{ command, answer string }{
 		{"codex-ask /w review --commit de68f7e && codex-ask /w review --commit bbb2222", "FINDINGS P1=1 P2=0 P3=0"},
 		{"codex-ask /w ask <<'Q'\nplan\nQ\ncodex-ask /w review --commit bbb2222", "FINDINGS P1=2 P2=0 P3=0"},
-		{"codex-ask /w review --commit de68f7e^", "FINDINGS P1=3 P2=0 P3=0"},
+		{"codex-ask /w review --commit de68f7e^ && codex-ask /w review --commit \"de68f7e\"^", "FINDINGS P1=3 P2=0 P3=0"},
 		{`codex-ask "/w/my project" ask`, "No review."},
 		{"codex-ask /w review \\\n  --commit de68f7e", "FINDINGS P1=4 P2=0 P3=0"},
-		{"codex-ask /w review --commit de68f7e <<'Q'\nlast time: codex-ask /w review --commit bbb2222\nQ", "FINDINGS P1=5 P2=0 P3=0"},
+		{"codex-ask /w review --commit de68f7e <<'123'\nlast time: codex-ask /w review --commit bbb2222\n123", "FINDINGS P1=5 P2=0 P3=0"},
 	} {
 		n := strings.Repeat("x", i+1)
 		x.subagent("agent-"+n, "codex", answer(n+"a", "2026-10-19T18:30:00Z", "tool_use", "", bash("t", c.command)),
@@ -143,16 +143,16 @@ func TestTheNewestCodexAskCallNamesTheTarget(t *testing.T) {
 	s := " session=" + x.sid
 	eq(t, x.q("select kind, ref, coalesce(substr(revision, 1, 7), '') from evidence where kind like 'review%' order by ts"),
 		[][]string{
-			{"review", "codex P1=1 P2=0 P3=0 commit=bbb2222" + s, "bbb2222"},
-			{"review", "codex P1=2 P2=0 P3=0 commit=bbb2222" + s, "bbb2222"},
+			{"review", "codex P1=1 P2=0 P3=0 target=unknown" + s, ""},
+			{"review", "codex P1=2 P2=0 P3=0 target=unknown" + s, ""},
 			{"review", "codex P1=3 P2=0 P3=0 target=unknown" + s, ""},
 			{"review", "codex P1=4 P2=0 P3=0 commit=de68f7e" + s, "de68f7e"},
-			{"review", "codex P1=5 P2=0 P3=0 commit=de68f7e" + s, "de68f7e"},
+			{"review", "codex P1=5 P2=0 P3=0 target=unknown" + s, ""},
 			{"review", "quick-review P1=6 P2=0 P3=0 target=unknown" + s, ""}})
 }
 
 // Quick-review of 7a38fdc (the P6b real run): a sha in backticks or before a closing paren is still that commit, and
-// a here-string (<<<) or a shift ($((1<<2))) starts no here-document.
+// a here-string (<<<) or a shift ($((1<<2))) hides no call.
 func TestAShaInPunctuationIsBoundAndAShiftIsNoHereDocument(t *testing.T) {
 	x := newIC(t, cfg{})
 	x.run()

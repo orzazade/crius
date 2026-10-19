@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -14,51 +15,55 @@ var reviewers = map[string]bool{"codex": true, "quick-review": true}
 
 var (
 	// The line is found by its form anywhere in the answer: the first real run printed it before its list.
-	findingsRe = regexp.MustCompile("(?m)^[ \t*`]*FINDINGS P1=(\\d+) P2=(\\d+) P3=(\\d+)[ \t*`]*$")
-	// A sha ends at anything that cannot go on a revision: abc1234^, abc1234~1 and abc1234..x name other commits.
-	reviewedRe  = regexp.MustCompile("(?m)^REVIEWED:\\s*(?:commit\\s+[`*]*([0-9a-f]{7,40})(?:[^\\w^~@{/.:-]|$)|(uncommitted)\\b|\\S+\\s+vs\\s+([^\\s,]+))")
+	findingsRe  = regexp.MustCompile("(?m)^[ \t*`]*FINDINGS P1=(\\d+) P2=(\\d+) P3=(\\d+)[ \t*`]*$")
+	reviewedRe  = regexp.MustCompile(`(?m)^REVIEWED:\s*(?:commit\s+([^\s,]+)|(uncommitted)\b|\S+\s+vs\s+([^\s,]+))`)
 	codexAskRe  = regexp.MustCompile(`\bcodex-ask\s+(?:"[^"]*"|'[^']*'|\S+)\s+(review|ask)\b([^;&|\n]*)`)
-	codexTargRe = regexp.MustCompile(`--commit\s+['"]?([0-9a-f]{7,40})(?:[^\w^~@{/.:-]|$)|--(uncommitted)\b|--base\s+(\S+)`)
-	heredocRe   = regexp.MustCompile(`(?:^|[^<])<<-?\s*['"]?([A-Za-z_]\w*)['"]?`) // not <<< or a shift by a number
+	codexTargRe = regexp.MustCompile(`--commit\s+([^\s;&|()<>]+)|--(uncommitted)\b|--base\s+(\S+)`)
+	shaRe       = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
 	boundShaRe  = regexp.MustCompile(` commit=([0-9a-f]{7,40}) `)
 )
 
 // target names what a review looked at from a commit, uncommitted and base submatch: "commit=<sha>", "uncommitted",
-// "base=<branch>", or "target=unknown".
+// "base=<branch>", or "target=unknown". A commit's word, without one pair of quotes, backticks or stars around it,
+// must be a sha: abc1234^ and "abc1234"~1 name other commits, and a target is never guessed.
 func target(m []string, r *runner) string {
 	switch {
 	case m == nil:
 		return "target=unknown"
 	case m[1] != "":
-		return "commit=" + m[1]
+		w := m[1]
+		for _, q := range []string{`"`, `'`, "`", "**", "*"} {
+			if len(w) > 2*len(q) && strings.HasPrefix(w, q) && strings.HasSuffix(w, q) {
+				w = w[len(q) : len(w)-len(q)]
+				break
+			}
+		}
+		if shaRe.MatchString(w) {
+			return "commit=" + w
+		}
+		return "target=unknown"
 	case m[2] != "":
 		return "uncommitted"
 	}
 	return "base=" + strings.ReplaceAll(truncate(r.text(m[3]), 100), " ", "_")
 }
 
-// codexCall returns the newest codex-ask call in a Bash command (its mode and its arguments, up to a shell separator), or nil. A line
-// continuation joins its lines; a here-document body is the caller's text, not a command.
-func codexCall(command string) []string {
-	var cmd []string
-	delim := ""
-	for _, l := range strings.Split(strings.ReplaceAll(command, "\\\n", " "), "\n") {
-		if delim != "" {
-			if strings.TrimSpace(l) == delim {
-				delim = ""
-			}
-			continue
-		}
-		cmd = append(cmd, l)
-		if m := heredocRe.FindStringSubmatch(l); m != nil {
-			delim = m[1]
+// codexCall reads the codex-ask calls in one Bash command (calls is 0 when it has none). Calls that disagree (two
+// calls, or one quoted in a here-document) give no target; the command is a plan critique only when every call is
+// an ask. A line continuation joins its lines.
+func codexCall(command string) (calls int, ask bool, where []string) {
+	all := codexAskRe.FindAllStringSubmatch(strings.ReplaceAll(command, "\\\n", " "), -1)
+	ask = true
+	for i, c := range all {
+		ask = ask && c[1] == "ask"
+		w := codexTargRe.FindStringSubmatch(c[2])
+		if i == 0 {
+			where = w
+		} else if !slices.Equal(w, where) {
+			where = nil
 		}
 	}
-	all := codexAskRe.FindAllStringSubmatch(strings.Join(cmd, "\n"), -1)
-	if len(all) == 0 {
-		return nil
-	}
-	return all[len(all)-1]
+	return len(all), ask, where
 }
 
 // reviewAnswers reads a reviewer's subagent file whole and stores each final answer (stop_reason end_turn) as
@@ -66,7 +71,8 @@ func codexCall(command string) []string {
 // lines that disagree, never a zero. A codex answer after a codex-ask `ask` (a plan critique) is no review. The
 // revision is bound later, by bindReviews, once git has read the commit.
 func (r *runner) reviewAnswers(tx *sql.Tx, path, sid, agent string) error {
-	var codex []string // the newest codex-ask call: its mode and the rest of its line
+	// The newest Bash command with codex-ask calls: whether all were asks, and the target they agree on.
+	codex, codexAsk, codexWhere := false, false, []string(nil)
 	_, _, err := scanLines(path, cursor{}, func(pos int64, raw []byte) error {
 		var o txLine
 		var m struct {
@@ -89,8 +95,8 @@ func (r *runner) reviewAnswers(tx *sql.Tx, path, sid, agent string) error {
 			if b.Type == "text" {
 				text = append(text, b.Text)
 			}
-			if c := codexCall(b.Input.Command); b.Type == "tool_use" && b.Name == "Bash" && c != nil {
-				codex = c
+			if n, ask, where := codexCall(b.Input.Command); b.Type == "tool_use" && b.Name == "Bash" && n > 0 {
+				codex, codexAsk, codexWhere = true, ask, where
 			}
 		}
 		if m.StopReason != "end_turn" {
@@ -102,12 +108,10 @@ func (r *runner) reviewAnswers(tx *sql.Tx, path, sid, agent string) error {
 		answer := strings.Join(text, "\n")
 		var where []string
 		if agent == "codex" {
-			if codex != nil && codex[1] == "ask" {
+			if codex && codexAsk {
 				return nil
 			}
-			if codex != nil {
-				where = codexTargRe.FindStringSubmatch(codex[2])
-			}
+			where = codexWhere
 		} else {
 			where = reviewedRe.FindStringSubmatch(answer)
 		}
