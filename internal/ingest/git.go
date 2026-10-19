@@ -26,7 +26,9 @@ func gitRun(repo string, args ...string) (string, error) {
 	return out.String(), nil
 }
 
-// defaultBranch returns the default branch and its sha: origin's HEAD, then main, then master.
+// defaultBranch returns the default branch and its sha: origin's HEAD, then main, then master. Of the local branch
+// and origin's copy, the newer one: work pushed from a worktree branch leaves the local branch behind. When they have
+// diverged neither is newer, and that is an error, not a guess.
 func defaultBranch(repo string) (name, sha string, err error) {
 	var names []string
 	if out, err := gitRun(repo, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"); err == nil {
@@ -35,9 +37,24 @@ func defaultBranch(repo string) (name, sha string, err error) {
 		}
 	}
 	for _, n := range append(names, "main", "master") {
-		if out, err := gitRun(repo, "rev-parse", "--verify", "-q", "refs/heads/"+n); err == nil {
-			return n, strings.TrimSpace(out), nil
+		local, lerr := gitRun(repo, "rev-parse", "--verify", "-q", "refs/heads/"+n)
+		remote, rerr := gitRun(repo, "rev-parse", "--verify", "-q", "refs/remotes/origin/"+n)
+		local, remote = strings.TrimSpace(local), strings.TrimSpace(remote)
+		switch {
+		case lerr != nil && rerr != nil:
+			continue
+		case rerr != nil:
+			return n, local, nil
+		case lerr != nil:
+			return n, remote, nil
 		}
+		if _, err := gitRun(repo, "merge-base", "--is-ancestor", local, remote); err == nil {
+			return n, remote, nil
+		}
+		if _, err := gitRun(repo, "merge-base", "--is-ancestor", remote, local); err == nil {
+			return n, local, nil
+		}
+		return "", "", fmt.Errorf("%s and origin/%s have diverged; neither is read until one contains the other", n, n)
 	}
 	return "", "", fmt.Errorf("no default branch (origin HEAD, main, master)")
 }

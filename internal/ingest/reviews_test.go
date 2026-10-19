@@ -150,3 +150,23 @@ func TestTheNewestCodexAskCallNamesTheTarget(t *testing.T) {
 			{"review", "codex P1=5 P2=0 P3=0 commit=de68f7e" + s, "de68f7e"},
 			{"review", "quick-review P1=6 P2=0 P3=0 target=unknown" + s, ""}})
 }
+
+// Quick-review of 7a38fdc (the P6b real run): a sha in backticks or before a closing paren is still that commit, and
+// a here-string (<<<) or a shift ($((1<<2))) starts no here-document.
+func TestAShaInPunctuationIsBoundAndAShiftIsNoHereDocument(t *testing.T) {
+	x := newIC(t, cfg{})
+	x.run()
+	x.commit(reviewedSha)
+	for i, command := range []string{"r=$(codex-ask /w review --commit de68f7e)", "cat <<< \"x\"\ncodex-ask /w review --commit de68f7e",
+		"echo $((1<<2))\ncodex-ask /w review --commit de68f7e"} {
+		n := strings.Repeat("x", i+1)
+		x.subagent("agent-"+n, "codex", answer(n+"a", "2026-10-19T18:30:00Z", "tool_use", "", bash("t", command)),
+			answer(n+"b", "2026-10-19T18:3"+string(rune('0'+i))+":00Z", "end_turn", "FINDINGS P1=0 P2=0 P3=0"))
+	}
+	x.subagent("agent-q", "quick-review", answer("qb", "2026-10-19T18:39:00Z", "end_turn",
+		"REVIEWED: commit `de68f7e`, 3 files\nFINDINGS P1=0 P2=0 P3=0"))
+	x.run()
+	eq(t, x.q("select distinct substr(ref, instr(ref, 'P3=0 ') + 5, 14), substr(revision, 1, 7) from evidence where kind = 'review'"),
+		[][]string{{"commit=de68f7e", "de68f7e"}})
+	eq(t, x.one("select count(*) from evidence where kind = 'review'"), "4")
+}

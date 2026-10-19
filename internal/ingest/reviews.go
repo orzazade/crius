@@ -15,11 +15,11 @@ var reviewers = map[string]bool{"codex": true, "quick-review": true}
 var (
 	// The line is found by its form anywhere in the answer: the first real run printed it before its list.
 	findingsRe = regexp.MustCompile("(?m)^[ \t*`]*FINDINGS P1=(\\d+) P2=(\\d+) P3=(\\d+)[ \t*`]*$")
-	// A sha ends at a space, comma, quote or the line's end: abc1234^ names another commit.
-	reviewedRe  = regexp.MustCompile(`(?m)^REVIEWED:\s*(?:commit\s+([0-9a-f]{7,40})(?:[\s,'"]|$)|(uncommitted)\b|\S+\s+vs\s+([^\s,]+))`)
+	// A sha ends at anything that cannot go on a revision: abc1234^, abc1234~1 and abc1234..x name other commits.
+	reviewedRe  = regexp.MustCompile("(?m)^REVIEWED:\\s*(?:commit\\s+[`*]*([0-9a-f]{7,40})(?:[^\\w^~@{/.:-]|$)|(uncommitted)\\b|\\S+\\s+vs\\s+([^\\s,]+))")
 	codexAskRe  = regexp.MustCompile(`\bcodex-ask\s+(?:"[^"]*"|'[^']*'|\S+)\s+(review|ask)\b([^;&|\n]*)`)
-	codexTargRe = regexp.MustCompile(`--commit\s+([0-9a-f]{7,40})(?:[\s'"]|$)|--(uncommitted)\b|--base\s+(\S+)`)
-	heredocRe   = regexp.MustCompile(`<<-?\s*['"]?(\w+)['"]?`)
+	codexTargRe = regexp.MustCompile(`--commit\s+['"]?([0-9a-f]{7,40})(?:[^\w^~@{/.:-]|$)|--(uncommitted)\b|--base\s+(\S+)`)
+	heredocRe   = regexp.MustCompile(`(?:^|[^<])<<-?\s*['"]?([A-Za-z_]\w*)['"]?`) // not <<< or a shift by a number
 	boundShaRe  = regexp.MustCompile(` commit=([0-9a-f]{7,40}) `)
 )
 
