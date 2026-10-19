@@ -1,8 +1,8 @@
 # crius:build — RESUME (contract: docs/notes/COST-LEVER3-FRESH.md §2, max 120 lines)
 
-Updated 2026-10-19 by session cb6a0a09 (CLEAR-READY after step 6 P3 93957fc). Last bus line read: 2026-10-19T16:58 ORDER.
-Last owner message seen: 2026-10-19 ~14:30 (via Crius brief ~/.crius/state/crius/BRIEF-build-2026-10-19.md).
-main = origin/main = 93957fc (step 6 P3) + this RESUME commit. Local main ref is behind: it is checked out in Crius's worktree main-rules. History: docs/notes/RESUME-HISTORY.md.
+Updated 2026-10-19 by session 6cfda64f (work statusline 47e7913 shipped; next P3c). Last bus line read: 2026-10-19T17:19 ORDER.
+Last owner message seen: 2026-10-19 ~17:25 (child roll-up answer, via Crius).
+main = origin/main = 47e7913 (work statusline) + this RESUME commit. Local main ref is behind: it is checked out in Crius's worktree main-rules. History: docs/notes/RESUME-HISTORY.md.
 
 ## OWNER DECISIONS (append-only, verbatim, dated)
 
@@ -27,7 +27,10 @@ main = origin/main = 93957fc (step 6 P3) + this RESUME commit. Local main ref is
   fallback there instead: included usage % + expiry and spend limit, from the same read quota uses (cached, never
   blocks the line). Red check first." Addendum: "Make the work line show the same parts (model + account, branch,
   cost, context %) plus the fallback numbers. Old script kept: ~/.claude-work/hooks/statusline.js; backup
-  ~/.claude-work/settings.json.bak-20261019-statusline." After P3. Status: not started (next).
+  ~/.claude-work/settings.json.bak-20261019-statusline." After P3. Status: done (main 47e7913).
+- 2026-10-19 ~17:25 (owner, via Crius, answer to review P3-3): yes, a defect or revoke on an accepted child task
+  counts against the parent outcome's week ("we need extensive data that will give us much better vision"). Build it
+  after the work statusline, red first. Status: not started.
 - Standing (memory): personal repo, push to main after review; effort medium/high only; no AI attribution.
 
 ## GOAL
@@ -43,17 +46,19 @@ Goal: build the Crius record (design §9 steps 1-9) so Crius answers the owner's
 - [ ] 6 record accept + scorecard
 - [ ] 9 Falcon source
 Done: 70% (7 of 10 required steps incl. 3b, equal weight; 7 and 8 only if needed)
-Next: work statusline (ORDER 15:25), then step 6 P4
+Next: P3c child roll-up (owner 10-19 ~17:25), then P4
 Needs owner: nothing
 
 ## NOW
 
-Step 6 P3 DONE: main 93957fc (61fdb75 + review fixes). `crius-rec scorecard [--week YYYY-MM-DD] [--write]` ->
-state/scorecards/<UTC end day>.md + .json. The live week ends Wed 10-21 22:00 UTC = Thu 10-22 02:00 local, so its
-name is 2026-10-21 (UTC by review P3-1; the refusal names both nearby ends). def v1 lines: Outcomes, Revoked, Quota
-(Max observed % of the epoch), Waits (not measured), Flow, Quality, Spot-check. Not in v1: enterprise $ and project
-shares per week (quota.Build only knows the running epoch) = follow-up P3b.
-Next session: the work statusline ORDER 15:25 (see OWNER DECISIONS), red first; then P4.
+Work statusline DONE: main 47e7913 (codex FINDINGS P1=0 P2=2 P3=1, all fixed red first). `crius-statusline --persona
+work` = model + account (ENT/MAX from $CLAUDE_CONFIG_DIR/.claude.json) │ branch │ $cost │ bar ctx % │ quota, and on
+an API-billed session the fallback from spool/ent-usage.json, refreshed by a detached `--refresh-ent` (same read as
+quota: quota.ReadWorkEnt) at most once per 5 min (spool/ent-usage.try), errors to logs/ent-refresh.log, STALE after
+15 min. Step 6 P3 (scorecard) done 93957fc.
+Next: P3c child roll-up, red first. Plan: descendants of the week's outcomes (recursive on item_v.parent) add their
+defects (found at/after the child's acceptance) to Defects/escapes and their revokes as a new count; Items for
+`since` include them; bump scorecard Def v1 -> v2 (no scorecard file written yet, state/scorecards absent).
 
 ## Open work (step 6 checklist; each part red first, then build, codex review, one DONE with evidence + commit)
 
@@ -69,6 +74,8 @@ Spec: design §9 row 6, §3c tables (acceptance, defect, correction), §7 (M1, M
    stamped, 0 model tokens). Red: a revoke lowers the original week, not the week found; a correction changes the
    view; re-writing a changed week appends `revised <date>: …` and keeps the old value.
 3b. [ ] P3b per-week enterprise $ + project shares in the scorecard (needs a quota.Build for a past epoch).
+3c. [ ] P3c child roll-up (owner 10-19 ~17:25): a defect/revoke on an accepted child task lowers the parent
+   outcome's week. Red: child revoke shows on the outcome week's scorecard.
 4. [ ] P4 parity with review-1016 (tools/agent-cost/review-1016 REPORT §4: $/main call on weekdays, compactions,
    10-10..10-16 personal): store numbers within 2%. Red: the compare fails on a number moved by 3%.
 5. [ ] P5 restore-after-expiry test (design §3c): newest backup -> scratch DB, transcripts > 30 d hidden,
@@ -80,7 +87,7 @@ Spec: design §9 row 6, §3c tables (acceptance, defect, correction), §7 (M1, M
 
 ## Waiting on
 
-- Crius: review P3-3 (owner's call): should defects/revokes on an accepted CHILD task roll up to its outcome's week?
+- Crius: review P3-3 ANSWERED 10-19 ~17:25 (OWNER DECISIONS): child defects/revokes roll up to the outcome week.
   Now they show on no scorecard. Also noticed: a parent correction cannot make a child top-level again (defect.go:312).
 - Crius answers on ~/.crius/bus/crius.log lines `-> crius:build`.
 
@@ -99,10 +106,10 @@ Spec: design §9 row 6, §3c tables (acceptance, defect, correction), §7 (M1, M
 
 ## Running things
 
-- Worktree <scratchpad cb6a0a09>/wt on feat/step6-p3 (= main). No watchers, no background jobs. Ship script:
-  <scratchpad cb6a0a09>/ship.sh (branch feat/step6-p3). No scorecard launchd job yet (weekly run: with P5).
-- launchd: space.scifilab.crius.{ingest,watchdog,digest,wait-sweep} run ~/.crius/bin (installed from 93957fc;
-  previous binaries kept as <scratchpad cb6a0a09>/crius-*.before-93957fc).
+- Worktree <scratchpad 6cfda64f>/wt on feat/work-statusline (= main). No watchers, no background jobs. Ship script:
+  <scratchpad 6cfda64f>/ship.sh (branch feat/work-statusline). No scorecard launchd job yet (weekly run: with P5).
+- launchd: space.scifilab.crius.{ingest,watchdog,digest,wait-sweep} run ~/.crius/bin (installed from 47e7913;
+  previous binaries kept as <scratchpad 6cfda64f>/crius-*.before-47e7913).
 - Old worktrees from earlier sessions (git worktree list): not mine to remove; listed for Crius.
 
 ## Not in this file
