@@ -53,7 +53,7 @@ type Report struct {
 	EntWeek, EntToday  []Share
 	EntWeekUSD, EntDay float64
 	Violations         []Violation
-	EntMonth           *Monthly // set by the `quota` command (a live read), not by Build
+	EntUsage           *EntUsage // set by the `quota` command (a live read), not by Build
 }
 
 // Querier is a *sql.DB or a *sql.Tx.
@@ -809,8 +809,8 @@ func (r *Report) Text() string {
 	default: // nothing known to be enterprise: no "$0.00 (none)" next to unmeasured spend
 		fmt.Fprintf(&b, "unknown %s (account not measured)\n", money(r.UnknownUSD))
 	}
-	if r.EntMonth != nil {
-		b.WriteString("  " + r.EntMonth.Text() + "\n")
+	if r.EntUsage != nil {
+		b.WriteString("  " + r.EntUsage.Text() + "\n")
 	}
 	if r.UnknownSessions > 0 {
 		fmt.Fprintf(&b, "  guard: not measured for %d session%s (account unknown)\n", r.UnknownSessions,

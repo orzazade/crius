@@ -340,28 +340,28 @@ func recordWith(home string, f func(*sql.DB) (string, error)) (string, error) {
 	return out, errors.Join(err, db.Close())
 }
 
-// readMonth reads the Enterprise month with the ~/.claude-work login (a variable so tests never reach the keychain
+// readEnt reads the Enterprise account with the ~/.claude-work login (a variable so tests never reach the keychain
 // or the network).
-var readMonth = func(now time.Time) quota.Monthly {
+var readEnt = func(now time.Time) quota.EntUsage {
 	u, err := os.UserHomeDir()
 	if err != nil {
-		return quota.Monthly{Reason: fmt.Sprintf("home: %v", err)}
+		return quota.EntUsage{Reason: fmt.Sprintf("home: %v", err)}
 	}
-	return quota.WithDeadline(func() quota.Monthly {
-		return quota.ReadMonthly(quota.KeychainLogin(filepath.Join(u, ".claude-work")), quota.UsageGet, now)
-	}, quota.MonthBudget)
+	return quota.WithDeadline(func() quota.EntUsage {
+		return quota.ReadEntUsage(quota.KeychainLogin(filepath.Join(u, ".claude-work")), quota.UsageGet, now)
+	}, quota.EntBudget)
 }
 
 // quotaCmd prints the two quota blocks (or the report as JSON), starting with the status and its reasons; anything
-// but complete exits partial. The Enterprise month not read makes the report partial.
+// but complete exits partial. The Enterprise account not read makes the report partial.
 func quotaCmd(home string, now time.Time, asJSON, room bool, stdout, stderr io.Writer) int {
-	month := readMonth(now)
+	ent := readEnt(now)
 	// fail says why on stderr; with --room every failure is also an "unknown" verdict on stdout, the one line a
 	// launcher reads, with a short reason (the full one is on stderr).
 	fail := func(rc int, reason, msg string) int {
 		fmt.Fprintln(stderr, msg)
 		if room {
-			roomLine(stdout, "unknown", reason, nil, month)
+			roomLine(stdout, "unknown", reason, nil, ent)
 			return exitUnavailable
 		}
 		return rc
@@ -382,14 +382,14 @@ func quotaCmd(home string, now time.Time, asJSON, room bool, stdout, stderr io.W
 	if err != nil {
 		return fail(exitError, "quota report error", fmt.Sprintf("error: %v", err))
 	}
-	rep.EntMonth = &month
-	if !month.Read {
+	rep.EntUsage = &ent
+	if !ent.Read {
 		rep.Status = "partial"
-		rep.Reasons = append(rep.Reasons, "enterprise monthly limit: cannot read ("+month.Reason+")")
+		rep.Reasons = append(rep.Reasons, "enterprise fallback: cannot read ("+ent.Reason+")")
 	}
 	if room {
 		v, reason := quota.Room(rep)
-		roomLine(stdout, v, reason, rep, month)
+		roomLine(stdout, v, reason, rep, ent)
 		switch v {
 		case "room":
 			return 0
@@ -416,15 +416,14 @@ func quotaCmd(home string, now time.Time, asJSON, room bool, stdout, stderr io.W
 }
 
 // roomLine is the --room answer: one JSON line. Launchers read verdict and reason; the numbers are null when there
-// is no report. Fallback is the Enterprise month's own verdict (its numbers null when not read); the exit code stays
+// is no report. Fallback is the Enterprise account's own verdict (included usage and spend limit null when not read); the exit code stays
 // the Max verdict's.
-func roomLine(w io.Writer, verdict, reason string, r *quota.Report, m quota.Monthly) {
+func roomLine(w io.Writer, verdict, reason string, r *quota.Report, m quota.EntUsage) {
 	type fallback struct {
-		Verdict string   `json:"verdict"`
-		Reason  string   `json:"reason"`
-		Used    *float64 `json:"used"`
-		Limit   *float64 `json:"limit"`
-		Reset   string   `json:"reset"`
+		Verdict  string            `json:"verdict"`
+		Reason   string            `json:"reason"`
+		Included *quota.Included   `json:"included"`
+		Spend    *quota.SpendLimit `json:"spend_limit"`
 	}
 	v := struct {
 		Verdict    string   `json:"verdict"`
@@ -437,8 +436,7 @@ func roomLine(w io.Writer, verdict, reason string, r *quota.Report, m quota.Mont
 	}{Verdict: verdict, Reason: reason}
 	v.Fallback.Verdict, v.Fallback.Reason = m.Room()
 	if m.Read {
-		v.Fallback.Used, v.Fallback.Limit = &m.UsedUSD, &m.LimitUSD
-		v.Fallback.Reset = m.Reset.UTC().Format(time.RFC3339)
+		v.Fallback.Included, v.Fallback.Spend = &m.Included, &m.Spend
 	}
 	if r != nil && !r.SevenAt.IsZero() {
 		age := int64(r.Now.Sub(r.MeasuredAt()).Seconds())
