@@ -16,6 +16,12 @@ main = origin/main = 3c86343 (P1). Local main ref is behind: it is checked out i
 - 2026-10-19 ~14:30 (owner, via Crius brief): quiet time while Quotes waits for Maris: start step 6 "record accept
   + scorecard" (design §9). Max quota 83% (resets Thu 2026-10-22 02:00): work alone, no team fan-out, one review
   pass (codex agent) before DONE. Other teams stay paused. Status: in progress.
+- 2026-10-19 14:44 (owner picked "2", via Crius ORDER bus line 49): "also track the Enterprise account's MONTHLY
+  usage limit (~/.claude-work, org eef9f4e6-9a9c-4120-8c7f-bcc4fca7d047 = aitch fallback), next to the Max 5h/7d
+  sampling (step 3). Show used vs this month's limit and the reset date in quota output, and let 'quota --room' report
+  whether the fallback has room. Add it to the RESUME checklist as step 3b, after step 6 P2. Read-only: reuse the
+  session's existing login, no new sign-in; the Enterprise login expires ~2026-10-21, so a missing or expired login
+  must be a loud 'cannot read', not 0%. Red check first." Status: queued after P2.
 - Standing (memory): personal repo, push to main after review; effort medium/high only; no AI attribution.
 
 ## GOAL
@@ -27,10 +33,13 @@ Goal: build the Crius record (design §9 steps 1-9) so Crius answers the owner's
 - [x] 4 find/show/health/--deep, redaction, recall eval 31/34 · b3a87cb, bus 2026-10-17T02:27
 - [x] 4b fail-closed key=value + gitleaks rules · 86a776a
 - [x] 5 digest + Crius daily start (09:00/18:00 goal report) · 23052fe .. 50e2384
+- [ ] 3b Enterprise monthly limit (owner 10-19 14:44): used vs limit + reset in `quota`, fallback room in
+      `quota --room`; read-only with the existing ~/.claude-work login; missing/expired login = loud "cannot read",
+      never 0%. Red first: an expired login gives "cannot read" and no room verdict. Build after P2, before P3.
 - [ ] 6 record accept + scorecard
 - [ ] 9 Falcon source
-Done: 75% (6 of 8 required steps, equal weight; 7 and 8 only if needed)
-Next: step 6, plan below (red check first per part)
+Done: 67% (6 of 9 required steps, equal weight; 7 and 8 only if needed)
+Next: step 6 P2 ship (d4d9f61 in codex review), then 3b, then P3
 Needs owner: nothing
 
 ## NOW
