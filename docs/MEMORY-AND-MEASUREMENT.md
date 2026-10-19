@@ -496,7 +496,8 @@ end with `FINDINGS P1=<n> P2=<n> P3=<n>` (an agent-definition edit, approved in 
 ## 7. Measurement
 
 **Unit of output: an accepted owner outcome.** One thing the owner wants = one item; the work under it are child
-tasks, which are not counted. Code, research and Falcon outcomes are reported apart, never summed.
+tasks, which are not counted as output; their defects and revokes count against the outcome's week (scorecard def
+v2, owner 10-19). Code, research and Falcon outcomes are reported apart, never summed.
 - **Criteria set before work.** `record item` stores the acceptance criteria when the item opens: which machine checks
   (CI, gate, tests, browser-check) and which independent review (codex, quick-review, team QA, owner).
 - **Bound to the exact revision**: checks and review must point at the same commit sha or artifact sha256. A review

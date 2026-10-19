@@ -328,3 +328,106 @@ func TestRevisedLineNamesEventsAfterTheBuild(t *testing.T) {
 		}
 	}
 }
+
+// accepted opens an accepted item under parent, accepted at ts.
+func accepted(t *testing.T, db *sql.DB, parent, ts string) string {
+	t.Helper()
+	id, err := store.RecordItem(db, "demo", "sub "+ts, "code", []string{"CI pass"}, parent, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("update item set opened = ?, state = 'accepted' where id = ?", ts, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("insert into acceptance (item, revision, checks, review_ref, accepted_by, ts)"+
+		" values (?, ?, '[]', 'event:1', 'crius', ?)", id, rev, ts); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// Owner 10-19 (P3c): a defect or revoke on an accepted child task, at any depth, counts against its outcome's week
+// (the week the outcome was accepted), not the child's own week and not the week it was found in.
+func TestChildDefectsCountAgainstTheOutcomeWeek(t *testing.T) {
+	db, _ := fixture(t)
+	revoke(t, db, "demo#3") // child of demo#1, week A
+	grand := accepted(t, db, "demo#3", "2026-09-12T07:30:00Z")
+	if _, err := store.RecordDefect(db, store.DefectInput{Item: grand, Title: "slow", FoundBy: "us", Severity: "S3",
+		Class: "silent failure"}); err != nil {
+		t.Fatal(err)
+	}
+	early := accepted(t, db, "demo#4", "2026-09-12T08:00:00Z") // accepted in week A, its outcome in week B
+	revoke(t, db, early)
+	a := build(t, db, "2026-09-12T00:00:00Z", "2026-10-20T00:00:00Z")
+	if n := a.Numbers; n.Code != 1 || n.Revoked != 0 || n.ChildRevoked != 1 || n.Defects != 2 || n.Escapes != 1 {
+		t.Fatalf("week A: %+v\n%s", n, a.Text)
+	}
+	for _, want := range []string{"child tasks 1: demo#3 on abc1234def56 (D-1", "found by us 1, owner 1"} {
+		if !strings.Contains(a.Text, want) {
+			t.Errorf("week A text lacks %q:\n%s", want, a.Text)
+		}
+	}
+	b := build(t, db, "2026-09-18T00:00:00Z", "2026-10-20T00:00:00Z")
+	if n := b.Numbers; n.Code != 1 || n.ChildRevoked != 1 || n.Defects != 1 || n.Escapes != 1 {
+		t.Fatalf("week B: %+v\n%s", n, b.Text)
+	}
+	now := weekOf(t, db, time.Now().UTC().Format(time.RFC3339))
+	if c, err := Build(db, now, time.Now()); err != nil || c.Numbers.ChildRevoked != 0 || c.Numbers.Defects != 0 {
+		t.Fatalf("the week found: %+v %v", c, err)
+	}
+}
+
+// A child revoke after the week was written appends a revised line that names it.
+func TestChildRevokeRevisesTheOutcomeWeek(t *testing.T) {
+	db, home := fixture(t)
+	dir := filepath.Join(home, "state", "scorecards")
+	path, _, err := Write(db, dir, build(t, db, "2026-09-12T00:00:00Z", "2026-09-18T06:00:00Z"), at("2026-09-18T06:00:00Z"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig := testutil.Read(t, path)
+	revoke(t, db, "demo#3")
+	if _, _, err := Write(db, dir, build(t, db, "2026-09-12T00:00:00Z", "2026-09-20T00:00:00Z"), at("2026-09-20T00:00:00Z")); err != nil {
+		t.Fatal(err)
+	}
+	added := strings.TrimPrefix(testutil.Read(t, path), orig)
+	for _, want := range []string{"defects 0 -> 1", "escapes 0 -> 1", "child revoked 0 -> 1", "demo#3 revoked D-1"} {
+		if !strings.Contains(added, want) {
+			t.Errorf("revised line lacks %q: %q", want, added)
+		}
+	}
+	if !strings.Contains(orig, "def v2") {
+		t.Errorf("the definition changed with P3c: %s", orig)
+	}
+}
+
+// Review of P3c (P2): an item accepted twice before a defect counts that defect once, on an outcome and on a child.
+func TestDefectCountsOnceOverTwoAcceptances(t *testing.T) {
+	db, _ := fixture(t)
+	for _, id := range []string{"demo#1", "demo#3"} {
+		if _, err := db.Exec("insert into acceptance (item, revision, checks, review_ref, accepted_by, ts)"+
+			" values (?, ?, '[]', 'event:1', 'crius', '2026-09-12T09:00:00Z')", id, rev); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.RecordDefect(db, store.DefectInput{Item: id, Title: "x", FoundBy: "owner", Severity: "S3",
+			Class: "bad data"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := build(t, db, "2026-09-12T00:00:00Z", "2026-10-20T00:00:00Z").Numbers; n.Defects != 2 || n.Escapes != 2 {
+		t.Fatalf("two defects, each on an item accepted twice: %+v", n)
+	}
+}
+
+// Review of P3c (P2): child tasks are not SQL parameters, so a tree past SQLite's 32766 variables still builds.
+func TestManyChildTasksBuild(t *testing.T) {
+	db, _ := fixture(t)
+	if _, err := db.Exec("with recursive k(n) as (select 1000 union all select n + 1 from k where n < 34000)" +
+		" insert into item (id, project, n, parent, kind, title, criteria, opened, state)" +
+		" select 'demo#' || n, 'demo', n, 'demo#1', 'code', 't', '[]', '2026-09-11T09:00:00Z', 'open' from k"); err != nil {
+		t.Fatal(err)
+	}
+	if c, err := Build(db, weekOf(t, db, "2026-09-12T00:00:00Z"), at("2026-10-20T00:00:00Z")); err != nil || len(c.Children) != 33002 {
+		t.Fatalf("children %v, err %v", c != nil && len(c.Children) > 0, err)
+	}
+}

@@ -20,8 +20,9 @@ import (
 	"github.com/orzazade/crius/internal/redact"
 )
 
-// Def is the scorecard definition; a week written under another one is not compared with this one.
-const Def = "v1"
+// Def is the scorecard definition; a week written under another one is not compared with this one. v2 (owner 10-19,
+// P3c): defects and revokes on the outcomes' accepted child tasks count against the outcome's week.
+const Def = "v2"
 
 const (
 	week   = 7 * 24 * time.Hour
@@ -38,16 +39,17 @@ type Week struct {
 
 // Numbers are what a revised line compares. MaxPct is -1 when the week has no Max sample.
 type Numbers struct {
-	Code, Research, Falcon, Other, Revoked, Defects, Escapes int
-	MaxPct                                                   float64
+	Code, Research, Falcon, Other, Revoked, Defects, Escapes, ChildRevoked int
+	MaxPct                                                                 float64
 }
 
 type Card struct {
-	Week    Week
-	Text    string
-	Numbers Numbers
-	Items   []string // the week's outcomes, revoked ones too
-	Event   int64    // the newest event id when it was built: later events explain a revision
+	Week     Week
+	Text     string
+	Numbers  Numbers
+	Items    []string // the week's outcomes, revoked ones too
+	Children []string // the child tasks under them, at any depth (as corrected)
+	Event    int64    // the newest event id when it was built: later events explain a revision
 }
 
 var (
@@ -204,16 +206,55 @@ func Build(db *sql.DB, w Week, now time.Time) (*Card, error) {
 		counted = append(counted, o)
 	}
 
-	// A defect counts when it was found at or after the acceptance: one found before is no escape (design §7b).
+	// Owner 10-19 (P3c): a defect or revoke on an accepted child task, at any depth (as corrected), counts against
+	// its outcome's week. The tree is walked here from the parents read once, and the queries take it as one JSON
+	// parameter: a large tree is no list of parameters, and a recursive join on item_v's corrected parent has no index
+	// (review of P3c).
+	var childRevoked []outcome
+	if c.Children, err = children(db, c.Items); err != nil {
+		return nil, err
+	}
+	tree, err := json.Marshal(slices.Concat(c.Items, c.Children))
+	if err != nil {
+		return nil, err
+	}
+	kids, err := json.Marshal(c.Children)
+	if err != nil {
+		return nil, err
+	}
+	if len(c.Children) > 0 {
+		rows, err := db.Query("select item, revision, coalesce(defect, ''), coalesce(revoked_ts, '') from acceptance"+
+			" where state = 'revoked' and item in (select value from json_each(?)) order by ts, id", string(kids))
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var o outcome
+			var revokedTS string
+			if err := rows.Scan(&o.id, &o.revision, &o.defect, &revokedTS); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			if o.revoked, err = parse(revokedTS); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("acceptance of %s: %w", o.id, err)
+			}
+			childRevoked = append(childRevoked, o)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		n.ChildRevoked = len(childRevoked)
+	}
+
+	// A defect counts when it was found at or after the acceptance: one found before is no escape (design §7b). Once,
+	// however many acceptances came before it (review of P3c).
 	foundBy := map[string]int{}
 	if len(c.Items) > 0 {
-		q := "select d.found_by, count(*) from defect_v d join acceptance a on a.item = d.item where d.found_ts >= a.ts" +
-			" and a.item in (?" + strings.Repeat(",?", len(c.Items)-1) + ") group by d.found_by"
-		args := make([]any, len(c.Items))
-		for i, id := range c.Items {
-			args[i] = id
-		}
-		rows, err := db.Query(q, args...)
+		q := "select d.found_by, count(*) from defect_v d where d.item in (select value from json_each(?)) and exists" +
+			" (select 1 from acceptance a where a.item = d.item and d.found_ts >= a.ts) group by d.found_by"
+		rows, err := db.Query(q, string(tree))
 		if err != nil {
 			return nil, err
 		}
@@ -276,14 +317,20 @@ func Build(db *sql.DB, w Week, now time.Time) (*Card, error) {
 	lines := []string{head, fmt.Sprintf("Outcomes   code %d · research %d · falcon %d · other %d (%s)%s",
 		n.Code, n.Research, n.Falcon, n.Other, cohort, perProject(byProject))}
 
-	rv := "Revoked    none"
-	if len(revoked) > 0 {
+	named := func(os []outcome) string {
 		var ss []string
-		for _, o := range revoked {
+		for _, o := range os {
 			ss = append(ss, fmt.Sprintf("%s on %s (%s, %s)", o.id, short(o.revision), o.defect,
 				o.revoked.Local().Format("01-02")))
 		}
-		rv = fmt.Sprintf("Revoked    %d of %d: %s", len(revoked), len(all), strings.Join(ss, ", "))
+		return strings.Join(ss, ", ")
+	}
+	rv := "Revoked    none"
+	if len(revoked) > 0 {
+		rv = fmt.Sprintf("Revoked    %d of %d: %s", len(revoked), len(all), named(revoked))
+	}
+	if len(childRevoked) > 0 {
+		rv += fmt.Sprintf(" · child tasks %d: %s", len(childRevoked), named(childRevoked))
 	}
 	lines = append(lines, rv)
 
@@ -293,12 +340,48 @@ func Build(db *sql.DB, w Week, now time.Time) (*Card, error) {
 	}
 	lines = append(lines, qt+" · enterprise $ and project shares: not in def v1 (crius-rec quota: running week)",
 		"Waits      not measured (step 7)", "Flow       "+flow(cycle),
-		fmt.Sprintf("Quality    defects on these outcomes %d (found by us %d, owner %d, others %d) · escapes %d ·"+
+		fmt.Sprintf("Quality    defects on these outcomes and their child tasks %d (found by us %d, owner %d, others %d) · escapes %d ·"+
 			" revoked %d of %d · corrections recorded %d · guards opened %d", n.Defects, foundBy["us"],
 			foundBy["owner"], foundBy["others"], n.Escapes, n.Revoked, len(all), corrections, guards),
 		"Spot-check "+spotCheck(w, counted))
 	c.Text = strings.Join(lines, "\n") + "\n"
 	return c, nil
+}
+
+// children is the child tasks under outcomes at any depth, as corrected, sorted.
+func children(db *sql.DB, outcomes []string) ([]string, error) {
+	rows, err := db.Query("select id, parent from item_v where coalesce(parent, '') != ''")
+	if err != nil {
+		return nil, err
+	}
+	under := map[string][]string{}
+	for rows.Next() {
+		var id, parent string
+		if err := rows.Scan(&id, &parent); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		under[parent] = append(under[parent], id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	var out []string
+	seen := map[string]bool{}
+	for next := slices.Clone(outcomes); len(next) > 0; {
+		id := next[len(next)-1]
+		next = next[:len(next)-1]
+		for _, k := range under[id] {
+			if !seen[k] {
+				seen[k] = true
+				out = append(out, k)
+				next = append(next, k)
+			}
+		}
+	}
+	slices.Sort(out)
+	return out, nil
 }
 
 func short(rev string) string { return rev[:min(len(rev), 12)] }
@@ -367,11 +450,12 @@ func spotCheck(w Week, outs []outcome) string {
 }
 
 type written struct {
-	Def     string
-	Numbers Numbers
-	Items   []string
-	Written string // when Numbers were last written
-	Event   int64  // the newest event id of that build: events after it explain a revision
+	Def      string
+	Numbers  Numbers
+	Items    []string
+	Children []string `json:",omitempty"`
+	Written  string   // when Numbers were last written
+	Event    int64    // the newest event id of that build: events after it explain a revision
 }
 
 // Write saves an ended week as <dir>/<end date>.md with its numbers in .json. A week already written keeps its text;
@@ -385,7 +469,7 @@ func Write(db *sql.DB, dir string, c *Card, now time.Time) (path, what string, e
 	base := filepath.Join(dir, Name(c.Week))
 	path = base + ".md"
 	save := func() error {
-		b, err := json.MarshalIndent(written{Def, c.Numbers, c.Items, now.UTC().Format(stamp), c.Event}, "", " ")
+		b, err := json.MarshalIndent(written{Def, c.Numbers, c.Items, c.Children, now.UTC().Format(stamp), c.Event}, "", " ")
 		if err != nil {
 			return err
 		}
@@ -419,7 +503,7 @@ func Write(db *sql.DB, dir string, c *Card, now time.Time) (path, what string, e
 	if diff == "" {
 		return path, "unchanged", nil
 	}
-	why, err := since(db, old.Event, append(slices.Clone(old.Items), c.Items...))
+	why, err := since(db, old.Event, slices.Concat(old.Items, old.Children, c.Items, c.Children))
 	if err != nil {
 		return "", "", err
 	}
@@ -446,7 +530,7 @@ func changes(a, b Numbers) string {
 		a, b int
 	}{{"code", a.Code, b.Code}, {"research", a.Research, b.Research}, {"falcon", a.Falcon, b.Falcon},
 		{"other", a.Other, b.Other}, {"revoked", a.Revoked, b.Revoked}, {"defects", a.Defects, b.Defects},
-		{"escapes", a.Escapes, b.Escapes}} {
+		{"escapes", a.Escapes, b.Escapes}, {"child revoked", a.ChildRevoked, b.ChildRevoked}} {
 		if f.a != f.b {
 			ss = append(ss, fmt.Sprintf("%s %d -> %d", f.name, f.a, f.b))
 		}
@@ -463,7 +547,8 @@ func changes(a, b Numbers) string {
 	return strings.Join(ss, ", ")
 }
 
-// since names the record events (defect, revoke, correction) after event id that touch one of items.
+// since names the record events (defect, revoke, correction) after event id that touch one of items (outcomes and
+// their child tasks).
 func since(db *sql.DB, id int64, items []string) (string, error) {
 	rows, err := db.Query("select kind, coalesce(item, ''), coalesce(refs, '') from event where id > ? and kind in"+
 		" ('defect', 'revoked', 'correction') order by id", id)
