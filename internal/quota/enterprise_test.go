@@ -32,7 +32,7 @@ const usageReply = `{"five_hour":null,"seven_day":null,"copper_kite":{"utilizati
 func body(included string, usedMinor int, enabled, reached bool) string {
 	return fmt.Sprintf(`{"a":%s,"spend":{"used":{"amount_minor":%d,"currency":"USD","exponent":2},`+
 		`"limit":{"amount_minor":60000,"currency":"USD","exponent":2},"enabled":%v},`+
-		`"extra_usage":{"monthly_limit":60000,"decimal_places":2,"spend_limit_reached":%v}}`, included, usedMinor, enabled, reached)
+		`"extra_usage":{"monthly_limit":60000,"decimal_places":2,"currency":"USD","spend_limit_reached":%v}}`, included, usedMinor, enabled, reached)
 }
 
 const incOK = `{"limit_dollars":2000,"used_dollars":5,"resets_at":"2026-11-14T18:28:47Z","locked_reason":null}`
@@ -209,5 +209,31 @@ func TestUsageClientSpeaksHTTP1(t *testing.T) {
 	resp.Body.Close()
 	if proto != 1 {
 		t.Fatal("HTTP", proto)
+	}
+}
+
+// Codex review of 72e9793 (four P2), each on today's reply with one change.
+func TestEntReviewOf72e9793(t *testing.T) {
+	ok := login(monthNow.Add(time.Hour))
+	edit := func(old, new string) string {
+		if !strings.Contains(usageReply, old) {
+			t.Fatal("not in reply:", old)
+		}
+		return strings.Replace(usageReply, old, new, 1)
+	}
+	// 1. An exponent out of range gives no number (an infinite one emptied the --room line).
+	cannotRead(t, ReadEntUsage(ok, reply(200, edit(`"used":{"amount_minor":0,"currency":"USD","exponent":2}`,
+		`"used":{"amount_minor":1,"currency":"USD","exponent":-400}`)), monthNow), "exponent")
+	// 2. A limit object nested inside a known container is unknown too.
+	cannotRead(t, ReadEntUsage(ok, reply(200, edit(`"daily":null`, `"daily":{"limit_dollars":10,"used_dollars":10}`)),
+		monthNow), "extra_usage.daily")
+	cannotRead(t, ReadEntUsage(ok, reply(200, edit(`"money":null`, `"money":{"amount_minor":5}`)), monthNow),
+		"spend.cap.money")
+	// 3. extra_usage in another currency does not agree with a USD limit.
+	cannotRead(t, ReadEntUsage(ok, reply(200, edit(`"utilization":null,"currency":"USD"`,
+		`"utilization":null,"currency":"EUR"`)), monthNow), "currency")
+	// 4. Emptiness is decoded, not compared as text: an empty limits list with a space is still empty.
+	if m := ReadEntUsage(ok, reply(200, edit(`"limits":[]`, `"limits":[ ]`)), monthNow); !m.Read {
+		t.Fatal(m.Reason)
 	}
 }

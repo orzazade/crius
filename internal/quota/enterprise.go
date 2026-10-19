@@ -8,9 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"net/http"
 	"os/exec"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -50,9 +52,54 @@ var ErrNoLogin = errors.New("no login")
 // UsageURL is the endpoint Claude Code's /usage reads with the same login.
 const UsageURL = "https://api.anthropic.com/api/oauth/usage"
 
-// limitWords: an object whose JSON holds one of these is about a dollar limit. One this code does not know is a
-// reply it does not understand (Crius NEED 15:06): cannot read, never ignored.
+// limitWords: a key holding one of these is about a dollar limit. One with a value at a path this code does not
+// read (knownPaths, and the included usage's own fields) is a reply it does not understand (Crius NEED 15:06):
+// cannot read, never ignored, at any depth (codex review of 72e9793).
 var limitWords = []string{"limit", "dollars", "credits", "amount_minor"}
+
+var knownPaths = map[string]bool{"spend.used.amount_minor": true, "spend.limit": true, "spend.limit.amount_minor": true,
+	"spend.cap.credits": true, "spend.cap.credits.amount_minor": true, "spend.can_purchase_credits": true,
+	"extra_usage.monthly_limit": true, "extra_usage.used_credits": true, "extra_usage.spend_limit_reached": true,
+	"extra_usage.credits_ever_enabled": true}
+
+// limitPaths adds to out the paths under v whose key names a dollar limit and holds a value, other than known ones.
+func limitPaths(v any, path string, known map[string]bool, out *[]string) {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, c := range t {
+			p := k
+			if path != "" {
+				p = path + "." + k
+			}
+			if !known[p] && hasValue(c) && slices.ContainsFunc(limitWords, func(w string) bool { return strings.Contains(k, w) }) {
+				*out = append(*out, p)
+				continue
+			}
+			limitPaths(c, p, known, out)
+		}
+	case []any:
+		for i, c := range t {
+			limitPaths(c, fmt.Sprintf("%s[%d]", path, i), known, out)
+		}
+	}
+}
+
+// hasValue: not null and not an empty list or object, as decoded.
+func hasValue(v any) bool {
+	switch t := v.(type) {
+	case nil:
+		return false
+	case []any:
+		return len(t) > 0
+	case map[string]any:
+		return len(t) > 0
+	}
+	return true
+}
+
+// validExp: a decimal exponent a dollar amount can have; another one is a reply not understood, never an infinite
+// or vanishing number (codex review of 72e9793).
+func validExp(e *int) bool { return e != nil && *e >= 0 && *e <= 6 }
 
 // ReadEntUsage reads the account with the login that login returns (Claude Code's keychain item) through get.
 func ReadEntUsage(login func() ([]byte, error), get func(token string) (int, []byte, error), now time.Time) EntUsage {
@@ -89,7 +136,8 @@ func ReadEntUsage(login func() ([]byte, error), get func(token string) (int, []b
 		return no("usage endpoint HTTP %d", code)
 	}
 	var top map[string]json.RawMessage
-	if err := json.Unmarshal(body, &top); err != nil {
+	var tree any
+	if json.Unmarshal(body, &top) != nil || json.Unmarshal(body, &tree) != nil {
 		return no("usage reply is not a JSON object")
 	}
 	// Included usage sits under a code name that may change: it is the one object with a dollar limit, the dollars
@@ -118,16 +166,12 @@ func ReadEntUsage(login func() ([]byte, error), get func(token string) (int, []b
 				continue
 			}
 		}
-		if k == "spend" || k == "extra_usage" || string(raw) == "null" || string(raw) == "[]" {
-			continue
-		}
-		for _, w := range limitWords {
-			if strings.Contains(k, w) || strings.Contains(string(raw), w) {
-				unknown = append(unknown, k)
-				break
-			}
-		}
 	}
+	known := maps.Clone(knownPaths)
+	for _, k := range keys {
+		known[k+".limit_dollars"], known[k+".used_dollars"], known[k+".remaining_dollars"] = true, true, true
+	}
+	limitPaths(tree, "", known, &unknown)
 	sort.Strings(keys)
 	sort.Strings(unknown)
 	switch {
@@ -155,6 +199,7 @@ func ReadEntUsage(login func() ([]byte, error), get func(token string) (int, []b
 
 	// The spend limit: spend gives used and limit with their exponents; extra_usage says whether the limit is reached
 	// and repeats the limit in minor units, which must agree.
+	// The cap's credits, when there, repeat the limit too.
 	type money struct {
 		Minor    *int64 `json:"amount_minor"`
 		Currency string `json:"currency"`
@@ -164,14 +209,18 @@ func ReadEntUsage(login func() ([]byte, error), get func(token string) (int, []b
 		Used    *money `json:"used"`
 		Limit   *money `json:"limit"`
 		Enabled *bool  `json:"enabled"`
+		Cap     *struct {
+			Credits *money `json:"credits"`
+		} `json:"cap"`
 	}
 	var x struct {
-		Limit   *int64 `json:"monthly_limit"`
-		Places  *int   `json:"decimal_places"`
-		Reached *bool  `json:"spend_limit_reached"`
+		Limit    *int64 `json:"monthly_limit"`
+		Places   *int   `json:"decimal_places"`
+		Currency string `json:"currency"`
+		Reached  *bool  `json:"spend_limit_reached"`
 	}
 	usd := func(m *money) (float64, bool) {
-		if m == nil || m.Minor == nil || m.Exponent == nil || m.Currency != "USD" {
+		if m == nil || m.Minor == nil || m.Currency != "USD" {
 			return 0, false
 		}
 		return float64(*m.Minor) / math.Pow10(*m.Exponent), true
@@ -181,15 +230,27 @@ func ReadEntUsage(login func() ([]byte, error), get func(token string) (int, []b
 			return no("spend limit %s in the usage reply does not decode", k)
 		}
 	}
+	for _, m := range []*money{s.Used, s.Limit} {
+		if m != nil && !validExp(m.Exponent) {
+			return no("spend limit exponent in the usage reply is missing or out of range")
+		}
+	}
 	used, okU := usd(s.Used)
 	limit, okL := usd(s.Limit)
 	switch {
 	case !okU || !okL || s.Enabled == nil:
 		return no("no spend limit in the usage reply (spend.used, spend.limit, spend.enabled in USD)")
-	case x.Limit == nil || x.Places == nil || x.Reached == nil:
+	case x.Limit == nil || x.Reached == nil:
 		return no("no spend limit state in the usage reply (extra_usage)")
+	case !validExp(x.Places):
+		return no("spend limit decimal_places exponent in the usage reply is missing or out of range")
+	case x.Currency != "USD":
+		return no("spend limit currency %q in extra_usage, not USD", x.Currency)
 	case float64(*x.Limit)/math.Pow10(*x.Places) != limit:
 		return no("spend limit disagrees: spend %v dollars, extra_usage %d at %d places", limit, *x.Limit, *x.Places)
+	case s.Cap != nil && s.Cap.Credits != nil && (s.Cap.Credits.Minor == nil || !validExp(s.Cap.Credits.Exponent) ||
+		float64(*s.Cap.Credits.Minor)/math.Pow10(*s.Cap.Credits.Exponent) != limit):
+		return no("spend limit disagrees: spend %v dollars, cap credits differ or out of range", limit)
 	case used < 0 || limit < 0:
 		return no("spend limit of %v dollars with %v used is not a limit", limit, used)
 	}
