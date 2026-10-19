@@ -1,8 +1,8 @@
 # crius:build — RESUME (contract: docs/notes/COST-LEVER3-FRESH.md §2, max 120 lines)
 
-Updated 2026-10-19 by session 6cfda64f (statusline 47e7913, P3c c133717+27c2a73 shipped; next P4). Last bus line read: 2026-10-19T17:19 ORDER.
+Updated 2026-10-19 by session 8e8a8321 (P4 e304c4d shipped; next P5). Last bus line read: 2026-10-19T17:46 ORDER.
 Last owner message seen: 2026-10-19 ~17:25 (child roll-up answer, via Crius).
-main = origin/main = 27c2a73 (P3c) + this RESUME commit. Local main ref is behind: it is checked out in Crius's worktree main-rules. History: docs/notes/RESUME-HISTORY.md.
+main = origin/main = e304c4d (P4) + this RESUME commit. Local main ref is behind: it is checked out in Crius's worktree main-rules. History: docs/notes/RESUME-HISTORY.md.
 
 ## OWNER DECISIONS (append-only, verbatim, dated)
 
@@ -46,18 +46,22 @@ Goal: build the Crius record (design §9 steps 1-9) so Crius answers the owner's
 - [ ] 6 record accept + scorecard
 - [ ] 9 Falcon source
 Done: 70% (7 of 10 required steps incl. 3b, equal weight; 7 and 8 only if needed)
-Next: step 6 P4 parity with review-1016
+Next: step 6 P5 restore-after-expiry test
 Needs owner: nothing
 
 ## NOW
 
-P3c DONE: main c133717 + 27c2a73 (codex FINDINGS P1=0 P2=2 P3=0, fixed red first). Scorecard def v2: Build walks the
-outcomes' child tree from item_v in Go (children()), passes it as one JSON parameter (json_each); child defects
-(found at/after the child's acceptance, counted once) go into Defects/escapes, child revokes into ChildRevoked
-(Revoked line, revised lines; since() names child events via Card/written Children).
-Known, not changed: an outcome with two acceptance rows counts twice in Outcomes (store refuses a 2nd accept,
+P4 DONE: main e304c4d (codex FINDINGS P1=0 P2=6 P3=0, all fixed red first). `crius-rec drivers --from --to
+[--json | --compare REF]` = M11 per persona (all days, UTC weekdays); research/parity-1016/ref.py makes the reference
+from the frozen review-1016 extract. 10-10..10-16T07:52:27Z: store within 0.01% (personal 24,049 main calls, $1,837.09,
+69 compactions, $0.0763/main call weekdays; both personas weekdays = REPORT's 0.079). Stamps compared via julianday.
+Known: a request copied into several transcripts: extract keeps the first walked copy, store the largest usage (10-11:
+1 call, 0.01%). Design line ~457 says baseline 0.126 $/main call; REPORT §4 says 0.079: flagged to Crius, not changed.
+For the 10-23 read: `crius-rec drivers --from 2026-10-16 --to 2026-10-23` (P7).
+
+P3c DONE: main c133717 + 27c2a73 (scorecard def v2: child defects/revokes count on the outcome's week). Known, not changed: an outcome with two acceptance rows counts twice in Outcomes (store refuses a 2nd accept,
 accept.go:181, so unreachable via the CLI); gofmt flags internal/store/defect.go (older).
-Work statusline done 47e7913. Next: P4, red first.
+Work statusline done 47e7913.
 
 ## Open work (step 6 checklist; each part red first, then build, codex review, one DONE with evidence + commit)
 
@@ -75,7 +79,7 @@ Spec: design §9 row 6, §3c tables (acceptance, defect, correction), §7 (M1, M
 3b. [ ] P3b per-week enterprise $ + project shares in the scorecard (needs a quota.Build for a past epoch).
 3c. [x] P3c (c133717 + 27c2a73) child roll-up (owner 10-19 ~17:25): a defect/revoke on an accepted child task lowers the parent
    outcome's week. Red: child revoke shows on the outcome week's scorecard.
-4. [ ] P4 parity with review-1016 (tools/agent-cost/review-1016 REPORT §4: $/main call on weekdays, compactions,
+4. [x] P4 (e304c4d) parity with review-1016 (tools/agent-cost/review-1016 REPORT §4: $/main call on weekdays, compactions,
    10-10..10-16 personal): store numbers within 2%. Red: the compare fails on a number moved by 3%.
 5. [ ] P5 restore-after-expiry test (design §3c): newest backup -> scratch DB, transcripts > 30 d hidden,
    regenerate a matured week, compare with its file; weekly launchd; `health` shows the result. Red: a changed
@@ -104,10 +108,10 @@ Spec: design §9 row 6, §3c tables (acceptance, defect, correction), §7 (M1, M
 
 ## Running things
 
-- Worktree <scratchpad 6cfda64f>/wt on feat/work-statusline (= main). No watchers, no background jobs. Ship script:
-  <scratchpad 6cfda64f>/ship.sh (branch feat/work-statusline). No scorecard launchd job yet (weekly run: with P5).
-- launchd: space.scifilab.crius.{ingest,watchdog,digest,wait-sweep} run ~/.crius/bin (installed from 27c2a73;
-  previous binaries kept as <scratchpad 6cfda64f>/crius-*.before-<sha>).
+- Worktree <scratchpad 8e8a8321>/wt on feat/p4-parity (= main). No watchers, no background jobs. Ship script:
+  <scratchpad 8e8a8321>/ship.sh (branch feat/p4-parity). No scorecard launchd job yet (weekly run: with P5).
+- launchd: space.scifilab.crius.{ingest,watchdog,digest,wait-sweep} run ~/.crius/bin (installed from e304c4d;
+  previous binaries kept as <scratchpad 8e8a8321>/crius-*.before-<sha>).
 - Old worktrees from earlier sessions (git worktree list): not mine to remove; listed for Crius.
 
 ## Not in this file
