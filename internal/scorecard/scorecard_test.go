@@ -248,3 +248,83 @@ func TestRewriteAppendsARevisedLine(t *testing.T) {
 		t.Fatal("no numbers file next to the scorecard:", err)
 	}
 }
+
+// Review of 61fdb75 (P2): a defect filed before the acceptance is no escape of the accepted outcome.
+func TestDefectBeforeAcceptanceIsNotCounted(t *testing.T) {
+	db, _ := fixture(t)
+	if _, err := store.RecordDefect(db, store.DefectInput{Item: "demo#2", Title: "typo", FoundBy: "owner",
+		Severity: "S3", Class: "bad data"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("update defect set found_ts = '2026-09-12T00:00:00Z'"); err != nil {
+		t.Fatal(err)
+	}
+	if n := build(t, db, "2026-09-12T00:00:00Z", "2026-09-20T00:00:00Z").Numbers; n.Defects != 0 || n.Escapes != 0 {
+		t.Fatalf("a defect found before demo#2 was accepted: %+v", n)
+	}
+}
+
+// Review of 61fdb75 (P2, P3): --week names the UTC day a week ends, also when it ends at 00:00, in any zone.
+func TestWeekEndingFindsAWeekEndingAtMidnight(t *testing.T) {
+	db, _ := fixture(t)
+	for _, zone := range []*time.Location{time.UTC, time.FixedZone("x", -5*3600), time.FixedZone("y", 4*3600)} {
+		time.Local = zone
+		w, err := WeekEnding(db, "2026-09-17")
+		if err != nil || !w.End.Equal(at("2026-09-17T00:00:00Z")) {
+			t.Errorf("%s: %+v %v", zone, w, err)
+		}
+		if _, err := WeekEnding(db, "2026-09-16"); err == nil {
+			t.Errorf("%s: no week ends on 09-16", zone)
+		}
+		if Name(w) != "2026-09-17" {
+			t.Errorf("%s: name %s", zone, Name(w))
+		}
+	}
+	time.Local = time.FixedZone("CEST", 2*3600)
+}
+
+// Review of 61fdb75 (P3): resets read within an hour of the one before are one reset, and its samples one week's.
+func TestEpochChainIsOneWeekEnd(t *testing.T) {
+	db, _ := fixture(t)
+	if _, err := db.Exec("insert into quota (source_key, ts, account, epoch, seven_day_pct, sample_kind) values" +
+		" ('q3', '2026-09-16T10:00:00Z', 'max', 1789606200, 80, 'session')," +
+		" ('q4', '2026-09-16T11:00:00Z', 'max', 1789607200, 75, 'session')"); err != nil {
+		t.Fatal(err)
+	}
+	if w := weekOf(t, db, "2026-09-17T00:30:00Z"); !w.Start.Equal(at("2026-09-17T00:00:00Z")) ||
+		!w.End.Equal(at("2026-09-24T00:00:00Z")) {
+		t.Fatalf("week after the chain: %s..%s", w.Start.UTC(), w.End.UTC())
+	}
+	if n := build(t, db, "2026-09-12T00:00:00Z", "2026-09-20T00:00:00Z").Numbers; n.MaxPct != 80 {
+		t.Fatalf("week A takes the chain's samples: %+v", n)
+	}
+	if n := build(t, db, "2026-09-18T00:00:00Z", "2026-09-20T00:00:00Z").Numbers; n.MaxPct != -1 {
+		t.Fatalf("week B has none of them: %+v", n)
+	}
+}
+
+// Review of 61fdb75 (P3): an event recorded after a build is named by the next revision, whatever the clocks say.
+func TestRevisedLineNamesEventsAfterTheBuild(t *testing.T) {
+	db, home := fixture(t)
+	dir := filepath.Join(home, "state", "scorecards")
+	late := "2027-01-01T00:00:00Z" // a write stamped after the events below
+	c := build(t, db, "2026-09-12T00:00:00Z", late)
+	revoke(t, db, "demo#1")
+	if _, err := store.RecordCorrect(db, store.CorrectInput{Target: "demo#2", Field: "kind", Value: "code",
+		Reason: "it shipped code", By: "crius"}); err != nil {
+		t.Fatal(err)
+	}
+	path, _, err := Write(db, dir, c, at(late))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Write(db, dir, build(t, db, "2026-09-12T00:00:00Z", late), at(late)); err != nil {
+		t.Fatal(err)
+	}
+	got := testutil.Read(t, path)
+	for _, want := range []string{"demo#1 revoked D-1", "D-1 on demo#1", "C-1 on demo#2"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("revised line lacks %q:\n%s", want, got)
+		}
+	}
+}

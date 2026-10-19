@@ -29,8 +29,12 @@ const (
 	stamp  = "2006-01-02T15:04:05Z"
 )
 
-// Week is [Start, End): End is a Max seven-day reset.
-type Week struct{ Start, End time.Time }
+// Week is [Start, End): End is a Max seven-day reset. Lo..Hi are the resets read for End (one reset read a few
+// seconds apart); a week stepped from a sampled one has Lo = Hi = End and no samples.
+type Week struct {
+	Start, End time.Time
+	Lo, Hi     int64
+}
 
 // Numbers are what a revised line compares. MaxPct is -1 when the week has no Max sample.
 type Numbers struct {
@@ -43,11 +47,13 @@ type Card struct {
 	Text    string
 	Numbers Numbers
 	Items   []string // the week's outcomes, revoked ones too
+	Event   int64    // the newest event id when it was built: later events explain a revision
 }
 
 var (
 	ErrNoWeeks = errors.New("no Max quota sample: week boundaries unknown")
 	ErrRunning = errors.New("the week has not ended")
+	ErrNoWeek  = errors.New("no such week")
 )
 
 // WeekOf gives the week holding t. Week ends are the sampled Max epochs (quota.epoch, the seven-day resets_at);
@@ -60,16 +66,19 @@ func WeekOf(db *sql.DB, t time.Time) (Week, error) {
 		return Week{}, err
 	}
 	var ends []time.Time
+	var span [][2]int64 // per end, the resets read for it
 	for rows.Next() {
 		var e int64
 		if err := rows.Scan(&e); err != nil {
 			rows.Close()
 			return Week{}, err
 		}
-		// one reset read a second apart is the same reset (the quota report's tolerance)
-		if n := len(ends); n == 0 || e-ends[n-1].Unix() >= 3600 {
-			ends = append(ends, time.Unix(e, 0))
+		// a reset read within an hour of the one before is the same reset (the quota report's tolerance)
+		if n := len(span); n > 0 && e-span[n-1][1] < 3600 {
+			span[n-1][1] = e
+			continue
 		}
+		ends, span = append(ends, time.Unix(e, 0)), append(span, [2]int64{e, e})
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
@@ -80,7 +89,7 @@ func WeekOf(db *sql.DB, t time.Time) (Week, error) {
 	}
 	if last := ends[len(ends)-1]; !t.Before(last) {
 		end := last.Add((t.Sub(last)/week + 1) * week)
-		return Week{end.Add(-week), end}, nil
+		return Week{end.Add(-week), end, end.Unix(), end.Unix()}, nil
 	}
 	i := sort.Search(len(ends), func(i int) bool { return ends[i].After(t) }) // the nearest later end
 	k := (ends[i].Sub(t) - 1) / week
@@ -89,7 +98,37 @@ func WeekOf(db *sql.DB, t time.Time) (Week, error) {
 	if i > 0 && start.Before(ends[i-1]) {
 		start = ends[i-1]
 	}
-	return Week{start, end}, nil
+	if k == 0 {
+		return Week{start, end, span[i][0], span[i][1]}, nil
+	}
+	return Week{start, end, end.Unix(), end.Unix()}, nil
+}
+
+// Name is a week's file name and --week value: the UTC day it ends, the same in every zone.
+func Name(w Week) string { return w.End.UTC().Format("2006-01-02") }
+
+// WeekEnding gives the week that ends on the UTC day (YYYY-MM-DD); with two, the later one.
+func WeekEnding(db *sql.DB, day string) (Week, error) {
+	d, err := time.Parse("2006-01-02", day)
+	if err != nil {
+		return Week{}, fmt.Errorf("--week must be YYYY-MM-DD, got %q", day)
+	}
+	w, err := WeekOf(db, d.Add(-time.Nanosecond)) // the week holding the day's start ends on it or later
+	for err == nil {
+		next, err := WeekOf(db, w.End)
+		if err != nil {
+			return Week{}, err
+		}
+		if Name(next) != day {
+			break
+		}
+		w = next
+	}
+	if err == nil && Name(w) != day {
+		err = fmt.Errorf("%w: no quota week ends on %s (UTC); the weeks around it end %s and %s (%s local)", ErrNoWeek,
+			day, Name(Week{End: w.Start}), Name(w), w.Start.Local().Format("Mon 01-02 15:04"))
+	}
+	return w, err
 }
 
 type outcome struct {
@@ -165,10 +204,11 @@ func Build(db *sql.DB, w Week, now time.Time) (*Card, error) {
 		counted = append(counted, o)
 	}
 
+	// A defect counts when it was found at or after the acceptance: one found before is no escape (design §7b).
 	foundBy := map[string]int{}
 	if len(c.Items) > 0 {
-		q := "select found_by, count(*) from defect_v where item in (?" + strings.Repeat(",?", len(c.Items)-1) +
-			") group by found_by"
+		q := "select d.found_by, count(*) from defect_v d join acceptance a on a.item = d.item where d.found_ts >= a.ts" +
+			" and a.item in (?" + strings.Repeat(",?", len(c.Items)-1) + ") group by d.found_by"
 		args := make([]any, len(c.Items))
 		for i, id := range c.Items {
 			args[i] = id
@@ -205,7 +245,8 @@ func Build(db *sql.DB, w Week, now time.Time) (*Card, error) {
 		{"select count(distinct g.id) from defect d join item g on g.id = d.guard_item where g.opened >= ?" +
 			" and g.opened < ?", []any{from, to}, []any{&guards}},
 		{"select count(*), max(seven_day_pct) from quota where account = 'max' and seven_day_pct is not null" +
-			" and abs(epoch - ?) < 3600", []any{w.End.Unix()}, []any{&samples, &maxPct}},
+			" and epoch between ? and ?", []any{w.Lo, w.Hi}, []any{&samples, &maxPct}},
+		{"select coalesce(max(id), 0) from event", nil, []any{&c.Event}},
 	} {
 		if err := db.QueryRow(q.sql, q.args...).Scan(q.dst...); err != nil {
 			return nil, err
@@ -329,7 +370,8 @@ type written struct {
 	Def     string
 	Numbers Numbers
 	Items   []string
-	Written string // when Numbers were last written; events after it explain a revision
+	Written string // when Numbers were last written
+	Event   int64  // the newest event id of that build: events after it explain a revision
 }
 
 // Write saves an ended week as <dir>/<end date>.md with its numbers in .json. A week already written keeps its text;
@@ -340,10 +382,10 @@ func Write(db *sql.DB, dir string, c *Card, now time.Time) (path, what string, e
 		return "", "", fmt.Errorf("%w: it ends %s; print it without --write", ErrRunning,
 			c.Week.End.Local().Format("Mon 01-02 15:04"))
 	}
-	base := filepath.Join(dir, c.Week.End.Local().Format("2006-01-02"))
+	base := filepath.Join(dir, Name(c.Week))
 	path = base + ".md"
 	save := func() error {
-		b, err := json.MarshalIndent(written{Def, c.Numbers, c.Items, now.UTC().Format(stamp)}, "", " ")
+		b, err := json.MarshalIndent(written{Def, c.Numbers, c.Items, now.UTC().Format(stamp), c.Event}, "", " ")
 		if err != nil {
 			return err
 		}
@@ -377,11 +419,11 @@ func Write(db *sql.DB, dir string, c *Card, now time.Time) (path, what string, e
 	if diff == "" {
 		return path, "unchanged", nil
 	}
-	why, err := since(db, old.Written, append(slices.Clone(old.Items), c.Items...))
+	why, err := since(db, old.Event, append(slices.Clone(old.Items), c.Items...))
 	if err != nil {
 		return "", "", err
 	}
-	line, _ := redact.Redact(fmt.Sprintf("revised %s: %s (%s)\n", now.Local().Format("2006-01-02"), diff, why))
+	line, _ := redact.Redact(fmt.Sprintf("revised %s: %s (%s)\n", now.UTC().Format("2006-01-02"), diff, why))
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
 	if err != nil {
 		return "", "", err
@@ -421,10 +463,10 @@ func changes(a, b Numbers) string {
 	return strings.Join(ss, ", ")
 }
 
-// since names the record events (defect, revoke, correction) after ts that touch one of items.
-func since(db *sql.DB, ts string, items []string) (string, error) {
-	rows, err := db.Query("select kind, coalesce(item, ''), coalesce(refs, '') from event where ts > ? and kind in"+
-		" ('defect', 'revoked', 'correction') order by ts, id", ts)
+// since names the record events (defect, revoke, correction) after event id that touch one of items.
+func since(db *sql.DB, id int64, items []string) (string, error) {
+	rows, err := db.Query("select kind, coalesce(item, ''), coalesce(refs, '') from event where id > ? and kind in"+
+		" ('defect', 'revoked', 'correction') order by id", id)
 	if err != nil {
 		return "", err
 	}

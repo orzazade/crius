@@ -56,7 +56,7 @@ const usage = `usage: crius-rec init
        crius-rec health [--json]
        crius-rec digest [--write [--print-path]]   (the goal report; --write saves it under state/digest/,
                  --print-path prints the saved path instead of the report)
-       crius-rec scorecard [--week YYYY-MM-DD] [--write]   (the quota week ending that day, default the running one;
+       crius-rec scorecard [--week YYYY-MM-DD] [--write]   (the quota week ending that UTC day, default the running one;
                  --write saves an ended week under state/scorecards/, a changed one gets a revised line)
 `
 
@@ -143,7 +143,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	case "scorecard":
 		fs := flag.NewFlagSet("scorecard", flag.ContinueOnError)
 		fs.SetOutput(stderr)
-		day := fs.String("week", "", "the local day the quota week ends")
+		day := fs.String("week", "", "the UTC day the quota week ends")
 		write := fs.Bool("write", false, "save the ended week under state/scorecards/")
 		if fs.Parse(args) != nil || fs.NArg() > 0 {
 			return exitUsage
@@ -733,31 +733,28 @@ func digestCmd(home string, now time.Time, write, printPath bool, stdout, stderr
 }
 
 func scorecardCmd(home string, now time.Time, day string, write bool, stdout, stderr io.Writer) int {
-	at := now
-	if day != "" {
-		d, err := time.ParseInLocation("2006-01-02", day, time.Local)
-		if err != nil {
-			fmt.Fprintf(stderr, "--week must be YYYY-MM-DD, got %q\n", day)
-			return exitUsage
-		}
-		at = d
-	}
 	db, rc := openStore(home, stderr)
 	if db == nil {
 		return rc
 	}
 	defer db.Close()
-	w, err := scorecard.WeekOf(db, at)
+	var w scorecard.Week
+	var err error
+	if day != "" {
+		w, err = scorecard.WeekEnding(db, day)
+	} else {
+		w, err = scorecard.WeekOf(db, now)
+	}
 	switch {
 	case errors.Is(err, scorecard.ErrNoWeeks):
 		fmt.Fprintf(stderr, "unavailable: %v\n", err)
 		return exitUnavailable
+	case errors.Is(err, scorecard.ErrNoWeek):
+		fmt.Fprintln(stderr, err)
+		return exitUsage
 	case err != nil:
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return exitError
-	case day != "" && w.End.Local().Format("2006-01-02") != day:
-		fmt.Fprintf(stderr, "no quota week ends on %s; the one holding it ends %s\n", day, w.End.Local().Format("2006-01-02 15:04"))
-		return exitUsage
 	}
 	c, err := scorecard.Build(db, w, now)
 	if err != nil {
