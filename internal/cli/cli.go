@@ -340,15 +340,26 @@ func recordWith(home string, f func(*sql.DB) (string, error)) (string, error) {
 	return out, errors.Join(err, db.Close())
 }
 
+// readMonth reads the Enterprise month with the ~/.claude-work login (a variable so tests never reach the keychain
+// or the network).
+var readMonth = func(now time.Time) quota.Monthly {
+	u, err := os.UserHomeDir()
+	if err != nil {
+		return quota.Monthly{Reason: fmt.Sprintf("home: %v", err)}
+	}
+	return quota.ReadMonthly(quota.KeychainLogin(filepath.Join(u, ".claude-work")), quota.UsageGet, now)
+}
+
 // quotaCmd prints the two quota blocks (or the report as JSON), starting with the status and its reasons; anything
-// but complete exits partial.
+// but complete exits partial. The Enterprise month not read makes the report partial.
 func quotaCmd(home string, now time.Time, asJSON, room bool, stdout, stderr io.Writer) int {
+	month := readMonth(now)
 	// fail says why on stderr; with --room every failure is also an "unknown" verdict on stdout, the one line a
 	// launcher reads, with a short reason (the full one is on stderr).
 	fail := func(rc int, reason, msg string) int {
 		fmt.Fprintln(stderr, msg)
 		if room {
-			roomLine(stdout, "unknown", reason, nil)
+			roomLine(stdout, "unknown", reason, nil, month)
 			return exitUnavailable
 		}
 		return rc
@@ -369,9 +380,14 @@ func quotaCmd(home string, now time.Time, asJSON, room bool, stdout, stderr io.W
 	if err != nil {
 		return fail(exitError, "quota report error", fmt.Sprintf("error: %v", err))
 	}
+	rep.EntMonth = &month
+	if !month.Read {
+		rep.Status = "partial"
+		rep.Reasons = append(rep.Reasons, "enterprise monthly limit: cannot read ("+month.Reason+")")
+	}
 	if room {
 		v, reason := quota.Room(rep)
-		roomLine(stdout, v, reason, rep)
+		roomLine(stdout, v, reason, rep, month)
 		switch v {
 		case "room":
 			return 0
@@ -398,8 +414,16 @@ func quotaCmd(home string, now time.Time, asJSON, room bool, stdout, stderr io.W
 }
 
 // roomLine is the --room answer: one JSON line. Launchers read verdict and reason; the numbers are null when there
-// is no report.
-func roomLine(w io.Writer, verdict, reason string, r *quota.Report) {
+// is no report. Fallback is the Enterprise month's own verdict (its numbers null when not read); the exit code stays
+// the Max verdict's.
+func roomLine(w io.Writer, verdict, reason string, r *quota.Report, m quota.Monthly) {
+	type fallback struct {
+		Verdict string   `json:"verdict"`
+		Reason  string   `json:"reason"`
+		Used    *float64 `json:"used"`
+		Limit   *float64 `json:"limit"`
+		Reset   string   `json:"reset"`
+	}
 	v := struct {
 		Verdict    string   `json:"verdict"`
 		Reason     string   `json:"reason"`
@@ -407,7 +431,13 @@ func roomLine(w io.Writer, verdict, reason string, r *quota.Report) {
 		Five       *float64 `json:"five"`
 		Reset      string   `json:"reset"`
 		SampleAgeS *int64   `json:"sample_age_s"`
+		Fallback   fallback `json:"fallback"`
 	}{Verdict: verdict, Reason: reason}
+	v.Fallback.Verdict, v.Fallback.Reason = m.Room()
+	if m.Read {
+		v.Fallback.Used, v.Fallback.Limit = &m.UsedUSD, &m.LimitUSD
+		v.Fallback.Reset = m.Reset.UTC().Format(time.RFC3339)
+	}
 	if r != nil && !r.SevenAt.IsZero() {
 		age := int64(r.Now.Sub(r.MeasuredAt()).Seconds())
 		v.Seven, v.Five, v.SampleAgeS = &r.SevenPct, &r.FivePct, &age
