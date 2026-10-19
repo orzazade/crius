@@ -142,10 +142,13 @@ func TestOutcomesCountTopLevelItemsOfTheWeek(t *testing.T) {
 		t.Fatalf("week A: %+v\n%s", n, a.Text)
 	}
 	for _, want := range []string{"code 1 · research 1 · falcon 0 · other 0 (provisional", "71% observed",
-		"status complete", "def v1"} {
+		"status complete", "def " + Def} {
 		if !strings.Contains(a.Text, want) {
 			t.Errorf("week A text lacks %q:\n%s", want, a.Text)
 		}
+	}
+	if strings.Count(a.Text, "def v") != strings.Count(a.Text, "def "+Def) {
+		t.Errorf("the text names another definition than %s:\n%s", Def, a.Text)
 	}
 	b := build(t, db, "2026-09-18T00:00:00Z", "2026-09-20T00:00:00Z")
 	if n := b.Numbers; n.Code != 1 || n.Research != 0 || n.MaxPct != -1 {

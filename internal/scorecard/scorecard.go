@@ -338,7 +338,7 @@ func Build(db *sql.DB, w Week, now time.Time) (*Card, error) {
 	if maxPct.Valid {
 		qt = fmt.Sprintf("Quota      Max (both personas): %.0f%% observed (%d samples)", maxPct.Float64, samples)
 	}
-	lines = append(lines, qt+" · enterprise $ and project shares: not in def v1 (crius-rec quota: running week)",
+	lines = append(lines, qt+" · enterprise $ and project shares: not in def "+Def+" (crius-rec quota: running week)",
 		"Waits      not measured (step 7)", "Flow       "+flow(cycle),
 		fmt.Sprintf("Quality    defects on these outcomes and their child tasks %d (found by us %d, owner %d, others %d) · escapes %d ·"+
 			" revoked %d of %d · corrections recorded %d · guards opened %d", n.Defects, foundBy["us"],
