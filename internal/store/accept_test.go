@@ -163,3 +163,47 @@ func TestAcceptWritesRowEventAndState(t *testing.T) {
 		t.Fatal(n)
 	}
 }
+
+// Codex review of 43067a2: an event binds only when every revision it names resolves to the accepted one.
+func TestAcceptEventMustNameOnlyTheRevision(t *testing.T) {
+	db, _ := acceptFixture(t)
+	art := strings.Repeat("ab", 32)
+	if _, err := db.Exec("insert into git_commit (sha, repo) values (?, 'r')", "abc1234"+strings.Repeat("1", 33)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("insert into artifact (path, sha256) values ('d.md', ?)", art); err != nil {
+		t.Fatal(err)
+	}
+	ev := func(kind, refs, text string) string {
+		r, err := db.Exec("insert into event (ts, kind, session, refs, text, source_key) values"+
+			" ('2026-10-19T11:00:00Z', ?, 's-rev', ?, ?, ?)", kind, refs, text, "x:"+refs+text+kind)
+		if err != nil {
+			t.Fatal(err)
+		}
+		n, _ := r.LastInsertId()
+		return fmt.Sprint("event:", n)
+	}
+	for name, c := range map[string]struct{ refs, text, rev string }{
+		"empty ref":      {`{"sha":[""]}`, "CI green", shaA},
+		"null ref":       {`{"sha":[null]}`, "CI green", shaA},
+		"one-char ref":   {`{"sha":["a"]}`, "CI green", shaA},
+		"ambiguous":      {`{}`, "CI green on abc1234", shaA},
+		"conflict":       {`{"sha":["def5678"]}`, "CI green on def5678; supersedes abc12340", shaA},
+		"unknown sha":    {`{}`, "abc12340 green, run feedbac0", shaA},
+		"commit for art": {`{}`, "abc12340 reviewed", art},
+	} {
+		check, review := ev("done", c.refs, c.text), ev("verified", c.refs, c.text)
+		if _, err := RecordAccept(db, AcceptInput{Item: "demo#1", Revision: c.rev, Checks: []string{"1=" + check, "2=" + check},
+			Review: review, By: "crius"}); !IsRefused(err) {
+			t.Errorf("%s: want refused, got %v", name, err)
+		}
+	}
+	if n := acceptRows(t, db); n != 0 {
+		t.Fatalf("%d acceptance rows after refusals", n)
+	}
+	check, review := ev("done", `{}`, "path=d.md sha256 "+art+" checked"), ev("verified", `{}`, art+" read, clean")
+	if _, err := RecordAccept(db, AcceptInput{Item: "demo#1", Revision: art, Checks: []string{"1=" + check, "2=" + check},
+		Review: review, By: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+}

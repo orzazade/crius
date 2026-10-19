@@ -571,11 +571,28 @@ func TestRecordAcceptAndShow(t *testing.T) {
 	if rc, out := run("record", "accept", "--revision", "abc1234"); rc != exitUsage {
 		t.Fatal(rc, out)
 	}
+	if rc, out := run("record", "accept", "demo#1", "--project", "other", "--revision", "abc1234", "--check", "1=event:2",
+		"--review", "event:2", "--by", "crius"); rc != exitUsage || !strings.Contains(out, "--project") {
+		t.Fatal(rc, out)
+	}
 	if rc, out := run("record", "accept", "demo#1", "--revision", "abc1234", "--check", "1=event:2", "--review",
 		"event:2", "--by", "crius"); rc != 0 || !strings.Contains(out, "accepted demo#1 on abc123400000") {
 		t.Fatal(rc, out)
 	}
 	if rc, out := run("show", "demo#1"); rc != exitPartial || !strings.Contains(out, "accepted on abc123400000 by crius · checks 1=event:2") {
 		t.Fatal(rc, out)
+	}
+	// An event id is shown whole, a sha cut to 12 (codex review of 43067a2).
+	db, err = store.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("insert into acceptance (item, revision, checks, review_ref, accepted_by, ts) values ('demo#1', ?,"+
+		` '[{"criterion":1,"ref":"event:1000000000002"},{"criterion":1,"ref":"`+a+`"}]', 'event:2', 'owner', 'x')`, a); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	if _, out := run("show", "demo#1"); !strings.Contains(out, "checks 1=event:1000000000002 1=abc123400000 ·") {
+		t.Fatal(out)
 	}
 }

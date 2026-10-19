@@ -29,7 +29,7 @@ var (
 	hexRe     = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
 	sha256Re  = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	eventRe   = regexp.MustCompile(`^event:([1-9][0-9]*)$`)
-	shaWordRe = regexp.MustCompile(`\b[0-9a-f]{7,40}\b`)
+	shaWordRe = regexp.MustCompile(`\b(?:[0-9a-f]{64}|[0-9a-f]{7,40})\b`)
 )
 
 type querier interface {
@@ -67,8 +67,10 @@ type boundRef struct {
 	ref, kind, session string
 }
 
-// bind resolves a ref and checks it names the revision: a commit's evidence row must be on it; an event must name it
-// (a sha in its refs or text that is a prefix of it). A ref that names only other revisions, or none, is refused.
+// bind resolves a ref and checks it names the revision: a commit's evidence row must be on it; every revision an event
+// names (a sha in its refs; in its text, a sha256 or a 7-40 hex word with a letter and a digit) must resolve to it, and it must name
+// one. A name that is ambiguous, unknown or another revision is refused: a line that also cites another sha does not
+// say which one it checked (codex review of 43067a2).
 func bind(ctx context.Context, q querier, ref, rev string) (boundRef, error) {
 	if m := eventRe.FindStringSubmatch(ref); m != nil {
 		var kind, refs, text string
@@ -83,26 +85,47 @@ func bind(ctx context.Context, q querier, ref, rev string) (boundRef, error) {
 		}
 		var names []string
 		for _, w := range shaWordRe.FindAllString(text, -1) {
-			if strings.ContainsAny(w, "abcdef") { // a sha, not a number (as digest's isSha)
+			// a sha, not a number or a word like "defaced"; a sha256 is never an English word
+			if len(w) == 64 || strings.ContainsAny(w, "abcdef") && strings.ContainsAny(w, "0123456789") {
 				names = append(names, w)
 			}
 		}
-		var r map[string][]string
+		var r map[string][]any
 		if refs != "" {
 			if err := json.Unmarshal([]byte(refs), &r); err != nil {
 				return boundRef{}, fmt.Errorf("%s has bad refs %q: %w", ref, refs, err)
 			}
 		}
-		names = append(names, r["sha"]...)
+		for _, v := range r["sha"] {
+			n, ok := v.(string)
+			if !ok || !hexRe.MatchString(n) && !sha256Re.MatchString(n) {
+				return boundRef{}, refused("%s has a sha ref that is no sha: %v", ref, v)
+			}
+			names = append(names, n)
+		}
 		if len(names) == 0 {
 			return boundRef{}, refused("%s names no revision", ref)
 		}
 		for _, n := range names {
-			if strings.HasPrefix(rev, n) {
-				return boundRef{ref, kind, session.String}, nil
+			full := n
+			if !sha256Re.MatchString(n) {
+				var k int
+				if err := q.QueryRowContext(ctx, "select count(*), coalesce(min(sha), '') from git_commit where"+
+					" substr(sha, 1, ?) = ?", len(n), n).Scan(&k, &full); err != nil {
+					return boundRef{}, err
+				}
+				switch {
+				case k == 0:
+					return boundRef{}, refused("%s names %s, which is no known commit", ref, n)
+				case k > 1:
+					return boundRef{}, refused("%s names %s, which matches %d commits", ref, n, k)
+				}
+			}
+			if full != rev {
+				return boundRef{}, refused("%s is on %s, not on %s", ref, short(full), short(rev))
 			}
 		}
-		return boundRef{}, refused("%s is on %s, not on %s", ref, strings.Join(names, ", "), short(rev))
+		return boundRef{ref, kind, session.String}, nil
 	}
 	if !hexRe.MatchString(ref) {
 		return boundRef{}, refused("%s is no evidence ref (a commit sha or event:<n>)", ref)

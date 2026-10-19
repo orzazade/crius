@@ -284,9 +284,10 @@ supersede chain, oldest first; acceptance, revokes and corrections join it in st
 
 **`record accept` as built (step 6).** `record accept ITEM --revision R --check N=REF … --review event:<n> --by
 crius|owner`. The item must be open. R is a commit sha prefix naming exactly one commit, or an artifact sha256. Every
-criterion N needs at least one check. A REF is a commit sha (its evidence row must be on R) or `event:<n>` (a sha in
-its refs or text, 7+ hex with a letter, must be a prefix of R). A ref that names another revision, or none, is
-refused, and nothing is written. The review must be a VERIFIED line on R, and it cannot come from the session that
+criterion N needs at least one check. A REF is a commit sha (its evidence row must be on R) or `event:<n>`: every
+revision the event names (a sha in its refs; in its text a sha256, or 7-40 hex with a letter and a digit) must
+resolve to R, and it must name at least one. A name that is ambiguous, unknown or another revision is refused, so a
+line that also cites another sha does not count. A refusal writes nothing. `--project` is refused (the item names it). The review must be a VERIFIED line on R, and it cannot come from the session that
 made the commit, when both sessions are known (bus lines carry none today). One transaction writes the
 `acceptance` row, an `accepted` event (refs item + sha) and the item state `accepted`. `show ITEM` lists each
 acceptance with its checks.

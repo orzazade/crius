@@ -181,6 +181,10 @@ func record(home string, args []string, stdout, stderr io.Writer) int {
 	}
 	given := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { given[f.Name] = true })
+	if what == "accept" && given["project"] {
+		fmt.Fprintln(stderr, "record accept takes no --project: the item names it")
+		return exitUsage
+	}
 	for _, name := range required {
 		if !given[name] {
 			fmt.Fprintf(stderr, "record %s needs --%s\n", what, name)

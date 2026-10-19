@@ -184,7 +184,11 @@ func acceptances(ctx context.Context, db *sql.DB, s *Shown) error {
 		}
 		var parts []string
 		for _, c := range cs {
-			parts = append(parts, fmt.Sprintf("%d=%s", c.Criterion, c.Ref[:min(len(c.Ref), 12)]))
+			ref := c.Ref
+			if !strings.HasPrefix(ref, "event:") {
+				ref = ref[:min(len(ref), 12)] // a full sha
+			}
+			parts = append(parts, fmt.Sprintf("%d=%s", c.Criterion, ref))
 		}
 		s.Lines = append(s.Lines, fmt.Sprintf("%s %s on %s by %s · checks %s · review %s", ts, state,
 			rev[:min(len(rev), 12)], by, strings.Join(parts, " "), review))
