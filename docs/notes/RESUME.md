@@ -1,8 +1,8 @@
 # crius:build — RESUME (contract: docs/notes/COST-LEVER3-FRESH.md §2, max 120 lines)
 
-Updated 2026-10-19 by session a1f147b5 (CLEAR-READY after 3b fix 97dc0d1).
+Updated 2026-10-19 by session cb6a0a09 (CLEAR-READY after step 6 P3 93957fc). Last bus line read: 2026-10-19T16:58 ORDER.
 Last owner message seen: 2026-10-19 ~14:30 (via Crius brief ~/.crius/state/crius/BRIEF-build-2026-10-19.md).
-main = origin/main = 8f47462 (step 3b) + this RESUME commit. Local main ref is behind: it is checked out in Crius's worktree main-rules. History: docs/notes/RESUME-HISTORY.md.
+main = origin/main = 93957fc (step 6 P3) + this RESUME commit. Local main ref is behind: it is checked out in Crius's worktree main-rules. History: docs/notes/RESUME-HISTORY.md.
 
 ## OWNER DECISIONS (append-only, verbatim, dated)
 
@@ -22,6 +22,12 @@ main = origin/main = 8f47462 (step 3b) + this RESUME commit. Local main ref is b
   whether the fallback has room. Add it to the RESUME checklist as step 3b, after step 6 P2. Read-only: reuse the
   session's existing login, no new sign-in; the Enterprise login expires ~2026-10-21, so a missing or expired login
   must be a loud 'cannot read', not 0%. Red check first." Status: done (main 97dc0d1; Crius NEED 15:06: included usage + spend limit, not 'monthly').
+- 2026-10-19 15:25 (Crius ORDER x2, owner switched work folders to crius-statusline --persona work): "on an API-billed
+  (Enterprise) session the statusline prints only 'quota: no plan limits (API-billed account)' ... Show the Enterprise
+  fallback there instead: included usage % + expiry and spend limit, from the same read quota uses (cached, never
+  blocks the line). Red check first." Addendum: "Make the work line show the same parts (model + account, branch,
+  cost, context %) plus the fallback numbers. Old script kept: ~/.claude-work/hooks/statusline.js; backup
+  ~/.claude-work/settings.json.bak-20261019-statusline." After P3. Status: not started (next).
 - Standing (memory): personal repo, push to main after review; effort medium/high only; no AI attribution.
 
 ## GOAL
@@ -37,19 +43,17 @@ Goal: build the Crius record (design §9 steps 1-9) so Crius answers the owner's
 - [ ] 6 record accept + scorecard
 - [ ] 9 Falcon source
 Done: 70% (7 of 10 required steps incl. 3b, equal weight; 7 and 8 only if needed)
-Next: step 6 P3 scorecard
+Next: work statusline (ORDER 15:25), then step 6 P4
 Needs owner: nothing
 
 ## NOW
 
-Step 3b DONE: main 97dc0d1 installed clean. b87bf61 + 8f47462 first read only the seat's "included usage" (called it
-monthly: wrong, Crius NEED 15:06); 72e9793 reads both allowances under the usage page's names, 97dc0d1 = codex fixes
-(4 P2: nested limits, exponents, currency, decoded emptiness), all red first. Live: "fallback: included usage $707 of
-$2000 used (35%), expires 14 Nov · spend limit $0 of $600 used, reset date not in the reply" (the reply has no reset
-for the spend limit; the page says 1 Nov). Room while either has room. Any key naming a dollar limit at a path the
-code does not read = cannot read (knownPaths in internal/quota/enterprise.go). Login: keychain item of ~/.claude-work,
-access token ~8 h, renewed only by a work session; read-only, so no work session for 8 h = "cannot read".
-Next session: step 6 P3 scorecard from a fresh worktree off origin/main.
+Step 6 P3 DONE: main 93957fc (61fdb75 + review fixes). `crius-rec scorecard [--week YYYY-MM-DD] [--write]` ->
+state/scorecards/<UTC end day>.md + .json. The live week ends Wed 10-21 22:00 UTC = Thu 10-22 02:00 local, so its
+name is 2026-10-21 (UTC by review P3-1; the refusal names both nearby ends). def v1 lines: Outcomes, Revoked, Quota
+(Max observed % of the epoch), Waits (not measured), Flow, Quality, Spot-check. Not in v1: enterprise $ and project
+shares per week (quota.Build only knows the running epoch) = follow-up P3b.
+Next session: the work statusline ORDER 15:25 (see OWNER DECISIONS), red first; then P4.
 
 ## Open work (step 6 checklist; each part red first, then build, codex review, one DONE with evidence + commit)
 
@@ -61,9 +65,10 @@ Spec: design §9 row 6, §3c tables (acceptance, defect, correction), §7 (M1, M
 2. [x] P2 (d4d9f61 + 4a102aa) `record defect` / `revoke` / `correct` + guard item + `show ITEM --history`. Red: revoke keeps the row
    (state revoked, reason, defect) and opens a fix item; 2nd confirmed defect of one class opens a guard item;
    a correction leaves the target row as it was; history lists open -> accept -> defect -> revoke -> fix in order.
-3. [ ] P3 scorecard `crius-rec scorecard [--week EPOCH] [--write]` -> state/scorecards/<week>.md (~40 lines,
+3. [x] P3 (61fdb75 + 93957fc) scorecard `crius-rec scorecard [--week EPOCH] [--write]` -> state/scorecards/<week>.md (~40 lines,
    stamped, 0 model tokens). Red: a revoke lowers the original week, not the week found; a correction changes the
    view; re-writing a changed week appends `revised <date>: …` and keeps the old value.
+3b. [ ] P3b per-week enterprise $ + project shares in the scorecard (needs a quota.Build for a past epoch).
 4. [ ] P4 parity with review-1016 (tools/agent-cost/review-1016 REPORT §4: $/main call on weekdays, compactions,
    10-10..10-16 personal): store numbers within 2%. Red: the compare fails on a number moved by 3%.
 5. [ ] P5 restore-after-expiry test (design §3c): newest backup -> scratch DB, transcripts > 30 d hidden,
@@ -75,7 +80,9 @@ Spec: design §9 row 6, §3c tables (acceptance, defect, correction), §7 (M1, M
 
 ## Waiting on
 
-- Nothing. Crius answers on ~/.crius/bus/crius.log lines `-> crius:build`.
+- Crius: review P3-3 (owner's call): should defects/revokes on an accepted CHILD task roll up to its outcome's week?
+  Now they show on no scorecard. Also noticed: a parent correction cannot make a child top-level again (defect.go:312).
+- Crius answers on ~/.crius/bus/crius.log lines `-> crius:build`.
 
 ## Do not redo
 
@@ -83,6 +90,8 @@ Spec: design §9 row 6, §3c tables (acceptance, defect, correction), §7 (M1, M
 - Clean builds: a git clone in the scratchpad (a worktree build gets no vcs stamp, Go 1.25.6). GOTOOLCHAIN=local.
 - Install: clean clone of the main commit, then bin/crius-install-launchd (or install-bins.sh); check
   `go version -m ~/.crius/bin/crius-ingest` shows vcs.modified=false.
+- Bus TYPE rule (Crius 16:58): CLEAR-READY is its own TYPE, `$(date +%FT%H:%M) CLEAR-READY crius:build -> crius:lead —
+  text`, never INFO: INFO does not wake Crius (the 15:14 one left the builder idle ~2 h).
 - Bus lines under ~240 chars (300 hard limit); format `$(date +%FT%H:%M) TYPE crius:build -> crius:lead — text`.
 - P1 binding rules (codex 43067a2): every sha an event names must resolve uniquely to the revision; see design §4
   "record accept as built". Ship script pattern: <scratch f33ce11c>/ship.sh (push, clean clone tests, install).
@@ -90,10 +99,10 @@ Spec: design §9 row 6, §3c tables (acceptance, defect, correction), §7 (M1, M
 
 ## Running things
 
-- Worktree <scratchpad a1f147b5>/wt on feat/step3b (= main). No watchers, no background jobs. Ship script:
-  <scratchpad a1f147b5>/ship.sh (branch feat/step3b).
-- launchd: space.scifilab.crius.{ingest,watchdog,digest,wait-sweep} run ~/.crius/bin (installed from 97dc0d1;
-  previous binaries kept as <scratchpad a1f147b5>/crius-*.before-97dc0d1).
+- Worktree <scratchpad cb6a0a09>/wt on feat/step6-p3 (= main). No watchers, no background jobs. Ship script:
+  <scratchpad cb6a0a09>/ship.sh (branch feat/step6-p3). No scorecard launchd job yet (weekly run: with P5).
+- launchd: space.scifilab.crius.{ingest,watchdog,digest,wait-sweep} run ~/.crius/bin (installed from 93957fc;
+  previous binaries kept as <scratchpad cb6a0a09>/crius-*.before-93957fc).
 - Old worktrees from earlier sessions (git worktree list): not mine to remove; listed for Crius.
 
 ## Not in this file
