@@ -1,8 +1,8 @@
 # crius:build — RESUME (contract: docs/notes/COST-LEVER3-FRESH.md §2, max 120 lines)
 
-Updated 2026-10-19 by session 8e8a8321 (P4 e304c4d shipped; next P5). Last bus line read: 2026-10-19T17:46 ORDER.
+Updated 2026-10-19 by session 9c4105f9 (P5 3f93098 shipped; next digest stale-RESUME fix). Last bus line read: 2026-10-19T18:24 DONE crius:weekly.
 Last owner message seen: 2026-10-19 ~17:25 (child roll-up answer, via Crius).
-main = origin/main = e304c4d (P4) + this RESUME commit. Local main ref is behind: it is checked out in Crius's worktree main-rules. History: docs/notes/RESUME-HISTORY.md.
+main = origin/main = 3f93098 (P5) + this RESUME commit. Local main ref is behind: it is checked out in Crius's worktree main-rules. History: docs/notes/RESUME-HISTORY.md.
 
 ## OWNER DECISIONS (append-only, verbatim, dated)
 
@@ -43,25 +43,28 @@ Goal: build the Crius record (design §9 steps 1-9) so Crius answers the owner's
 - [x] 4b fail-closed key=value + gitleaks rules · 86a776a
 - [x] 5 digest + Crius daily start (09:00/18:00 goal report) · 23052fe .. 50e2384
 - [x] 3b Enterprise fallback: included usage + spend limit (owner 10-19 14:44, Crius NEED 15:06) · 72e9793, 97dc0d1
-- [ ] 6 record accept + scorecard
+- [ ] 6 record accept + scorecard (P1-P5, P3c done; P3b, P6, P7 open)
 - [ ] 9 Falcon source
 Done: 70% (7 of 10 required steps incl. 3b, equal weight; 7 and 8 only if needed)
-Next: step 6 P5 restore-after-expiry test
+Next: digest stale-RESUME fix (Crius NEED 18:00), then step 6 P6
 Needs owner: nothing
 
 ## NOW
 
-P4 DONE: main e304c4d (codex FINDINGS P1=0 P2=6 P3=0, all fixed red first). `crius-rec drivers --from --to
-[--json | --compare REF]` = M11 per persona (all days, UTC weekdays); research/parity-1016/ref.py makes the reference
-from the frozen review-1016 extract. 10-10..10-16T07:52:27Z: store within 0.01% (personal 24,049 main calls, $1,837.09,
-69 compactions, $0.0763/main call weekdays; both personas weekdays = REPORT's 0.079). Stamps compared via julianday.
-Known: a request copied into several transcripts: extract keeps the first walked copy, store the largest usage (10-11:
-1 call, 0.01%). Design line ~457 says baseline 0.126 $/main call; REPORT §4 says 0.079: flagged to Crius, not changed.
-For the 10-23 read: `crius-rec drivers --from 2026-10-16 --to 2026-10-23` (P7).
+P5 DONE: main 3f93098 (codex FINDINGS P1=0 P2=6 P3=1 over two passes; the first single pass timed out at 300 s, so split
+Go / shell. 6 fixed red first; 1 not needed: no scorecard existed before). `crius-rec restore-test`: newest backup ->
+scratch home -> every matured written week must equal its .json and .md sha256 (`MD` in the .json). health: fail /
+never run / > 8 d = problem. launchd space.scifilab.crius.weekly Thu 04:00 (bin/crius-weekly-run): scorecard --write
+(no --week = last ended week), rewrite every written week, restore test, one DONE. Installed; first run 18:24 wrote
+state/scorecards/2026-10-14.md (first real scorecard), restore test `none` (first week matures 10-29 02:00 local).
 
-P3c DONE: main c133717 + 27c2a73 (scorecard def v2: child defects/revokes count on the outcome's week). Known, not changed: an outcome with two acceptance rows counts twice in Outcomes (store refuses a 2nd accept,
-accept.go:181, so unreachable via the CLI); gofmt flags internal/store/defect.go (older).
-Work statusline done 47e7913.
+NEXT digest stale-RESUME fix (Crius 18:00 NEED, red first). Found so far: lead files come from ~/.crius/projects.toml
+`leads = { build = "<path>" }` read by internal/digest/report.go:85 ReadGoal(l.StatusFile); crius build points at the
+main checkout (wip/recall, old untracked RESUME). This RESUME's heading is `## GOAL` without the stamp the digest needs
+(goal.go headingRe `## GOAL (YYYY-MM-DD HH:MM)`), so reading origin/main as-is gives UNREADABLE: fix the heading too.
+Open question for Crius: "stale when older than the lead's newest bus line" flags it after every INFO; proposal: newer
+DONE or CLEAR-READY from that lead than the GOAL stamp = stale. Ask before building.
+
 
 ## Open work (step 6 checklist; each part red first, then build, codex review, one DONE with evidence + commit)
 
@@ -81,7 +84,7 @@ Spec: design §9 row 6, §3c tables (acceptance, defect, correction), §7 (M1, M
    outcome's week. Red: child revoke shows on the outcome week's scorecard.
 4. [x] P4 (e304c4d) parity with review-1016 (tools/agent-cost/review-1016 REPORT §4: $/main call on weekdays, compactions,
    10-10..10-16 personal): store numbers within 2%. Red: the compare fails on a number moved by 3%.
-5. [ ] P5 restore-after-expiry test (design §3c): newest backup -> scratch DB, transcripts > 30 d hidden,
+5. [x] P5 (3f93098) restore-after-expiry test (design §3c): newest backup -> scratch DB, transcripts > 30 d hidden,
    regenerate a matured week, compare with its file; weekly launchd; `health` shows the result. Red: a changed
    scorecard file fails the test.
 6. [ ] P6 FINDINGS line (D3 config change): NEED to Crius with the exact diff of the codex + quick-review agent
@@ -108,10 +111,10 @@ Spec: design §9 row 6, §3c tables (acceptance, defect, correction), §7 (M1, M
 
 ## Running things
 
-- Worktree <scratchpad 8e8a8321>/wt on feat/p4-parity (= main). No watchers, no background jobs. Ship script:
-  <scratchpad 8e8a8321>/ship.sh (branch feat/p4-parity). No scorecard launchd job yet (weekly run: with P5).
-- launchd: space.scifilab.crius.{ingest,watchdog,digest,wait-sweep} run ~/.crius/bin (installed from e304c4d;
-  previous binaries kept as <scratchpad 8e8a8321>/crius-*.before-<sha>).
+- Worktree <scratchpad 9c4105f9>/wt on feat/p5-restore (= main). No watchers, no background jobs. Ship script:
+  <scratchpad 9c4105f9>/ship.sh (branch feat/p5-restore).
+- launchd: space.scifilab.crius.{ingest,watchdog,digest,weekly,wait-sweep} run ~/.crius/bin (installed from 3f93098;
+  previous binaries kept as <scratchpad 9c4105f9>/crius-*.before-<sha>).
 - Old worktrees from earlier sessions (git worktree list): not mine to remove; listed for Crius.
 
 ## Not in this file

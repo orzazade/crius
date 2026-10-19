@@ -315,3 +315,17 @@ Branch feat/session-gaps (worktree scratchpad/wt-4b) from 547c21b; 2e8a9f6 + unc
 - [x] feat/session-gaps @f218ec5 (main e6cbd50 + 3), clean clone 253 pass, DONE 00:48. Crius kept the role parse
       (00:48); asked whether attrib_source is enough as role_src (NEED 00:48). Waits on Crius re-check + merge.
 - Bus lines: draft under ~240 chars (4 refusals over 300 on 10-17 00:3x-00:48).
+
+## NOW notes moved 2026-10-19 (session 9c4105f9, after P5)
+
+P4 DONE: main e304c4d (codex FINDINGS P1=0 P2=6 P3=0, all fixed red first). `crius-rec drivers --from --to
+[--json | --compare REF]` = M11 per persona (all days, UTC weekdays); research/parity-1016/ref.py makes the reference
+from the frozen review-1016 extract. 10-10..10-16T07:52:27Z: store within 0.01% (personal 24,049 main calls, $1,837.09,
+69 compactions, $0.0763/main call weekdays; both personas weekdays = REPORT's 0.079). Stamps compared via julianday.
+Known: a request copied into several transcripts: extract keeps the first walked copy, store the largest usage (10-11:
+1 call, 0.01%). Design line ~457 says baseline 0.126 $/main call; REPORT §4 says 0.079: flagged to Crius, not changed.
+For the 10-23 read: `crius-rec drivers --from 2026-10-16 --to 2026-10-23` (P7).
+
+P3c DONE: main c133717 + 27c2a73 (scorecard def v2: child defects/revokes count on the outcome's week). Known, not changed: an outcome with two acceptance rows counts twice in Outcomes (store refuses a 2nd accept,
+accept.go:181, so unreachable via the CLI); gofmt flags internal/store/defect.go (older).
+Work statusline done 47e7913.
