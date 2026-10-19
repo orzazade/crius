@@ -1,8 +1,8 @@
 # crius:build — RESUME (contract: docs/notes/COST-LEVER3-FRESH.md §2, max 120 lines)
 
-Updated 2026-10-19 by session 6cfda64f (work statusline 47e7913 shipped; next P3c). Last bus line read: 2026-10-19T17:19 ORDER.
+Updated 2026-10-19 by session 6cfda64f (statusline 47e7913, P3c c133717+27c2a73 shipped; next P4). Last bus line read: 2026-10-19T17:19 ORDER.
 Last owner message seen: 2026-10-19 ~17:25 (child roll-up answer, via Crius).
-main = origin/main = 47e7913 (work statusline) + this RESUME commit. Local main ref is behind: it is checked out in Crius's worktree main-rules. History: docs/notes/RESUME-HISTORY.md.
+main = origin/main = 27c2a73 (P3c) + this RESUME commit. Local main ref is behind: it is checked out in Crius's worktree main-rules. History: docs/notes/RESUME-HISTORY.md.
 
 ## OWNER DECISIONS (append-only, verbatim, dated)
 
@@ -30,7 +30,7 @@ main = origin/main = 47e7913 (work statusline) + this RESUME commit. Local main 
   ~/.claude-work/settings.json.bak-20261019-statusline." After P3. Status: done (main 47e7913).
 - 2026-10-19 ~17:25 (owner, via Crius, answer to review P3-3): yes, a defect or revoke on an accepted child task
   counts against the parent outcome's week ("we need extensive data that will give us much better vision"). Build it
-  after the work statusline, red first. Status: not started.
+  after the work statusline, red first. Status: done (main c133717, 27c2a73; scorecard def v2).
 - Standing (memory): personal repo, push to main after review; effort medium/high only; no AI attribution.
 
 ## GOAL
@@ -46,19 +46,18 @@ Goal: build the Crius record (design §9 steps 1-9) so Crius answers the owner's
 - [ ] 6 record accept + scorecard
 - [ ] 9 Falcon source
 Done: 70% (7 of 10 required steps incl. 3b, equal weight; 7 and 8 only if needed)
-Next: P3c child roll-up (owner 10-19 ~17:25), then P4
+Next: step 6 P4 parity with review-1016
 Needs owner: nothing
 
 ## NOW
 
-Work statusline DONE: main 47e7913 (codex FINDINGS P1=0 P2=2 P3=1, all fixed red first). `crius-statusline --persona
-work` = model + account (ENT/MAX from $CLAUDE_CONFIG_DIR/.claude.json) │ branch │ $cost │ bar ctx % │ quota, and on
-an API-billed session the fallback from spool/ent-usage.json, refreshed by a detached `--refresh-ent` (same read as
-quota: quota.ReadWorkEnt) at most once per 5 min (spool/ent-usage.try), errors to logs/ent-refresh.log, STALE after
-15 min. Step 6 P3 (scorecard) done 93957fc.
-Next: P3c child roll-up, red first. Plan: descendants of the week's outcomes (recursive on item_v.parent) add their
-defects (found at/after the child's acceptance) to Defects/escapes and their revokes as a new count; Items for
-`since` include them; bump scorecard Def v1 -> v2 (no scorecard file written yet, state/scorecards absent).
+P3c DONE: main c133717 + 27c2a73 (codex FINDINGS P1=0 P2=2 P3=0, fixed red first). Scorecard def v2: Build walks the
+outcomes' child tree from item_v in Go (children()), passes it as one JSON parameter (json_each); child defects
+(found at/after the child's acceptance, counted once) go into Defects/escapes, child revokes into ChildRevoked
+(Revoked line, revised lines; since() names child events via Card/written Children).
+Known, not changed: an outcome with two acceptance rows counts twice in Outcomes (store refuses a 2nd accept,
+accept.go:181, so unreachable via the CLI); gofmt flags internal/store/defect.go (older).
+Work statusline done 47e7913. Next: P4, red first.
 
 ## Open work (step 6 checklist; each part red first, then build, codex review, one DONE with evidence + commit)
 
@@ -74,7 +73,7 @@ Spec: design §9 row 6, §3c tables (acceptance, defect, correction), §7 (M1, M
    stamped, 0 model tokens). Red: a revoke lowers the original week, not the week found; a correction changes the
    view; re-writing a changed week appends `revised <date>: …` and keeps the old value.
 3b. [ ] P3b per-week enterprise $ + project shares in the scorecard (needs a quota.Build for a past epoch).
-3c. [ ] P3c child roll-up (owner 10-19 ~17:25): a defect/revoke on an accepted child task lowers the parent
+3c. [x] P3c (c133717 + 27c2a73) child roll-up (owner 10-19 ~17:25): a defect/revoke on an accepted child task lowers the parent
    outcome's week. Red: child revoke shows on the outcome week's scorecard.
 4. [ ] P4 parity with review-1016 (tools/agent-cost/review-1016 REPORT §4: $/main call on weekdays, compactions,
    10-10..10-16 personal): store numbers within 2%. Red: the compare fails on a number moved by 3%.
@@ -87,7 +86,6 @@ Spec: design §9 row 6, §3c tables (acceptance, defect, correction), §7 (M1, M
 
 ## Waiting on
 
-- Crius: review P3-3 ANSWERED 10-19 ~17:25 (OWNER DECISIONS): child defects/revokes roll up to the outcome week.
   Now they show on no scorecard. Also noticed: a parent correction cannot make a child top-level again (defect.go:312).
 - Crius answers on ~/.crius/bus/crius.log lines `-> crius:build`.
 
@@ -108,8 +106,8 @@ Spec: design §9 row 6, §3c tables (acceptance, defect, correction), §7 (M1, M
 
 - Worktree <scratchpad 6cfda64f>/wt on feat/work-statusline (= main). No watchers, no background jobs. Ship script:
   <scratchpad 6cfda64f>/ship.sh (branch feat/work-statusline). No scorecard launchd job yet (weekly run: with P5).
-- launchd: space.scifilab.crius.{ingest,watchdog,digest,wait-sweep} run ~/.crius/bin (installed from 47e7913;
-  previous binaries kept as <scratchpad 6cfda64f>/crius-*.before-47e7913).
+- launchd: space.scifilab.crius.{ingest,watchdog,digest,wait-sweep} run ~/.crius/bin (installed from 27c2a73;
+  previous binaries kept as <scratchpad 6cfda64f>/crius-*.before-<sha>).
 - Old worktrees from earlier sessions (git worktree list): not mine to remove; listed for Crius.
 
 ## Not in this file
