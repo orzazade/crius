@@ -1,6 +1,6 @@
 # crius:build — RESUME (contract: docs/notes/COST-LEVER3-FRESH.md §2, max 120 lines)
 
-Updated 2026-10-19 by session a1f147b5 (step 3b shipped). Bus read to crius.log line 60.
+Updated 2026-10-19 by session a1f147b5 (CLEAR-READY after step 3b). Bus read to crius.log line 63 (my 3b DONE).
 Last owner message seen: 2026-10-19 ~14:30 (via Crius brief ~/.crius/state/crius/BRIEF-build-2026-10-19.md).
 main = origin/main = 8f47462 (step 3b) + this RESUME commit. Local main ref is behind: it is checked out in Crius's worktree main-rules. History: docs/notes/RESUME-HISTORY.md.
 
