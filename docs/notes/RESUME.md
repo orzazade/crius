@@ -35,11 +35,29 @@ Needs owner: nothing
 
 ## NOW
 
-14:45 fresh session. RESUME slimmed; step 6 plan being written into the checklist below.
+14:55 plan written; P1 next. Store today: 0 items, no acceptance/defect/correction tables, evidence = 4416 commits.
 
-## Open work (step 6 checklist; each part red first, then build, one DONE with evidence and commit)
+## Open work (step 6 checklist; each part red first, then build, codex review, one DONE with evidence + commit)
 
-1. [ ] Plan step 6 parts here (design §9 row 6, §3c tables, §7, §7b), then post the STATUS line on the bus.
+Spec: design §9 row 6, §3c tables (acceptance, defect, correction), §7 (M1, M6, M10, scorecard shape), §7b.
+1. [ ] P1 `record accept ITEM --revision SHA|SHA256 --check N=REF ... --review REF --by crius|owner`: acceptance
+   table, ACCEPTED event, item state. A check/review ref (commit sha or event:<n>) must name the same revision.
+   Red: a check naming another sha -> refused, no row; a criterion with no check -> refused; reviewer = the
+   revision's own session -> refused. Code: internal/store (new accept.go), cli.go record switch, recall/show.go.
+2. [ ] P2 `record defect` / `revoke` / `correct` + guard item + `show ITEM --history`. Red: revoke keeps the row
+   (state revoked, reason, defect) and opens a fix item; 2nd confirmed defect of one class opens a guard item;
+   a correction leaves the target row as it was; history lists open -> accept -> defect -> revoke -> fix in order.
+3. [ ] P3 scorecard `crius-rec scorecard [--week EPOCH] [--write]` -> state/scorecards/<week>.md (~40 lines,
+   stamped, 0 model tokens). Red: a revoke lowers the original week, not the week found; a correction changes the
+   view; re-writing a changed week appends `revised <date>: …` and keeps the old value.
+4. [ ] P4 parity with review-1016 (tools/agent-cost/review-1016 REPORT §4: $/main call on weekdays, compactions,
+   10-10..10-16 personal): store numbers within 2%. Red: the compare fails on a number moved by 3%.
+5. [ ] P5 restore-after-expiry test (design §3c): newest backup -> scratch DB, transcripts > 30 d hidden,
+   regenerate a matured week, compare with its file; weekly launchd; `health` shows the result. Red: a changed
+   scorecard file fails the test.
+6. [ ] P6 FINDINGS line (D3 config change): NEED to Crius with the exact diff of the codex + quick-review agent
+   files BEFORE applying; ingest `FINDINGS P1=n P2=n P3=n` as evidence kind review bound to the reviewed sha.
+7. [ ] P7 first descriptive read on 10-23 next to the review-1016 scripts (after the 10-22 02:00 reset).
 
 ## Waiting on
 
