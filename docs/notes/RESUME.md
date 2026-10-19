@@ -1,6 +1,6 @@
 # crius:build — RESUME (contract: docs/notes/COST-LEVER3-FRESH.md §2, max 120 lines)
 
-Updated 2026-10-19 by session 9c4105f9 (P5 3f93098 shipped; next digest stale-RESUME fix). Last bus line read: 2026-10-19T18:24 DONE crius:weekly.
+Updated 2026-10-19 18:34 by session 11838a67 (digest stale-RESUME fix shipped; next P6 NEED). Last bus line read: 2026-10-19T18:25 ORDER crius:lead.
 Last owner message seen: 2026-10-19 ~17:25 (child roll-up answer, via Crius).
 main = origin/main = 3f93098 (P5) + this RESUME commit. Local main ref is behind: it is checked out in Crius's worktree main-rules. History: docs/notes/RESUME-HISTORY.md.
 
@@ -33,7 +33,7 @@ main = origin/main = 3f93098 (P5) + this RESUME commit. Local main ref is behind
   after the work statusline, red first. Status: done (main c133717, 27c2a73; scorecard def v2).
 - Standing (memory): personal repo, push to main after review; effort medium/high only; no AI attribution.
 
-## GOAL
+## GOAL (2026-10-19 18:34)
 
 Goal: build the Crius record (design §9 steps 1-9) so Crius answers the owner's questions from its own store
 - [x] 1 store layout, leak test, decisions, items, bus grammar · 060610f
@@ -46,24 +46,20 @@ Goal: build the Crius record (design §9 steps 1-9) so Crius answers the owner's
 - [ ] 6 record accept + scorecard (P1-P5, P3c done; P3b, P6, P7 open)
 - [ ] 9 Falcon source
 Done: 70% (7 of 10 required steps incl. 3b, equal weight; 7 and 8 only if needed)
-Next: digest stale-RESUME fix (Crius NEED 18:00), then step 6 P6
+Next: step 6 P6: NEED to Crius with the agent-file diff, apply only after GO
 Needs owner: nothing
 
 ## NOW
 
-P5 DONE: main 3f93098 (codex FINDINGS P1=0 P2=6 P3=1 over two passes; the first single pass timed out at 300 s, so split
-Go / shell. 6 fixed red first; 1 not needed: no scorecard existed before). `crius-rec restore-test`: newest backup ->
-scratch home -> every matured written week must equal its .json and .md sha256 (`MD` in the .json). health: fail /
-never run / > 8 d = problem. launchd space.scifilab.crius.weekly Thu 04:00 (bin/crius-weekly-run): scorecard --write
-(no --week = last ended week), rewrite every written week, restore test, one DONE. Installed; first run 18:24 wrote
-state/scorecards/2026-10-14.md (first real scorecard), restore test `none` (first week matures 10-29 02:00 local).
+Digest stale-RESUME fix DONE (this commit; Crius NEED 18:00, GO 18:25). projects.toml lead value may be
+`git:<repo>#<rev>:<path>` (read with git cat-file --end-of-options; failure = ERROR, partial). STALE = the lead has a
+DONE or CLEAR-READY on the Crius bus newer than its GOAL stamp (later reading of a repeated DST hour). CLEAR-READY is
+now a Crius-bus type (it was malformed; the bus is re-read on install). This file's heading carries the stamp: update
+it on every write, before the DONE. ~/.crius/projects.toml crius build -> git:~/Projects/scifi/crius#origin/main:...
+codex FINDINGS P1=0 P2=1 P3=1, both fixed red first.
 
-NEXT digest stale-RESUME fix (Crius 18:00 NEED, red first). Found so far: lead files come from ~/.crius/projects.toml
-`leads = { build = "<path>" }` read by internal/digest/report.go:85 ReadGoal(l.StatusFile); crius build points at the
-main checkout (wip/recall, old untracked RESUME). This RESUME's heading is `## GOAL` without the stamp the digest needs
-(goal.go headingRe `## GOAL (YYYY-MM-DD HH:MM)`), so reading origin/main as-is gives UNREADABLE: fix the heading too.
-Open question for Crius: "stale when older than the lead's newest bus line" flags it after every INFO; proposal: newer
-DONE or CLEAR-READY from that lead than the GOAL stamp = stale. Ask before building.
+NEXT P6: NEED to Crius with the exact diff (draft <scratchpad 11838a67>/p6/p6.diff: codex relay counts [P1-3] tags,
+quick-review tags each finding and ends with FINDINGS). Apply only after GO, then ingest FINDINGS as review evidence.
 
 
 ## Open work (step 6 checklist; each part red first, then build, codex review, one DONE with evidence + commit)
@@ -111,10 +107,10 @@ Spec: design §9 row 6, §3c tables (acceptance, defect, correction), §7 (M1, M
 
 ## Running things
 
-- Worktree <scratchpad 9c4105f9>/wt on feat/p5-restore (= main). No watchers, no background jobs. Ship script:
-  <scratchpad 9c4105f9>/ship.sh (branch feat/p5-restore).
-- launchd: space.scifilab.crius.{ingest,watchdog,digest,weekly,wait-sweep} run ~/.crius/bin (installed from 3f93098;
-  previous binaries kept as <scratchpad 9c4105f9>/crius-*.before-<sha>).
+- Worktree <scratchpad 11838a67>/wt on fix/digest-stale (= main). No watchers, no background jobs. Ship script:
+  <scratchpad 11838a67>/ship.sh (branch fix/digest-stale).
+- launchd: space.scifilab.crius.{ingest,watchdog,digest,weekly,wait-sweep} run ~/.crius/bin (installed from the fix(digest) stale-RESUME commit;
+  previous binaries kept as <scratchpad 11838a67>/crius-*.before-<sha>).
 - Old worktrees from earlier sessions (git worktree list): not mine to remove; listed for Crius.
 
 ## Not in this file

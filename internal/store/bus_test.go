@@ -217,12 +217,12 @@ func TestAppendLineGoesToProjectLog(t *testing.T) {
 // Real ~/.crius/bus lines (INFO, NEED, WAIT) were warned as malformed: the Go list and the written list drifted.
 func TestEveryCriusBusTypeParsesStrict(t *testing.T) {
 	for _, typ := range []string{"DONE", "BLOCKED", "NEED-OWNER", "PAUSED", "LIMIT", "ITEM", "DECISION", "RESUMED",
-		"ALERT", "INFO", "NEED", "WAIT", "PARKED", "ACK"} {
+		"ALERT", "INFO", "NEED", "WAIT", "PARKED", "ACK", "CLEAR-READY"} { // CLEAR-READY: Crius TYPE rule 10-19 16:58
 		if ParseLine("2026-10-16T09:20 "+typ+" demo:leader -> crius — x", nil, true) == nil {
 			t.Error(typ)
 		}
 	}
-	for _, typ := range []string{"CLEAR-READY", "QUEUE", "NEED-QA", "BUG", "LESSON"} { // team-only: loud on the Crius bus
+	for _, typ := range []string{"QUEUE", "NEED-QA", "BUG", "LESSON"} { // team-only: loud on the Crius bus
 		if ParseLine("2026-10-16T09:20 "+typ+" demo:leader -> crius — x", nil, true) != nil {
 			t.Error("team-only type parsed strict:", typ)
 		}

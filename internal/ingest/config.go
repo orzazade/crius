@@ -19,7 +19,7 @@ var defaultRoots = map[string]string{"personal": "~/.claude-personal/projects", 
 type project struct {
 	slug                                         string
 	accounts, cwd, repos, teamLogs, artifactDirs []string
-	leads                                        map[string]string // role -> status file holding the GOAL block
+	leads                                        map[string]Lead // role -> status file holding the GOAL block (no Name)
 }
 
 type root struct{ persona, path string }
@@ -86,12 +86,22 @@ func loadConfig(home string) (*config, error) {
 				return nil, fmt.Errorf("%s: project %s: unknown account %q", path, slug, a)
 			}
 		}
-		leads := map[string]string{}
+		leads := map[string]Lead{}
 		for role, f := range p.Leads {
 			if !store.Slug.MatchString(role) {
 				return nil, fmt.Errorf("%s: project %s: bad lead role %q", path, slug, role)
 			}
-			leads[role] = expand(f)
+			g, ok := strings.CutPrefix(f, "git:")
+			if !ok {
+				leads[role] = Lead{StatusFile: expand(f)}
+				continue
+			}
+			repo, object, _ := strings.Cut(g, "#")
+			rev, file, _ := strings.Cut(object, ":")
+			if repo == "" || rev == "" || file == "" {
+				return nil, fmt.Errorf("%s: project %s: lead %s: want git:<repo>#<rev>:<path>, got %q", path, slug, role, f)
+			}
+			leads[role] = Lead{StatusFile: object, Repo: expand(repo)}
 		}
 		c.projects = append(c.projects, project{slug: slug, accounts: p.Accounts, cwd: expandAll(p.CWD), repos: expandAll(p.Repos),
 			teamLogs: expandAll(p.TeamLogs), artifactDirs: expandAll(p.ArtifactDirs), leads: leads})
@@ -146,7 +156,9 @@ func QuotaProjects(home string) (quota.Projects, error) {
 }
 
 // Lead is a lead as it signs bus lines (<project>:<role>) and the status file holding its GOAL block (RULES 3.1).
-type Lead struct{ Name, StatusFile string }
+// With Repo set, StatusFile is a git object in that repo, <rev>:<path>: projects.toml names it
+// "git:<repo>#<rev>:<path>" for a lead that commits its file elsewhere than a checkout (Crius 10-19 18:00).
+type Lead struct{ Name, StatusFile, Repo string }
 
 // Leads reads projects.toml in home: every lead with its status file, sorted by name (step 5, the digest).
 func Leads(home string) ([]Lead, error) {
@@ -156,8 +168,9 @@ func Leads(home string) ([]Lead, error) {
 	}
 	var out []Lead
 	for _, p := range c.projects {
-		for role, f := range p.leads {
-			out = append(out, Lead{p.slug + ":" + role, f})
+		for role, l := range p.leads {
+			l.Name = p.slug + ":" + role
+			out = append(out, l)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })

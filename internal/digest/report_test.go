@@ -1,6 +1,7 @@
 package digest
 
 import (
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"github.com/orzazade/crius/internal/ingest"
 	"github.com/orzazade/crius/internal/quota"
 	"github.com/orzazade/crius/internal/recall"
+	"github.com/orzazade/crius/internal/testutil"
 )
 
 var now = time.Date(2026, 10, 17, 9, 0, 0, 0, time.Local)
@@ -497,5 +499,127 @@ func TestBuildQuotaLineHasTheFiveHourShareAndTheTopProject(t *testing.T) {
 	r, err = Build(db, Input{Quota: q, Health: &recall.Health{Status: "complete"}}, now)
 	if err != nil || !strings.Contains(r.Text, " at this pace\n") {
 		t.Fatal(err, r.Text)
+	}
+}
+
+// Crius 10-19 18:00: a lead commits its status file somewhere other than the checkout projects.toml pointed at
+// (crius:build on origin/main, the main checkout on another branch with an old copy). A lead named by a git object
+// is read from that object, never from the working tree; an object that cannot be read is an ERROR, not LOST.
+func TestBuildReadsALeadFromItsCommittedObject(t *testing.T) {
+	db := open(t)
+	repo := testutil.GitRepo(t, filepath.Join(t.TempDir(), "repo"))
+	testutil.Write(t, filepath.Join(repo, "docs", "RESUME.md"), block("2026-10-17 08:30", "nothing", "- [x] step 4 · def5678", "- [ ] step 5"))
+	testutil.CommitAll(t, repo)
+	testutil.Write(t, filepath.Join(repo, "docs", "RESUME.md"), "old copy, no block\n") // the checkout's stale copy
+	leads := []ingest.Lead{
+		{Name: "crius:build", Repo: repo, StatusFile: "main:docs/RESUME.md"},
+		{Name: "crius:lead", Repo: repo, StatusFile: "main:docs/GONE.md"},
+	}
+	r, err := Build(db, input(leads, nil), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"crius:build: 50% claimed · verified 0 of 1 done (2 milestones)",
+		"crius:lead: ERROR: " + repo + " main:docs/GONE.md: ", "! 1 lead status file cannot be read"} {
+		if !strings.Contains(r.Text, want) {
+			t.Errorf("missing %q in\n%s", want, r.Text)
+		}
+	}
+}
+
+// busLine stores a Crius bus line as the ingest does (source key bus:...).
+func busLine(t *testing.T, db *sql.DB, ts time.Time, sender, kind string) {
+	t.Helper()
+	id := line(t, db, ts, sender, kind, "x")
+	if _, err := db.Exec("update event set source_key = ? where id = ?", fmt.Sprint("bus:f:", id), id); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Crius GO 10-19 18:25: a lead's status file is STALE when the lead has a DONE or CLEAR-READY on the Crius bus newer
+// than its GOAL stamp. An INFO or NEED is no milestone, so it never makes the file stale; a team log line is not the bus.
+func TestBuildMarksAStaleGoal(t *testing.T) {
+	stamp := time.Date(2026, 10, 17, 8, 30, 0, 0, time.Local)
+	for _, c := range []struct {
+		name  string
+		lines func(db *sql.DB)
+		stale string
+	}{
+		{"done newer", func(db *sql.DB) { busLine(t, db, stamp.Add(10*time.Minute), "crius:build", "done") },
+			"crius:build: STALE: GOAL (2026-10-17 08:30) is older than its DONE 2026-10-17 08:40 on the bus · 50% claimed"},
+		{"clear-ready newer", func(db *sql.DB) { busLine(t, db, stamp.Add(time.Minute), "crius:build", "clear-ready") },
+			"crius:build: STALE: GOAL (2026-10-17 08:30) is older than its CLEAR-READY 2026-10-17 08:31 on the bus · 50% claimed"},
+		{"same minute", func(db *sql.DB) { busLine(t, db, stamp, "crius:build", "done") }, ""},
+		{"done older", func(db *sql.DB) { busLine(t, db, stamp.Add(-time.Minute), "crius:build", "done") }, ""},
+		{"info newer", func(db *sql.DB) {
+			busLine(t, db, stamp.Add(time.Hour), "crius:build", "info")
+			busLine(t, db, stamp.Add(time.Hour), "crius:build", "need")
+		}, ""},
+		{"other lead", func(db *sql.DB) {
+			busLine(t, db, stamp.Add(time.Hour), "crius:lead", "done")
+			busLine(t, db, stamp.Add(time.Hour), "axi:build", "done")
+		}, ""},
+		{"team log", func(db *sql.DB) { line(t, db, stamp.Add(time.Hour), "crius:build", "done", "x") }, ""},
+	} {
+		db := open(t)
+		c.lines(db)
+		dir := t.TempDir()
+		leads := []ingest.Lead{{Name: "crius:build", StatusFile: statusFile(t, dir, "c.md", block("2026-10-17 08:30", "nothing", "- [ ] one"))}}
+		r, err := Build(db, input(leads, nil), now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.stale == "" && strings.Contains(r.Text, "STALE") || c.stale != "" && !strings.Contains(r.Text, c.stale+" · ") {
+			t.Errorf("%s: want %q in\n%s", c.name, c.stale, r.Text)
+		}
+	}
+}
+
+// Review of 4364094 (P3): a git object from projects.toml that starts with '-' is an object name, never a git option
+// (--batch made git print its usage into the report), and git's error is one bounded line of the report.
+func TestBuildPassesTheGitObjectAsAnObject(t *testing.T) {
+	db := open(t)
+	repo := testutil.GitRepo(t, filepath.Join(t.TempDir(), "repo"))
+	testutil.Write(t, filepath.Join(repo, "R.md"), "x\n")
+	testutil.CommitAll(t, repo)
+	r, err := Build(db, input([]ingest.Lead{{Name: "a:lead", Repo: repo, StatusFile: "--batch=x:R.md"}}, nil), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := strings.Index(r.Text, "a:lead: ERROR: ")
+	if i < 0 {
+		t.Fatal(r.Text)
+	}
+	l, _, _ := strings.Cut(r.Text[i:], "\n")
+	if !strings.Contains(l, "invalid object name") || len(l) > 400 || strings.Contains(r.Text, "usage:") {
+		t.Fatalf("%q\n%s", l, r.Text)
+	}
+}
+
+// Review of 4364094 (P2): in a repeated hour (DST fall-back) a GOAL stamp has two readings; a DONE is newer only
+// when it is newer than the later one, so a GOAL written in the second hour is not called stale.
+func TestStaleUsesTheLaterReadingOfARepeatedHour(t *testing.T) {
+	ny, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Skip(err)
+	}
+	old := time.Local
+	time.Local = ny
+	t.Cleanup(func() { time.Local = old })
+	g, err := ParseGoal(block("2026-11-01 01:30", "nothing", "- [ ] one")) // 05:30Z (EDT) or 06:30Z (EST)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		done  string
+		stale bool
+	}{{"2026-11-01T06:20:00Z", false}, {"2026-11-01T06:30:00Z", false}, {"2026-11-01T06:31:00Z", true}} {
+		db := open(t)
+		at, _ := time.Parse(time.RFC3339, c.done)
+		busLine(t, db, at, "crius:build", "done")
+		s, err := staleness(db, "crius:build", g)
+		if err != nil || (s != "") != c.stale {
+			t.Errorf("DONE %s: %q %v", c.done, s, err)
+		}
 	}
 }

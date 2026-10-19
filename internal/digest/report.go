@@ -1,10 +1,12 @@
 package digest
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -82,7 +84,7 @@ func Build(db *sql.DB, in Input, now time.Time) (*Report, error) {
 	var entries []entry
 	cannotRead := 0
 	for _, l := range leads {
-		g, err := ReadGoal(l.StatusFile)
+		g, err := readGoal(l)
 		var u *Unreadable
 		if err != nil {
 			if p, ok := prev[l.Name]; ok {
@@ -133,8 +135,12 @@ func Build(db *sql.DB, in Input, now time.Time) (*Report, error) {
 		if notCounted > 0 {
 			lost = fmt.Sprintf(" · VERIFIED lines not counted: %d", notCounted)
 		}
+		stale, err := staleness(db, l.Name, g)
+		if err != nil {
+			return nil, err
+		}
 		entries = append(entries, entry{
-			line: fmt.Sprintf("%s: %d%% claimed · %s · %s%s", l.Name, g.Done, counted, change(prev, l.Name, snap), lost),
+			line: fmt.Sprintf("%s: %s%d%% claimed · %s · %s%s", l.Name, stale, g.Done, counted, change(prev, l.Name, snap), lost),
 			goal: "  Goal: " + g.Goal,
 			next: "  Next: " + g.Next,
 		})
@@ -211,6 +217,59 @@ func Build(db *sql.DB, in Input, now time.Time) (*Report, error) {
 	}
 	r.Text = strings.Join(append(append(head, body...), tail...), "\n") + "\n"
 	return r, nil
+}
+
+// readGoal reads a lead's GOAL block from its status file, or from the git object when the lead names one (its
+// committed copy, not a checkout's). An object git cannot read is an error, never LOST.
+func readGoal(l ingest.Lead) (*Goal, error) {
+	if l.Repo == "" {
+		return ReadGoal(l.StatusFile)
+	}
+	var out, errb bytes.Buffer
+	// --end-of-options: an object from projects.toml that starts with '-' is never read as an option.
+	cmd := exec.Command("git", "-C", l.Repo, "cat-file", "blob", "--end-of-options", l.StatusFile)
+	cmd.Stdout, cmd.Stderr = &out, &errb
+	if err := cmd.Run(); err != nil {
+		why, _, _ := strings.Cut(strings.TrimSpace(errb.String()), "\n") // one report line
+		if len(why) > 200 {
+			why = why[:200] + "…"
+		}
+		return nil, fmt.Errorf("%s %s: git cat-file: %v: %s", l.Repo, l.StatusFile, err, why)
+	}
+	g, err := ParseGoal(out.String())
+	if err != nil {
+		return nil, fmt.Errorf("%s %s: %w", l.Repo, l.StatusFile, err)
+	}
+	return g, nil
+}
+
+// staleness says a lead's GOAL block is stale when the lead posted a DONE or CLEAR-READY on the Crius bus after its
+// stamp (Crius GO 10-19 18:25): its status file was not written with the milestone. INFO, NEED and team log lines
+// never count. A stamp in a repeated hour (DST fall-back) is taken at its later reading. "" when it is not stale.
+func staleness(db *sql.DB, lead string, g *Goal) (string, error) {
+	project, role, _ := strings.Cut(lead, ":")
+	latest, wall := g.Updated, g.Updated.Format("2006-01-02 15:04")
+	for d := 15 * time.Minute; d <= 2*time.Hour; d += 15 * time.Minute {
+		if t := g.Updated.Add(d); t.Format("2006-01-02 15:04") == wall {
+			latest = t
+		}
+	}
+	var ts, kind string
+	err := db.QueryRow("select ts, kind from event where project = ? and actor = ? and kind in ('done', 'clear-ready')"+
+		" and source_key like 'bus:%' and ts > ? order by ts desc, id desc limit 1",
+		project, role, latest.UTC().Format("2006-01-02T15:04:05Z")).Scan(&ts, &kind)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	at, err := time.Parse(time.RFC3339, ts)
+	if err != nil {
+		return "", fmt.Errorf("event %s %s: ts %q: %w", lead, kind, ts, err)
+	}
+	return fmt.Sprintf("STALE: GOAL (%s) is older than its %s %s on the bus · ", g.Updated.Format("2006-01-02 15:04"),
+		strings.ToUpper(kind), at.Local().Format("2006-01-02 15:04")), nil
 }
 
 // change says how a lead's claimed % and verified milestones moved since the last report.
