@@ -1,6 +1,6 @@
 # crius:build — RESUME (contract: docs/notes/COST-LEVER3-FRESH.md §2, max 120 lines)
 
-Updated 2026-10-19 by session a1f147b5 (CLEAR-READY after step 3b). Bus read to crius.log line 63 (my 3b DONE).
+Updated 2026-10-19 by session a1f147b5 (CLEAR-READY after 3b fix 97dc0d1).
 Last owner message seen: 2026-10-19 ~14:30 (via Crius brief ~/.crius/state/crius/BRIEF-build-2026-10-19.md).
 main = origin/main = 8f47462 (step 3b) + this RESUME commit. Local main ref is behind: it is checked out in Crius's worktree main-rules. History: docs/notes/RESUME-HISTORY.md.
 
@@ -21,7 +21,7 @@ main = origin/main = 8f47462 (step 3b) + this RESUME commit. Local main ref is b
   sampling (step 3). Show used vs this month's limit and the reset date in quota output, and let 'quota --room' report
   whether the fallback has room. Add it to the RESUME checklist as step 3b, after step 6 P2. Read-only: reuse the
   session's existing login, no new sign-in; the Enterprise login expires ~2026-10-21, so a missing or expired login
-  must be a loud 'cannot read', not 0%. Red check first." Status: done (main 8f47462).
+  must be a loud 'cannot read', not 0%. Red check first." Status: done (main 97dc0d1; Crius NEED 15:06: included usage + spend limit, not 'monthly').
 - Standing (memory): personal repo, push to main after review; effort medium/high only; no AI attribution.
 
 ## GOAL
@@ -33,7 +33,7 @@ Goal: build the Crius record (design §9 steps 1-9) so Crius answers the owner's
 - [x] 4 find/show/health/--deep, redaction, recall eval 31/34 · b3a87cb, bus 2026-10-17T02:27
 - [x] 4b fail-closed key=value + gitleaks rules · 86a776a
 - [x] 5 digest + Crius daily start (09:00/18:00 goal report) · 23052fe .. 50e2384
-- [x] 3b Enterprise monthly limit (owner 10-19 14:44) · b87bf61, 8f47462
+- [x] 3b Enterprise fallback: included usage + spend limit (owner 10-19 14:44, Crius NEED 15:06) · 72e9793, 97dc0d1
 - [ ] 6 record accept + scorecard
 - [ ] 9 Falcon source
 Done: 70% (7 of 10 required steps incl. 3b, equal weight; 7 and 8 only if needed)
@@ -42,13 +42,13 @@ Needs owner: nothing
 
 ## NOW
 
-Step 3b DONE: main 8f47462 pushed + installed clean (vcs.modified=false). b87bf61 = feature, 8f47462 = codex fixes
-(P1 1.5 s budget for aitch's 3 s; P2 HTTP/1.1 only so http2debug cannot log the token; P2 undecodable limit =
-cannot read), all red first. Source: keychain item "Claude Code-credentials-"+sha256(dir)[:8] of ~/.claude-work,
-GET api.anthropic.com/api/oauth/usage; the limit is the one object with limit_dollars/used_dollars/resets_at (key
-is a code name, "copper_kite" on 10-19). Live: $707 of $2000, resets 14 Nov; --room has a fallback field, exit
-code still the Max verdict's. The access token lasts ~8 h and only a ~/.claude-work session renews it: no work
-session for 8 h = "cannot read" (by design, read-only).
+Step 3b DONE: main 97dc0d1 installed clean. b87bf61 + 8f47462 first read only the seat's "included usage" (called it
+monthly: wrong, Crius NEED 15:06); 72e9793 reads both allowances under the usage page's names, 97dc0d1 = codex fixes
+(4 P2: nested limits, exponents, currency, decoded emptiness), all red first. Live: "fallback: included usage $707 of
+$2000 used (35%), expires 14 Nov · spend limit $0 of $600 used, reset date not in the reply" (the reply has no reset
+for the spend limit; the page says 1 Nov). Room while either has room. Any key naming a dollar limit at a path the
+code does not read = cannot read (knownPaths in internal/quota/enterprise.go). Login: keychain item of ~/.claude-work,
+access token ~8 h, renewed only by a work session; read-only, so no work session for 8 h = "cannot read".
 Next session: step 6 P3 scorecard from a fresh worktree off origin/main.
 
 ## Open work (step 6 checklist; each part red first, then build, codex review, one DONE with evidence + commit)
@@ -92,8 +92,8 @@ Spec: design §9 row 6, §3c tables (acceptance, defect, correction), §7 (M1, M
 
 - Worktree <scratchpad a1f147b5>/wt on feat/step3b (= main). No watchers, no background jobs. Ship script:
   <scratchpad a1f147b5>/ship.sh (branch feat/step3b).
-- launchd: space.scifilab.crius.{ingest,watchdog,digest,wait-sweep} run ~/.crius/bin (installed from 8f47462;
-  previous binaries kept as <scratchpad a1f147b5>/crius-*.before-8f47462).
+- launchd: space.scifilab.crius.{ingest,watchdog,digest,wait-sweep} run ~/.crius/bin (installed from 97dc0d1;
+  previous binaries kept as <scratchpad a1f147b5>/crius-*.before-97dc0d1).
 - Old worktrees from earlier sessions (git worktree list): not mine to remove; listed for Crius.
 
 ## Not in this file
