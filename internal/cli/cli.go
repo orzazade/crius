@@ -1,5 +1,6 @@
 // Package cli is crius-rec, the door to the record store. Commands: init, leak-test, record bus|decision|item (step 1),
-// quota (step 3), find, show and health (step 4), digest (step 5), record accept|defect|revoke|correct (step 6).
+// quota (step 3), find, show and health (step 4), digest (step 5), record accept|defect|revoke|correct and scorecard
+// (step 6).
 package cli
 
 import (
@@ -22,6 +23,7 @@ import (
 	"github.com/orzazade/crius/internal/quota"
 	"github.com/orzazade/crius/internal/recall"
 	"github.com/orzazade/crius/internal/redact"
+	"github.com/orzazade/crius/internal/scorecard"
 	"github.com/orzazade/crius/internal/store"
 )
 
@@ -54,6 +56,8 @@ const usage = `usage: crius-rec init
        crius-rec health [--json]
        crius-rec digest [--write [--print-path]]   (the goal report; --write saves it under state/digest/,
                  --print-path prints the saved path instead of the report)
+       crius-rec scorecard [--week YYYY-MM-DD] [--write]   (the quota week ending that day, default the running one;
+                 --write saves an ended week under state/scorecards/, a changed one gets a revised line)
 `
 
 type multi []string
@@ -136,6 +140,15 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			return exitUsage
 		}
 		return digestCmd(home, time.Now(), *write, *printPath, stdout, stderr)
+	case "scorecard":
+		fs := flag.NewFlagSet("scorecard", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		day := fs.String("week", "", "the local day the quota week ends")
+		write := fs.Bool("write", false, "save the ended week under state/scorecards/")
+		if fs.Parse(args) != nil || fs.NArg() > 0 {
+			return exitUsage
+		}
+		return scorecardCmd(home, time.Now(), *day, *write, stdout, stderr)
 	}
 	fmt.Fprint(stderr, usage)
 	return exitUsage
@@ -714,6 +727,58 @@ func digestCmd(home string, now time.Time, write, printPath bool, stdout, stderr
 		fmt.Fprint(stdout, text)
 	}
 	if r.Status != "complete" {
+		return exitPartial
+	}
+	return 0
+}
+
+func scorecardCmd(home string, now time.Time, day string, write bool, stdout, stderr io.Writer) int {
+	at := now
+	if day != "" {
+		d, err := time.ParseInLocation("2006-01-02", day, time.Local)
+		if err != nil {
+			fmt.Fprintf(stderr, "--week must be YYYY-MM-DD, got %q\n", day)
+			return exitUsage
+		}
+		at = d
+	}
+	db, rc := openStore(home, stderr)
+	if db == nil {
+		return rc
+	}
+	defer db.Close()
+	w, err := scorecard.WeekOf(db, at)
+	switch {
+	case errors.Is(err, scorecard.ErrNoWeeks):
+		fmt.Fprintf(stderr, "unavailable: %v\n", err)
+		return exitUnavailable
+	case err != nil:
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return exitError
+	case day != "" && w.End.Local().Format("2006-01-02") != day:
+		fmt.Fprintf(stderr, "no quota week ends on %s; the one holding it ends %s\n", day, w.End.Local().Format("2006-01-02 15:04"))
+		return exitUsage
+	}
+	c, err := scorecard.Build(db, w, now)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return exitError
+	}
+	if !write {
+		fmt.Fprint(stdout, c.Text)
+	} else {
+		path, what, err := scorecard.Write(db, filepath.Join(home, "state", "scorecards"), c, now)
+		switch {
+		case errors.Is(err, scorecard.ErrRunning):
+			fmt.Fprintf(stderr, "refused: %v\n", err)
+			return exitUsage
+		case err != nil:
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return exitError
+		}
+		fmt.Fprintf(stdout, "%s %s\n", what, path)
+	}
+	if c.Numbers.MaxPct < 0 {
 		return exitPartial
 	}
 	return 0
