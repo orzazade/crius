@@ -97,6 +97,21 @@ Best parts to take:
 - Risk to keep in mind: a harness that rewrites its own guardrails needs the verification to be strong;
   safety rules (secrets, production, outward-facing) stay outside what it may edit.
 
+### LangGraph and LangSmith (LangChain)
+
+Added by the owner 2026-10-21. Written from general knowledge, not checked against their latest releases.
+
+- **LangGraph:** open-source library (Python and TypeScript) to build an agent flow as a graph of steps with
+  saved state. Best parts: **checkpoints** after every step, so a run resumes where it stopped after a crash
+  or a context reset (our resume files do this by hand); **interrupts** that pause for a human answer and
+  continue (our NEED/ASK lines); a clear graph of who hands work to whom.
+- **LangSmith:** tracing and evals for agent runs: every step, tool call, cost and time in one view, plus test
+  sets that score runs. Best parts: **one trace per run** instead of reading bus lines and screens; **eval sets
+  from past failures**, the same idea as Harness².
+- Fit: both are built for agents we write in code, not for CLI sessions like Claude Code, so we would take
+  ideas, not run them. LangSmith's hosted version sends traces to LangChain: never with Appxite code or data;
+  self-hosting is an enterprise option.
+
 ### Smaller ones found on the way
 
 - **Agent Herder** (MCP server): watches and inspects agent sessions across Claude Code, Codex, OpenCode.
@@ -119,6 +134,8 @@ Best parts to take:
    when a model is out. Pinned version, in a container, test keys only.
 6. Harness²: read the paper and code first, then try the idea on one skill or AGENTS.md with a small test
    set of past mistakes: does a tested edit beat our hand-written fix? Linux only, so in a container.
+7. LangGraph / LangSmith: ideas only. Checkpoint + interrupt shape for the bus; one trace per lead run for
+   the goal reports. Revisit if we build our own agent service in TypeScript.
 
 For each trial write down: what it replaces in our setup, what it cannot do (clean-checkout re-runs,
 the bus rules), and the cost to move. Keep Crius's own checks either way.
