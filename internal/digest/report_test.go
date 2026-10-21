@@ -169,6 +169,8 @@ func TestBuildAddsTheStoreSections(t *testing.T) {
 		`wait idle_prompt "falcon" sid=3b660534`, "w1"); err != nil {
 		t.Fatal(err)
 	}
+	// Crius 10-22 00:49: the owner's own words relayed by Crius show with the decisions.
+	line(t, db, since.Add(4*time.Minute), "crius:lead", "owner", "no Telegram, wake Crius instead")
 	reset := now.Add(5 * 24 * time.Hour)
 	q := &quota.Report{Status: "partial", Reasons: []string{"account unknown for $1424 in 319 sessions (not measured)", "x"},
 		Now: now, Reset: reset, SevenPct: 54, Day: 3, Passed: 2.0 / 7}
@@ -188,7 +190,8 @@ func TestBuildAddsTheStoreSections(t *testing.T) {
 			"  axi:qa-api -> axi:leader " + since.Add(2*time.Hour).Format("15:04") + " axi#7 · on env004\n" +
 			"  crius:lead -> crius " + since.Add(150*time.Minute).Format("15:04") + " F-1 · sent to no lead\n" +
 			"Blocked: 1\n  axi:leader " + since.Add(4*time.Hour).Format("15:04") + " env004 is down, tests wait\n" +
-			"Decisions: 4\n  crius:lead 00:05 decision 1\n  crius:lead 00:06 decision 2\n  crius:lead 00:07 decision 3\n  +1 more\n" +
+			"Decisions: 5\n  crius:lead 00:04 OWNER no Telegram, wake Crius instead\n  crius:lead 00:05 decision 1\n" +
+			"  crius:lead 00:06 decision 2\n  +2 more\n" +
 			"Open waits (last 24 h): 1\n  " + now.Add(-30*time.Minute).Format("15:04") + ` wait idle_prompt "falcon" sid=3b660534` + "\n",
 		"\n## Quota and health\nQuota: 7d 54% on day 3 of 7, 1.9x the time passed · runs out ~" +
 			q.Runout().Local().Format("Mon 01-02 15:04") + " at this pace\n" +

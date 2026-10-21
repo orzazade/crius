@@ -143,7 +143,7 @@ func TestAMissingLogIsRefused(t *testing.T) {
 
 func TestAnUnknownTypeIsRefused(t *testing.T) {
 	_, log := setup(t)
-	rc, errs := post(t, at("2026-10-21T22:54"), log, "OWNER", "crius:build", "crius:lead", "x")
+	rc, errs := post(t, at("2026-10-21T22:54"), log, "QUEUE", "crius:build", "crius:lead", "x") // team-only type
 	if rc != 2 || busText(t, log) != "" {
 		t.Fatal(rc, errs)
 	}
@@ -229,5 +229,14 @@ func TestEveryNamedShaMustBeTheRunsSha(t *testing.T) {
 		if rc != 2 || busText(t, log) != "" {
 			t.Fatal(text, rc, errs)
 		}
+	}
+}
+
+// Crius 10-22 00:49: OWNER records the owner's own words relayed by Crius; bus-post posts it.
+func TestAnOwnerLineIsPosted(t *testing.T) {
+	_, log := setup(t)
+	rc, errs := post(t, at("2026-10-22T01:30"), log, "OWNER", "crius:lead", "crius:build", "no Telegram")
+	if want := "2026-10-22T01:30 OWNER crius:lead -> crius:build — no Telegram\n"; rc != 0 || busText(t, log) != want {
+		t.Fatal(rc, errs, busText(t, log))
 	}
 }

@@ -456,9 +456,10 @@ more than a late one.
   more than 10 min ahead of the clock, raises an ALERT naming the writer, one per file, writer, day and kind.
 - Types (the one list; `internal/store` tests check the Go list equals it): `DONE`, `BLOCKED`, `NEED-OWNER`,
   `PAUSE`, `PAUSED`, `LIMIT`, `ITEM`, `DECISION`, `RESUMED`, `ALERT`, `INFO`, `NEED`, `WAIT`, `PARKED`, `VERIFIED`,
-  `CORRECTED`, `GO`, `ACK`, `ORDER`, `ANSWER`, `ASK`, `START`, `CLEAR-READY`. Tests also check that RULES.md and the
+  `CORRECTED`, `GO`, `ACK`, `ORDER`, `ANSWER`, `ASK`, `START`, `CLEAR-READY`, `OWNER`. Tests also check that RULES.md and the
   cmux-team skill name no other type.
-- Who writes them: ALERT only Crius's own scripts (ingest, watchdog), WAIT the wait detector, PARKED the park mod
+- Who writes them: OWNER only Crius, for the owner's own words it relays (the goal report lists them with the decisions); ALERT only Crius's
+  own scripts (ingest, watchdog), WAIT the wait detector, PARKED the park mod
   (via the leader). Team-only types (QUEUE, NEED-QA, BUG, LESSON) never go on the Crius bus; any type
   not in the list above is malformed: ingest keeps a row per line with the time it read it, and the goal report
   counts them per log.

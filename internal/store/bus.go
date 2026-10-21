@@ -20,7 +20,7 @@ import (
 var Types = map[string]bool{"DONE": true, "BLOCKED": true, "NEED-OWNER": true, "PAUSE": true, "PAUSED": true, "LIMIT": true,
 	"ITEM": true, "DECISION": true, "RESUMED": true, "ALERT": true, "INFO": true, "NEED": true, "WAIT": true,
 	"PARKED": true, "VERIFIED": true, "CORRECTED": true, "GO": true, "ACK": true,
-	"ORDER": true, "ANSWER": true, "ASK": true, "START": true, "CLEAR-READY": true}
+	"ORDER": true, "ANSWER": true, "ASK": true, "START": true, "CLEAR-READY": true, "OWNER": true}
 
 const MaxLen = 300
 

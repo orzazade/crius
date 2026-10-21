@@ -327,7 +327,9 @@ func storeSections(db *sql.DB, in Input, now time.Time, maxItems int) ([]string,
 		}
 	}
 	events := func(cond string) ([]string, error) {
-		rows, err := db.Query("select ts, project, actor, coalesce(refs, ''), text from event where ts >= ? and ("+cond+
+		// An OWNER line (the owner's own words relayed by Crius) says so: it lists with the decisions.
+		rows, err := db.Query("select ts, project, actor, coalesce(refs, ''), case kind when 'owner' then 'OWNER ' || text"+
+			" else text end from event where ts >= ? and ("+cond+
 			") order by ts, id",
 			since.UTC().Format("2006-01-02T15:04:05Z"))
 		if err != nil {
@@ -362,7 +364,7 @@ func storeSections(db *sql.DB, in Input, now time.Time, maxItems int) ([]string,
 		{"Verified by Crius or QA", "kind = 'verified' and ((project = 'crius' and actor = 'lead') or actor = 'qa' or" +
 			" actor like 'qa-%')"},
 		{"Blocked", "kind = 'blocked'"},
-		{"Decisions", "kind = 'decision'"},
+		{"Decisions", "kind in ('decision', 'owner')"},
 	} {
 		items, err := events(l.cond)
 		if err != nil {
