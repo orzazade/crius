@@ -388,3 +388,55 @@ func TestTheLastEmojiOnALineDecides(t *testing.T) {
 		t.Error("✅ then ❓ not counted as asking")
 	}
 }
+
+// A secret in an over-long alert is redacted before the cut: a cut just before "@" would leave the password bare.
+func TestALongAlertIsRedactedBeforeItIsCut(t *testing.T) {
+	head := stamp(t0) + " DONE quotes:lead -> crius:lead — "
+	pad := strings.Repeat("x", maxText-len([]rune("quotes.log: "+head+"postgres://user:hunter2")))
+	home := setup(t, map[string]string{"quotes.log": head + pad + "postgres://user:hunter2@db.internal/app tail\n"})
+	f := &fake{}
+	if err := Run(f.deps(home, t0.Add(21*time.Minute))); err != nil || len(f.sent) != 1 {
+		t.Fatal(err, len(f.sent))
+	}
+	if strings.Contains(f.sent[0], "hunter2") {
+		t.Fatal("password sent:", f.sent[0][len(f.sent[0])-80:])
+	}
+}
+
+// Parts are measured after redaction, header included: text that grows when redacted still fits Telegram's limit.
+func TestPartsFitAfterRedaction(t *testing.T) {
+	var bus strings.Builder
+	for i := 0; i < 9; i++ {
+		fmt.Fprintf(&bus, "%s DONE quotes:lead -> crius:lead — F-%d %s\n", stamp(t0), i, strings.Repeat(".pwd='' ", 37))
+	}
+	home := setup(t, map[string]string{"quotes.log": bus.String()})
+	f := &fake{}
+	if err := Run(f.deps(home, t0.Add(21*time.Minute))); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range f.sent {
+		if n := len([]rune(m)); n > 4096 {
+			t.Errorf("part of %d runes", n)
+		}
+	}
+	for i := 0; i < 9; i++ {
+		if !strings.Contains(strings.Join(f.sent, "\n"), fmt.Sprintf("F-%d ", i)) {
+			t.Errorf("F-%d never sent", i)
+		}
+	}
+}
+
+// While the whole tab check fails, a tab already reported as unreadable is not reported again once the check is back.
+func TestAWholeCheckFailureKeepsPerTabFailures(t *testing.T) {
+	home := setup(t, nil)
+	bad := Screen{Surface: "surface:9", Title: "axi: lead", Err: "surface gone"}
+	f := &fake{screens: []Screen{bad}}
+	Run(f.deps(home, t0))
+	f.scrErr = errors.New("cmux: socket not found")
+	Run(f.deps(home, t0.Add(5*time.Minute)))
+	f.scrErr = nil
+	Run(f.deps(home, t0.Add(10*time.Minute)))
+	if n := strings.Count(strings.Join(f.sent, "\n"), "surface gone"); n != 1 || len(f.sent) != 2 {
+		t.Fatal(n, f.sent)
+	}
+}

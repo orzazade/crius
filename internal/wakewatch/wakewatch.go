@@ -25,7 +25,10 @@ const (
 	wakeAfter   = 20 * time.Minute
 	screenAfter = 10 * time.Minute
 	window      = 12 * time.Hour // older lines are history: a first run must not page the owner for them
-	maxText     = 3500           // Telegram allows 4096
+	maxText     = 3500           // Telegram allows 4096; the header and one cut alert stay under it
+
+	header        = "Crius missed a wake:\n"
+	screensFailed = "screens-failed"
 )
 
 // wakeTypes ask Crius to act; replyTypes from crius:lead show it woke.
@@ -95,6 +98,8 @@ func Run(d Deps) error {
 		if _, done := st.Alerted[a[0]]; done {
 			continue
 		}
+		// Redact first: a cut could split a secret so the redactor no longer sees it, and redaction can grow the text.
+		a[1], _ = redact.Redact(a[1])
 		if r := []rune(a[1]); len(r) > maxText {
 			a[1] = string(r[:maxText]) + "…"
 		}
@@ -111,8 +116,7 @@ func Run(d Deps) error {
 		for i, a := range p {
 			texts[i] = a[1]
 		}
-		msg, _ := redact.Redact("Crius missed a wake:\n" + strings.Join(texts, "\n"))
-		if sendErr = d.Send(msg); sendErr != nil {
+		if sendErr = d.Send(header + strings.Join(texts, "\n")); sendErr != nil {
 			break
 		}
 		for _, a := range p {
@@ -129,6 +133,13 @@ func Run(d Deps) error {
 	// works again), so the same thing can alert again later and a lasting one is never re-sent.
 	for surface, s := range st.Screens {
 		active[screenKey(surface, s.Hash)] = true
+	}
+	if active[screensFailed] { // no tab was read: a tab already reported unreadable has not recovered
+		for k := range st.Alerted {
+			if strings.HasPrefix(k, "screen-failed:") {
+				active[k] = true
+			}
+		}
 	}
 	for k := range st.Alerted {
 		if !active[k] {
@@ -224,7 +235,7 @@ func lineTime(s string) (time.Time, error) {
 func waiting(st *state, d Deps) [][2]string {
 	screens, err := d.Screens()
 	if err != nil {
-		return [][2]string{{"screens-failed", "the tab check failed to look: " + err.Error()}}
+		return [][2]string{{screensFailed, "the tab check failed to look: " + err.Error()}}
 	}
 	var out [][2]string
 	live := map[string]bool{}
