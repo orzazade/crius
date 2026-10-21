@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -61,6 +62,7 @@ type Deps struct {
 type seenScreen struct {
 	Hash  string
 	Since time.Time
+	Idle  bool // its idle alert is raised; a bus line from it lowers it, so the next idle spell alerts again
 }
 
 type state struct {
@@ -102,11 +104,14 @@ func Run(d Deps) error {
 	}
 	alerts = append(alerts, waiting(&st, d)...)
 
-	// Crius is woken on its bus apart from Telegram, so a failing send does not keep it asleep.
+	// Crius is woken on its bus apart from Telegram, so a failing send does not keep it asleep, nor a failing wake
+	// the owner's alerts; a wake that failed is tried again next run and returned.
+	var wakeErr error
 	for _, a := range alerts {
 		if _, done := st.Woken[a[0]]; strings.HasPrefix(a[0], "idle:") && !done {
 			if err := watchdog.Post(d.Home, d.Now, "IDLE "+a[1]); err != nil {
-				return err
+				wakeErr = fmt.Errorf("wakewatch could not wake Crius on its bus: %w", err)
+				continue
 			}
 			st.Woken[a[0]] = d.Now
 		}
@@ -155,7 +160,9 @@ func Run(d Deps) error {
 	// works again), so the same thing can alert again later and a lasting one is never re-sent.
 	for surface, s := range st.Screens {
 		active[screenKey(surface, s.Hash)] = true
-		active[idleKey(surface, s.Hash)] = true
+		if s.Idle {
+			active[idleKey(surface, s.Hash)] = true
+		}
 	}
 	if active[screensFailed] { // no tab was read: a tab already reported unreadable has not recovered
 		for k := range st.Alerted {
@@ -190,7 +197,7 @@ func Run(d Deps) error {
 		os.Remove(tmp.Name())
 		return werr
 	}
-	return sendErr
+	return errors.Join(sendErr, wakeErr)
 }
 
 func hash(s string) string {
@@ -306,10 +313,11 @@ func waiting(st *state, d Deps) [][2]string {
 			}
 		}
 		live[s.Surface] = true
-		h := hash(body)
+		name, _ := session(s.Text, s.Title) // another session in the same tab starts afresh
+		h := hash(name + "\n" + body)
 		seen, ok := st.Screens[s.Surface]
 		if !ok || seen.Hash != h {
-			st.Screens[s.Surface] = seenScreen{h, d.Now}
+			st.Screens[s.Surface] = seenScreen{Hash: h, Since: d.Now}
 			continue
 		}
 		if ask {
@@ -323,7 +331,9 @@ func waiting(st *state, d Deps) [][2]string {
 		if lastLine.After(from) {
 			from = lastLine
 		}
-		if wait := d.Now.Sub(from); wait >= idleAfter {
+		seen.Idle = d.Now.Sub(from) >= idleAfter
+		st.Screens[s.Surface] = seen
+		if wait := d.Now.Sub(from); seen.Idle {
 			text := fmt.Sprintf("%s (tab %q, %s) is idle: not working, nothing running, no bus line from it for %d min", who, s.Title, s.Surface, int(wait.Minutes()))
 			if clear {
 				text += "; its screen says CLEAR-READY"
@@ -371,16 +381,16 @@ func session(text, title string) (who, role string) {
 	return m[1] + ":" + m[2], m[2]
 }
 
-// clearReady reports whether the last reply above the input box says CLEAR-READY.
+// clearReady reports whether the last reply above the input box says CLEAR-READY. A screen with no reply marker has
+// no last reply to read.
 func clearReady(body string) bool {
 	lines := strings.Split(body, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
 		if strings.HasPrefix(strings.TrimSpace(lines[i]), "⏺") {
-			lines = lines[i:]
-			break
+			return strings.Contains(strings.Join(lines[i:], "\n"), "CLEAR-READY")
 		}
 	}
-	return strings.Contains(strings.Join(lines, "\n"), "CLEAR-READY")
+	return false
 }
 
 // lastFrom gives the time of the newest whole line sent by who ("quotes:lead") on its project's bus. found is false

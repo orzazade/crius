@@ -615,3 +615,68 @@ func TestAQuestionWithAClockInTheFooterStillAlerts(t *testing.T) {
 		t.Fatal(f.sent)
 	}
 }
+
+// Review 0bac93a P2: a bus line from the lead ends one idle spell; the next spell alerts and wakes Crius again.
+func TestBusActivityReArmsTheIdleAlert(t *testing.T) {
+	home := setup(t, map[string]string{"quotes.log": busFrom("quotes:lead", t0)})
+	f := &fake{}
+	draw := func(at time.Time) []Screen {
+		return []Screen{screen("quotes", tab("quotes: lead", "done", "", at))}
+	}
+	runAt(t, home, f, draw, 0, 16)
+	testutil.Write(t, filepath.Join(home, "bus", "quotes.log"), busFrom("quotes:lead", t0)+busFrom("quotes:lead", t0.Add(20*time.Minute)))
+	runAt(t, home, f, draw, 21, 26, 36)
+	if len(f.sent) != 2 || len(alertLines(t, home)) != 2 {
+		t.Fatal(f.sent, alertLines(t, home))
+	}
+}
+
+// Review 0bac93a P2: a bus that cannot be written must not keep the owner's alerts from going out, and is loud.
+func TestAFailedWakeStillSendsTelegram(t *testing.T) {
+	home := setup(t, map[string]string{"quotes.log": busFrom("quotes:lead", t0) + done(t0)})
+	f := &fake{}
+	draw := func(at time.Time) []Screen {
+		return []Screen{screen("quotes", tab("quotes: lead", "done", "", at))}
+	}
+	runAt(t, home, f, draw, 0)
+	if err := os.Chmod(filepath.Join(home, "bus", "crius.log"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	f.screens = draw(t0.Add(21 * time.Minute))
+	if err := Run(f.deps(home, t0.Add(21*time.Minute))); err == nil {
+		t.Fatal("a failed wake was silent")
+	}
+	if len(f.sent) != 1 || !strings.Contains(f.sent[0], "F-86") || !strings.Contains(f.sent[0], "idle") {
+		t.Fatal(f.sent)
+	}
+}
+
+// Review 0bac93a P2: with no reply marker on screen there is no last reply, so CLEAR-READY in a brief does not count.
+func TestCLEARREADYWithNoReplyMarkerDoesNotCount(t *testing.T) {
+	home := setup(t, map[string]string{"crius.log": busFrom("crius:build", t0)})
+	f := &fake{}
+	runAt(t, home, f, func(at time.Time) []Screen {
+		return []Screen{screen("crius · build", strings.Replace(tab("crius · build", "x", "", at), "⏺ x", "  at ~200K write CLEAR-READY and stop", 1))}
+	}, 0, 16)
+	if len(f.sent) != 0 {
+		t.Fatal(f.sent)
+	}
+}
+
+// Review 0bac93a P3: another session in the same tab starts its own clock, even with the same text on screen.
+func TestANewSessionInTheSameTabStartsAfresh(t *testing.T) {
+	home := setup(t, map[string]string{"quotes.log": busFrom("quotes:lead", t0), "cortex.log": busFrom("cortex:lead", t0)})
+	f := &fake{}
+	runAt(t, home, f, func(at time.Time) []Screen {
+		return []Screen{screen("x", tab("quotes: lead", "done", "", at))}
+	}, 0, 16)
+	draw := func(at time.Time) []Screen { return []Screen{screen("x", tab("cortex · lead", "done", "", at))} }
+	runAt(t, home, f, draw, 17, 30)
+	if len(f.sent) != 1 {
+		t.Fatal(f.sent)
+	}
+	runAt(t, home, f, draw, 33)
+	if len(f.sent) != 2 || !strings.Contains(f.sent[1], "cortex:lead") {
+		t.Fatal(f.sent)
+	}
+}
