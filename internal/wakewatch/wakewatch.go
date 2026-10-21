@@ -430,8 +430,14 @@ func Prompt(screen string) (string, bool) {
 	if !boxed {
 		return "", false
 	}
-	line := strings.SplitN(foot, "\n", 2)[0]
-	return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "❯")), true
+	var lines []string
+	for i, line := range strings.Split(foot, "\n") {
+		if line = strings.TrimSpace(line); i > 0 && borderRe.MatchString(line) {
+			break
+		}
+		lines = append(lines, line)
+	}
+	return strings.TrimSpace(strings.TrimPrefix(strings.Join(lines, "\n"), "❯")), true
 }
 
 // split cuts a Claude Code screen at its input box: what is above it, what is below it, and whether it has one.

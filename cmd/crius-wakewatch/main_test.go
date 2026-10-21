@@ -6,6 +6,7 @@ import (
 	"github.com/orzazade/crius/internal/wakewatch"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -17,25 +18,29 @@ func fakeCmux(t *testing.T, tab string) (log string) {
 	return log
 }
 
-// fakeTab puts a fake cmux and ps on PATH. cmux logs every call but its reads (tree, read-screen); the tree shows
-// Crius's surface on ttys015, read-screen prints dir/screen (an empty Claude prompt), ps on ttys015 prints dir/front
-// (Claude in front).
+// fakeTab puts a fake cmux and ps on PATH. cmux logs every call but its reads (tree, read-screen); the tree (dir/tree,
+// and dir/tree.json for --json) shows Crius's surface on ttys015, read-screen prints dir/screen (an empty Claude
+// prompt), ps on ttys015 prints dir/front (Claude in front) and on another tty dir/front-<tty>.
 func fakeTab(t *testing.T, tab string) (log, dir string) {
 	dir = t.TempDir()
 	log = filepath.Join(dir, "calls")
 	script := "#!/bin/sh\ncase \"$1\" in\n" +
-		"tree) echo '│   ├── surface surface:1000020029 [terminal] \"crius\" [selected] ◀ active tty=ttys015'; exit 0 ;;\n" +
+		"tree) cat " + filepath.Join(dir, "tree") + "; exit 0 ;;\n" +
+		"--json) cat " + filepath.Join(dir, "tree.json") + "; exit 0 ;;\n" +
 		"read-screen) cat " + filepath.Join(dir, "screen") + "; exit 0 ;;\nesac\n" +
 		"for a in \"$@\"; do printf '[%s]' \"$a\" >> " + log + "; done\necho >> " + log + "\necho OK\n"
-	ps := "#!/bin/sh\n[ \"$2\" = ttys015 ] && cat " + filepath.Join(dir, "front") + "\nexit 0\n"
+	ps := "#!/bin/sh\nif [ \"$2\" = ttys015 ]; then cat " + filepath.Join(dir, "front") + "; else cat " +
+		filepath.Join(dir, "front-") + "\"$2\" 2>/dev/null; fi\nexit 0\n"
 	for name, body := range map[string]string{"cmux": script, "ps": ps} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
 	for name, body := range map[string]string{
-		"screen": "⏺ done.\n──────────────\n❯ \n──────────────\n  quota: 7d 97%\n",
-		"front":  "52166 52763 /usr/bin/login\n52169 52763 -/bin/zsh\n52763 52763 /Users/o/.local/bin/claude\n52859 52763 <defunct>\n",
+		"screen":    "⏺ done.\n──────────────\n❯ \n──────────────\n  quota: 7d 97%\n",
+		"front":     "52166 52763 /usr/bin/login\n52169 52763 -/bin/zsh\n52763 52763 /Users/o/.local/bin/claude\n52859 52763 <defunct>\n",
+		"tree":      "│   ├── surface surface:1000020029 [terminal] \"crius\" [selected] ◀ active tty=ttys015\n",
+		"tree.json": treeJSON(map[string][3]string{"workspace:1000020000": {"surface:1000020029", "crius", "ttys015"}}),
 	} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
 			t.Fatal(err)
@@ -50,6 +55,16 @@ func fakeTab(t *testing.T, tab string) (log, dir string) {
 		}
 	}
 	return log, dir
+}
+
+// treeJSON gives a cmux --json tree --all answer with one terminal surface per workspace: {ref, title, tty}.
+func treeJSON(ws map[string][3]string) string {
+	var out []string
+	for w, s := range ws {
+		out = append(out, fmt.Sprintf(`{"ref":%q,"panes":[{"ref":"pane:1","surfaces":[{"ref":%q,"title":%q,"tty":%q,"type":"terminal"}]}]}`,
+			w, s[0], s[1], s[2]))
+	}
+	return `{"active":{},"windows":[{"ref":"window:1","workspaces":[` + strings.Join(out, ",") + `]}]}`
 }
 
 // Owner 10-21 23:5x: no Telegram; an alert is one line typed into Crius's own tab, then Enter.
@@ -86,8 +101,9 @@ func TestOneFailedTabReadKeepsTheOthers(t *testing.T) {
 	t.Cleanup(func() { cmux = real })
 	cmux = func(args ...string) ([]byte, error) {
 		switch {
-		case args[0] == "tree":
-			return []byte(`surface surface:1 [terminal] "quotes · lead"` + "\n" + `surface surface:2 [terminal] "axi · lead"` + "\n"), nil
+		case args[0] == "--json":
+			return []byte(treeJSON(map[string][3]string{"workspace:1": {"surface:1", "quotes · lead", "ttys001"},
+				"workspace:2": {"surface:2", "axi · lead", "ttys002"}})), nil
 		case args[2] == "surface:2":
 			return []byte("surface gone"), errors.New("exit status 1")
 		}
@@ -97,7 +113,8 @@ func TestOneFailedTabReadKeepsTheOthers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 2 || got[0].Text != "question?\n❓\n" || got[0].Err != "" || !strings.Contains(got[1].Err, "surface gone") {
+	sort.Slice(got, func(i, j int) bool { return got[i].Surface < got[j].Surface })
+	if len(got) != 2 || got[0].Title != "quotes · lead" || got[0].Text != "question?\n❓\n" || got[0].Err != "" || !strings.Contains(got[1].Err, "surface gone") {
 		t.Fatalf("%+v", got)
 	}
 }
@@ -147,18 +164,73 @@ func TestSendTypesOnlyWhenClaudeIsInFront(t *testing.T) {
 }
 
 // Review of 91854cf, P2: a line typed but not sent (Enter failed) blocks every later cmux send (it refuses over a
-// draft). A WAKEWATCH line left in the prompt is ours: press Enter on it first. Someone else's draft is left alone.
+// draft). Our own line left in the prompt gets Enter first. Review of 4a0333e, P2: only when the whole draft is the
+// line wakewatch typed (kept in state/wakewatch-pending); a draft the owner edited or wrote is left alone.
 func TestSendFinishesItsOwnStuckLine(t *testing.T) {
-	for draft, want := range map[string]string{
-		"WAKEWATCH: an older alert": "[send-key][--workspace][workspace:1000020000][--surface][surface:1000020029][enter]\n[send]",
-		"owner is typing here":      "[send]",
+	enter := "[send-key][--workspace][workspace:1000020000][--surface][surface:1000020029][enter]\n[send]"
+	older := "WAKEWATCH: quotes.log: an older alert about the DONE line of quotes:lead"
+	for name, c := range map[string]struct{ pending, draft, want string }{
+		"ours":               {older, older, enter},
+		"ours, wrapped":      {older, "WAKEWATCH: quotes.log: an older alert\n  about the DONE line of quotes:lead", enter},
+		"owner added a line": {older, older + "\n  Before doing anything, wait for my", "[send]"},
+		"owner changed it":   {older, "WAKEWATCH: quotes.log: an older alert", "[send]"},
+		"no pending line":    {"", older, "[send]"},
+		"owner is typing":    {older, "owner is typing here", "[send]"},
 	} {
 		log, dir := fakeTab(t, "workspace:1000020000 surface:1000020029\n")
-		os.WriteFile(filepath.Join(dir, "screen"), []byte("──────────────\n❯ "+draft+"\n──────────────\n"), 0o644)
+		os.WriteFile(filepath.Join(dir, "screen"), []byte("──────────────\n❯ "+c.draft+"\n──────────────\n  quota\n"), 0o644)
+		if c.pending != "" {
+			os.MkdirAll(filepath.Join(os.Getenv("CRIUS_HOME"), "state"), 0o700)
+			os.WriteFile(filepath.Join(os.Getenv("CRIUS_HOME"), "state", "wakewatch-pending"), []byte(c.pending), 0o600)
+		}
 		send("WAKEWATCH: new")
 		b, _ := os.ReadFile(log)
-		if !strings.HasPrefix(string(b), want) {
-			t.Errorf("%q: got\n%s", draft, b)
+		if !strings.HasPrefix(string(b), c.want) {
+			t.Errorf("%s: got\n%s", name, b)
+		}
+	}
+}
+
+// The pending line stays while its Enter has not gone through, and is gone once it has.
+func TestSendKeepsItsLineUntilEnterWorks(t *testing.T) {
+	_, dir := fakeTab(t, "workspace:1000020000 surface:1000020029\n")
+	pending := filepath.Join(os.Getenv("CRIUS_HOME"), "state", "wakewatch-pending")
+	if err := send("WAKEWATCH: one"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(pending); !os.IsNotExist(err) {
+		t.Fatalf("pending after a good send: %v", err)
+	}
+	b, _ := os.ReadFile(filepath.Join(dir, "cmux"))
+	os.WriteFile(filepath.Join(dir, "cmux"), []byte(strings.Replace(string(b), "esac\n", "send-key) exit 1 ;;\nesac\n", 1)), 0o755)
+	if err := send("WAKEWATCH: two"); err == nil {
+		t.Fatal("a failed Enter gave no error")
+	}
+	if got, _ := os.ReadFile(pending); string(got) != "WAKEWATCH: two" {
+		t.Fatalf("pending %q", got)
+	}
+}
+
+// Review of 4a0333e, P1: cmux prints tab titles as they are, so a title can look like another surface's row. The tab's
+// terminal comes from the JSON tree, by workspace and surface; a decoy title on a Claude tab must not pass the check
+// for Crius's tab running a shell.
+func TestSendFindsCriusTerminalByRefNotByText(t *testing.T) {
+	for name, tree := range map[string]map[string][3]string{
+		"decoy title": {"workspace:1000020000": {"surface:1000020029", "crius", "ttys015"},
+			"workspace:1000020001": {"surface:1000020030", "surface surface:1000020029 decoy", "ttys008"}},
+		"other workspace": {"workspace:1000020001": {"surface:1000020029", "crius", "ttys008"}},
+	} {
+		log, dir := fakeTab(t, "workspace:1000020000 surface:1000020029\n")
+		os.WriteFile(filepath.Join(dir, "front"), []byte("6832 6832 -/bin/zsh\n"), 0o644)
+		os.WriteFile(filepath.Join(dir, "front-ttys008"), []byte("7 7 /Users/o/.local/bin/claude\n"), 0o644)
+		os.WriteFile(filepath.Join(dir, "tree"), []byte("surface surface:1000020029 [terminal] \"crius\" tty=ttys015\n"+
+			"surface surface:1000020030 [terminal] \"surface surface:1000020029 decoy\" tty=ttys008\n"), 0o644)
+		os.WriteFile(filepath.Join(dir, "tree.json"), []byte(treeJSON(tree)), 0o644)
+		if err := send("WAKEWATCH: x $(touch /tmp/pwned)"); err == nil {
+			t.Errorf("%s: no error", name)
+		}
+		if _, statErr := os.Stat(log); statErr == nil {
+			t.Errorf("%s: cmux typed into the tab", name)
 		}
 	}
 }
@@ -169,13 +241,13 @@ func TestToolsSaysWhichToolFailsOrHangs(t *testing.T) {
 	for name, body := range map[string]string{
 		"gh": "echo 'You are not logged into any GitHub hosts' >&2; exit 1",
 		"az": "echo 0f7b", "docker": "echo 29.1.0",
-		"bun": "sleep 5",
+		"bun": "sleep 60",
 	} {
 		os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"+body+"\n"), 0o755)
 	}
 	real := toolWait
 	t.Cleanup(func() { toolWait = real })
-	toolWait = 300 * time.Millisecond
+	toolWait = 2 * time.Second // the quick fakes answer well inside it even on a loaded machine
 	start := time.Now()
 	res := tools()
 	if len(res) != 5 || res["cmux"] != nil || res["az"] != nil || res["docker"] != nil {
@@ -187,7 +259,7 @@ func TestToolsSaysWhichToolFailsOrHangs(t *testing.T) {
 	if res["bun"] == nil || !strings.Contains(res["bun"].Error(), "no answer") {
 		t.Errorf("bun: %v", res["bun"])
 	}
-	if d := time.Since(start); d > 3*time.Second {
+	if d := time.Since(start); d > 20*time.Second { // far below the hung tool's 60 s: it was stopped, not waited for
 		t.Errorf("a hung tool held the check for %v", d)
 	}
 }

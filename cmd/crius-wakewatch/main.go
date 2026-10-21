@@ -21,11 +21,9 @@ import (
 )
 
 var (
-	surfaceRe = regexp.MustCompile(`surface (surface:\d+) \[terminal\] "(.*)"`)
-	tabRe     = regexp.MustCompile(`^(workspace:\d+)\s+(surface:\d+)$`)
-	ttyRe     = regexp.MustCompile(`\btty=(\S+)`)
-	swapRe    = regexp.MustCompile(`used = ([\d.]+)([MG])`)
-	cmux      = func(args ...string) ([]byte, error) { return exec.Command("cmux", args...).CombinedOutput() }
+	tabRe  = regexp.MustCompile(`^(workspace:\d+)\s+(surface:\d+)$`)
+	swapRe = regexp.MustCompile(`used = ([\d.]+)([MG])`)
+	cmux   = func(args ...string) ([]byte, error) { return exec.Command("cmux", args...).CombinedOutput() }
 )
 
 func main() {
@@ -44,20 +42,58 @@ func main() {
 	}
 }
 
+// terminal is one terminal tab in cmux.
+type terminal struct{ Workspace, Surface, Title, TTY string }
+
+// terminals lists every terminal tab from cmux's JSON tree. The text tree prints titles as they are, so a title can
+// look like another tab's row.
+func terminals() ([]terminal, error) {
+	b, err := cmux("--json", "tree", "--all")
+	if err != nil {
+		return nil, fmt.Errorf("cmux tree: %v: %s", err, strings.TrimSpace(string(b)))
+	}
+	var tree struct {
+		Windows []struct {
+			Workspaces []struct {
+				Ref   string
+				Panes []struct {
+					Surfaces []struct{ Ref, Title, TTY, Type string }
+				}
+			}
+		}
+	}
+	if err := json.Unmarshal(b, &tree); err != nil {
+		return nil, fmt.Errorf("cmux --json tree: %v", err)
+	}
+	var out []terminal
+	for _, w := range tree.Windows {
+		for _, ws := range w.Workspaces {
+			for _, p := range ws.Panes {
+				for _, s := range p.Surfaces {
+					if s.Type == "terminal" {
+						out = append(out, terminal{ws.Ref, s.Ref, s.Title, s.TTY})
+					}
+				}
+			}
+		}
+	}
+	return out, nil
+}
+
 // screens reads the last 30 lines of every terminal tab in cmux. A tab whose read fails comes back with Err set.
 func screens() ([]wakewatch.Screen, error) {
-	tree, err := cmux("tree", "--all")
+	tabs, err := terminals()
 	if err != nil {
-		return nil, fmt.Errorf("cmux tree: %v: %s", err, strings.TrimSpace(string(tree)))
+		return nil, err
 	}
 	var out []wakewatch.Screen
-	for _, m := range surfaceRe.FindAllStringSubmatch(string(tree), -1) {
-		text, err := cmux("read-screen", "--surface", m[1], "--lines", "30")
+	for _, tab := range tabs {
+		text, err := cmux("read-screen", "--surface", tab.Surface, "--lines", "30")
 		if err != nil {
-			out = append(out, wakewatch.Screen{Surface: m[1], Title: m[2], Err: fmt.Sprintf("cmux read-screen: %v: %s", err, strings.TrimSpace(string(text)))})
+			out = append(out, wakewatch.Screen{Surface: tab.Surface, Title: tab.Title, Err: fmt.Sprintf("cmux read-screen: %v: %s", err, strings.TrimSpace(string(text)))})
 			continue
 		}
-		out = append(out, wakewatch.Screen{Surface: m[1], Title: m[2], Text: string(text)})
+		out = append(out, wakewatch.Screen{Surface: tab.Surface, Title: tab.Title, Text: string(text)})
 	}
 	if len(out) == 0 {
 		return nil, fmt.Errorf("cmux tree lists no terminal tab")
@@ -83,18 +119,30 @@ func send(text string) error {
 	if m == nil {
 		return fmt.Errorf("%s: want one line \"workspace:N surface:N\" (crius-tab), got %q", path, strings.Join(ref, " | "))
 	}
-	if err := claudeInFront(m[2]); err != nil {
+	if err := claudeInFront(m[1], m[2]); err != nil {
 		return err
 	}
 	screen, err := cmux("read-screen", "--workspace", m[1], "--surface", m[2], "--lines", "40")
 	if err != nil {
 		return fmt.Errorf("cmux read-screen %s: %v: %s", m[2], err, strings.TrimSpace(string(screen)))
 	}
-	// An earlier line whose Enter failed is still in the prompt, and cmux send refuses to type over a draft.
-	if draft, _ := wakewatch.Prompt(string(screen)); strings.HasPrefix(draft, wakewatch.Prefix) {
-		if out, err := cmux("send-key", "--workspace", m[1], "--surface", m[2], "enter"); err != nil {
-			return fmt.Errorf("cmux send-key: %v: %s", err, strings.TrimSpace(string(out)))
+	// An earlier line whose Enter failed is still in the prompt, and cmux send refuses to type over a draft. Enter
+	// goes on it only if the whole draft is that line, as typed: a draft the owner edited or wrote is left alone.
+	pending := filepath.Join(store.Home(), "state", "wakewatch-pending")
+	if last, err := os.ReadFile(pending); err == nil {
+		if draft, _ := wakewatch.Prompt(string(screen)); draft != "" && squash(draft) == squash(string(last)) {
+			if out, err := cmux("send-key", "--workspace", m[1], "--surface", m[2], "enter"); err != nil {
+				return fmt.Errorf("cmux send-key: %v: %s", err, strings.TrimSpace(string(out)))
+			}
 		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(pending), 0o700); err != nil {
+		return err
+	}
+	if err := os.WriteFile(pending, []byte(text), 0o600); err != nil {
+		return err
 	}
 	if out, err := cmux("send", "--workspace", m[1], "--surface", m[2], "--", text); err != nil {
 		return fmt.Errorf("cmux send: %v: %s", err, strings.TrimSpace(string(out)))
@@ -102,24 +150,27 @@ func send(text string) error {
 	if out, err := cmux("send-key", "--workspace", m[1], "--surface", m[2], "enter"); err != nil {
 		return fmt.Errorf("cmux send-key: %v: %s", err, strings.TrimSpace(string(out)))
 	}
-	return nil
+	return os.Remove(pending)
 }
+
+// squash drops all white space, so a line the input box wrapped equals the line as typed.
+func squash(s string) string { return strings.Join(strings.Fields(s), "") }
 
 // claudeInFront checks that Claude is the foreground process of the surface's terminal. If Claude has exited, the tab
 // is a shell, and Enter would run the alert text there.
-func claudeInFront(surface string) error {
-	tree, err := cmux("tree", "--all")
+func claudeInFront(workspace, surface string) error {
+	tabs, err := terminals()
 	if err != nil {
-		return fmt.Errorf("cmux tree: %v: %s", err, strings.TrimSpace(string(tree)))
+		return err
 	}
 	tty := ""
-	for _, line := range strings.Split(string(tree), "\n") {
-		if m := ttyRe.FindStringSubmatch(line); m != nil && strings.Contains(line, "surface "+surface+" ") {
-			tty = m[1]
+	for _, tab := range tabs {
+		if tab.Workspace == workspace && tab.Surface == surface {
+			tty = tab.TTY
 		}
 	}
 	if tty == "" {
-		return fmt.Errorf("Crius's tab %s has no terminal in cmux tree --all: nothing typed", surface)
+		return fmt.Errorf("Crius's tab %s %s has no terminal in cmux tree --all: nothing typed", workspace, surface)
 	}
 	out, err := exec.Command("ps", "-t", tty, "-o", "pid=,tpgid=,comm=").Output()
 	if err != nil {
