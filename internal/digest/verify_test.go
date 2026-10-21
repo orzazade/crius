@@ -48,7 +48,7 @@ func line(t *testing.T, db *sql.DB, ts time.Time, sender, kind, text string) int
 func verified(t *testing.T, db *sql.DB, ts time.Time, sender, to, text string) int64 {
 	t.Helper()
 	id := line(t, db, ts, sender, "verified", text)
-	if _, err := db.Exec("update event set refs = ? where id = ?", `{"to":["`+to+`"]}`, id); err != nil {
+	if _, err := db.Exec("update event set refs = ? where id = ?", `{"to":["`+strings.ReplaceAll(to, ", ", `","`)+`"]}`, id); err != nil {
 		t.Fatal(err)
 	}
 	return id

@@ -156,7 +156,7 @@ func TestBuildAddsTheStoreSections(t *testing.T) {
 	}
 	since := now.Add(-9 * time.Hour)
 	verified(t, db, since.Add(-time.Minute), "crius:lead", "crius:build", "0aa0000 · before the last report")
-	verified(t, db, since.Add(time.Hour), "crius:lead", "crius:build", "b3a87cb · 31/34")
+	verified(t, db, since.Add(time.Hour), "crius:lead", "crius:build, quotes:lead", "b3a87cb · 31/34") // several recipients: the report shows all
 	verified(t, db, since.Add(2*time.Hour), "axi:qa-api", "axi:leader", "axi#7 · on env004")
 	verified(t, db, since.Add(3*time.Hour), "crius:build", "crius:build", "2cc2222 · the builder's own claim")
 	line(t, db, since.Add(4*time.Hour), "axi:leader", "blocked", "env004 is down, tests wait")
@@ -186,7 +186,7 @@ func TestBuildAddsTheStoreSections(t *testing.T) {
 		"# Goal report · 2026-10-17 09:00 · status partial\nsources read: bus " + bus + " · git " + git + " · prices never\n",
 		"\n## Since the last report (2026-10-17 00:00)\n" +
 			"Verified by Crius or QA: 3\n" +
-			"  crius:lead -> crius:build " + since.Add(time.Hour).Format("15:04") + " b3a87cb · 31/34\n" +
+			"  crius:lead -> crius:build, quotes:lead " + since.Add(time.Hour).Format("15:04") + " b3a87cb · 31/34\n" +
 			"  axi:qa-api -> axi:leader " + since.Add(2*time.Hour).Format("15:04") + " axi#7 · on env004\n" +
 			"  crius:lead -> crius " + since.Add(150*time.Minute).Format("15:04") + " F-1 · sent to no lead\n" +
 			"Blocked: 1\n  axi:leader " + since.Add(4*time.Hour).Format("15:04") + " env004 is down, tests wait\n" +

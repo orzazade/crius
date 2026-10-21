@@ -349,7 +349,7 @@ func storeSections(db *sql.DB, in Input, now time.Time, maxItems int) ([]string,
 					return nil, fmt.Errorf("event at %s: refs: %w", ts, err)
 				}
 				if len(r["to"]) > 0 { // a VERIFIED line; one to "crius" names no lead and shows it
-					to = " -> " + r["to"][0]
+					to = " -> " + strings.Join(r["to"], ", ")
 				}
 			}
 			t, err := time.Parse(time.RFC3339, ts)
