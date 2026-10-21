@@ -20,7 +20,7 @@ func fakeCmux(t *testing.T, tab string) (log string) {
 
 // fakeTab puts a fake cmux and ps on PATH. cmux logs every call but its reads (tree, read-screen) and acts like the
 // real one: the JSON tree (dir/tree.json) shows Crius's surface on ttys015; read-screen prints dir/screen if there is
-// one, else a Claude input box holding dir/draft; send refuses over a draft, else types into it (plus dir/extra, if
+// one, else a Claude input box holding dir/draft (one read late if dir/lag exists, as Claude redraws after a key); send refuses over a draft, else types into it (plus dir/extra, if
 // any: someone typing at the same time); send-key enter sends the draft (fails if dir/enterfail exists). ps on
 // ttys015 prints dir/front (Claude in front) and on another tty dir/front-<tty>.
 func fakeTab(t *testing.T, tab string) (log, dir string) {
@@ -29,8 +29,10 @@ func fakeTab(t *testing.T, tab string) (log, dir string) {
 	f := func(name string) string { return filepath.Join(dir, name) }
 	script := "#!/bin/sh\ncase \"$1\" in\n" +
 		"--json) cat " + f("warn") + " >&2 2>/dev/null; cat " + f("tree.json") + "; exit 0 ;;\n" +
-		"read-screen) if [ -f " + f("screen") + " ]; then cat " + f("screen") + "; else printf '⏺ done.\\n──────────────\\n❯ %s\\n" +
-		"──────────────\\n  quota: 7d 97%%\\n' \"$(cat " + f("draft") + ")\"; fi; exit 0 ;;\nesac\n" +
+		"read-screen) if [ -f " + f("screen") + " ]; then cat " + f("screen") + "; exit 0; fi\n  src=" + f("draft") +
+		"; [ -f " + f("lag") + " ] && [ -f " + f("shown") + " ] && src=" + f("shown") + "\n" +
+		"  printf '⏺ done.\\n──────────────\\n❯ %s\\n──────────────\\n  quota: 7d 97%%\\n' \"$(cat $src)\"\n" +
+		"  [ -f " + f("lag") + " ] && cp " + f("draft") + " " + f("shown") + "; exit 0 ;;\nesac\n" +
 		"for a in \"$@\"; do printf '[%s]' \"$a\" >> " + log + "; last=$a; done\necho >> " + log + "\n" +
 		"case \"$1\" in\nsend) [ -s " + f("draft") + " ] && { echo 'Error: the prompt holds a draft' >&2; exit 1; }\n" +
 		"  printf '%s' \"$last\" > " + f("draft") + "; cat " + f("extra") + " >> " + f("draft") + " 2>/dev/null ;;\n" +
@@ -366,5 +368,25 @@ func TestAWarningOnStderrKeepsTheTree(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(log); !strings.Contains(string(b), "[send-key]") {
 		t.Fatalf("calls:\n%s", b)
+	}
+}
+
+// Review of c9df15f, P2: Claude draws a key's effect a moment after it arrives. A read right after typing or Enter
+// sees the old box, so send waits for the box to catch up instead of failing (two alerts in one run, a stuck line).
+func TestSendWaitsForTheBoxToCatchUp(t *testing.T) {
+	_, dir := fakeTab(t, "workspace:1000020000 surface:1000020029\n")
+	os.WriteFile(filepath.Join(dir, "lag"), nil, 0o644)
+	for _, text := range []string{"WAKEWATCH: one", "WAKEWATCH: two"} {
+		if err := send(text); err != nil {
+			t.Fatalf("%s: %v", text, err)
+		}
+	}
+	for _, f := range []string{"draft", "shown"} { // on screen for a while: no lag left
+		os.WriteFile(filepath.Join(dir, f), []byte("WAKEWATCH: stuck"), 0o644)
+	}
+	os.MkdirAll(filepath.Join(os.Getenv("CRIUS_HOME"), "state"), 0o700)
+	os.WriteFile(filepath.Join(os.Getenv("CRIUS_HOME"), "state", "wakewatch-pending"), []byte("WAKEWATCH: stuck"), 0o600)
+	if err := send("WAKEWATCH: three"); err != nil {
+		t.Fatalf("after a stuck line: %v", err)
 	}
 }

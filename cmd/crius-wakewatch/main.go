@@ -152,6 +152,9 @@ func send(text string) error {
 		if out, err := cmux("send-key", "--workspace", m[1], "--surface", m[2], "enter"); err != nil {
 			return fmt.Errorf("cmux send-key: %v: %s", err, strings.TrimSpace(string(out)))
 		}
+		if draft, err := waitBox(m[1], m[2], ""); err != nil || draft != "" {
+			return fmt.Errorf("Crius's prompt still holds %q after Enter on wakewatch's earlier line: %v", draft, err)
+		}
 	}
 	if err := os.MkdirAll(filepath.Dir(pending), 0o700); err != nil {
 		return err
@@ -163,7 +166,7 @@ func send(text string) error {
 		return fmt.Errorf("cmux send: %v: %s", err, strings.TrimSpace(string(out)))
 	}
 	// Someone may have typed at the same moment: Enter would send the mix.
-	if draft, err = inputBox(m[1], m[2]); err != nil {
+	if draft, err = waitBox(m[1], m[2], text); err != nil {
 		return err
 	}
 	if squash(draft) != squash(text) {
@@ -172,7 +175,27 @@ func send(text string) error {
 	if out, err := cmux("send-key", "--workspace", m[1], "--surface", m[2], "enter"); err != nil {
 		return fmt.Errorf("cmux send-key: %v: %s", err, strings.TrimSpace(string(out)))
 	}
+	// The line stays pending until the box is empty, so the next send can finish it.
+	if draft, err = waitBox(m[1], m[2], ""); err != nil || draft != "" {
+		return fmt.Errorf("Crius's prompt still holds %q after Enter: %v", draft, err)
+	}
 	return os.Remove(pending)
+}
+
+var boxWait = 100 * time.Millisecond
+
+// waitBox reads Crius's input box until its draft is want (white space aside), for up to 20 reads: Claude draws a
+// key's effect a moment after it arrives. It gives the last draft it read.
+func waitBox(workspace, surface, want string) (draft string, err error) {
+	for i := 0; i < 20; i++ {
+		if i > 0 {
+			time.Sleep(boxWait)
+		}
+		if draft, err = inputBox(workspace, surface); err == nil && squash(draft) == squash(want) {
+			return draft, nil
+		}
+	}
+	return draft, err
 }
 
 // inputBox reads Crius's screen and gives the draft in Claude's input box. Without the box on screen (bash mode, a
