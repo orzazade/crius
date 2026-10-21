@@ -1,9 +1,9 @@
 #!/bin/bash
-# Install (or reinstall) the four Crius launchd jobs: the ingest every 10 min, the watchdog every 5 min, the goal
-# report at 09:00 and 18:00, and the weekly job (scorecards and the restore test, Thursday 04:00). Builds both
-# binaries, crius-statusline (the statusLine command), crius-rec (for launchers: quota --room; the goal report) and
-# bus-post (the bus writer) from this checkout into ~/.crius/bin with the run scripts, then prints each installed
-# plist and the job state, so the owner sees exactly what was installed.
+# Install (or reinstall) the five Crius launchd jobs: the ingest every 10 min, the watchdog and the missed-wake watch
+# (wakewatch) every 5 min, the goal report at 09:00 and 18:00, and the weekly job (scorecards and the restore test,
+# Thursday 04:00). Builds the job binaries, crius-statusline (the statusLine command), crius-rec (for launchers:
+# quota --room; the goal report) and bus-post (the bus writer) from this checkout into ~/.crius/bin with the run
+# scripts, then prints each installed plist and the job state, so the owner sees exactly what was installed.
 set -euo pipefail
 repo="$(cd "$(dirname "$(realpath "$0")")/.." && pwd -P)"
 bin="$HOME/.crius/bin"
@@ -13,14 +13,15 @@ for p in "$repo" "$HOME"; do
 done
 [ -d "$HOME/.crius/state" ] || { echo "~/.crius is missing; run bin/crius-rec init first" >&2; exit 1; }
 mkdir -p -m 700 "$bin"
-for cmd in crius-ingest crius-watchdog crius-statusline crius-rec bus-post; do
+for cmd in crius-ingest crius-watchdog crius-wakewatch crius-statusline crius-rec bus-post; do
   GOTOOLCHAIN=local go -C "$repo" build -o "$bin/$cmd" "./cmd/$cmd"
 done
 install -m 755 "$repo/bin/crius-digest-run" "$bin/crius-digest-run"
 install -m 755 "$repo/bin/crius-weekly-run" "$bin/crius-weekly-run"
+install -m 755 "$repo/bin/crius-wakewatch-run" "$bin/crius-wakewatch-run"
 dest="$HOME/Library/LaunchAgents"
 mkdir -p "$dest"
-for job in ingest watchdog digest weekly; do
+for job in ingest watchdog wakewatch digest weekly; do
   label="space.scifilab.crius.$job"
   plist="$dest/$label.plist"
   sed -e "s#@REPO@#$repo#g" -e "s#@HOME@#$HOME#g" "$repo/launchd/$label.plist.in" > "$plist.tmp"

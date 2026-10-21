@@ -1,0 +1,8 @@
+#!/bin/bash
+# launchd runs this every 5 min. It reads only TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID from ~/.secrets, at run time and
+# in a subshell, so no other secret reaches crius-wakewatch and none is stored anywhere.
+set -euo pipefail
+vals=$(set +u; . "$HOME/.secrets" > /dev/null 2>&1; printf '%s\n%s\n' "${TELEGRAM_BOT_TOKEN:-}" "${TELEGRAM_CHAT_ID:-}")
+{ IFS= read -r TELEGRAM_BOT_TOKEN; IFS= read -r TELEGRAM_CHAT_ID; } <<< "$vals"
+export TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID
+exec "$HOME/.crius/bin/crius-wakewatch"
