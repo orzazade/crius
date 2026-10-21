@@ -157,7 +157,7 @@ func TestUnknownTypeStrictAndLenient(t *testing.T) {
 }
 
 func TestNewTypesAreAccepted(t *testing.T) {
-	for _, typ := range []string{"NEED-OWNER", "PAUSED", "LIMIT", "ITEM", "DECISION", "RESUMED", "VERIFIED", "CORRECTED",
+	for _, typ := range []string{"NEED-OWNER", "PAUSE", "PAUSED", "LIMIT", "ITEM", "DECISION", "RESUMED", "VERIFIED", "CORRECTED",
 		"GO", "ACK"} {
 		if ParseLine("2026-10-16T09:20 "+typ+" demo:leader -> crius — x", nil, true) == nil {
 			t.Error(typ)

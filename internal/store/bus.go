@@ -17,7 +17,7 @@ import (
 
 // Types are the Crius-bus types. The one written list is the "- Types" line in docs/MEMORY-AND-MEASUREMENT.md §6;
 // a test keeps the two equal. Any other type stays malformed (a loud warning), on purpose.
-var Types = map[string]bool{"DONE": true, "BLOCKED": true, "NEED-OWNER": true, "PAUSED": true, "LIMIT": true,
+var Types = map[string]bool{"DONE": true, "BLOCKED": true, "NEED-OWNER": true, "PAUSE": true, "PAUSED": true, "LIMIT": true,
 	"ITEM": true, "DECISION": true, "RESUMED": true, "ALERT": true, "INFO": true, "NEED": true, "WAIT": true,
 	"PARKED": true, "VERIFIED": true, "CORRECTED": true, "GO": true, "ACK": true,
 	"ORDER": true, "ANSWER": true, "ASK": true, "START": true, "CLEAR-READY": true}

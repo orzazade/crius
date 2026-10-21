@@ -455,7 +455,7 @@ more than a late one.
   a line: a dated line more than 1 h behind the newest stamp before it in its file (a clock in UTC without `Z`), or
   more than 10 min ahead of the clock, raises an ALERT naming the writer, one per file, writer, day and kind.
 - Types (the one list; `internal/store` tests check the Go list equals it): `DONE`, `BLOCKED`, `NEED-OWNER`,
-  `PAUSED`, `LIMIT`, `ITEM`, `DECISION`, `RESUMED`, `ALERT`, `INFO`, `NEED`, `WAIT`, `PARKED`, `VERIFIED`,
+  `PAUSE`, `PAUSED`, `LIMIT`, `ITEM`, `DECISION`, `RESUMED`, `ALERT`, `INFO`, `NEED`, `WAIT`, `PARKED`, `VERIFIED`,
   `CORRECTED`, `GO`, `ACK`, `ORDER`, `ANSWER`, `ASK`, `START`, `CLEAR-READY`. Tests also check that RULES.md and the
   cmux-team skill name no other type.
 - Who writes them: ALERT only Crius's own scripts (ingest, watchdog), WAIT the wait detector, PARKED the park mod
