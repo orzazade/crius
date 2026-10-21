@@ -195,12 +195,12 @@ func hash(s string) string {
 // projects is the set of projects watched; nil watches every project.
 type projects map[string]bool
 
-func (p projects) has(project string) bool { return p == nil || p[project] }
+func (p projects) has(project string) bool { return p == nil || p[strings.ToLower(project)] }
 
 // watched reads home/wakewatch-projects: the project names (bus file names: quotes, crius), split by spaces, commas or
-// lines, with # starting a comment (owner 10-22: only Quotes and Crius are watched). With no file every project is
-// watched. A file that cannot be read or names no project would silence every team: it is an alert, and every project
-// stays watched.
+// lines, with # starting a comment, in any case (owner 10-22: only Quotes and Crius are watched). With no file every
+// project is watched. A file that cannot be read or names no project would silence every team: it is an alert, and
+// every project stays watched. A name with no bus file would silence its team: it is an alert too.
 func watched(home string) (projects, [][2]string) {
 	path := filepath.Join(home, "wakewatch-projects")
 	b, err := os.ReadFile(path)
@@ -214,13 +214,19 @@ func watched(home string) (projects, [][2]string) {
 	for _, line := range strings.Split(string(b), "\n") {
 		line, _, _ = strings.Cut(line, "#")
 		for _, name := range strings.FieldsFunc(line, func(c rune) bool { return c == ',' || unicode.IsSpace(c) }) {
-			p[name] = true
+			p[strings.ToLower(name)] = true
 		}
 	}
 	if len(p) == 0 {
 		return nil, [][2]string{{"projects-failed", path + " names no project, so every project is watched"}}
 	}
-	return p, nil
+	var out [][2]string
+	for name := range p {
+		if _, err := os.Stat(filepath.Join(home, "bus", name+".log")); err != nil {
+			out = append(out, [2]string{"projects-unknown:" + name, path + " names " + name + ", which has no bus file, so that team is not watched: " + err.Error()})
+		}
+	}
+	return p, out
 }
 
 // project gives the project of a bus name ("quotes:lead" -> "quotes").
@@ -317,10 +323,14 @@ func waiting(st *state, d Deps, watch projects) [][2]string {
 		if s.Title == "crius" {
 			continue
 		}
-		// A tab of no team, or of a team not watched, stays quiet. A read failure above still alerts: it has no name to
-		// go by.
+		// A tab of a team not watched stays quiet. A dialog hides the named input box: then the title's first word names
+		// the project (a lead tab is titled "quotes"). A read failure above still alerts: it has no name to go by.
 		name, _ := session(s.Text, s.Title)
-		if watch != nil && (name == "" || !watch.has(project(name))) {
+		team := project(name)
+		if title := strings.Fields(strings.NewReplacer(":", " ", "·", " ").Replace(s.Title)); name == "" && len(title) > 0 {
+			team = title[0]
+		}
+		if watch != nil && !watch.has(team) {
 			continue
 		}
 		body, foot, boxed := split(s.Text)

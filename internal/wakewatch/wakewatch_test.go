@@ -848,3 +848,35 @@ func TestAnEmptyProjectListIsAnAlert(t *testing.T) {
 		t.Fatal(quotes)
 	}
 }
+
+// A dialog hides the named input box, and a lead tab's title is often the bare project ("quotes"): the title's first
+// word still names its project, so a listed project's dialog wakes Crius and another project's stays quiet.
+func TestATabTitledOnlyByItsProjectIsWatched(t *testing.T) {
+	home := setup(t, map[string]string{"quotes.log": ""})
+	testutil.Write(t, filepath.Join(home, "wakewatch-projects"), "quotes crius\n")
+	dialog := " Do you want to proceed?\n ❯ 1. Yes\n   2. No, and tell Claude what to do differently (esc)\n"
+	f := &fake{screens: []Screen{{Surface: "surface:1", Title: "quotes", Text: dialog},
+		{Surface: "surface:2", Title: "axi", Text: dialog}}}
+	Run(f.deps(home, t0))
+	Run(f.deps(home, t0.Add(11*time.Minute)))
+	if len(f.sent) != 1 || !strings.Contains(f.sent[0], "surface:1") {
+		t.Fatal(f.sent)
+	}
+}
+
+// A listed name with no bus file (a capital, a typo, "quotes.log") would silence that team with no word: it is an
+// alert that names it. Names match bus files whatever their case.
+func TestAListedNameWithNoBusIsAnAlert(t *testing.T) {
+	all := []string{".log: ", "waits on a question", "is idle", "no fresh start"}
+	quotes, axi := projectAlerts(t, "Quotes, qoutes\n")
+	if len(axi) != 0 || fmt.Sprint(kinds(quotes)) != fmt.Sprint(all) {
+		t.Fatalf("Quotes is listed: quotes %q, axi %q", quotes, axi)
+	}
+	var said bool
+	for _, m := range quotes {
+		said = said || strings.Contains(m, "qoutes") && strings.Contains(m, "no bus")
+	}
+	if !said {
+		t.Fatal(quotes)
+	}
+}
