@@ -21,7 +21,7 @@ if [ -n "$changes" ]; then
   echo "$repo has changes not pushed; install from a clean checkout at origin/main" >&2; exit 1
 fi
 head="$(git -C "$repo" rev-parse --verify HEAD)"
-main="$(git -C "$repo" rev-parse --verify --quiet origin/main)" ||
+main="$(git -C "$repo" rev-parse --verify --quiet refs/remotes/origin/main)" ||
   { echo "$repo has no origin/main; git fetch, then install from a clean checkout at origin/main" >&2; exit 1; }
 if [ "$head" != "$main" ]; then
   echo "$repo is not at origin/main (git pull first); install from a clean checkout at origin/main" >&2; exit 1
