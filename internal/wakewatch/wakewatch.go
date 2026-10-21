@@ -45,7 +45,7 @@ const (
 // wakeTypes ask Crius to act; replyTypes from crius:lead show it woke.
 var (
 	wakeTypes  = map[string]bool{"DONE": true, "NEED": true, "CLEAR-READY": true, "ASK": true}
-	replyTypes = map[string]bool{"ORDER": true, "ANSWER": true, "VERIFIED": true, "ACK": true, "INFO": true, "GO": true}
+	replyTypes = map[string]bool{"ORDER": true, "ANSWER": true, "VERIFIED": true, "ACK": true, "INFO": true, "GO": true, "OWNER": true}
 	lineRe     = regexp.MustCompile(`^(\d{4}-\d\d-\d\dT\d\d:\d\dZ?) ([A-Z][A-Z-]*) (\S+)(?: -> (.*?))? — `)
 	// A Claude Code permission or choice dialog: a numbered option under the cursor.
 	dialogRe = regexp.MustCompile(`(?m)^\s*❯\s*1\.\s`)
@@ -235,8 +235,13 @@ func missed(home string, now time.Time) ([][2]string, error) {
 }
 
 func toCrius(to string) bool {
-	for _, r := range strings.Split(to, ",") {
-		if r = strings.TrimSpace(r); r == "crius:lead" || r == "crius" {
+	return sentTo(to, "crius:lead") || sentTo(to, "crius")
+}
+
+// sentTo reports whether a line's recipients ("a, b" or "a b", as the bus grammar allows) name who.
+func sentTo(to, who string) bool {
+	for _, r := range strings.FieldsFunc(to, func(c rune) bool { return c == ',' || c == ' ' }) {
+		if r == who {
 			return true
 		}
 	}
@@ -388,12 +393,12 @@ func fresh(d Deps) [][2]string {
 			continue
 		}
 		// Crius sent the lead back to work after the DONE (Crius 10-22 01:07): a decision, so no alert. An ACK is not.
-		order, _, err := lastLine(d.Home, who, "crius:lead", who, "ORDER")
+		ordered, err := orderAfterDone(d.Home, who)
 		if err != nil {
 			out = append(out, [2]string{"fresh-failed:" + who, fmt.Sprintf("the lead fresh-start check failed to look at %s's bus: %v", who, err)})
 			continue
 		}
-		if order.After(at) {
+		if ordered {
 			continue
 		}
 		when := at.Format("2006-01-02T15:04")
@@ -502,28 +507,48 @@ func clearReady(body string) bool {
 // lastFrom gives the time of the newest whole line sent by who ("quotes:lead") on its project's bus, of type typ or
 // any type for "". found is false when the project has no bus.
 func lastFrom(home, who, typ string) (last time.Time, found bool, err error) {
-	return lastLine(home, who, who, "", typ)
-}
-
-// lastLine gives the time of the newest line from "from" (to "to", when given) of type typ in the bus log of the
-// project of "in". found is false when that log does not exist yet.
-func lastLine(home, in, from, to, typ string) (last time.Time, found bool, err error) {
-	b, err := os.ReadFile(filepath.Join(home, "bus", strings.SplitN(in, ":", 2)[0]+".log"))
-	if os.IsNotExist(err) {
-		return last, false, nil
-	} else if err != nil {
-		return last, false, err
-	}
-	for _, line := range strings.Split(string(b[:bytes.LastIndexByte(b, '\n')+1]), "\n") {
-		m := lineRe.FindStringSubmatch(line)
-		if m == nil || m[3] != from || typ != "" && m[2] != typ || to != "" && strings.TrimSpace(m[4]) != to {
+	lines, found, err := busLines(home, who)
+	for _, m := range lines {
+		if m[3] != who || typ != "" && m[2] != typ {
 			continue
 		}
 		if at, err := lineTime(m[1]); err == nil && at.After(last) {
 			last = at
 		}
 	}
-	return last, true, nil
+	return last, found, err
+}
+
+// orderAfterDone reports whether crius:lead sent who an ORDER below who's last DONE in its project's bus log. The
+// file's order counts, not the minute: both lines often carry the same one.
+func orderAfterDone(home, who string) (bool, error) {
+	lines, _, err := busLines(home, who)
+	ordered := false
+	for _, m := range lines {
+		switch {
+		case m[3] == who && m[2] == "DONE":
+			ordered = false
+		case m[3] == "crius:lead" && m[2] == "ORDER" && sentTo(m[4], who):
+			ordered = true
+		}
+	}
+	return ordered, err
+}
+
+// busLines gives the parsed whole lines of the bus log of who's project. found is false when that log does not exist yet.
+func busLines(home, who string) (lines [][]string, found bool, err error) {
+	b, err := os.ReadFile(filepath.Join(home, "bus", strings.SplitN(who, ":", 2)[0]+".log"))
+	if os.IsNotExist(err) {
+		return nil, false, nil
+	} else if err != nil {
+		return nil, false, err
+	}
+	for _, line := range strings.Split(string(b[:bytes.LastIndexByte(b, '\n')+1]), "\n") {
+		if m := lineRe.FindStringSubmatch(line); m != nil {
+			lines = append(lines, m)
+		}
+	}
+	return lines, true, nil
 }
 
 // asks reports whether a screen waits on someone: its newest status emoji is ❓, or a dialog offers numbered options.

@@ -91,6 +91,7 @@ func TestALaterCriusLeadLineAnswersIt(t *testing.T) {
 		"ORDER crius:lead -> quotes:lead — x",
 		"ANSWER crius:lead -> quotes:lead — x",
 		"GO crius:lead -> quotes:lead — x",
+		"OWNER crius:lead -> quotes:lead — owner: x", // Crius passing on the owner's words is awake too
 	} {
 		home := setup(t, map[string]string{"quotes.log": done(t0) + stamp(t0.Add(30*time.Minute)) + " " + reply + "\n"})
 		f := &fake{}
@@ -114,14 +115,15 @@ func TestOnlyWakeTypesToCriusLeadCount(t *testing.T) {
 		stamp(t0) + " DONE quotes:b1 -> quotes:lead — not for Crius\n" +
 		stamp(t0) + " NEED quotes:lead -> crius:lead, quotes:qa — needs an answer\n" +
 		stamp(t0) + " CLEAR-READY crius:build -> crius:lead — at 200K\n" +
-		stamp(t0) + " ASK axi:lead -> crius — which branch\n"
+		stamp(t0) + " ASK axi:lead -> crius — which branch\n" +
+		stamp(t0) + " ASK quotes:b2 -> quotes:qa crius:lead — spaces only\n" // the bus grammar allows "a b" as well as "a, b"
 	home := setup(t, map[string]string{"quotes.log": bus})
 	f := &fake{}
-	if err := Run(f.deps(home, t0.Add(25*time.Minute))); err != nil || len(f.sent) != 3 {
+	if err := Run(f.deps(home, t0.Add(25*time.Minute))); err != nil || len(f.sent) != 4 {
 		t.Fatal(err, f.sent)
 	}
 	all := strings.Join(f.sent, "\n")
-	for _, want := range []string{"needs an answer", "at 200K", "which branch"} {
+	for _, want := range []string{"needs an answer", "at 200K", "which branch", "spaces only"} {
 		if !strings.Contains(all, want) {
 			t.Error("missing", want, all)
 		}
@@ -730,10 +732,16 @@ func TestCriusOrderAfterTheDONEClosesTheFreshStartAlert(t *testing.T) {
 		bus  string
 		want int
 	}{
-		"order after the DONE":    {done(t0) + order(t0.Add(2*time.Minute), "quotes:lead"), 0},
-		"order before the DONE":   {order(t0.Add(-time.Minute), "quotes:lead") + done(t0), 2},
-		"order to another lead":   {done(t0) + order(t0.Add(2*time.Minute), "quotes:qa-api"), 2},
-		"order from someone else": {done(t0) + stamp(t0.Add(2*time.Minute)) + " ORDER quotes:qa-api -> quotes:lead — x\n", 2},
+		"order after the DONE":  {done(t0) + order(t0.Add(2*time.Minute), "quotes:lead"), 0},
+		"order before the DONE": {order(t0.Add(-time.Minute), "quotes:lead") + done(t0), 2},
+		// Review of 24f04c9: the file's order counts, not the minute; a line may name several recipients.
+		"order in the DONE's minute":        {done(t0) + order(t0, "quotes:lead"), 0},
+		"order before, in the same minute":  {order(t0, "quotes:lead") + done(t0), 2},
+		"order to several":                  {done(t0) + order(t0.Add(2*time.Minute), "crius:build, quotes:lead"), 0},
+		"order to several, not to the lead": {done(t0) + order(t0.Add(2*time.Minute), "crius:build, quotes:qa-api"), 2},
+		"order to several, spaces only":     {done(t0) + order(t0.Add(2*time.Minute), "crius:build quotes:lead"), 0},
+		"order to another lead":             {done(t0) + order(t0.Add(2*time.Minute), "quotes:qa-api"), 2},
+		"order from someone else":           {done(t0) + stamp(t0.Add(2*time.Minute)) + " ORDER quotes:qa-api -> quotes:lead — x\n", 2},
 	} {
 		home := setup(t, map[string]string{"quotes.log": c.bus})
 		f := &fake{ses: old}
