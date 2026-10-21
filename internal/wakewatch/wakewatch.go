@@ -1,7 +1,8 @@
 // Package wakewatch tells the owner when Crius missed a wake: a lead's DONE, NEED, CLEAR-READY or ASK to Crius with no
 // crius:lead line after it on the same bus for 20 min, a lead tab waiting on a question or dialog for 10 min, or a
 // lead tab idle for 15 min (or any tab whose last reply says CLEAR-READY), the Mac short of disk or deep in swap, and
-// a tool the team needs (cmux, gh, az, bun, docker) that fails or does not answer.
+// a tool the team needs (cmux, gh, az, bun, docker) that fails or does not answer, and a lead still in the same session
+// 20 min after its DONE.
 // It runs as its own launchd job, outside
 // any chat, and wakes Crius by typing one line into Crius's own tab: Crius then acts, and sends the owner a push
 // notification when the owner is needed (owner 10-21 23:5x: no Telegram). Like the watchdog it imports nothing from
@@ -32,6 +33,7 @@ const (
 	idleAfter   = 15 * time.Minute
 	window      = 12 * time.Hour   // older lines are history: a first run must not wake Crius for them
 	resend      = 20 * time.Minute // an item still open wakes Crius again, never more often
+	freshAfter  = 20 * time.Minute // a lead's DONE with no new session of that lead this long wakes Crius
 	minFreeGB   = 20               // less free disk than this wakes Crius
 	maxSwapGB   = 20               // more swap in use than this wakes Crius
 	maxLine     = 500
@@ -65,6 +67,13 @@ type Deps struct {
 	Send      func(text string) error
 	Resources func() (freeDiskGB, swapUsedGB float64, err error)
 	Tools     func() map[string]error // each tool the team needs, and why it failed or did not answer (nil: fine)
+	Sessions  func() ([]Session, error)
+}
+
+// Session is a live Claude Code session: its name ("quotes: lead"), id, and when it started (zero: nothing written yet).
+type Session struct {
+	Name, ID string
+	Started  time.Time
 }
 
 type seenScreen struct {
@@ -110,6 +119,7 @@ func Run(d Deps) error {
 	alerts = append(alerts, waiting(&st, d)...)
 	alerts = append(alerts, resources(d)...)
 	alerts = append(alerts, tools(d)...)
+	alerts = append(alerts, fresh(d)...)
 
 	active := map[string]bool{}
 	var sendErr error
@@ -279,7 +289,7 @@ func waiting(st *state, d Deps) [][2]string {
 			}
 			var found bool
 			var err error
-			if lastLine, found, err = lastFrom(d.Home, who); err != nil {
+			if lastLine, found, err = lastFrom(d.Home, who, ""); err != nil {
 				live[s.Surface] = true
 				out = append(out, [2]string{"screen-failed:" + s.Surface, fmt.Sprintf("tab %q (%s): idle check could not read its bus: %v", s.Title, s.Surface, err)})
 				continue
@@ -336,6 +346,50 @@ func resources(d Deps) [][2]string {
 	}
 	if swap > maxSwapGB {
 		out = append(out, [2]string{"swap", fmt.Sprintf("swap: %.1f GB in use, above %d GB", swap, maxSwapGB)})
+	}
+	return out
+}
+
+// fresh gives an alert for each lead whose newest DONE (in the last 12 h) is 20 min old while no session of that lead
+// started after it: no /clear and no relaunch (cmux-team SKILL §5, fresh context per item).
+func fresh(d Deps) [][2]string {
+	ss, err := d.Sessions()
+	if err != nil {
+		return [][2]string{{"sessions-failed", "the lead fresh-start check failed to look: " + err.Error()}}
+	}
+	newest := map[string]time.Time{}
+	var whos []string
+	for _, s := range ss {
+		m := sessionRe.FindStringSubmatch(strings.TrimSpace(s.Name))
+		if m == nil || !leadRe.MatchString(m[2]) {
+			continue
+		}
+		who, started := m[1]+":"+m[2], s.Started
+		if started.IsZero() {
+			started = d.Now // nothing written yet: it has just started
+		}
+		if _, ok := newest[who]; !ok {
+			whos = append(whos, who)
+		}
+		if started.After(newest[who]) {
+			newest[who] = started
+		}
+	}
+	sort.Strings(whos)
+	var out [][2]string
+	for _, who := range whos {
+		at, found, err := lastFrom(d.Home, who, "DONE")
+		if err != nil {
+			out = append(out, [2]string{"fresh-failed:" + who, fmt.Sprintf("the lead fresh-start check failed to look at %s's bus: %v", who, err)})
+			continue
+		}
+		if !found || at.IsZero() || d.Now.Sub(at) < freshAfter || d.Now.Sub(at) > window || newest[who].After(at) {
+			continue
+		}
+		when := at.Format("2006-01-02T15:04")
+		out = append(out, [2]string{"fresh:" + who + ":" + when, fmt.Sprintf("%s posted DONE at %s and has had no fresh "+
+			"start since (no /clear or relaunch in %d min; cmux-team SKILL §5: fresh context per item)", who, when,
+			int(d.Now.Sub(at).Minutes()))})
 	}
 	return out
 }
@@ -421,9 +475,9 @@ func clearReady(body string) bool {
 	return false
 }
 
-// lastFrom gives the time of the newest whole line sent by who ("quotes:lead") on its project's bus. found is false
-// when the project has no bus.
-func lastFrom(home, who string) (last time.Time, found bool, err error) {
+// lastFrom gives the time of the newest whole line sent by who ("quotes:lead") on its project's bus, of type typ or
+// any type for "". found is false when the project has no bus.
+func lastFrom(home, who, typ string) (last time.Time, found bool, err error) {
 	b, err := os.ReadFile(filepath.Join(home, "bus", strings.SplitN(who, ":", 2)[0]+".log"))
 	if os.IsNotExist(err) {
 		return last, false, nil
@@ -432,7 +486,7 @@ func lastFrom(home, who string) (last time.Time, found bool, err error) {
 	}
 	for _, line := range strings.Split(string(b[:bytes.LastIndexByte(b, '\n')+1]), "\n") {
 		m := lineRe.FindStringSubmatch(line)
-		if m == nil || m[3] != who {
+		if m == nil || m[3] != who || typ != "" && m[2] != typ {
 			continue
 		}
 		if at, err := lineTime(m[1]); err == nil && at.After(last) {

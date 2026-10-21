@@ -26,12 +26,15 @@ type fake struct {
 	swapGB  float64
 	resErr  error
 	tools   map[string]error
+	ses     []Session
+	sesErr  error
 }
 
 func (f *fake) deps(home string, now time.Time) Deps {
 	return Deps{Home: home, Now: now,
-		Screens: func() ([]Screen, error) { return f.screens, f.scrErr },
-		Tools:   func() map[string]error { return f.tools },
+		Screens:  func() ([]Screen, error) { return f.screens, f.scrErr },
+		Tools:    func() map[string]error { return f.tools },
+		Sessions: func() ([]Session, error) { return f.ses, f.sesErr },
 		Resources: func() (float64, float64, error) {
 			if f.freeGB == 0 {
 				return 100, f.swapGB, f.resErr
@@ -666,5 +669,69 @@ func TestAToolThatDoesNotAnswerWakesCrius(t *testing.T) {
 	Run(f.deps(home, t0.Add(45*time.Minute)))
 	if len(f.sent) != 0 {
 		t.Fatalf("tools answer again: %q", f.sent)
+	}
+}
+
+func freshSent(f *fake) []string {
+	var out []string
+	for _, m := range f.sent {
+		if strings.Contains(m, "no fresh start") || strings.Contains(m, "fresh-start check") {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// Crius 10-21 23:58 (cmux-team SKILL §5, fresh context per item): a lead's DONE with no fresh start of that lead (a
+// /clear or a relaunch, so a new session) within 20 min wakes Crius. Case 10-21: quotes:lead ran 00:57-00:00 through
+// six DONEs in one session.
+func TestALeadDONEWithNoFreshStartWakesCrius(t *testing.T) {
+	bus := done(t0) + stamp(t0.Add(time.Minute)) + " ACK crius:lead -> quotes:lead — seen\n"
+	old := Session{Name: "quotes: lead", ID: "18c04af5", Started: t0.Add(-2 * time.Hour)}
+	for name, c := range map[string]struct {
+		ses  []Session
+		want int
+	}{
+		"same session":             {[]Session{old}, 2},
+		"name with a dot":          {[]Session{{Name: "quotes · lead", ID: "1", Started: t0.Add(-time.Hour)}}, 2},
+		"cleared after the DONE":   {[]Session{{Name: "quotes: lead", ID: "2", Started: t0.Add(5 * time.Minute)}}, 0},
+		"old and a new one":        {[]Session{old, {Name: "quotes: lead", ID: "3", Started: t0.Add(3 * time.Minute)}}, 0},
+		"new, nothing written yet": {[]Session{{Name: "quotes: lead", ID: "4"}}, 0},
+		"no lead session":          {[]Session{{Name: "quotes: qa-api", ID: "5", Started: t0.Add(-time.Hour)}}, 0},
+		"no session":               {nil, 0},
+	} {
+		home := setup(t, map[string]string{"quotes.log": bus})
+		f := &fake{ses: c.ses}
+		for _, m := range []int{10, 21, 30, 41} {
+			if err := Run(f.deps(home, t0.Add(time.Duration(m)*time.Minute))); err != nil {
+				t.Fatal(err)
+			}
+		}
+		got := freshSent(f)
+		if len(got) != c.want {
+			t.Errorf("%s: want %d, got %q", name, c.want, got)
+		}
+		for _, m := range got {
+			if !strings.Contains(m, "quotes:lead") || !strings.Contains(m, stamp(t0)) {
+				t.Errorf("%s: %q", name, m)
+			}
+		}
+	}
+}
+
+// A DONE older than the 12 h window, or from a role that is not a lead, does not count; a failed session read is loud.
+func TestTheFreshStartCheckSkipsOldAndNonLeadDONEs(t *testing.T) {
+	old := Session{Name: "quotes: lead", ID: "1", Started: t0.Add(-20 * time.Hour)}
+	home := setup(t, map[string]string{"quotes.log": done(t0.Add(-13*time.Hour)) +
+		stamp(t0.Add(-1*time.Hour)) + " DONE quotes:qa-api -> crius:lead — F-87 · 1c6e705 · 12 OK\n"})
+	f := &fake{ses: []Session{old, {Name: "quotes: qa-api", ID: "2", Started: t0.Add(-20 * time.Hour)}}}
+	Run(f.deps(home, t0))
+	if got := freshSent(f); len(got) != 0 {
+		t.Fatalf("%q", got)
+	}
+	f.sesErr = errors.New("open ~/.claude/sessions: permission denied")
+	Run(f.deps(home, t0.Add(time.Minute)))
+	if got := freshSent(f); len(got) != 1 || !strings.Contains(got[0], "permission denied") {
+		t.Fatalf("%q", got)
 	}
 }

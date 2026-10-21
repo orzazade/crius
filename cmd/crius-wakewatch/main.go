@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -30,7 +31,13 @@ var (
 func main() {
 	os.Setenv("PATH", toolPath())
 	err := wakewatch.Run(wakewatch.Deps{Home: store.Home(), Now: time.Now(), Screens: screens, Send: send,
-		Resources: resources, Tools: tools})
+		Resources: resources, Tools: tools, Sessions: func() ([]wakewatch.Session, error) {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return nil, err
+			}
+			return sessions(home)
+		}})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, time.Now().Format(time.RFC3339), "crius-wakewatch:", err)
 		os.Exit(1)
@@ -212,4 +219,47 @@ func tools() map[string]error {
 func toolPath() string {
 	home, _ := os.UserHomeDir()
 	return os.Getenv("PATH") + ":/opt/homebrew/bin:/usr/local/bin:" + filepath.Join(home, ".bun", "bin")
+}
+
+// sessions lists the live Claude Code sessions of every config folder (~/.claude*): name, id, and the birth time of
+// the session's transcript (zero when it has none yet). A linked folder lists a process again; it counts once.
+func sessions(home string) ([]wakewatch.Session, error) {
+	files, err := filepath.Glob(filepath.Join(home, ".claude*", "sessions", "*.json"))
+	if err != nil {
+		return nil, err
+	}
+	var out []wakewatch.Session
+	seen := map[int]bool{}
+	for _, f := range files {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			return nil, err
+		}
+		var s struct {
+			PID       int    `json:"pid"`
+			SessionID string `json:"sessionId"`
+			Name      string `json:"name"`
+		}
+		if err := json.Unmarshal(b, &s); err != nil {
+			return nil, fmt.Errorf("%s: %v", f, err)
+		}
+		if seen[s.PID] || syscall.Kill(s.PID, 0) == syscall.ESRCH { // a file left by a session that ended
+			continue
+		}
+		seen[s.PID] = true
+		ses := wakewatch.Session{Name: s.Name, ID: s.SessionID}
+		ts, err := filepath.Glob(filepath.Join(filepath.Dir(filepath.Dir(f)), "projects", "*", s.SessionID+".jsonl"))
+		if err != nil {
+			return nil, err
+		}
+		for _, t := range ts {
+			var st syscall.Stat_t
+			if err := syscall.Stat(t, &st); err != nil {
+				return nil, err
+			}
+			ses.Started = time.Unix(st.Birthtimespec.Unix())
+		}
+		out = append(out, ses)
+	}
+	return out, nil
 }

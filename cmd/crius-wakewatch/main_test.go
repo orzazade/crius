@@ -2,6 +2,8 @@ package main
 
 import (
 	"errors"
+	"fmt"
+	"github.com/orzazade/crius/internal/wakewatch"
 	"os"
 	"path/filepath"
 	"strings"
@@ -187,5 +189,48 @@ func TestToolsSaysWhichToolFailsOrHangs(t *testing.T) {
 	}
 	if d := time.Since(start); d > 3*time.Second {
 		t.Errorf("a hung tool held the check for %v", d)
+	}
+}
+
+// The fresh-start check reads every config folder's live sessions; a linked folder (~/.claude-personal) lists the
+// same process twice, a dead pid's file is left over, and a session with no transcript yet has no start.
+func TestSessionsReadsLiveSessionsWithTheirStart(t *testing.T) {
+	home := t.TempDir()
+	write := func(path, body string) {
+		os.MkdirAll(filepath.Dir(path), 0o700)
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	me, parent := os.Getpid(), os.Getppid()
+	write(filepath.Join(home, ".claude", "sessions", fmt.Sprint(me)+".json"),
+		fmt.Sprintf(`{"pid":%d,"sessionId":"aaa","name":"quotes: lead","status":"busy"}`, me))
+	write(filepath.Join(home, ".claude", "sessions", "99999999.json"), `{"pid":99999999,"sessionId":"dead","name":"axi: lead"}`)
+	write(filepath.Join(home, ".claude", "projects", "-Users-o-x", "aaa.jsonl"), "{}\n")
+	write(filepath.Join(home, ".claude-work", "sessions", fmt.Sprint(parent)+".json"),
+		fmt.Sprintf(`{"pid":%d,"sessionId":"bbb","name":"cortex · lead"}`, parent))
+	if err := os.Symlink(filepath.Join(home, ".claude"), filepath.Join(home, ".claude-personal")); err != nil {
+		t.Fatal(err)
+	}
+	ss, err := sessions(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]wakewatch.Session{}
+	for _, s := range ss {
+		got[s.ID] = s
+	}
+	if len(ss) != 2 || got["aaa"].Name != "quotes: lead" || got["bbb"].Name != "cortex · lead" {
+		t.Fatalf("%+v", ss)
+	}
+	if d := time.Since(got["aaa"].Started); d < 0 || d > time.Minute {
+		t.Errorf("aaa started %v", got["aaa"].Started)
+	}
+	if !got["bbb"].Started.IsZero() {
+		t.Errorf("bbb has no transcript: %v", got["bbb"].Started)
+	}
+	write(filepath.Join(home, ".claude", "sessions", "1.json"), `{"pid":`)
+	if _, err := sessions(home); err == nil || !strings.Contains(err.Error(), "1.json") {
+		t.Errorf("a broken session file: %v", err)
 	}
 }
