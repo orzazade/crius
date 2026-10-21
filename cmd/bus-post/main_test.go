@@ -213,3 +213,21 @@ func TestARelativeHomeFindsItsRuns(t *testing.T) {
 		t.Fatal(rc, errs)
 	}
 }
+
+// Review round 2: a sha hidden in a prefixed path or an underscore word must not stand in for the sha the line
+// names. Every sha the line names must be one its run log ran.
+func TestEveryNamedShaMustBeTheRunsSha(t *testing.T) {
+	home, log := setup(t)
+	runLog := filepath.Join(home, "runs", "r.log")
+	testutil.Write(t, runLog, "sha: 3622eda\npass: 3\n")
+	for _, text := range []string{
+		"620c99f path=" + filepath.Join(home, "runs", "3622eda.log") + " " + runLog,
+		"620c99f not_3622eda_checked " + runLog,
+		"3622eda and 620c99f " + runLog,
+	} {
+		rc, errs := post(t, at("2026-10-21T15:10"), log, "VERIFIED", "crius:lead", "x:lead", text)
+		if rc != 2 || busText(t, log) != "" {
+			t.Fatal(text, rc, errs)
+		}
+	}
+}

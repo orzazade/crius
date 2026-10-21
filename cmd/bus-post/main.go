@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -115,23 +116,22 @@ func lastByte(f *os.File) (byte, bool) {
 	return b[0], true
 }
 
-// shasOf gives the words of text that look like a sha. Words split on anything but a letter or digit, any script, so
-// a sha glued inside another word is not one.
+// shasOf gives the words of text that are a sha. A word runs between spaces, less the punctuation at its ends, so a
+// sha inside a path, a file name or another word is never one.
 func shasOf(text string) []string {
 	var shas []string
-	for _, w := range strings.FieldsFunc(text, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) }) {
-		if shaRe.MatchString(w) {
+	for _, w := range strings.Fields(text) {
+		if w = strings.TrimFunc(w, unicode.IsPunct); shaRe.MatchString(w) {
 			shas = append(shas, w)
 		}
 	}
 	return shas
 }
 
-// checkRunLog passes when the text names a run log under ~/.crius/runs whose header holds a sha the text names and a
-// pass count of at least 1.
+// checkRunLog passes when every sha the text names is the sha in the header of a run log the text names, under
+// ~/.crius/runs, with a pass count of at least 1. Naming a sha no run tested is the mistake it stops.
 func checkRunLog(text string) error {
-	// A sha inside the run log's own file name is not the line naming what it checked.
-	shas := shasOf(pathRe.ReplaceAllString(text, " "))
+	shas := shasOf(text)
 	if len(shas) == 0 {
 		return errors.New("a VERIFIED line names the sha it checked")
 	}
@@ -142,7 +142,7 @@ func checkRunLog(text string) error {
 	if err != nil {
 		return fmt.Errorf("no runs folder for run logs: %v", err)
 	}
-	var problems []string
+	var problems, ran []string
 	for _, m := range pathRe.FindAllStringSubmatch(text, -1) {
 		p := m[1]
 		if strings.HasPrefix(p, "~/") {
@@ -166,17 +166,24 @@ func checkRunLog(text string) error {
 			problems = append(problems, p+": header has no pass count of 1 or more (`pass: <N>`)")
 			continue
 		}
-		for _, s := range shas {
-			// The line may shorten the run's sha, never lengthen it.
-			if strings.HasPrefix(sha, s) {
-				return nil
-			}
-		}
-		problems = append(problems, fmt.Sprintf("%s ran sha %s, not %s", p, sha, strings.Join(shas, ", ")))
+		ran = append(ran, sha)
 	}
-	if len(problems) == 0 {
+	// Other paths (an evidence folder, say) may stand beside the run log; only an unproven sha refuses the line.
+	var unproven []string
+	for _, s := range shas {
+		// The line may shorten the run's sha, never lengthen it.
+		if !slices.ContainsFunc(ran, func(r string) bool { return strings.HasPrefix(r, s) }) {
+			unproven = append(unproven, s)
+		}
+	}
+	if len(unproven) == 0 {
+		return nil
+	}
+	if len(ran) == 0 && len(problems) == 0 {
 		return errors.New("a VERIFIED line names its run log (a file under ~/.crius/runs with `sha:` and `pass:` in its header)")
 	}
+	problems = append(problems, fmt.Sprintf("no passing run log named here ran %s (they ran: %s)",
+		strings.Join(unproven, ", "), strings.Join(ran, ", ")))
 	return errors.New(strings.Join(problems, "; "))
 }
 
