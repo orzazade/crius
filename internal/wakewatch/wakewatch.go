@@ -434,7 +434,11 @@ func printable(r rune) rune {
 	return r
 }
 
-// Prompt gives the text in a Claude Code screen's input box, and whether the screen has one.
+// queuedHint is what Claude shows in an empty input box while messages sent mid-turn wait in its queue.
+const queuedHint = "Press up to edit queued messages"
+
+// Prompt gives the text in a Claude Code screen's input box, and whether the screen has one. A box showing only the
+// queued-messages hint is empty.
 func Prompt(screen string) (string, bool) {
 	_, foot, boxed := split(screen)
 	if !boxed {
@@ -447,7 +451,11 @@ func Prompt(screen string) (string, bool) {
 		}
 		lines = append(lines, line)
 	}
-	return strings.TrimSpace(strings.TrimPrefix(strings.Join(lines, "\n"), "❯")), true
+	draft := strings.TrimSpace(strings.TrimPrefix(strings.Join(lines, "\n"), "❯"))
+	if draft == queuedHint {
+		return "", true
+	}
+	return draft, true
 }
 
 // split cuts a Claude Code screen at its input box: what is above it, what is below it, and whether it has one.

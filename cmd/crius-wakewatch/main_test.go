@@ -20,7 +20,8 @@ func fakeCmux(t *testing.T, tab string) (log string) {
 
 // fakeTab puts a fake cmux and ps on PATH. cmux logs every call but its reads (tree, read-screen) and acts like the
 // real one: the JSON tree (dir/tree.json) shows Crius's surface on ttys015; read-screen prints dir/screen if there is
-// one, else a Claude input box holding dir/draft (one read late if dir/lag exists, as Claude redraws after a key); send refuses over a draft, else types into it (plus dir/extra, if
+// one, else a Claude input box holding dir/draft (one read late if dir/lag exists, as Claude redraws after a key;
+// an empty box shows Claude's queued-messages hint if dir/queued exists); send refuses over a draft, else types into it (plus dir/extra, if
 // any: someone typing at the same time); send-key enter sends the draft (fails if dir/enterfail exists). ps on
 // ttys015 prints dir/front (Claude in front) and on another tty dir/front-<tty>.
 func fakeTab(t *testing.T, tab string) (log, dir string) {
@@ -31,7 +32,8 @@ func fakeTab(t *testing.T, tab string) (log, dir string) {
 		"--json) cat " + f("warn") + " >&2 2>/dev/null; cat " + f("tree.json") + "; exit 0 ;;\n" +
 		"read-screen) if [ -f " + f("screen") + " ]; then cat " + f("screen") + "; exit 0; fi\n  src=" + f("draft") +
 		"; [ -f " + f("lag") + " ] && [ -f " + f("shown") + " ] && src=" + f("shown") + "\n" +
-		"  printf '⏺ done.\\n──────────────\\n❯ %s\\n──────────────\\n  quota: 7d 97%%\\n' \"$(cat $src)\"\n" +
+		"  box=$(cat $src); [ -z \"$box\" ] && [ -f " + f("queued") + " ] && box='Press up to edit queued messages'\n" +
+		"  printf '⏺ done.\\n──────────────\\n❯ %s\\n──────────────\\n  quota: 7d 97%%\\n' \"$box\"\n" +
 		"  [ -f " + f("lag") + " ] && cp " + f("draft") + " " + f("shown") + "; exit 0 ;;\nesac\n" +
 		"for a in \"$@\"; do printf '[%s]' \"$a\" >> " + log + "; last=$a; done\necho >> " + log + "\n" +
 		"case \"$1\" in\nsend) [ -s " + f("draft") + " ] && { echo 'Error: the prompt holds a draft' >&2; exit 1; }\n" +
@@ -388,5 +390,17 @@ func TestSendWaitsForTheBoxToCatchUp(t *testing.T) {
 	os.WriteFile(filepath.Join(os.Getenv("CRIUS_HOME"), "state", "wakewatch-pending"), []byte("WAKEWATCH: stuck"), 0o600)
 	if err := send("WAKEWATCH: three"); err != nil {
 		t.Fatalf("after a stuck line: %v", err)
+	}
+}
+
+// Live 10-22 01:29: Crius was mid-turn, so Enter queued the alert and the empty box showed Claude's hint "Press up to
+// edit queued messages". Queued is delivered: the hint is an empty box, after Enter and on the first read.
+func TestSendTakesTheQueuedHintAsAnEmptyBox(t *testing.T) {
+	_, dir := fakeTab(t, "workspace:1000020000 surface:1000020029\n")
+	os.WriteFile(filepath.Join(dir, "queued"), nil, 0o644)
+	for _, text := range []string{"WAKEWATCH: one", "WAKEWATCH: two"} {
+		if err := send(text); err != nil {
+			t.Fatalf("%s: %v", text, err)
+		}
 	}
 }
