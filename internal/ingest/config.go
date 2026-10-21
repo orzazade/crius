@@ -215,3 +215,22 @@ func (c *config) projectForCwd(cwd string) string {
 	}
 	return best
 }
+
+// Place gives where a project's sessions start and on which account: its first cwd and first account in projects.toml
+// (crius-launch).
+func Place(home, slug string) (cwd, account string, err error) {
+	c, err := loadConfig(home)
+	if err != nil {
+		return "", "", err
+	}
+	for _, p := range c.projects {
+		if p.slug != slug {
+			continue
+		}
+		if len(p.cwd) == 0 || len(p.accounts) == 0 {
+			return "", "", fmt.Errorf("projects.toml: project %s needs cwd and accounts to be launched", slug)
+		}
+		return p.cwd[0], p.accounts[0], nil
+	}
+	return "", "", fmt.Errorf("projects.toml has no project %s", slug)
+}
