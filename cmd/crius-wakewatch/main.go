@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -23,8 +24,19 @@ import (
 var (
 	tabRe  = regexp.MustCompile(`^(workspace:\d+)\s+(surface:\d+)$`)
 	swapRe = regexp.MustCompile(`used = ([\d.]+)([MG])`)
-	cmux   = func(args ...string) ([]byte, error) { return exec.Command("cmux", args...).CombinedOutput() }
+	cmux   = runCmux
 )
+
+// runCmux gives cmux's stdout, or on failure its stdout and stderr: a warning on stderr must not reach a JSON parse.
+func runCmux(args ...string) ([]byte, error) {
+	var out, msg bytes.Buffer
+	cmd := exec.Command("cmux", args...)
+	cmd.Stdout, cmd.Stderr = &out, &msg
+	if err := cmd.Run(); err != nil {
+		return append(out.Bytes(), msg.Bytes()...), err
+	}
+	return out.Bytes(), nil
+}
 
 func main() {
 	os.Setenv("PATH", toolPath())
@@ -122,21 +134,24 @@ func send(text string) error {
 	if err := claudeInFront(m[1], m[2]); err != nil {
 		return err
 	}
-	screen, err := cmux("read-screen", "--workspace", m[1], "--surface", m[2], "--lines", "40")
+	draft, err := inputBox(m[1], m[2])
 	if err != nil {
-		return fmt.Errorf("cmux read-screen %s: %v: %s", m[2], err, strings.TrimSpace(string(screen)))
-	}
-	// An earlier line whose Enter failed is still in the prompt, and cmux send refuses to type over a draft. Enter
-	// goes on it only if the whole draft is that line, as typed: a draft the owner edited or wrote is left alone.
-	pending := filepath.Join(store.Home(), "state", "wakewatch-pending")
-	if last, err := os.ReadFile(pending); err == nil {
-		if draft, _ := wakewatch.Prompt(string(screen)); draft != "" && squash(draft) == squash(string(last)) {
-			if out, err := cmux("send-key", "--workspace", m[1], "--surface", m[2], "enter"); err != nil {
-				return fmt.Errorf("cmux send-key: %v: %s", err, strings.TrimSpace(string(out)))
-			}
-		}
-	} else if !os.IsNotExist(err) {
 		return err
+	}
+	// An earlier line whose Enter failed is still in the prompt. Enter goes on it only if the whole draft is that
+	// line, as typed: a draft the owner edited or wrote is left alone, and nothing is typed over it.
+	pending := filepath.Join(store.Home(), "state", "wakewatch-pending")
+	last, err := os.ReadFile(pending)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if draft != "" {
+		if err != nil || squash(draft) != squash(string(last)) {
+			return fmt.Errorf("Crius's prompt holds a draft that is not wakewatch's: nothing typed")
+		}
+		if out, err := cmux("send-key", "--workspace", m[1], "--surface", m[2], "enter"); err != nil {
+			return fmt.Errorf("cmux send-key: %v: %s", err, strings.TrimSpace(string(out)))
+		}
 	}
 	if err := os.MkdirAll(filepath.Dir(pending), 0o700); err != nil {
 		return err
@@ -147,10 +162,31 @@ func send(text string) error {
 	if out, err := cmux("send", "--workspace", m[1], "--surface", m[2], "--", text); err != nil {
 		return fmt.Errorf("cmux send: %v: %s", err, strings.TrimSpace(string(out)))
 	}
+	// Someone may have typed at the same moment: Enter would send the mix.
+	if draft, err = inputBox(m[1], m[2]); err != nil {
+		return err
+	}
+	if squash(draft) != squash(text) {
+		return fmt.Errorf("Crius's prompt holds %q after typing, not the alert alone: Enter not pressed", draft)
+	}
 	if out, err := cmux("send-key", "--workspace", m[1], "--surface", m[2], "enter"); err != nil {
 		return fmt.Errorf("cmux send-key: %v: %s", err, strings.TrimSpace(string(out)))
 	}
 	return os.Remove(pending)
+}
+
+// inputBox reads Crius's screen and gives the draft in Claude's input box. Without the box on screen (bash mode, a
+// dialog, a picker) Enter would run or pick something, so that is an error.
+func inputBox(workspace, surface string) (string, error) {
+	screen, err := cmux("read-screen", "--workspace", workspace, "--surface", surface, "--lines", "40")
+	if err != nil {
+		return "", fmt.Errorf("cmux read-screen %s: %v: %s", surface, err, strings.TrimSpace(string(screen)))
+	}
+	draft, boxed := wakewatch.Prompt(string(screen))
+	if !boxed {
+		return "", fmt.Errorf("Crius's tab %s shows no Claude input box: nothing typed", surface)
+	}
+	return draft, nil
 }
 
 // squash drops all white space, so a line the input box wrapped equals the line as typed.
@@ -283,6 +319,9 @@ func sessions(home string) ([]wakewatch.Session, error) {
 	seen := map[int]bool{}
 	for _, f := range files {
 		b, err := os.ReadFile(f)
+		if os.IsNotExist(err) { // the session ended after the listing
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -294,7 +333,8 @@ func sessions(home string) ([]wakewatch.Session, error) {
 		if err := json.Unmarshal(b, &s); err != nil {
 			return nil, fmt.Errorf("%s: %v", f, err)
 		}
-		if seen[s.PID] || syscall.Kill(s.PID, 0) == syscall.ESRCH { // a file left by a session that ended
+		// A file left by a session that ended; pid 0 would test our own process group.
+		if s.PID <= 0 || seen[s.PID] || syscall.Kill(s.PID, 0) == syscall.ESRCH {
 			continue
 		}
 		seen[s.PID] = true

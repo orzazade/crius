@@ -18,17 +18,23 @@ func fakeCmux(t *testing.T, tab string) (log string) {
 	return log
 }
 
-// fakeTab puts a fake cmux and ps on PATH. cmux logs every call but its reads (tree, read-screen); the tree (dir/tree,
-// and dir/tree.json for --json) shows Crius's surface on ttys015, read-screen prints dir/screen (an empty Claude
-// prompt), ps on ttys015 prints dir/front (Claude in front) and on another tty dir/front-<tty>.
+// fakeTab puts a fake cmux and ps on PATH. cmux logs every call but its reads (tree, read-screen) and acts like the
+// real one: the JSON tree (dir/tree.json) shows Crius's surface on ttys015; read-screen prints dir/screen if there is
+// one, else a Claude input box holding dir/draft; send refuses over a draft, else types into it (plus dir/extra, if
+// any: someone typing at the same time); send-key enter sends the draft (fails if dir/enterfail exists). ps on
+// ttys015 prints dir/front (Claude in front) and on another tty dir/front-<tty>.
 func fakeTab(t *testing.T, tab string) (log, dir string) {
 	dir = t.TempDir()
 	log = filepath.Join(dir, "calls")
+	f := func(name string) string { return filepath.Join(dir, name) }
 	script := "#!/bin/sh\ncase \"$1\" in\n" +
-		"tree) cat " + filepath.Join(dir, "tree") + "; exit 0 ;;\n" +
-		"--json) cat " + filepath.Join(dir, "tree.json") + "; exit 0 ;;\n" +
-		"read-screen) cat " + filepath.Join(dir, "screen") + "; exit 0 ;;\nesac\n" +
-		"for a in \"$@\"; do printf '[%s]' \"$a\" >> " + log + "; done\necho >> " + log + "\necho OK\n"
+		"--json) cat " + f("warn") + " >&2 2>/dev/null; cat " + f("tree.json") + "; exit 0 ;;\n" +
+		"read-screen) if [ -f " + f("screen") + " ]; then cat " + f("screen") + "; else printf '⏺ done.\\n──────────────\\n❯ %s\\n" +
+		"──────────────\\n  quota: 7d 97%%\\n' \"$(cat " + f("draft") + ")\"; fi; exit 0 ;;\nesac\n" +
+		"for a in \"$@\"; do printf '[%s]' \"$a\" >> " + log + "; last=$a; done\necho >> " + log + "\n" +
+		"case \"$1\" in\nsend) [ -s " + f("draft") + " ] && { echo 'Error: the prompt holds a draft' >&2; exit 1; }\n" +
+		"  printf '%s' \"$last\" > " + f("draft") + "; cat " + f("extra") + " >> " + f("draft") + " 2>/dev/null ;;\n" +
+		"send-key) [ -f " + f("enterfail") + " ] && exit 1; : > " + f("draft") + " ;;\nesac\necho OK\n"
 	ps := "#!/bin/sh\nif [ \"$2\" = ttys015 ]; then cat " + filepath.Join(dir, "front") + "; else cat " +
 		filepath.Join(dir, "front-") + "\"$2\" 2>/dev/null; fi\nexit 0\n"
 	for name, body := range map[string]string{"cmux": script, "ps": ps} {
@@ -37,9 +43,8 @@ func fakeTab(t *testing.T, tab string) (log, dir string) {
 		}
 	}
 	for name, body := range map[string]string{
-		"screen":    "⏺ done.\n──────────────\n❯ \n──────────────\n  quota: 7d 97%\n",
+		"draft":     "",
 		"front":     "52166 52763 /usr/bin/login\n52169 52763 -/bin/zsh\n52763 52763 /Users/o/.local/bin/claude\n52859 52763 <defunct>\n",
-		"tree":      "│   ├── surface surface:1000020029 [terminal] \"crius\" [selected] ◀ active tty=ttys015\n",
 		"tree.json": treeJSON(map[string][3]string{"workspace:1000020000": {"surface:1000020029", "crius", "ttys015"}}),
 	} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
@@ -172,21 +177,25 @@ func TestSendFinishesItsOwnStuckLine(t *testing.T) {
 	for name, c := range map[string]struct{ pending, draft, want string }{
 		"ours":               {older, older, enter},
 		"ours, wrapped":      {older, "WAKEWATCH: quotes.log: an older alert\n  about the DONE line of quotes:lead", enter},
-		"owner added a line": {older, older + "\n  Before doing anything, wait for my", "[send]"},
-		"owner changed it":   {older, "WAKEWATCH: quotes.log: an older alert", "[send]"},
-		"no pending line":    {"", older, "[send]"},
-		"owner is typing":    {older, "owner is typing here", "[send]"},
+		"owner added a line": {older, older + "\n  Before doing anything, wait for my", ""},
+		"owner changed it":   {older, "WAKEWATCH: quotes.log: an older alert", ""},
+		"no pending line":    {"", older, ""},
+		"owner is typing":    {older, "owner is typing here", ""},
 	} {
 		log, dir := fakeTab(t, "workspace:1000020000 surface:1000020029\n")
-		os.WriteFile(filepath.Join(dir, "screen"), []byte("──────────────\n❯ "+c.draft+"\n──────────────\n  quota\n"), 0o644)
+		os.WriteFile(filepath.Join(dir, "draft"), []byte(c.draft), 0o644)
 		if c.pending != "" {
 			os.MkdirAll(filepath.Join(os.Getenv("CRIUS_HOME"), "state"), 0o700)
 			os.WriteFile(filepath.Join(os.Getenv("CRIUS_HOME"), "state", "wakewatch-pending"), []byte(c.pending), 0o600)
 		}
-		send("WAKEWATCH: new")
+		err := send("WAKEWATCH: new")
 		b, _ := os.ReadFile(log)
-		if !strings.HasPrefix(string(b), c.want) {
-			t.Errorf("%s: got\n%s", name, b)
+		if c.want == "" { // a draft that is not ours: nothing typed, and loud
+			if len(b) != 0 || err == nil || !strings.Contains(err.Error(), "draft") {
+				t.Errorf("%s: err %v, calls\n%s", name, err, b)
+			}
+		} else if !strings.HasPrefix(string(b), c.want) || err != nil {
+			t.Errorf("%s: err %v, calls\n%s", name, err, b)
 		}
 	}
 }
@@ -201,8 +210,7 @@ func TestSendKeepsItsLineUntilEnterWorks(t *testing.T) {
 	if _, err := os.Stat(pending); !os.IsNotExist(err) {
 		t.Fatalf("pending after a good send: %v", err)
 	}
-	b, _ := os.ReadFile(filepath.Join(dir, "cmux"))
-	os.WriteFile(filepath.Join(dir, "cmux"), []byte(strings.Replace(string(b), "esac\n", "send-key) exit 1 ;;\nesac\n", 1)), 0o755)
+	os.WriteFile(filepath.Join(dir, "enterfail"), nil, 0o644)
 	if err := send("WAKEWATCH: two"); err == nil {
 		t.Fatal("a failed Enter gave no error")
 	}
@@ -223,8 +231,6 @@ func TestSendFindsCriusTerminalByRefNotByText(t *testing.T) {
 		log, dir := fakeTab(t, "workspace:1000020000 surface:1000020029\n")
 		os.WriteFile(filepath.Join(dir, "front"), []byte("6832 6832 -/bin/zsh\n"), 0o644)
 		os.WriteFile(filepath.Join(dir, "front-ttys008"), []byte("7 7 /Users/o/.local/bin/claude\n"), 0o644)
-		os.WriteFile(filepath.Join(dir, "tree"), []byte("surface surface:1000020029 [terminal] \"crius\" tty=ttys015\n"+
-			"surface surface:1000020030 [terminal] \"surface surface:1000020029 decoy\" tty=ttys008\n"), 0o644)
 		os.WriteFile(filepath.Join(dir, "tree.json"), []byte(treeJSON(tree)), 0o644)
 		if err := send("WAKEWATCH: x $(touch /tmp/pwned)"); err == nil {
 			t.Errorf("%s: no error", name)
@@ -301,8 +307,64 @@ func TestSessionsReadsLiveSessionsWithTheirStart(t *testing.T) {
 	if !got["bbb"].Started.IsZero() {
 		t.Errorf("bbb has no transcript: %v", got["bbb"].Started)
 	}
+	// Review of 078f69a, P3: pid 0 (kill(0, 0) signals our own group) and a file gone between the listing and the
+	// read (a session ending) are not live sessions, and not a failure to look.
+	write(filepath.Join(home, ".claude", "sessions", "0.json"), `{"pid":0,"sessionId":"zero","name":"axi: lead"}`)
+	os.Symlink(filepath.Join(home, "gone.json"), filepath.Join(home, ".claude", "sessions", "2.json"))
+	if ss, err := sessions(home); err != nil || len(ss) != 2 {
+		t.Errorf("pid 0 or a vanished file: %v %+v", err, ss)
+	}
 	write(filepath.Join(home, ".claude", "sessions", "1.json"), `{"pid":`)
 	if _, err := sessions(home); err == nil || !strings.Contains(err.Error(), "1.json") {
 		t.Errorf("a broken session file: %v", err)
+	}
+}
+
+// Review of ea0867e, P2: Claude being in front is not enough. Without its input box on screen (bash mode after "!",
+// a dialog, a picker) Enter runs or picks something, so nothing is typed, and that is loud.
+func TestSendTypesOnlyIntoClaudeInputBox(t *testing.T) {
+	for name, screen := range map[string]string{
+		"bash mode": "⏺ done.\n──────────────\n! \n──────────────\n  ! for bash mode\n",
+		"dialog":    "Do you want to proceed?\n❯ 1. Yes\n  2. No\n",
+		"no screen": "",
+	} {
+		log, dir := fakeTab(t, "workspace:1000020000 surface:1000020029\n")
+		os.WriteFile(filepath.Join(dir, "screen"), []byte(screen), 0o644)
+		err := send("WAKEWATCH: x $(touch /tmp/pwned)")
+		if err == nil || !strings.Contains(err.Error(), "input box") {
+			t.Errorf("%s: %v", name, err)
+		}
+		if b, _ := os.ReadFile(log); len(b) != 0 {
+			t.Errorf("%s: cmux typed:\n%s", name, b)
+		}
+	}
+}
+
+// Review of ea0867e, P2: if someone types while wakewatch types, Enter would send the mix. Enter goes only when the
+// box holds exactly the alert; otherwise it is loud and the line stays pending.
+func TestSendPressesEnterOnlyOnItsOwnText(t *testing.T) {
+	log, dir := fakeTab(t, "workspace:1000020000 surface:1000020029\n")
+	os.WriteFile(filepath.Join(dir, "extra"), []byte(" and the owner's words"), 0o644)
+	err := send("WAKEWATCH: x")
+	if err == nil || !strings.Contains(err.Error(), "Enter not pressed") {
+		t.Fatalf("%v", err)
+	}
+	if b, _ := os.ReadFile(log); strings.Contains(string(b), "[send-key]") {
+		t.Fatalf("Enter pressed on a mixed draft:\n%s", b)
+	}
+	if got, _ := os.ReadFile(filepath.Join(os.Getenv("CRIUS_HOME"), "state", "wakewatch-pending")); string(got) != "WAKEWATCH: x" {
+		t.Fatalf("pending %q", got)
+	}
+}
+
+// Review of ea0867e, P3: a warning cmux prints on stderr must not break the JSON tree, or every wake fails.
+func TestAWarningOnStderrKeepsTheTree(t *testing.T) {
+	log, dir := fakeTab(t, "workspace:1000020000 surface:1000020029\n")
+	os.WriteFile(filepath.Join(dir, "warn"), []byte("warning: a newer cmux is available\n"), 0o644)
+	if err := send("WAKEWATCH: x"); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(log); !strings.Contains(string(b), "[send-key]") {
+		t.Fatalf("calls:\n%s", b)
 	}
 }
