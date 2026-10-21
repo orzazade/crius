@@ -207,3 +207,18 @@ func TestAFreshHeartbeatRearmsTheMissingAlert(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+// A bus that ends mid-line (a writer that died) must not swallow the alert into that line.
+func TestAnAlertAfterAPartialLineStartsOnItsOwnLine(t *testing.T) {
+	_, home := testutil.Temp(t)
+	log := filepath.Join(home, "bus", "crius.log")
+	testutil.Write(t, log, "2026-10-21T22:00 INFO quotes:lead -> crius:lead — half a li")
+	if err := Post(home, time.Date(2026, 10, 21, 22, 5, 0, 0, time.Local), "wakewatch cannot reach the owner"); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(log)
+	if !regexp.MustCompile(`(?m)^2026-10-21T22:05 ALERT crius:watchdog -> crius — wakewatch cannot reach the owner\n\z`).Match(b) ||
+		!strings.Contains(string(b), "half a li\n") {
+		t.Fatalf("%q", b)
+	}
+}

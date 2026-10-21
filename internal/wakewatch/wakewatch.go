@@ -5,6 +5,7 @@
 package wakewatch
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -36,7 +37,8 @@ var (
 	dialogRe = regexp.MustCompile(`(?m)^\s*❯\s*1\.\s`)
 )
 
-type Screen struct{ Surface, Title, Text string }
+// Screen is one tab. Err is set when its read failed; Text is then empty.
+type Screen struct{ Surface, Title, Text, Err string }
 
 type Deps struct {
 	Home    string
@@ -56,14 +58,18 @@ type state struct {
 	SendFailing bool
 }
 
-// Run checks every bus log and every tab once and sends one message for whatever is new. A failed send is not
-// marked sent, so the next run tries again; the first failure in a row also goes to Crius's bus.
+// Run checks every bus log and every tab once and sends whatever is new, in parts under Telegram's limit. A part that
+// fails is not marked sent, so the next run tries again; the first failure in a row also goes to Crius's bus.
 func Run(d Deps) error {
 	path := filepath.Join(d.Home, "state", "wakewatch.json")
-	st := state{Alerted: map[string]time.Time{}, Screens: map[string]seenScreen{}}
+	st := state{}
 	if b, err := os.ReadFile(path); err == nil {
 		if err := json.Unmarshal(b, &st); err != nil {
-			return fmt.Errorf("wakewatch state %s: %v", path, err)
+			// Starting afresh can repeat an alert; stopping at the bad file would silence every later one.
+			st = state{}
+			if err := watchdog.Post(d.Home, d.Now, fmt.Sprintf("wakewatch state %s was unreadable (%v); started afresh", path, err)); err != nil {
+				return err
+			}
 		}
 	} else if !os.IsNotExist(err) {
 		return err
@@ -81,22 +87,36 @@ func Run(d Deps) error {
 	}
 	alerts = append(alerts, waiting(&st, d)...)
 
-	var keys, texts []string
+	active := map[string]bool{}
+	var parts [][][2]string // each part fits one message
+	size := 0
 	for _, a := range alerts {
-		if _, done := st.Alerted[a[0]]; !done {
-			keys, texts = append(keys, a[0]), append(texts, a[1])
+		active[a[0]] = true
+		if _, done := st.Alerted[a[0]]; done {
+			continue
 		}
+		if r := []rune(a[1]); len(r) > maxText {
+			a[1] = string(r[:maxText]) + "…"
+		}
+		if n := len([]rune(a[1])) + 1; len(parts) == 0 || size+n > maxText {
+			parts, size = append(parts, nil), n
+		} else {
+			size += n
+		}
+		parts[len(parts)-1] = append(parts[len(parts)-1], a)
 	}
 	var sendErr error
-	if len(texts) > 0 {
-		msg, _ := redact.Redact("Crius missed a wake:\n" + strings.Join(texts, "\n"))
-		if r := []rune(msg); len(r) > maxText {
-			msg = string(r[:maxText]) + "…"
+	for _, p := range parts {
+		texts := make([]string, len(p))
+		for i, a := range p {
+			texts[i] = a[1]
 		}
-		if sendErr = d.Send(msg); sendErr == nil {
-			for _, k := range keys {
-				st.Alerted[k] = d.Now
-			}
+		msg, _ := redact.Redact("Crius missed a wake:\n" + strings.Join(texts, "\n"))
+		if sendErr = d.Send(msg); sendErr != nil {
+			break
+		}
+		for _, a := range p {
+			st.Alerted[a[0]] = d.Now
 		}
 	}
 	if sendErr != nil && !st.SendFailing {
@@ -105,14 +125,31 @@ func Run(d Deps) error {
 		}
 	}
 	st.SendFailing = sendErr != nil
-	for k, at := range st.Alerted {
-		if d.Now.Sub(at) > 2*window {
+	// A key goes once its alert is no longer raised (line answered or past the window, tab stopped asking, check
+	// works again), so the same thing can alert again later and a lasting one is never re-sent.
+	for surface, s := range st.Screens {
+		active[screenKey(surface, s.Hash)] = true
+	}
+	for k := range st.Alerted {
+		if !active[k] {
 			delete(st.Alerted, k)
 		}
 	}
 	b, _ := json.Marshal(st)
-	if err := os.WriteFile(path, b, 0o600); err != nil {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "wakewatch.json.")
+	if err != nil {
 		return err
+	}
+	_, werr := tmp.Write(b)
+	if cerr := tmp.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr == nil {
+		werr = os.Rename(tmp.Name(), path)
+	}
+	if werr != nil {
+		os.Remove(tmp.Name())
+		return werr
 	}
 	return sendErr
 }
@@ -135,8 +172,10 @@ func missed(home string, now time.Time) ([][2]string, error) {
 		if err != nil {
 			return nil, err
 		}
+		// Only whole lines: a last line with no newline may still be being written.
+		text := string(b[:bytes.LastIndexByte(b, '\n')+1])
 		var open []string
-		for _, line := range strings.Split(string(b), "\n") {
+		for _, line := range strings.Split(text, "\n") {
 			m := lineRe.FindStringSubmatch(line)
 			if m == nil {
 				continue
@@ -181,16 +220,20 @@ func lineTime(s string) (time.Time, error) {
 }
 
 // waiting gives [key, text] for each tab whose screen has waited on a question or dialog, unchanged, for 10 min.
-// A screen read that fails is an alert of its own, once until reads work again.
+// A screen read that fails is an alert of its own: the whole check, or one tab, which keeps its place meanwhile.
 func waiting(st *state, d Deps) [][2]string {
 	screens, err := d.Screens()
 	if err != nil {
 		return [][2]string{{"screens-failed", "the tab check failed to look: " + err.Error()}}
 	}
-	delete(st.Alerted, "screens-failed")
 	var out [][2]string
 	live := map[string]bool{}
 	for _, s := range screens {
+		if s.Err != "" {
+			live[s.Surface] = true
+			out = append(out, [2]string{"screen-failed:" + s.Surface, fmt.Sprintf("tab %q (%s) could not be read: %s", s.Title, s.Surface, s.Err)})
+			continue
+		}
 		if s.Title == "crius" || !asks(s.Text) {
 			continue
 		}
@@ -202,7 +245,7 @@ func waiting(st *state, d Deps) [][2]string {
 			continue
 		}
 		if wait := d.Now.Sub(seen.Since); wait >= screenAfter {
-			out = append(out, [2]string{"screen:" + s.Surface + ":" + h,
+			out = append(out, [2]string{screenKey(s.Surface, h),
 				fmt.Sprintf("tab %q (%s) waits on a question or dialog for %d min", s.Title, s.Surface, int(wait.Minutes()))})
 		}
 	}
@@ -214,6 +257,8 @@ func waiting(st *state, d Deps) [][2]string {
 	return out
 }
 
+func screenKey(surface, hash string) string { return "screen:" + surface + ":" + hash }
+
 // asks reports whether a screen waits on someone: its newest status emoji is ❓, or a dialog offers numbered options.
 func asks(text string) bool {
 	if dialogRe.MatchString(text) {
@@ -221,8 +266,8 @@ func asks(text string) bool {
 	}
 	lines := strings.Split(text, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
-		if strings.ContainsAny(lines[i], "❓✅⏳") {
-			return strings.Contains(lines[i], "❓")
+		if j := strings.LastIndexAny(lines[i], "❓✅⏳"); j >= 0 {
+			return strings.HasPrefix(lines[i][j:], "❓")
 		}
 	}
 	return false

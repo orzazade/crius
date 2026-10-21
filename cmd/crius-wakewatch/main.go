@@ -4,6 +4,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -17,7 +18,10 @@ import (
 	"github.com/orzazade/crius/internal/wakewatch"
 )
 
-var surfaceRe = regexp.MustCompile(`surface (surface:\d+) \[terminal\] "(.*)"`)
+var (
+	surfaceRe = regexp.MustCompile(`surface (surface:\d+) \[terminal\] "(.*)"`)
+	cmux      = func(args ...string) ([]byte, error) { return exec.Command("cmux", args...).CombinedOutput() }
+)
 
 func main() {
 	err := wakewatch.Run(wakewatch.Deps{Home: store.Home(), Now: time.Now(), Screens: screens, Send: send})
@@ -27,17 +31,18 @@ func main() {
 	}
 }
 
-// screens reads the last 30 lines of every terminal tab in cmux.
+// screens reads the last 30 lines of every terminal tab in cmux. A tab whose read fails comes back with Err set.
 func screens() ([]wakewatch.Screen, error) {
-	tree, err := exec.Command("cmux", "tree", "--all").CombinedOutput()
+	tree, err := cmux("tree", "--all")
 	if err != nil {
 		return nil, fmt.Errorf("cmux tree: %v: %s", err, strings.TrimSpace(string(tree)))
 	}
 	var out []wakewatch.Screen
 	for _, m := range surfaceRe.FindAllStringSubmatch(string(tree), -1) {
-		text, err := exec.Command("cmux", "read-screen", "--surface", m[1], "--lines", "30").CombinedOutput()
+		text, err := cmux("read-screen", "--surface", m[1], "--lines", "30")
 		if err != nil {
-			return nil, fmt.Errorf("cmux read-screen %s: %v: %s", m[1], err, strings.TrimSpace(string(text)))
+			out = append(out, wakewatch.Screen{Surface: m[1], Title: m[2], Err: fmt.Sprintf("cmux read-screen: %v: %s", err, strings.TrimSpace(string(text)))})
+			continue
 		}
 		out = append(out, wakewatch.Screen{Surface: m[1], Title: m[2], Text: string(text)})
 	}
@@ -55,8 +60,13 @@ func send(text string) error {
 	c := http.Client{Timeout: 15 * time.Second}
 	resp, err := c.PostForm("https://api.telegram.org/bot"+token+"/sendMessage", url.Values{"chat_id": {chat}, "text": {text}})
 	if err != nil {
-		// The error quotes the URL, and the URL holds the token.
-		return fmt.Errorf("telegram send failed: %s", strings.ReplaceAll(err.Error(), token, "<token>"))
+		// The URL holds the token and a url.Error quotes it, escaped where a plain replace cannot find it: give only
+		// the cause. Any other error is not shown at all.
+		var ue *url.Error
+		if !errors.As(err, &ue) {
+			return fmt.Errorf("telegram send failed (cause withheld: it may hold the token)")
+		}
+		return fmt.Errorf("telegram send failed: %s: %s", ue.Op, strings.ReplaceAll(ue.Err.Error(), token, "<token>"))
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {

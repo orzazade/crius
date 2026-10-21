@@ -2,6 +2,7 @@ package wakewatch
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -221,5 +222,169 @@ func TestAScreenReadFailureAlertsOnce(t *testing.T) {
 	Run(f.deps(home, t0.Add(5*time.Minute)))
 	if len(f.sent) != 1 || !strings.Contains(f.sent[0], "socket not found") {
 		t.Fatal(f.sent)
+	}
+}
+
+// A crash mid-write once left bad JSON and every later run stopped at it. Now the run says so and starts afresh.
+func TestACorruptStateIsReportedAndReset(t *testing.T) {
+	home := setup(t, map[string]string{"quotes.log": done(t0)})
+	testutil.Write(t, filepath.Join(home, "state", "wakewatch.json"), `{"Alerted":{"bus:`)
+	f := &fake{}
+	if err := Run(f.deps(home, t0.Add(21*time.Minute))); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.sent) != 1 {
+		t.Fatal(f.sent)
+	}
+	b, _ := os.ReadFile(filepath.Join(home, "bus", "crius.log"))
+	if !strings.Contains(string(b), "ALERT") || !strings.Contains(string(b), "wakewatch.json") {
+		t.Fatal(string(b))
+	}
+	if err := Run(f.deps(home, t0.Add(26*time.Minute))); err != nil || len(f.sent) != 1 {
+		t.Fatal(err, f.sent)
+	}
+}
+
+// The state is replaced whole (temp file + rename), never truncated and rewritten in place: a read-only old file
+// shows which, since only a rename can replace it.
+func TestTheStateIsReplacedNotRewritten(t *testing.T) {
+	home := setup(t, nil)
+	path := filepath.Join(home, "state", "wakewatch.json")
+	testutil.Write(t, path, `{}`)
+	os.Chmod(path, 0o400)
+	if err := Run((&fake{}).deps(home, t0)); err != nil {
+		t.Fatal(err)
+	}
+	if left, _ := filepath.Glob(filepath.Join(home, "state", "wakewatch.json?*")); len(left) != 0 {
+		t.Fatal("temp files left:", left)
+	}
+}
+
+// A long batch goes out in parts under Telegram's limit; no alert is marked sent that the owner did not get.
+func TestALongBatchIsSentInPartsAndNothingIsLost(t *testing.T) {
+	var bus strings.Builder
+	for i := 0; i < 60; i++ {
+		fmt.Fprintf(&bus, "%s DONE quotes:lead -> crius:lead — F-%03d · %s\n", stamp(t0), i, strings.Repeat("x", 80))
+	}
+	home := setup(t, map[string]string{"quotes.log": bus.String()})
+	f := &fake{}
+	if err := Run(f.deps(home, t0.Add(21*time.Minute))); err != nil {
+		t.Fatal(err)
+	}
+	all := strings.Join(f.sent, "\n")
+	for i := 0; i < 60; i++ {
+		if !strings.Contains(all, fmt.Sprintf("F-%03d", i)) {
+			t.Errorf("F-%03d never sent", i)
+		}
+	}
+	for _, m := range f.sent {
+		if n := len([]rune(m)); n > 4096 {
+			t.Errorf("part of %d runes", n)
+		}
+	}
+}
+
+// A part that fails to send stays unsent: the next run sends exactly what is left.
+func TestAFailedPartIsRetriedAndSentPartsAreNot(t *testing.T) {
+	var bus strings.Builder
+	for i := 0; i < 60; i++ {
+		fmt.Fprintf(&bus, "%s DONE quotes:lead -> crius:lead — F-%03d · %s\n", stamp(t0), i, strings.Repeat("x", 80))
+	}
+	home := setup(t, map[string]string{"quotes.log": bus.String()})
+	calls := 0
+	var sent []string
+	d := Deps{Home: home, Now: t0.Add(21 * time.Minute), Screens: func() ([]Screen, error) { return nil, nil },
+		Send: func(text string) error {
+			if calls++; calls == 2 {
+				return errors.New("telegram answered 502")
+			}
+			sent = append(sent, text)
+			return nil
+		}}
+	if err := Run(d); err == nil {
+		t.Fatal("no error")
+	}
+	d.Now = d.Now.Add(5 * time.Minute)
+	if err := Run(d); err != nil {
+		t.Fatal(err)
+	}
+	all := strings.Join(sent, "\n")
+	for i := 0; i < 60; i++ {
+		if n := strings.Count(all, fmt.Sprintf("F-%03d", i)); n != 1 {
+			t.Errorf("F-%03d sent %d times", i, n)
+		}
+	}
+}
+
+// A line still being written has no newline yet; it is not read until it is whole.
+func TestAnUnterminatedLastLineIsNotRead(t *testing.T) {
+	home := setup(t, map[string]string{"quotes.log": strings.TrimSuffix(done(t0), "\n")})
+	f := &fake{}
+	if err := Run(f.deps(home, t0.Add(21*time.Minute))); err != nil || len(f.sent) != 0 {
+		t.Fatal(err, f.sent)
+	}
+}
+
+// One tab that cannot be read is an alert for that tab; the other tabs are still checked.
+func TestOneTabReadFailureAlertsForThatTabOnly(t *testing.T) {
+	home := setup(t, nil)
+	f := &fake{screens: []Screen{screen("quotes: lead", question), {Surface: "surface:9", Title: "axi: lead", Err: "surface gone"}}}
+	for _, m := range []time.Duration{0, 5, 11} {
+		if err := Run(f.deps(home, t0.Add(m*time.Minute))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	all := strings.Join(f.sent, "\n")
+	if strings.Count(all, "surface gone") != 1 || !strings.Contains(all, "waits on a question") {
+		t.Fatal(f.sent)
+	}
+}
+
+// Once a tab stops asking, the same question asked again later alerts again.
+func TestAResolvedScreenCanAlertAgain(t *testing.T) {
+	home := setup(t, nil)
+	f := &fake{}
+	for _, step := range []struct {
+		m    time.Duration
+		text string
+	}{{0, question}, {11, question}, {15, "all done\n✅\n"}, {20, question}, {31, question}} {
+		f.screens = []Screen{screen("quotes: lead", step.text)}
+		if err := Run(f.deps(home, t0.Add(step.m*time.Minute))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(f.sent) != 2 {
+		t.Fatal(f.sent)
+	}
+}
+
+// Old keys are pruned only once the thing they name has gone: a tab still waiting, or a check still failing, after
+// a day is not sent again.
+func TestAStillActiveAlertIsNotResentAfterADay(t *testing.T) {
+	home := setup(t, nil)
+	f := &fake{screens: []Screen{screen("quotes: lead", question)}}
+	for _, m := range []time.Duration{0, 11, 25 * 60, 25*60 + 5} {
+		Run(f.deps(home, t0.Add(m*time.Minute)))
+	}
+	if len(f.sent) != 1 {
+		t.Fatal("waiting tab:", f.sent)
+	}
+	home = setup(t, nil)
+	f = &fake{scrErr: errors.New("cmux: socket not found")}
+	for _, m := range []time.Duration{0, 25 * 60, 25*60 + 5} {
+		Run(f.deps(home, t0.Add(m*time.Minute)))
+	}
+	if len(f.sent) != 1 {
+		t.Fatal("failing check:", f.sent)
+	}
+}
+
+// The newest status emoji on the line decides: a question that a later ✅ on the same line closed is not asking.
+func TestTheLastEmojiOnALineDecides(t *testing.T) {
+	if asks("asked which branch ❓ answered: main ✅\n") {
+		t.Error("❓ then ✅ counted as asking")
+	}
+	if !asks("done with step 1 ✅ now: main or develop? ❓\n") {
+		t.Error("✅ then ❓ not counted as asking")
 	}
 }

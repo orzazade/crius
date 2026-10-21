@@ -48,3 +48,20 @@ func TestWakewatchJobRunsTheScriptEvery5Min(t *testing.T) {
 		}
 	}
 }
+
+// An empty TELEGRAM_CHAT_ID must still reach crius-wakewatch, which then alerts on the bus; the script must not exit
+// silently before it.
+func TestWakewatchRunStillRunsWithAnEmptyChatID(t *testing.T) {
+	root, _ := testutil.Temp(t)
+	home := filepath.Join(root, "home")
+	testutil.Write(t, filepath.Join(home, ".secrets"), "export TELEGRAM_BOT_TOKEN=tok\n")
+	fake := filepath.Join(home, ".crius", "bin", "crius-wakewatch")
+	testutil.Write(t, fake, "#!/bin/sh\necho ran\nenv\n")
+	os.Chmod(fake, 0o755)
+	cmd := exec.Command(filepath.Join(testutil.RepoRoot(t), "bin", "crius-wakewatch-run"))
+	cmd.Env = []string{"HOME=" + home, "PATH=/usr/bin:/bin"}
+	out, err := cmd.CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "ran\n") || !strings.Contains(string(out), "TELEGRAM_BOT_TOKEN=tok\n") {
+		t.Fatal(err, string(out))
+	}
+}
