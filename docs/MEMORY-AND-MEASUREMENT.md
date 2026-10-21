@@ -451,6 +451,8 @@ more than a late one.
   with `bus-post <log> <TYPE> <project:role> <to> <text>` (stamps the clock; a VERIFIED needs its run log under
   `~/.crius/runs` with `sha: <sha>` and `pass: <N>` in its first 20 lines). Old `HH:MM` lines still parse (date from
   file order and mtime).
+- A line may go to several plain names: `-> crius:lead, quotes:b1` (comma or space between them). A list with any
+  other word in it is malformed.
 - Stamps are local time. A UTC stamp ends in `Z` (`$(date -u +%FT%H:%MZ)`), dated lines only. Ingest never re-dates
   a line: a dated line more than 1 h behind the newest stamp before it in its file (a clock in UTC without `Z`), or
   more than 10 min ahead of the clock, raises an ALERT naming the writer, one per file, writer, day and kind.

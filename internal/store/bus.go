@@ -32,7 +32,10 @@ const lateWithin = 10
 // Slug is a project or role name. Go's `$` matches only at the very end, so "demo\n" does not pass.
 var Slug = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 
-var lineRe = regexp.MustCompile(`^(?:(\d{4}-\d\d-\d\d)T)?(\d\d:\d\d)(Z?) ([A-Z][A-Z-]*) (\S+) -> (\S+) — (.*)$`)
+// nameRe is a bus name: a project, or project:role.
+var nameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*(?::[a-z0-9][a-z0-9-]*)?$`)
+
+var lineRe = regexp.MustCompile(`^(?:(\d{4}-\d\d-\d\d)T)?(\d\d:\d\d)(Z?) ([A-Z][A-Z-]*) (\S+) -> (\S+(?:,? \S+)*?) — (.*)$`)
 
 var refRes = []struct {
 	key string
@@ -81,6 +84,15 @@ func ParseLine(line string, st *State, strict bool) *Line {
 	day, hhmm, utc, typ, sender, to, text := m[1], m[2], m[3] == "Z", m[4], m[5], m[6], m[7]
 	if strict && !Types[typ] {
 		return nil
+	}
+	// Several recipients are plain names, so a secret with a space in it ("password: hunter2") is never split into
+	// names that each look harmless.
+	if rs := (&Line{To: to}).Recipients(); len(rs) > 1 {
+		for _, r := range rs {
+			if !nameRe.MatchString(r) {
+				return nil
+			}
+		}
 	}
 	project, role := "", sender
 	if i := strings.LastIndex(sender, ":"); i >= 0 {
@@ -139,6 +151,11 @@ func ParseLine(line string, st *State, strict bool) *Line {
 	}
 	return &Line{Date: day, Time: hhmm, Type: typ, Project: project, Role: role, To: to, Text: text,
 		Refs: RefsOf(text), At: instant, DatedByGuess: guessed, Late: late}
+}
+
+// Recipients splits To, as written ("crius:lead, quotes:b1" or "crius:lead quotes:all"), into names.
+func (l *Line) Recipients() []string {
+	return strings.FieldsFunc(l.To, func(r rune) bool { return r == ',' || r == ' ' })
 }
 
 // minutes is the minute of the day of a checked "HH:MM", 0 for "".

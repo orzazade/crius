@@ -111,7 +111,7 @@ func nullable(s string) any {
 
 type event struct {
 	ts, kind, key, session, project, actor, item, text string
-	to                                                 string // a VERIFIED line's recipient, kept in refs "to"
+	to                                                 string // a VERIFIED line's recipients, kept in refs "to"
 	hasText                                            bool
 	refs                                               map[string][]string
 }
@@ -125,7 +125,7 @@ func (r *runner) event(tx *sql.Tx, e event) error {
 		}
 	}
 	if e.to != "" {
-		clean["to"] = []string{r.name(e.to)}
+		clean["to"] = r.names(e.to)
 	}
 	if len(clean) > 0 {
 		b, err := json.Marshal(clean)
@@ -169,6 +169,15 @@ func RedactName(s string, known func(slug string) bool, redacted func(string) st
 }
 
 func (r *runner) name(s string) string { return RedactName(s, r.cfg.known, r.redacted) }
+
+// names redacts a line's recipients one by one ("a, b"; ParseLine takes several only when each is a plain name).
+func (r *runner) names(to string) []string {
+	var out []string
+	for _, s := range (&store.Line{To: to}).Recipients() {
+		out = append(out, r.name(s))
+	}
+	return out
+}
 
 // queueAlert records an alert in the caller's transaction; flushAlerts posts it. One alert per key, ever.
 func (r *runner) queueAlert(tx *sql.Tx, key, text string) error {

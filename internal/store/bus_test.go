@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -324,5 +325,36 @@ func TestTypesEqualTheDesignDocList(t *testing.T) {
 	sort.Strings(code)
 	if !reflect.DeepEqual(doc, code) {
 		t.Fatalf("doc %v\ncode %v", doc, code)
+	}
+}
+
+// Live 10-22: 72 of 95 malformed lines on the buses name several recipients ("-> crius:lead, quotes:b1", also
+// "-> crius:lead quotes:all"). They are good lines: To keeps what was written, Recipients splits it.
+func TestSeveralRecipients(t *testing.T) {
+	for line, want := range map[string][]string{
+		"2026-10-20T23:27 INFO quotes:rig -> crius:lead, quotes:lead — Cache waits — found": {"crius:lead", "quotes:lead"},
+		"2026-10-20T23:28 ORDER crius:lead -> crius:lead quotes:all — go":                   {"crius:lead", "quotes:all"},
+		"2026-10-20T23:29 DONE quotes:lead -> crius:lead — a — b":                           {"crius:lead"},
+	} {
+		p := ParseLine(line, nil, true)
+		if p == nil {
+			t.Errorf("not parsed: %q", line)
+			continue
+		}
+		if got := p.Recipients(); !slices.Equal(got, want) {
+			t.Errorf("%q: recipients %q, want %q", line, got, want)
+		}
+	}
+	if p := ParseLine("2026-10-20T23:29 DONE quotes:lead -> crius:lead — a — b", nil, true); p.Text != "a — b" {
+		t.Errorf("text %q", p.Text)
+	}
+	for _, line := range []string{
+		"2026-10-20T23:30 INFO crius:lead — no recipient",
+		"2026-10-20T23:31 VERIFIED crius:lead -> password: hunter2 — x",
+		"2026-10-20T23:32 INFO crius:lead -> crius:build (when free) — x",
+	} {
+		if ParseLine(line, nil, true) != nil {
+			t.Errorf("parsed %q", line)
+		}
 	}
 }

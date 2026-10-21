@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -110,21 +111,25 @@ func TestBusLinesKeepTheirRecipient(t *testing.T) {
 			"2026-10-17T03:04 VERIFIED crius:lead -> "+long+" — F-5 · x\n"+
 			"2026-10-17T03:05 VERIFIED crius:lead -> "+long+"b — F-6 · x\n"+
 			"2026-10-17T03:06 VERIFIED crius:lead -> "+ext+" — F-7 · x\n"+
-			"2026-10-17T03:07 VERIFIED crius:lead -> "+ext+"b — F-8 · x\n")
+			"2026-10-17T03:07 VERIFIED crius:lead -> "+ext+"b — F-8 · x\n"+
+			"2026-10-17T03:08 VERIFIED crius:lead -> token-service:lead, demo:qa-ui — F-9 · x\n"+
+			"2026-10-17T03:09 VERIFIED crius:lead -> password: hunter2 — F-10 · x\n"+
+			"2026-10-17T03:10 VERIFIED crius:lead -> demo:qa-ui,password:hunter2 — F-11 · x\n")
 	testutil.Write(t, teamLog, "2026-10-17T02:59 VERIFIED crius:lead -> demo:qa-ui — F-126 · ticks seen\n")
 	x.run()
 	if rows := x.q("select refs from event where kind = 'done'"); len(rows) != 1 || rows[0][0] != "<nil>" {
 		t.Fatal("a line other than VERIFIED keeps its recipient:", rows)
 	}
 	rows := x.q("select kind, refs from event where kind = 'verified' order by ts")
-	if len(rows) != 10 {
+	if len(rows) != 12 {
 		t.Fatal(rows)
 	}
-	for i, want := range []string{"token-service:lead", "demo:qa-ui", "[redacted]", "demo:[redacted]", "[redacted]",
-		"[redacted]", long, long + "b", ext, ext + "b"} {
+	for i, want := range [][]string{{"token-service:lead"}, {"demo:qa-ui"}, {"[redacted]"}, {"demo:[redacted]"},
+		{"[redacted]"}, {"[redacted]"}, {long}, {long + "b"}, {ext}, {ext + "b"}, {"token-service:lead", "demo:qa-ui"},
+		{"demo:qa-ui", "[redacted]"}} {
 		var refs map[string][]string
-		if err := json.Unmarshal([]byte(rows[i][1]), &refs); err != nil || len(refs["to"]) != 1 || refs["to"][0] != want {
-			t.Errorf("%v: %v", rows[i], err)
+		if err := json.Unmarshal([]byte(rows[i][1]), &refs); err != nil || !slices.Equal(refs["to"], want) {
+			t.Errorf("%d %v: %v", i, rows[i], err)
 		}
 	}
 	eq(t, rows[0][0], "verified")

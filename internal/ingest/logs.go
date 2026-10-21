@@ -28,7 +28,7 @@ const datingVersion = "d3" // d3: a stamp ending in Z is UTC
 
 // lineVersion names what a stored log line holds besides its date. Raise it by hand when that changes: every log is
 // read again, and its stored rows take the refs the rules give now (Crius 10-17 04:23).
-const lineVersion = "l1" // l1: a VERIFIED line keeps its recipient in refs "to"
+const lineVersion = "l2" // l1: a VERIFIED line keeps its recipient in refs "to"; l2: several recipients ("a, b")
 
 func typesSum() string {
 	ts := make([]string, 0, len(store.Types))
