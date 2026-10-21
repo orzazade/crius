@@ -81,6 +81,22 @@ Caution: on 2026-03-24 the PyPI package was hijacked (versions 1.82.7 and 1.82.8
 GitHub tags, prefer the official container image, run it in a container with no access to `~/.secrets`, and
 never give it production keys.
 
+### Google Harness² (Harness2, Google Research)
+
+Open-sourced with a paper on 2026-10-09, Apache 2.0, research code (not a supported Google product). An agent
+improves its own harness, not its model: it edits the system prompt, guardrails, memory, tool guidance,
+subagents, skills, scripts and middleware between runs, and keeps an edit only when it scores better.
+Runs on OpenCode by default, can switch to Codex. Reported gain about 11.5 points on benchmarks (Claude Opus
+as the editing model). Linux, Python 3.12/3.13 with uv. Added by the owner 2026-10-21.
+
+Best parts to take:
+- **Edits to rules and skills are tested, not trusted.** Today our AGENTS.md, skills and memory change by hand
+  after a correction (the ladder in `~/.agents/AGENTS.md`). Harness² measures each edit against a test set and
+  drops the ones that do not help. That is the missing check behind our memory cleanup.
+- **The harness as eight named parts** gives us a checklist for where a fix lives.
+- Risk to keep in mind: a harness that rewrites its own guardrails needs the verification to be strong;
+  safety rules (secrets, production, outward-facing) stay outside what it may edit.
+
 ### Smaller ones found on the way
 
 - **Agent Herder** (MCP server): watches and inspects agent sessions across Claude Code, Codex, OpenCode.
@@ -101,6 +117,8 @@ never give it production keys.
 4. Paperclip: only the budget and approval ideas; we probably do not run it.
 5. LiteLLM: with the local LLM trial. One gateway for local and API models, a budget per key, fallback
    when a model is out. Pinned version, in a container, test keys only.
+6. Harness²: read the paper and code first, then try the idea on one skill or AGENTS.md with a small test
+   set of past mistakes: does a tested edit beat our hand-written fix? Linux only, so in a container.
 
 For each trial write down: what it replaces in our setup, what it cannot do (clean-checkout re-runs,
 the bus rules), and the cost to move. Keep Crius's own checks either way.
@@ -116,6 +134,8 @@ the bus rules), and the cost to move. Keep Crius's own checks either way.
   https://betterstack.com/community/guides/ai/paperclip-multi-agent/
 - LiteLLM hijack: https://simonwillison.net/2026/Mar/24/malicious-litellm/,
   https://www.comet.com/site/blog/litellm-supply-chain-attack/
+- Harness²: https://www.marktechpost.com/2026/10/18/google-harness2-recursive-agent-harnessing-framework/,
+  https://www.remio.ai/post/google-harness2-open-sources-agent-self-improvement-but-verification-remains-the
 - Agent Herder: https://glama.ai/mcp/servers/megamen32/agent-herder
 - Herd: https://pkg.go.dev/github.com/herd-os/herd
 - Claude Dashboards and Motion: https://claude.com/resources/articles/dashboards-and-motion
