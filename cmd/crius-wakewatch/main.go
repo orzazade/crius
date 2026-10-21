@@ -1,15 +1,12 @@
 // Command crius-wakewatch runs one missed-wake check (internal/wakewatch) and exits 1 when it could not finish or not
-// reach the owner. launchd starts it every 5 min through bin/crius-wakewatch-run, which hands it TELEGRAM_BOT_TOKEN
-// and TELEGRAM_CHAT_ID from ~/.secrets.
+// reach Crius's tab. launchd starts it every 5 min.
 package main
 
 import (
-	"errors"
 	"fmt"
-	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -20,6 +17,7 @@ import (
 
 var (
 	surfaceRe = regexp.MustCompile(`surface (surface:\d+) \[terminal\] "(.*)"`)
+	tabRe     = regexp.MustCompile(`^(workspace:\d+)\s+(surface:\d+)$`)
 	cmux      = func(args ...string) ([]byte, error) { return exec.Command("cmux", args...).CombinedOutput() }
 )
 
@@ -52,25 +50,29 @@ func screens() ([]wakewatch.Screen, error) {
 	return out, nil
 }
 
+// send types text into Crius's own tab, then Enter. The tab is in ~/.crius/crius-tab: "workspace:N surface:N" on one
+// line (# starts a comment). Without both, nothing is typed: a cmux send with no target goes to the caller's tab.
 func send(text string) error {
-	token, chat := os.Getenv("TELEGRAM_BOT_TOKEN"), os.Getenv("TELEGRAM_CHAT_ID")
-	if token == "" || chat == "" {
-		return fmt.Errorf("TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is empty (read from ~/.secrets by crius-wakewatch-run)")
-	}
-	c := http.Client{Timeout: 15 * time.Second}
-	resp, err := c.PostForm("https://api.telegram.org/bot"+token+"/sendMessage", url.Values{"chat_id": {chat}, "text": {text}})
+	path := filepath.Join(store.Home(), "crius-tab")
+	b, err := os.ReadFile(path)
 	if err != nil {
-		// The URL holds the token and a url.Error quotes it, escaped where a plain replace cannot find it: give only
-		// the cause. Any other error is not shown at all.
-		var ue *url.Error
-		if !errors.As(err, &ue) {
-			return fmt.Errorf("telegram send failed (cause withheld: it may hold the token)")
-		}
-		return fmt.Errorf("telegram send failed: %s: %s", ue.Op, strings.ReplaceAll(ue.Err.Error(), token, "<token>"))
+		return fmt.Errorf("Crius's tab is not known: %v (crius-tab holds \"workspace:N surface:N\")", err)
 	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("telegram answered %s", resp.Status)
+	var ref []string
+	for _, line := range strings.Split(string(b), "\n") {
+		if line = strings.TrimSpace(line); line != "" && !strings.HasPrefix(line, "#") {
+			ref = append(ref, line)
+		}
+	}
+	m := tabRe.FindStringSubmatch(strings.Join(ref, "\n"))
+	if m == nil {
+		return fmt.Errorf("%s: want one line \"workspace:N surface:N\" (crius-tab), got %q", path, strings.Join(ref, " | "))
+	}
+	if out, err := cmux("send", "--workspace", m[1], "--surface", m[2], "--", text); err != nil {
+		return fmt.Errorf("cmux send: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	if out, err := cmux("send-key", "--workspace", m[1], "--surface", m[2], "enter"); err != nil {
+		return fmt.Errorf("cmux send-key: %v: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }

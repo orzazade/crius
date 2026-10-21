@@ -6,7 +6,7 @@
 	<string>space.scifilab.crius.wakewatch</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>@HOME@/.crius/bin/crius-wakewatch-run</string>
+		<string>@HOME@/.crius/bin/crius-wakewatch</string>
 	</array>
 	<key>EnvironmentVariables</key>
 	<dict>

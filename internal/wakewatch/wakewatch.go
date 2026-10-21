@@ -1,8 +1,9 @@
 // Package wakewatch tells the owner when Crius missed a wake: a lead's DONE, NEED, CLEAR-READY or ASK to Crius with no
 // crius:lead line after it on the same bus for 20 min, a lead tab waiting on a question or dialog for 10 min, or a
-// lead tab idle for 15 min (or any tab whose last reply says CLEAR-READY). An idle tab also wakes Crius on its bus. It
-// runs as its own launchd job, outside any chat, and sends to the owner directly (Telegram), because the session it
-// watches is the one that missed the wake. Like the watchdog it imports nothing from the ingest or the store.
+// lead tab idle for 15 min (or any tab whose last reply says CLEAR-READY). It runs as its own launchd job, outside
+// any chat, and wakes Crius by typing one line into Crius's own tab: Crius then acts, and sends the owner a push
+// notification when the owner is needed (owner 10-21 23:5x: no Telegram). Like the watchdog it imports nothing from
+// the ingest or the store.
 package wakewatch
 
 import (
@@ -10,7 +11,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -27,10 +27,11 @@ const (
 	wakeAfter   = 20 * time.Minute
 	screenAfter = 10 * time.Minute
 	idleAfter   = 15 * time.Minute
-	window      = 12 * time.Hour // older lines are history: a first run must not page the owner for them
-	maxText     = 3500           // Telegram allows 4096; the header and one cut alert stay under it
+	window      = 12 * time.Hour   // older lines are history: a first run must not wake Crius for them
+	resend      = 20 * time.Minute // an item still open wakes Crius again, never more often
+	maxLine     = 500
 
-	header        = "Crius missed a wake:\n"
+	prefix        = "WAKEWATCH: "
 	screensFailed = "screens-failed"
 )
 
@@ -66,14 +67,14 @@ type seenScreen struct {
 }
 
 type state struct {
-	Alerted     map[string]time.Time // key -> when sent
-	Woken       map[string]time.Time // idle key -> when Crius was woken on its bus
+	Alerted     map[string]time.Time // key -> when last sent
 	Screens     map[string]seenScreen
 	SendFailing bool
 }
 
-// Run checks every bus log and every tab once and sends whatever is new, in parts under Telegram's limit. A part that
-// fails is not marked sent, so the next run tries again; the first failure in a row also goes to Crius's bus.
+// Run checks every bus log and every tab once and sends each alert that is new, or still open 20 min after it was
+// last sent, as one line. A line that fails is not marked sent, so the next run tries again; the first failure in a
+// row also goes to Crius's bus.
 func Run(d Deps) error {
 	path := filepath.Join(d.Home, "state", "wakewatch.json")
 	st := state{}
@@ -91,9 +92,6 @@ func Run(d Deps) error {
 	if st.Alerted == nil {
 		st.Alerted = map[string]time.Time{}
 	}
-	if st.Woken == nil {
-		st.Woken = map[string]time.Time{}
-	}
 	if st.Screens == nil {
 		st.Screens = map[string]seenScreen{}
 	}
@@ -104,60 +102,32 @@ func Run(d Deps) error {
 	}
 	alerts = append(alerts, waiting(&st, d)...)
 
-	// Crius is woken on its bus apart from Telegram, so a failing send does not keep it asleep, nor a failing wake
-	// the owner's alerts; a wake that failed is tried again next run and returned.
-	var wakeErr error
-	for _, a := range alerts {
-		if _, done := st.Woken[a[0]]; strings.HasPrefix(a[0], "idle:") && !done {
-			if err := watchdog.Post(d.Home, d.Now, "IDLE "+a[1]); err != nil {
-				wakeErr = fmt.Errorf("wakewatch could not wake Crius on its bus: %w", err)
-				continue
-			}
-			st.Woken[a[0]] = d.Now
-		}
-	}
-
 	active := map[string]bool{}
-	var parts [][][2]string // each part fits one message
-	size := 0
+	var sendErr error
 	for _, a := range alerts {
 		active[a[0]] = true
-		if _, done := st.Alerted[a[0]]; done {
+		if last, ok := st.Alerted[a[0]]; sendErr != nil || ok && d.Now.Sub(last) < resend {
 			continue
 		}
 		// Redact first: a cut could split a secret so the redactor no longer sees it, and redaction can grow the text.
-		a[1], _ = redact.Redact(a[1])
-		if r := []rune(a[1]); len(r) > maxText {
-			a[1] = string(r[:maxText]) + "…"
+		// The line is typed: cmux send reads a backslash-n or -r as Enter, so no backslash and no line break reach it.
+		text, _ := redact.Redact(a[1])
+		text = strings.Join(strings.Fields(strings.ReplaceAll(text, `\`, "/")), " ")
+		if r := []rune(text); len(r) > maxLine {
+			text = string(r[:maxLine]) + "…"
 		}
-		if n := len([]rune(a[1])) + 1; len(parts) == 0 || size+n > maxText {
-			parts, size = append(parts, nil), n
-		} else {
-			size += n
-		}
-		parts[len(parts)-1] = append(parts[len(parts)-1], a)
-	}
-	var sendErr error
-	for _, p := range parts {
-		texts := make([]string, len(p))
-		for i, a := range p {
-			texts[i] = a[1]
-		}
-		if sendErr = d.Send(header + strings.Join(texts, "\n")); sendErr != nil {
-			break
-		}
-		for _, a := range p {
+		if sendErr = d.Send(prefix + text); sendErr == nil {
 			st.Alerted[a[0]] = d.Now
 		}
 	}
 	if sendErr != nil && !st.SendFailing {
-		if err := watchdog.Post(d.Home, d.Now, "wakewatch cannot reach the owner: "+sendErr.Error()); err != nil {
+		if err := watchdog.Post(d.Home, d.Now, "wakewatch cannot reach Crius's tab: "+sendErr.Error()); err != nil {
 			return err
 		}
 	}
 	st.SendFailing = sendErr != nil
 	// A key goes once its alert is no longer raised (line answered or past the window, tab stopped asking, check
-	// works again), so the same thing can alert again later and a lasting one is never re-sent.
+	// works again), so the same thing alerts at once when it comes back; a lasting one keeps its 20 min rhythm.
 	for surface, s := range st.Screens {
 		active[screenKey(surface, s.Hash)] = true
 		if s.Idle {
@@ -176,11 +146,6 @@ func Run(d Deps) error {
 			delete(st.Alerted, k)
 		}
 	}
-	for k := range st.Woken {
-		if !active[k] {
-			delete(st.Woken, k)
-		}
-	}
 	b, _ := json.Marshal(st)
 	tmp, err := os.CreateTemp(filepath.Dir(path), "wakewatch.json.")
 	if err != nil {
@@ -197,7 +162,7 @@ func Run(d Deps) error {
 		os.Remove(tmp.Name())
 		return werr
 	}
-	return errors.Join(sendErr, wakeErr)
+	return sendErr
 }
 
 func hash(s string) string {

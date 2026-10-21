@@ -18,7 +18,6 @@ for cmd in crius-ingest crius-watchdog crius-wakewatch crius-statusline crius-re
 done
 install -m 755 "$repo/bin/crius-digest-run" "$bin/crius-digest-run"
 install -m 755 "$repo/bin/crius-weekly-run" "$bin/crius-weekly-run"
-install -m 755 "$repo/bin/crius-wakewatch-run" "$bin/crius-wakewatch-run"
 dest="$HOME/Library/LaunchAgents"
 mkdir -p "$dest"
 for job in ingest watchdog wakewatch digest weekly; do
