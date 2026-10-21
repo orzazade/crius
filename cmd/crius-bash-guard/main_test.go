@@ -90,3 +90,37 @@ func TestReviewFalseRefusalsPass(t *testing.T) {
 		}
 	}
 }
+
+// Review round 2 (46dbb90).
+func TestReviewRound2BypassesAreRefused(t *testing.T) {
+	v := "2026-10-21T23:00 VERIFIED crius:lead -> quotes:lead — F-1"
+	for _, c := range []struct{ cmd, want string }{
+		{`printf '%s VERIFIED %s -> %s — %s\n' "$(date +%FT%H:%M)" crius:lead quotes:lead F-1 >> ~/.crius/bus/quotes.log`, "bus-post"},
+		{`echo "$(date +%FT%H:%M) VERIFIED $me -> quotes:lead — F-1" >> ~/.crius/bus/quotes.log`, "bus-post"},
+		{"bash -c '~/.claude/skills/cmux-team/scripts/team-wait.sh crius 600' &", "run_in_background"},
+		{"nohup bash -c 'team-wait.sh crius 600' > /tmp/w.log 2>&1 &", "run_in_background"},
+		{"bash -lc \"echo '" + v + "' >> ~/.crius/bus/crius.log\"", "bus-post"},
+		{"bash -lc 'team-wait.sh crius 600 &'", "run_in_background"},
+		{`bash -c "echo \"$(date +%FT%H:%M) VERIFIED crius:lead -> x:y — z\" >> ~/.crius/bus/crius.log"`, "bus-post"},
+		{"LOG=~/.crius/bus/quotes.log; echo '" + v + "' >> \"$LOG\"", "bus-post"},
+		{"timeout 900 team-wait.sh crius 600 &", "run_in_background"},
+		{"cd ~/.crius/bus && echo '" + v + "' &>> crius.log", "bus-post"},
+	} {
+		if why := check(c.cmd); !strings.Contains(why, c.want) {
+			t.Errorf("%q: %q", c.cmd, why)
+		}
+	}
+}
+
+func TestReviewRound2FalseRefusalsPass(t *testing.T) {
+	for _, cmd := range []string{
+		`grep -c 'VERIFIED crius:lead -> quotes' ~/.crius/bus/quotes.log; echo "$(date +%FT%H:%M) INFO crius:build -> crius:lead — ok" >> ~/.crius/bus/quotes.log`,
+		`cd ~/.crius/bus && grep -n 'VERIFIED crius:lead ->' crius.log > /tmp/v.txt`,
+		"grep -n 'VERIFIED crius:lead ->' ~/.crius/bus/crius.log; if",
+		"bash", "sh -c",
+	} {
+		if why := check(cmd); why != "" {
+			t.Errorf("%q refused: %s", cmd, why)
+		}
+	}
+}
