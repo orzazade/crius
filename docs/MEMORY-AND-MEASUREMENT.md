@@ -448,13 +448,16 @@ more than a late one.
 2026-10-16T09:20 DONE quotes:leader -> crius — item=quotes#41 sha=abc1234 Inc 4 QA-verified; evidence docs/build/STATUS.md
 ```
 - `<YYYY-MM-DDTHH:MM> TYPE <project>:<role> -> crius — text [refs]`, from `$(date +%FT%H:%M)`, ≤ 300 chars, append
-  with `>>` (or `crius-rec record bus`). Old `HH:MM` lines still parse (date from file order and mtime).
+  with `bus-post <log> <TYPE> <project:role> <to> <text>` (stamps the clock; a VERIFIED needs its run log under
+  `~/.crius/runs` with `sha: <sha>` and `pass: <N>` in its first 20 lines). Old `HH:MM` lines still parse (date from
+  file order and mtime).
 - Stamps are local time. A UTC stamp ends in `Z` (`$(date -u +%FT%H:%MZ)`), dated lines only. Ingest never re-dates
   a line: a dated line more than 1 h behind the newest stamp before it in its file (a clock in UTC without `Z`), or
   more than 10 min ahead of the clock, raises an ALERT naming the writer, one per file, writer, day and kind.
 - Types (the one list; `internal/store` tests check the Go list equals it): `DONE`, `BLOCKED`, `NEED-OWNER`,
   `PAUSED`, `LIMIT`, `ITEM`, `DECISION`, `RESUMED`, `ALERT`, `INFO`, `NEED`, `WAIT`, `PARKED`, `VERIFIED`,
-  `CORRECTED`, `GO`, `ACK`, `CLEAR-READY`. Tests also check that RULES.md and the cmux-team skill name no other type.
+  `CORRECTED`, `GO`, `ACK`, `ORDER`, `ANSWER`, `ASK`, `START`, `CLEAR-READY`. Tests also check that RULES.md and the
+  cmux-team skill name no other type.
 - Who writes them: ALERT only Crius's own scripts (ingest, watchdog), WAIT the wait detector, PARKED the park mod
   (via the leader). Team-only types (QUEUE, NEED-QA, BUG, LESSON) never go on the Crius bus; any type
   not in the list above is malformed: ingest keeps a row per line with the time it read it, and the goal report
