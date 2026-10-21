@@ -204,6 +204,31 @@ func TestBusClockMistakesAreLoud(t *testing.T) {
 		time.Date(2026, 10, 16, 22, 23, 0, 0, time.Local).UTC().Format("2006-01-02T15:04:05Z"))
 }
 
+// Live 10-22: a new type list or line version reads every bus log again from the start. A clock alert already
+// queued is not queued or posted again.
+func TestBusClockAlertOnceAcrossAReRead(t *testing.T) {
+	x, _, _ := busCase(t)
+	now := time.Date(2026, 10, 21, 13, 0, 0, 0, time.Local)
+	clock = func() time.Time { return now }
+	t.Cleanup(func() { clock = time.Now })
+	testutil.Write(t, filepath.Join(x.home, "bus", "quotes.log"),
+		"2026-10-21T12:48 ASK quotes:lead -> crius:lead — x\n"+
+			"2026-10-21T08:48 ANSWER crius:lead -> quotes:lead — UTC without Z\n")
+	for i := 0; i < 2; i++ {
+		x.run()
+		x.q("update coverage set sha = 'old' where resource like '%quotes.log'") // as a version bump leaves it
+		now = now.Add(10 * time.Minute)
+	}
+	x.run()
+	if x.one("select sha from coverage where resource like '%quotes.log'") == "old" {
+		t.Fatal("quotes.log was not read again")
+	}
+	eq(t, x.one("select count(*) from alert where text like 'bus clock: crius:lead line 2026-10-21T08:48 %'"), "1")
+	if got := grepAlerts(x.alerts(), "bus clock: crius:lead line 2026-10-21T08:48"); len(got) != 1 {
+		t.Fatalf("%q", x.alerts())
+	}
+}
+
 // Review of 944e44a: an alert key holds no writer name (a role can be a token); a slug writer stays readable in the
 // alert (the redactor takes token-service:lead for a key); a re-read with a later clock does not let a line flagged
 // ahead move the newest stamp and blame good lines; a Z line in a DST fall-back hour keeps its instant.
