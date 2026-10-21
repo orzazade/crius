@@ -76,3 +76,19 @@ func TestOneFailedTabReadKeepsTheOthers(t *testing.T) {
 		t.Fatalf("%+v", got)
 	}
 }
+
+func TestSwapUsedIsReadInGB(t *testing.T) {
+	for in, want := range map[string]float64{
+		"total = 17408.00M  used = 15997.06M  free = 1410.94M  (encrypted)\n": 15997.06 / 1024,
+		"total = 30.00G  used = 21.50G  free = 8.50G  (encrypted)\n":          21.5,
+		"total = 0.00M  used = 0.00M  free = 0.00M\n":                         0,
+	} {
+		got, err := swapUsed(in)
+		if err != nil || got < want-0.001 || got > want+0.001 {
+			t.Errorf("%q: %v %v", in, got, err)
+		}
+	}
+	if _, err := swapUsed("vm.swapusage: unknown oid"); err == nil {
+		t.Error("an unreadable answer gave no error")
+	}
+}

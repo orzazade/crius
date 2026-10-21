@@ -8,7 +8,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/orzazade/crius/internal/store"
@@ -18,11 +20,12 @@ import (
 var (
 	surfaceRe = regexp.MustCompile(`surface (surface:\d+) \[terminal\] "(.*)"`)
 	tabRe     = regexp.MustCompile(`^(workspace:\d+)\s+(surface:\d+)$`)
+	swapRe    = regexp.MustCompile(`used = ([\d.]+)([MG])`)
 	cmux      = func(args ...string) ([]byte, error) { return exec.Command("cmux", args...).CombinedOutput() }
 )
 
 func main() {
-	err := wakewatch.Run(wakewatch.Deps{Home: store.Home(), Now: time.Now(), Screens: screens, Send: send})
+	err := wakewatch.Run(wakewatch.Deps{Home: store.Home(), Now: time.Now(), Screens: screens, Send: send, Resources: resources})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, time.Now().Format(time.RFC3339), "crius-wakewatch:", err)
 		os.Exit(1)
@@ -75,4 +78,42 @@ func send(text string) error {
 		return fmt.Errorf("cmux send-key: %v: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// resources gives the free disk of the volume holding the home folder and the swap in use, both in GB.
+func resources() (float64, float64, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return 0, 0, err
+	}
+	var fs syscall.Statfs_t
+	if err := syscall.Statfs(home, &fs); err != nil {
+		return 0, 0, fmt.Errorf("statfs %s: %v", home, err)
+	}
+	// launchd's PATH has no /usr/sbin.
+	out, err := exec.Command("/usr/sbin/sysctl", "-n", "vm.swapusage").CombinedOutput()
+	if err != nil {
+		return 0, 0, fmt.Errorf("sysctl vm.swapusage: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	swap, err := swapUsed(string(out))
+	if err != nil {
+		return 0, 0, err
+	}
+	return float64(fs.Bavail) * float64(fs.Bsize) / (1 << 30), swap, nil
+}
+
+// swapUsed reads "used = 15997.06M" (or G) from sysctl vm.swapusage, in GB.
+func swapUsed(s string) (float64, error) {
+	m := swapRe.FindStringSubmatch(s)
+	if m == nil {
+		return 0, fmt.Errorf("sysctl vm.swapusage: no used amount in %q", strings.TrimSpace(s))
+	}
+	n, err := strconv.ParseFloat(m[1], 64)
+	if err != nil {
+		return 0, err
+	}
+	if m[2] == "M" {
+		n /= 1024
+	}
+	return n, nil
 }

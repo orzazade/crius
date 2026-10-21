@@ -1,6 +1,7 @@
 // Package wakewatch tells the owner when Crius missed a wake: a lead's DONE, NEED, CLEAR-READY or ASK to Crius with no
 // crius:lead line after it on the same bus for 20 min, a lead tab waiting on a question or dialog for 10 min, or a
-// lead tab idle for 15 min (or any tab whose last reply says CLEAR-READY). It runs as its own launchd job, outside
+// lead tab idle for 15 min (or any tab whose last reply says CLEAR-READY), and the Mac short of disk or deep in swap.
+// It runs as its own launchd job, outside
 // any chat, and wakes Crius by typing one line into Crius's own tab: Crius then acts, and sends the owner a push
 // notification when the owner is needed (owner 10-21 23:5x: no Telegram). Like the watchdog it imports nothing from
 // the ingest or the store.
@@ -29,6 +30,8 @@ const (
 	idleAfter   = 15 * time.Minute
 	window      = 12 * time.Hour   // older lines are history: a first run must not wake Crius for them
 	resend      = 20 * time.Minute // an item still open wakes Crius again, never more often
+	minFreeGB   = 20               // less free disk than this wakes Crius
+	maxSwapGB   = 20               // more swap in use than this wakes Crius
 	maxLine     = 500
 
 	prefix        = "WAKEWATCH: "
@@ -54,10 +57,11 @@ var (
 type Screen struct{ Surface, Title, Text, Err string }
 
 type Deps struct {
-	Home    string
-	Now     time.Time
-	Screens func() ([]Screen, error)
-	Send    func(text string) error
+	Home      string
+	Now       time.Time
+	Screens   func() ([]Screen, error)
+	Send      func(text string) error
+	Resources func() (freeDiskGB, swapUsedGB float64, err error)
 }
 
 type seenScreen struct {
@@ -101,6 +105,7 @@ func Run(d Deps) error {
 		return err
 	}
 	alerts = append(alerts, waiting(&st, d)...)
+	alerts = append(alerts, resources(d)...)
 
 	active := map[string]bool{}
 	var sendErr error
@@ -310,6 +315,22 @@ func waiting(st *state, d Deps) [][2]string {
 		if !live[k] {
 			delete(st.Screens, k)
 		}
+	}
+	return out
+}
+
+// resources gives an alert when free disk is below 20 GB or swap in use above 20 GB, or when they could not be read.
+func resources(d Deps) [][2]string {
+	free, swap, err := d.Resources()
+	if err != nil {
+		return [][2]string{{"resources-failed", "the disk and swap check failed to look: " + err.Error()}}
+	}
+	var out [][2]string
+	if free < minFreeGB {
+		out = append(out, [2]string{"disk", fmt.Sprintf("disk: %.1f GB free, below %d GB", free, minFreeGB)})
+	}
+	if swap > maxSwapGB {
+		out = append(out, [2]string{"swap", fmt.Sprintf("swap: %.1f GB in use, above %d GB", swap, maxSwapGB)})
 	}
 	return out
 }

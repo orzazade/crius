@@ -21,11 +21,20 @@ type fake struct {
 	sendErr error
 	screens []Screen
 	scrErr  error
+	freeGB  float64 // free disk; 0 means a healthy 100
+	swapGB  float64
+	resErr  error
 }
 
 func (f *fake) deps(home string, now time.Time) Deps {
 	return Deps{Home: home, Now: now,
 		Screens: func() ([]Screen, error) { return f.screens, f.scrErr },
+		Resources: func() (float64, float64, error) {
+			if f.freeGB == 0 {
+				return 100, f.swapGB, f.resErr
+			}
+			return f.freeGB, f.swapGB, f.resErr
+		},
 		Send: func(text string) error {
 			if f.sendErr != nil {
 				return f.sendErr
@@ -581,5 +590,42 @@ func TestEachAlertIsOneLineForCriusTab(t *testing.T) {
 		if !strings.HasPrefix(m, "WAKEWATCH: ") || strings.ContainsAny(m, "\\\n\r\t") || len([]rune(m)) > len("WAKEWATCH: ")+maxLine+1 {
 			t.Errorf("%q", m)
 		}
+	}
+}
+
+// Brief P7 item 4: below 20 GB free disk or above 20 GB swap wakes Crius, by the same tab line and 20 min rhythm.
+func TestLowDiskOrHighSwapWakesCrius(t *testing.T) {
+	for _, c := range []struct {
+		free, swap float64
+		want       string
+	}{{19.5, 1, "disk"}, {200, 20.5, "swap"}, {20, 20, ""}, {25, 3, ""}} {
+		home := setup(t, nil)
+		f := &fake{freeGB: c.free, swapGB: c.swap}
+		for _, m := range []time.Duration{0, 5, 21} {
+			if err := Run(f.deps(home, t0.Add(m*time.Minute))); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if c.want == "" {
+			if len(f.sent) != 0 {
+				t.Fatal(c, f.sent)
+			}
+			continue
+		}
+		if len(f.sent) != 2 || !strings.Contains(f.sent[0], c.want) || !strings.Contains(f.sent[0], "20 GB") {
+			t.Fatal(c, f.sent)
+		}
+	}
+}
+
+// Failed to look is not found nothing: a disk or swap read that fails wakes Crius too.
+func TestADiskOrSwapReadFailureIsAnAlert(t *testing.T) {
+	home := setup(t, nil)
+	f := &fake{resErr: errors.New("sysctl: exit status 1")}
+	if err := Run(f.deps(home, t0)); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.sent) != 1 || !strings.Contains(f.sent[0], "sysctl: exit status 1") {
+		t.Fatal(f.sent)
 	}
 }
