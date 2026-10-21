@@ -15,9 +15,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -221,7 +223,7 @@ func watched(home string) (projects, [][2]string) {
 		return nil, [][2]string{{"projects-failed", path + " names no project, so every project is watched"}}
 	}
 	var out [][2]string
-	for name := range p {
+	for _, name := range slices.Sorted(maps.Keys(p)) {
 		if _, err := os.Stat(filepath.Join(home, "bus", name+".log")); err != nil {
 			out = append(out, [2]string{"projects-unknown:" + name, path + " names " + name + ", which has no bus file, so that team is not watched: " + err.Error()})
 		}
