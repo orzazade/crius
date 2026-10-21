@@ -363,4 +363,15 @@ func TestInstallOnlyFromPushedMain(t *testing.T) {
 	if out := install(); !strings.Contains(out, "is not at origin/main") {
 		t.Fatal("commit not pushed:", out)
 	}
+	// Review of d11705b: a failed git read printed nothing, and two empty answers passed both checks.
+	git("update-ref", "-d", "refs/remotes/origin/main")
+	if out := install(); !strings.Contains(out, "has no origin/main") {
+		t.Fatal("no origin/main:", out)
+	}
+	if err := os.RemoveAll(filepath.Join(repo, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	if out := install(); !strings.Contains(out, "is not a git checkout") {
+		t.Fatal("not a checkout:", out)
+	}
 }

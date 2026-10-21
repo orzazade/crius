@@ -13,11 +13,18 @@ for p in "$repo" "$HOME"; do
 done
 # The jobs run what is built here and read this checkout as CRIUS_REPO: only what was pushed, never work in progress.
 # A stable checkout: git clone https://github.com/orzazade/crius ~/Projects/scifi/crius-live (git pull after a push).
-if [ -n "$(git -C "$repo" status --porcelain)" ]; then
+# Each read is its own assignment: a git that fails stops here, never compares as an empty answer.
+top="$(git -C "$repo" rev-parse --show-toplevel 2> /dev/null)" && [ "$top" = "$repo" ] ||
+  { echo "$repo is not a git checkout; install from a clean checkout at origin/main" >&2; exit 1; }
+changes="$(git -C "$repo" status --porcelain)"
+if [ -n "$changes" ]; then
   echo "$repo has changes not pushed; install from a clean checkout at origin/main" >&2; exit 1
 fi
-if [ "$(git -C "$repo" rev-parse HEAD)" != "$(git -C "$repo" rev-parse origin/main)" ]; then
-  echo "$repo is not at origin/main; install from a clean checkout at origin/main" >&2; exit 1
+head="$(git -C "$repo" rev-parse --verify HEAD)"
+main="$(git -C "$repo" rev-parse --verify --quiet origin/main)" ||
+  { echo "$repo has no origin/main; git fetch, then install from a clean checkout at origin/main" >&2; exit 1; }
+if [ "$head" != "$main" ]; then
+  echo "$repo is not at origin/main (git pull first); install from a clean checkout at origin/main" >&2; exit 1
 fi
 [ -d "$HOME/.crius/state" ] || { echo "~/.crius is missing; run bin/crius-rec init first" >&2; exit 1; }
 mkdir -p -m 700 "$bin"
