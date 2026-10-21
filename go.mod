@@ -6,6 +6,7 @@ require (
 	github.com/BurntSushi/toml v1.5.0
 	golang.org/x/sys v0.47.0
 	modernc.org/sqlite v1.59.0
+	mvdan.cc/sh/v3 v3.12.0
 )
 
 require (
