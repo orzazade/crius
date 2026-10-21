@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/orzazade/crius/internal/redact"
 	"github.com/orzazade/crius/internal/watchdog"
@@ -34,7 +35,7 @@ const (
 	maxSwapGB   = 20               // more swap in use than this wakes Crius
 	maxLine     = 500
 
-	prefix        = "WAKEWATCH: "
+	Prefix        = "WAKEWATCH: "
 	screensFailed = "screens-failed"
 )
 
@@ -117,11 +118,12 @@ func Run(d Deps) error {
 		// Redact first: a cut could split a secret so the redactor no longer sees it, and redaction can grow the text.
 		// The line is typed: cmux send reads a backslash-n or -r as Enter, so no backslash and no line break reach it.
 		text, _ := redact.Redact(a[1])
-		text = strings.Join(strings.Fields(strings.ReplaceAll(text, `\`, "/")), " ")
+		// cmux reads \n as Enter, and control bytes (Ctrl-U, Esc) would edit Crius's prompt: neither may pass.
+		text = strings.Join(strings.Fields(strings.Map(printable, text)), " ")
 		if r := []rune(text); len(r) > maxLine {
 			text = string(r[:maxLine]) + "…"
 		}
-		if sendErr = d.Send(prefix + text); sendErr == nil {
+		if sendErr = d.Send(Prefix + text); sendErr == nil {
 			st.Alerted[a[0]] = d.Now
 		}
 	}
@@ -337,6 +339,26 @@ func resources(d Deps) [][2]string {
 
 func screenKey(surface, hash string) string { return "screen:" + surface + ":" + hash }
 func idleKey(surface, hash string) string   { return "idle:" + surface + ":" + hash }
+
+func printable(r rune) rune {
+	if r == '\\' {
+		return '/'
+	}
+	if !unicode.IsPrint(r) {
+		return ' '
+	}
+	return r
+}
+
+// Prompt gives the text in a Claude Code screen's input box, and whether the screen has one.
+func Prompt(screen string) (string, bool) {
+	_, foot, boxed := split(screen)
+	if !boxed {
+		return "", false
+	}
+	line := strings.SplitN(foot, "\n", 2)[0]
+	return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "❯")), true
+}
 
 // split cuts a Claude Code screen at its input box: what is above it, what is below it, and whether it has one.
 func split(text string) (body, foot string, boxed bool) {

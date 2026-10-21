@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 
 	"github.com/orzazade/crius/internal/ingest"
 	"github.com/orzazade/crius/internal/launch"
@@ -22,6 +23,7 @@ func main() {
 		account = os.Args[3]
 	}
 	ws, surface, tag, err := launch.Run(os.Args[1], os.Args[2], account, launch.Deps{
+		Lock: filepath.Join(store.Home(), "launch.lock"),
 		Cmux: func(args ...string) (string, error) {
 			out, err := exec.Command("cmux", args...).CombinedOutput()
 			return string(out), err

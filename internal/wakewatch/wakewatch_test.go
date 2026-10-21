@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 
 	"github.com/orzazade/crius/internal/testutil"
 )
@@ -575,8 +576,11 @@ func TestAnOpenItemWakesCriusAtMostOncePer20Min(t *testing.T) {
 
 // Owner 10-21 23:5x: each alert is one line typed into Crius's tab. cmux send reads a backslash-n as Enter, so no
 // backslash and no newline may reach it, and a long line is cut.
+// Control bytes from a bus line (Ctrl-U, Esc, DEL) would edit Crius's prompt: "\x15/clear" wipes the line and
+// runs /clear (review of 91854cf, P1).
 func TestEachAlertIsOneLineForCriusTab(t *testing.T) {
-	bus := done(t0) + stamp(t0) + ` NEED axi:lead -> crius:lead — run \n then \r then a` + "\t" + "tab " + strings.Repeat("y", 900) + "\n"
+	bus := done(t0) + stamp(t0) + ` NEED axi:lead -> crius:lead — run \n then \r then a` + "\t" + "tab \x15/clear\x1b[A\x7f\u0085 " +
+		strings.Repeat("y", 900) + "\n"
 	home := setup(t, map[string]string{"quotes.log": bus})
 	f := &fake{screens: []Screen{screen("quotes: lead", question)}}
 	Run(f.deps(home, t0.Add(5*time.Minute)))
@@ -589,6 +593,12 @@ func TestEachAlertIsOneLineForCriusTab(t *testing.T) {
 	for _, m := range f.sent {
 		if !strings.HasPrefix(m, "WAKEWATCH: ") || strings.ContainsAny(m, "\\\n\r\t") || len([]rune(m)) > len("WAKEWATCH: ")+maxLine+1 {
 			t.Errorf("%q", m)
+		}
+		for _, r := range m {
+			if !unicode.IsPrint(r) {
+				t.Errorf("control rune %U in %q", r, m)
+				break
+			}
 		}
 	}
 }

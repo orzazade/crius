@@ -20,6 +20,7 @@ import (
 var (
 	surfaceRe = regexp.MustCompile(`surface (surface:\d+) \[terminal\] "(.*)"`)
 	tabRe     = regexp.MustCompile(`^(workspace:\d+)\s+(surface:\d+)$`)
+	ttyRe     = regexp.MustCompile(`\btty=(\S+)`)
 	swapRe    = regexp.MustCompile(`used = ([\d.]+)([MG])`)
 	cmux      = func(args ...string) ([]byte, error) { return exec.Command("cmux", args...).CombinedOutput() }
 )
@@ -71,11 +72,56 @@ func send(text string) error {
 	if m == nil {
 		return fmt.Errorf("%s: want one line \"workspace:N surface:N\" (crius-tab), got %q", path, strings.Join(ref, " | "))
 	}
+	if err := claudeInFront(m[2]); err != nil {
+		return err
+	}
+	screen, err := cmux("read-screen", "--workspace", m[1], "--surface", m[2], "--lines", "40")
+	if err != nil {
+		return fmt.Errorf("cmux read-screen %s: %v: %s", m[2], err, strings.TrimSpace(string(screen)))
+	}
+	// An earlier line whose Enter failed is still in the prompt, and cmux send refuses to type over a draft.
+	if draft, _ := wakewatch.Prompt(string(screen)); strings.HasPrefix(draft, wakewatch.Prefix) {
+		if out, err := cmux("send-key", "--workspace", m[1], "--surface", m[2], "enter"); err != nil {
+			return fmt.Errorf("cmux send-key: %v: %s", err, strings.TrimSpace(string(out)))
+		}
+	}
 	if out, err := cmux("send", "--workspace", m[1], "--surface", m[2], "--", text); err != nil {
 		return fmt.Errorf("cmux send: %v: %s", err, strings.TrimSpace(string(out)))
 	}
 	if out, err := cmux("send-key", "--workspace", m[1], "--surface", m[2], "enter"); err != nil {
 		return fmt.Errorf("cmux send-key: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// claudeInFront checks that Claude is the foreground process of the surface's terminal. If Claude has exited, the tab
+// is a shell, and Enter would run the alert text there.
+func claudeInFront(surface string) error {
+	tree, err := cmux("tree", "--all")
+	if err != nil {
+		return fmt.Errorf("cmux tree: %v: %s", err, strings.TrimSpace(string(tree)))
+	}
+	tty := ""
+	for _, line := range strings.Split(string(tree), "\n") {
+		if m := ttyRe.FindStringSubmatch(line); m != nil && strings.Contains(line, "surface "+surface+" ") {
+			tty = m[1]
+		}
+	}
+	if tty == "" {
+		return fmt.Errorf("Crius's tab %s has no terminal in cmux tree --all: nothing typed", surface)
+	}
+	out, err := exec.Command("ps", "-t", tty, "-o", "pid=,tpgid=,comm=").Output()
+	if err != nil {
+		return fmt.Errorf("ps -t %s: %v", tty, err)
+	}
+	front := ""
+	for _, line := range strings.Split(string(out), "\n") {
+		if f := strings.Fields(line); len(f) >= 3 && f[0] == f[1] {
+			front = strings.Join(f[2:], " ")
+		}
+	}
+	if filepath.Base(front) != "claude" {
+		return fmt.Errorf("Crius's tab %s (%s) runs %q in front, not Claude: nothing typed", surface, tty, front)
 	}
 	return nil
 }

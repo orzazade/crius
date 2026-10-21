@@ -10,11 +10,33 @@ import (
 
 // fakeCmux puts a cmux on PATH that records each call, one per line, and gives Crius's tab in a config file.
 func fakeCmux(t *testing.T, tab string) (log string) {
-	dir := t.TempDir()
+	log, _ = fakeTab(t, tab)
+	return log
+}
+
+// fakeTab puts a fake cmux and ps on PATH. cmux logs every call but its reads (tree, read-screen); the tree shows
+// Crius's surface on ttys015, read-screen prints dir/screen (an empty Claude prompt), ps on ttys015 prints dir/front
+// (Claude in front).
+func fakeTab(t *testing.T, tab string) (log, dir string) {
+	dir = t.TempDir()
 	log = filepath.Join(dir, "calls")
-	script := "#!/bin/sh\nfor a in \"$@\"; do printf '[%s]' \"$a\" >> " + log + "; done\necho >> " + log + "\necho OK\n"
-	if err := os.WriteFile(filepath.Join(dir, "cmux"), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
+	script := "#!/bin/sh\ncase \"$1\" in\n" +
+		"tree) echo '│   ├── surface surface:1000020029 [terminal] \"crius\" [selected] ◀ active tty=ttys015'; exit 0 ;;\n" +
+		"read-screen) cat " + filepath.Join(dir, "screen") + "; exit 0 ;;\nesac\n" +
+		"for a in \"$@\"; do printf '[%s]' \"$a\" >> " + log + "; done\necho >> " + log + "\necho OK\n"
+	ps := "#!/bin/sh\n[ \"$2\" = ttys015 ] && cat " + filepath.Join(dir, "front") + "\nexit 0\n"
+	for name, body := range map[string]string{"cmux": script, "ps": ps} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, body := range map[string]string{
+		"screen": "⏺ done.\n──────────────\n❯ \n──────────────\n  quota: 7d 97%\n",
+		"front":  "52166 52763 /usr/bin/login\n52169 52763 -/bin/zsh\n52763 52763 /Users/o/.local/bin/claude\n52859 52763 <defunct>\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
 	home := t.TempDir()
@@ -24,7 +46,7 @@ func fakeCmux(t *testing.T, tab string) (log string) {
 			t.Fatal(err)
 		}
 	}
-	return log
+	return log, dir
 }
 
 // Owner 10-21 23:5x: no Telegram; an alert is one line typed into Crius's own tab, then Enter.
@@ -90,5 +112,50 @@ func TestSwapUsedIsReadInGB(t *testing.T) {
 	}
 	if _, err := swapUsed("vm.swapusage: unknown oid"); err == nil {
 		t.Error("an unreadable answer gave no error")
+	}
+}
+
+// Review of 91854cf, P1: if Claude has exited, Crius's tab is a shell and Enter would run the alert text there
+// ("$(...)" in a bus line runs). Nothing is typed unless Claude is the tab's foreground process, and that is loud.
+func TestSendTypesOnlyWhenClaudeIsInFront(t *testing.T) {
+	for name, ps := range map[string]string{
+		"shell in front":   "6777 6832 /usr/bin/login\n6832 6832 -/bin/zsh\n",
+		"claude in back":   "52763 99 /Users/o/.local/bin/claude\n99 99 vim\n",
+		"no front process": "",
+		"claude-like name": "7 7 /usr/local/bin/claude-wrapper\n",
+	} {
+		log, dir := fakeTab(t, "workspace:1000020000 surface:1000020029\n")
+		os.WriteFile(filepath.Join(dir, "front"), []byte(ps), 0o644)
+		err := send("WAKEWATCH: x $(touch /tmp/pwned)")
+		if err == nil || !strings.Contains(err.Error(), "not Claude") {
+			t.Errorf("%s: %v", name, err)
+		}
+		if _, statErr := os.Stat(log); statErr == nil {
+			t.Errorf("%s: cmux typed into the tab", name)
+		}
+	}
+	log, _ := fakeTab(t, "workspace:1000020000 surface:1000020077\n")
+	if err := send("WAKEWATCH: x"); err == nil || !strings.Contains(err.Error(), "surface:1000020077") {
+		t.Errorf("surface not in the tree: %v", err)
+	}
+	if _, statErr := os.Stat(log); statErr == nil {
+		t.Error("surface not in the tree: cmux typed")
+	}
+}
+
+// Review of 91854cf, P2: a line typed but not sent (Enter failed) blocks every later cmux send (it refuses over a
+// draft). A WAKEWATCH line left in the prompt is ours: press Enter on it first. Someone else's draft is left alone.
+func TestSendFinishesItsOwnStuckLine(t *testing.T) {
+	for draft, want := range map[string]string{
+		"WAKEWATCH: an older alert": "[send-key][--workspace][workspace:1000020000][--surface][surface:1000020029][enter]\n[send]",
+		"owner is typing here":      "[send]",
+	} {
+		log, dir := fakeTab(t, "workspace:1000020000 surface:1000020029\n")
+		os.WriteFile(filepath.Join(dir, "screen"), []byte("──────────────\n❯ "+draft+"\n──────────────\n"), 0o644)
+		send("WAKEWATCH: new")
+		b, _ := os.ReadFile(log)
+		if !strings.HasPrefix(string(b), want) {
+			t.Errorf("%q: got\n%s", draft, b)
+		}
 	}
 }

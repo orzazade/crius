@@ -5,8 +5,10 @@ package launch
 
 import (
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
+	"syscall"
 )
 
 // looks is the one table of workspace names and colors: blue shades for Appxite, green and warm for personal work,
@@ -29,6 +31,7 @@ var (
 )
 
 type Deps struct {
+	Lock  string // file locked while finding or making the workspace, so two launches make one
 	Cmux  func(args ...string) (string, error)
 	Place func(project string) (cwd, account string, err error) // from projects.toml
 }
@@ -61,6 +64,17 @@ func Run(project, role, account string, d Deps) (ws, surface, tag string, err er
 	cmd := "aitch launch claude -- --model " + model +
 		` --permission-mode bypassPermissions --settings '{"autoCompactWindow":150000}' -n '` + name + `'`
 
+	if d.Lock == "" {
+		return "", "", "", fmt.Errorf("no launch lock file named: two launches at once could make two workspaces")
+	}
+	lf, err := os.OpenFile(d.Lock, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return "", "", "", fmt.Errorf("launch lock: %v", err)
+	}
+	defer lf.Close() // closing releases the lock
+	if err := syscall.Flock(int(lf.Fd()), syscall.LOCK_EX); err != nil {
+		return "", "", "", fmt.Errorf("launch lock %s: %v", d.Lock, err)
+	}
 	tree, err := d.Cmux("tree", "--all")
 	if err != nil {
 		return "", "", "", fmt.Errorf("cmux tree: %v", err)

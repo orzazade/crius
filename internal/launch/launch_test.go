@@ -2,8 +2,12 @@ package launch
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 const tree = `window window:1 [current] ◀ active
@@ -26,6 +30,7 @@ type fake struct {
 
 func (f *fake) deps() Deps {
 	return Deps{
+		Lock: filepath.Join(os.TempDir(), "crius-launch-test.lock"),
 		Cmux: func(args ...string) (string, error) {
 			f.calls = append(f.calls, strings.Join(args, " "))
 			switch args[0] {
@@ -144,5 +149,57 @@ func TestBadInputIsRefusedBeforeCmuxIsTouched(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), c.want) || len(f.calls) != 0 {
 			t.Fatal(c, err, f.calls)
 		}
+	}
+}
+
+// Review of 91854cf, P2: two first launches for one project at once both saw no workspace and made two. The
+// find-or-create step holds a file lock, so the second one finds the first one's workspace.
+func TestTwoLaunchesAtOnceMakeOneWorkspace(t *testing.T) {
+	var mu sync.Mutex
+	made := 0
+	d := Deps{
+		Lock: filepath.Join(t.TempDir(), "launch.lock"),
+		Cmux: func(args ...string) (string, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			switch args[0] {
+			case "tree":
+				time.Sleep(50 * time.Millisecond) // cmux is slow; both first launches read the tree before either creates
+				if made == 0 {
+					return tree, nil
+				}
+				return tree + "├── workspace workspace:9 \"Falcon\"\n│   └── pane pane:9\n│       └── surface surface:90 [terminal] \"x\"\n", nil
+			case "new-workspace":
+				made++
+				return "OK workspace:9", nil
+			case "new-surface":
+				return "OK surface:91 pane:9 workspace:9", nil
+			}
+			return "OK", nil
+		},
+		Place: func(string) (string, string, error) { return "/Users/o/Projects/falcon", "max", nil },
+	}
+	var wg sync.WaitGroup
+	for _, role := range []string{"lead", "qa-api"} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, _, _, err := Run("falcon", role, "", d); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	if made != 1 {
+		t.Fatalf("%d workspaces made, want 1", made)
+	}
+}
+
+// A launch with no lock file named is refused, not run unlocked.
+func TestALaunchWithNoLockIsRefused(t *testing.T) {
+	d := (&fake{trees: []string{tree}}).deps()
+	d.Lock = ""
+	if _, _, _, err := Run("quotes", "lead", "", d); err == nil || !strings.Contains(err.Error(), "lock") {
+		t.Fatal(err)
 	}
 }
