@@ -58,3 +58,35 @@ func TestOtherBusUseIsAllowed(t *testing.T) {
 		}
 	}
 }
+
+// Review round 1 (b93c71f, 4782e51): ways past the guard.
+func TestReviewBypassesAreRefused(t *testing.T) {
+	v := "2026-10-21T23:00 VERIFIED crius:lead -> quotes:lead — F-1 · unchecked"
+	for _, c := range []struct{ cmd, want string }{
+		{"team-wait.sh crius 900 & echo started\nif", "run_in_background"},
+		{"printf '%s\\n' '" + v + "' | tee -a ~/.crius/bus/quotes.log\nif", "bus-post"},
+		{"printf '%s\\n' '" + v + "' | /usr/bin/tee -a ~/.crius/bus/quotes.log", "bus-post"},
+		{"printf '%s\\n' '" + v + "' | command tee -a ~/.crius/bus/quotes.log", "bus-post"},
+		{"printf '%s\\n' '" + v + "' | env \"tee\" -a ~/.crius/bus/quotes.log", "bus-post"},
+		{"line='" + v + "'; echo \"$line\" >> ~/.crius/bus/crius.log", "bus-post"},
+		{"cd ~/.crius/bus && echo '" + v + "' >> crius.log", "bus-post"},
+		{"bash -c '~/.claude/skills/cmux-team/scripts/team-wait.sh crius 600 &'", "run_in_background"},
+		{"sh -c \"echo '" + v + "' >> ~/.crius/bus/crius.log\"", "bus-post"},
+	} {
+		if why := check(c.cmd); !strings.Contains(why, c.want) {
+			t.Errorf("%q: %q", c.cmd, why)
+		}
+	}
+}
+
+// Review round 1: normal work the guard must not block.
+func TestReviewFalseRefusalsPass(t *testing.T) {
+	for _, cmd := range []string{
+		"grep -R -n 'team-wait.sh' docs > /tmp/waiter-references.txt &",
+		`echo "$(date +%FT%H:%M) INFO crius:build -> crius:lead — waiting for VERIFIED on F-1" >> ~/.crius/bus/crius.log`,
+	} {
+		if why := check(cmd); why != "" {
+			t.Errorf("%q refused: %s", cmd, why)
+		}
+	}
+}
