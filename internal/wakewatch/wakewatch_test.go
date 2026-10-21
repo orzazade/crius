@@ -440,3 +440,178 @@ func TestAWholeCheckFailureKeepsPerTabFailures(t *testing.T) {
 		t.Fatal(n, f.sent)
 	}
 }
+
+// tab draws a Claude Code screen: the last reply, the input box with the session name in its border, and a footer
+// whose quota countdown changes every minute, as the personal status line does.
+func tab(name, reply, footer string, at time.Time) string {
+	left := t0.Add(3 * time.Hour).Sub(at)
+	return "⏺ " + reply + "\n                                         8% until auto-compact\n" +
+		"────────────────────────────── " + name + " ─\n❯ \n──────────────────────────────\n" +
+		fmt.Sprintf("  Opus 5.5 │ main │ 7d 97%% (resets in %dh %dm)\n", int(left.Hours()), int(left.Minutes())%60) + footer
+}
+
+func busFrom(from string, at time.Time) string {
+	return stamp(at) + " INFO " + from + " -> crius:lead — f169 run going\n"
+}
+
+func alertLines(t *testing.T, home string) []string {
+	b, err := os.ReadFile(filepath.Join(home, "bus", "crius.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, l := range strings.Split(string(b), "\n") {
+		if strings.Contains(l, " ALERT crius:watchdog -> crius — ") {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// runAt runs at each minute after t0 with the screens drawn for that minute.
+func runAt(t *testing.T, home string, f *fake, draw func(at time.Time) []Screen, minutes ...int) {
+	t.Helper()
+	for _, m := range minutes {
+		at := t0.Add(time.Duration(m) * time.Minute)
+		f.screens = draw(at)
+		if err := Run(f.deps(home, at)); err != nil && f.sendErr == nil {
+			t.Fatal(m, err)
+		}
+	}
+}
+
+// Case 10-21 23:30: quotes:lead finished a turn, posted nothing and sat idle; the owner found it, Crius did not.
+func TestAnIdleLeadAlertsAfter15MinAndWakesCrius(t *testing.T) {
+	home := setup(t, map[string]string{"quotes.log": busFrom("quotes:lead", t0)})
+	f := &fake{}
+	draw := func(at time.Time) []Screen {
+		return []Screen{screen("quotes", tab("quotes: lead", "The f177 rerun is on :7090.", "  ⏵⏵ bypass permissions on\n", at))}
+	}
+	runAt(t, home, f, draw, 0, 5, 10, 14)
+	if len(f.sent) != 0 || len(alertLines(t, home)) != 0 {
+		t.Fatal(f.sent, alertLines(t, home))
+	}
+	runAt(t, home, f, draw, 16, 21, 26)
+	if len(f.sent) != 1 || !strings.Contains(f.sent[0], "quotes:lead") || !strings.Contains(f.sent[0], "idle") {
+		t.Fatal(f.sent)
+	}
+	if a := alertLines(t, home); len(a) != 1 || !strings.Contains(a[0], "quotes:lead") || !strings.Contains(a[0], "IDLE") {
+		t.Fatal(a)
+	}
+}
+
+func TestABusyLeadIsNotIdle(t *testing.T) {
+	for _, c := range []struct{ reply, footer string }{
+		{"✻ Running tests… (2m 10s · esc to interrupt)", "  ⏵⏵ bypass permissions on\n"},
+		{"done for now", "  ⏵⏵ bypass permissions on · 1 shell\n"},
+		{"done for now", "  ⏵⏵ bypass permissions on · 1 shell, 1 monitor\n"},
+		{"done for now", "  ⏵⏵ bypass permissions on · 2 background tasks\n"},
+		{"done for now", "  ⏵⏵ bypass permissions on\n\n  ⏺ main\n  ◯ general-purpose  Writing docs/briefs/README.md      7m 11s\n"},
+	} {
+		home := setup(t, map[string]string{"quotes.log": busFrom("quotes:lead", t0)})
+		f := &fake{}
+		runAt(t, home, f, func(at time.Time) []Screen {
+			return []Screen{screen("quotes", tab("quotes: lead", c.reply, c.footer, at))}
+		}, 0, 16, 30)
+		if len(f.sent) != 0 || len(alertLines(t, home)) != 0 {
+			t.Fatal(c, f.sent)
+		}
+	}
+}
+
+func TestOnlyALineFromTheLeadItselfResetsIdle(t *testing.T) {
+	bus := busFrom("quotes:lead", t0) + busFrom("quotes:lead", t0.Add(10*time.Minute)) +
+		busFrom("quotes:qa", t0.Add(20*time.Minute)) + stamp(t0.Add(20*time.Minute)) + " ACK crius:lead -> quotes:lead — ok\n"
+	home := setup(t, map[string]string{"quotes.log": bus})
+	f := &fake{}
+	draw := func(at time.Time) []Screen {
+		return []Screen{screen("quotes", tab("quotes: lead", "waiting", "", at))}
+	}
+	runAt(t, home, f, draw, 0, 16, 24)
+	if len(f.sent) != 0 {
+		t.Fatal(f.sent)
+	}
+	runAt(t, home, f, draw, 26)
+	if len(f.sent) != 1 {
+		t.Fatal(f.sent)
+	}
+}
+
+func TestOnlyLeadTabsWithABusAreCheckedForIdle(t *testing.T) {
+	home := setup(t, map[string]string{"quotes.log": busFrom("quotes:lead", t0)})
+	f := &fake{}
+	runAt(t, home, f, func(at time.Time) []Screen {
+		return []Screen{
+			screen("quotes · qa", tab("quotes · qa", "checked", "", at)),
+			{Surface: "surface:8", Title: "first-order · lead", Text: tab("first-order · lead", "done", "", at)},
+			{Surface: "surface:9", Title: "zsh", Text: "~ % \n"},
+		}
+	}, 0, 16, 30)
+	if len(f.sent) != 0 {
+		t.Fatal(f.sent)
+	}
+}
+
+func TestATabTitleNamesTheSessionWhenTheBorderDoesNot(t *testing.T) {
+	home := setup(t, map[string]string{"cortex.log": busFrom("cortex:lead", t0)})
+	f := &fake{}
+	runAt(t, home, f, func(at time.Time) []Screen {
+		return []Screen{screen("cortex · lead", strings.Replace(tab("x", "done", "", at), " x ─", "─", 1))}
+	}, 0, 16)
+	if len(f.sent) != 1 || !strings.Contains(f.sent[0], "cortex:lead") {
+		t.Fatal(f.sent)
+	}
+}
+
+// Crius 10-21 23:32: the word CLEAR-READY on a screen counts like the bus line, for any role.
+func TestCLEARREADYOnAScreenAlertsForAnyRole(t *testing.T) {
+	home := setup(t, map[string]string{"crius.log": busFrom("crius:build", t0)})
+	f := &fake{}
+	runAt(t, home, f, func(at time.Time) []Screen {
+		return []Screen{screen("crius · build", tab("crius · build", "CLEAR-READY: item 3 done, next item 4.\n\n⏳", "", at))}
+	}, 0, 16)
+	if len(f.sent) != 1 || !strings.Contains(f.sent[0], "CLEAR-READY") || !strings.Contains(f.sent[0], "crius:build") {
+		t.Fatal(f.sent)
+	}
+}
+
+func TestCLEARREADYAboveTheLastReplyDoesNotCount(t *testing.T) {
+	home := setup(t, map[string]string{"crius.log": busFrom("crius:build", t0)})
+	f := &fake{}
+	runAt(t, home, f, func(at time.Time) []Screen {
+		return []Screen{screen("crius · build", "  at ~200K write CLEAR-READY and stop\n"+tab("crius · build", "Waiting for GO.\n\n⏳", "", at))}
+	}, 0, 16)
+	if len(f.sent) != 0 {
+		t.Fatal(f.sent)
+	}
+}
+
+// Waking Crius does not wait for Telegram: the bus line goes even when the owner cannot be reached, and only once.
+func TestAnIdleLeadWakesCriusWhenTelegramFails(t *testing.T) {
+	home := setup(t, map[string]string{"quotes.log": busFrom("quotes:lead", t0)})
+	f := &fake{sendErr: errors.New("telegram down")}
+	runAt(t, home, f, func(at time.Time) []Screen {
+		return []Screen{screen("quotes", tab("quotes: lead", "done", "", at))}
+	}, 0, 16, 21)
+	n := 0
+	for _, l := range alertLines(t, home) {
+		if strings.Contains(l, "IDLE") {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatal(alertLines(t, home))
+	}
+}
+
+// The status line's countdown changes every minute; it must not restart the 10 min wait of a question.
+func TestAQuestionWithAClockInTheFooterStillAlerts(t *testing.T) {
+	home := setup(t, nil)
+	f := &fake{}
+	runAt(t, home, f, func(at time.Time) []Screen {
+		return []Screen{screen("axi", tab("axi: lead", "Which branch, main or develop?\n\n❓", "", at))}
+	}, 0, 5, 11)
+	if len(f.sent) != 1 || !strings.Contains(f.sent[0], "question") {
+		t.Fatal(f.sent)
+	}
+}

@@ -1,5 +1,6 @@
 // Package wakewatch tells the owner when Crius missed a wake: a lead's DONE, NEED, CLEAR-READY or ASK to Crius with no
-// crius:lead line after it on the same bus for 20 min, or a lead tab waiting on a question or dialog for 10 min. It
+// crius:lead line after it on the same bus for 20 min, a lead tab waiting on a question or dialog for 10 min, or a
+// lead tab idle for 15 min (or any tab whose last reply says CLEAR-READY). An idle tab also wakes Crius on its bus. It
 // runs as its own launchd job, outside any chat, and sends to the owner directly (Telegram), because the session it
 // watches is the one that missed the wake. Like the watchdog it imports nothing from the ingest or the store.
 package wakewatch
@@ -24,6 +25,7 @@ import (
 const (
 	wakeAfter   = 20 * time.Minute
 	screenAfter = 10 * time.Minute
+	idleAfter   = 15 * time.Minute
 	window      = 12 * time.Hour // older lines are history: a first run must not page the owner for them
 	maxText     = 3500           // Telegram allows 4096; the header and one cut alert stay under it
 
@@ -38,6 +40,12 @@ var (
 	lineRe     = regexp.MustCompile(`^(\d{4}-\d\d-\d\dT\d\d:\d\dZ?) ([A-Z][A-Z-]*) (\S+)(?: -> (.*?))? — `)
 	// A Claude Code permission or choice dialog: a numbered option under the cursor.
 	dialogRe = regexp.MustCompile(`(?m)^\s*❯\s*1\.\s`)
+	// The input box's top border carries the session name: "──── quotes: lead ─".
+	borderRe  = regexp.MustCompile(`^─+(?: (.+?) ─+)?$`)
+	sessionRe = regexp.MustCompile(`^([A-Za-z0-9][\w.-]*)\s*[:·]\s*([\w.-]+)$`)
+	// Under the input box: background shells, monitors, tasks or agents still running.
+	jobsRe = regexp.MustCompile(`\b\d+ (?:shells?|monitors?|background tasks?|agents?)\b|(?m)^\s*◯ `)
+	leadRe = regexp.MustCompile(`^lead(?:er)?$`)
 )
 
 // Screen is one tab. Err is set when its read failed; Text is then empty.
@@ -57,6 +65,7 @@ type seenScreen struct {
 
 type state struct {
 	Alerted     map[string]time.Time // key -> when sent
+	Woken       map[string]time.Time // idle key -> when Crius was woken on its bus
 	Screens     map[string]seenScreen
 	SendFailing bool
 }
@@ -80,6 +89,9 @@ func Run(d Deps) error {
 	if st.Alerted == nil {
 		st.Alerted = map[string]time.Time{}
 	}
+	if st.Woken == nil {
+		st.Woken = map[string]time.Time{}
+	}
 	if st.Screens == nil {
 		st.Screens = map[string]seenScreen{}
 	}
@@ -89,6 +101,16 @@ func Run(d Deps) error {
 		return err
 	}
 	alerts = append(alerts, waiting(&st, d)...)
+
+	// Crius is woken on its bus apart from Telegram, so a failing send does not keep it asleep.
+	for _, a := range alerts {
+		if _, done := st.Woken[a[0]]; strings.HasPrefix(a[0], "idle:") && !done {
+			if err := watchdog.Post(d.Home, d.Now, "IDLE "+a[1]); err != nil {
+				return err
+			}
+			st.Woken[a[0]] = d.Now
+		}
+	}
 
 	active := map[string]bool{}
 	var parts [][][2]string // each part fits one message
@@ -133,6 +155,7 @@ func Run(d Deps) error {
 	// works again), so the same thing can alert again later and a lasting one is never re-sent.
 	for surface, s := range st.Screens {
 		active[screenKey(surface, s.Hash)] = true
+		active[idleKey(surface, s.Hash)] = true
 	}
 	if active[screensFailed] { // no tab was read: a tab already reported unreadable has not recovered
 		for k := range st.Alerted {
@@ -144,6 +167,11 @@ func Run(d Deps) error {
 	for k := range st.Alerted {
 		if !active[k] {
 			delete(st.Alerted, k)
+		}
+	}
+	for k := range st.Woken {
+		if !active[k] {
+			delete(st.Woken, k)
 		}
 	}
 	b, _ := json.Marshal(st)
@@ -230,8 +258,10 @@ func lineTime(s string) (time.Time, error) {
 	return time.ParseInLocation("2006-01-02T15:04", s, time.Local)
 }
 
-// waiting gives [key, text] for each tab whose screen has waited on a question or dialog, unchanged, for 10 min.
-// A screen read that fails is an alert of its own: the whole check, or one tab, which keeps its place meanwhile.
+// waiting gives [key, text] for each tab whose screen has waited on a question or dialog, unchanged, for 10 min, and
+// for each idle tab: unchanged and with no bus line of its own for 15 min. A screen counts as unchanged by what is
+// above its input box: the status line below it holds a clock. A screen read that fails is an alert of its own: the
+// whole check, or one tab, which keeps its place meanwhile.
 func waiting(st *state, d Deps) [][2]string {
 	screens, err := d.Screens()
 	if err != nil {
@@ -245,19 +275,60 @@ func waiting(st *state, d Deps) [][2]string {
 			out = append(out, [2]string{"screen-failed:" + s.Surface, fmt.Sprintf("tab %q (%s) could not be read: %s", s.Title, s.Surface, s.Err)})
 			continue
 		}
-		if s.Title == "crius" || !asks(s.Text) {
+		if s.Title == "crius" {
 			continue
 		}
+		body, foot, boxed := split(s.Text)
+		ask := asks(s.Text)
+		var who string
+		var clear bool
+		var lastLine time.Time
+		if !ask {
+			if !boxed || strings.Contains(s.Text, "esc to interrupt") || jobsRe.MatchString(foot) {
+				continue
+			}
+			var role string
+			if who, role = session(s.Text, s.Title); who == "" {
+				continue
+			}
+			clear = clearReady(body)
+			if !leadRe.MatchString(role) && !clear {
+				continue
+			}
+			var found bool
+			var err error
+			if lastLine, found, err = lastFrom(d.Home, who); err != nil {
+				live[s.Surface] = true
+				out = append(out, [2]string{"screen-failed:" + s.Surface, fmt.Sprintf("tab %q (%s): idle check could not read its bus: %v", s.Title, s.Surface, err)})
+				continue
+			} else if !found {
+				continue // no bus for this project: not a team Crius runs
+			}
+		}
 		live[s.Surface] = true
-		h := hash(s.Text)
+		h := hash(body)
 		seen, ok := st.Screens[s.Surface]
 		if !ok || seen.Hash != h {
 			st.Screens[s.Surface] = seenScreen{h, d.Now}
 			continue
 		}
-		if wait := d.Now.Sub(seen.Since); wait >= screenAfter {
-			out = append(out, [2]string{screenKey(s.Surface, h),
-				fmt.Sprintf("tab %q (%s) waits on a question or dialog for %d min", s.Title, s.Surface, int(wait.Minutes()))})
+		if ask {
+			if wait := d.Now.Sub(seen.Since); wait >= screenAfter {
+				out = append(out, [2]string{screenKey(s.Surface, h),
+					fmt.Sprintf("tab %q (%s) waits on a question or dialog for %d min", s.Title, s.Surface, int(wait.Minutes()))})
+			}
+			continue
+		}
+		from := seen.Since
+		if lastLine.After(from) {
+			from = lastLine
+		}
+		if wait := d.Now.Sub(from); wait >= idleAfter {
+			text := fmt.Sprintf("%s (tab %q, %s) is idle: not working, nothing running, no bus line from it for %d min", who, s.Title, s.Surface, int(wait.Minutes()))
+			if clear {
+				text += "; its screen says CLEAR-READY"
+			}
+			out = append(out, [2]string{idleKey(s.Surface, h), text})
 		}
 	}
 	for k := range st.Screens {
@@ -269,6 +340,69 @@ func waiting(st *state, d Deps) [][2]string {
 }
 
 func screenKey(surface, hash string) string { return "screen:" + surface + ":" + hash }
+func idleKey(surface, hash string) string   { return "idle:" + surface + ":" + hash }
+
+// split cuts a Claude Code screen at its input box: what is above it, what is below it, and whether it has one.
+func split(text string) (body, foot string, boxed bool) {
+	lines := strings.Split(text, "\n")
+	for i := len(lines) - 2; i >= 0; i-- {
+		if borderRe.MatchString(strings.TrimSpace(lines[i])) && strings.HasPrefix(strings.TrimSpace(lines[i+1]), "❯") {
+			return strings.Join(lines[:i], "\n"), strings.Join(lines[i+1:], "\n"), true
+		}
+	}
+	return text, "", false
+}
+
+// session gives the bus name ("quotes:lead") and role of a tab, from the input box border or else the tab title.
+func session(text, title string) (who, role string) {
+	name := title
+	lines := strings.Split(text, "\n")
+	for i := len(lines) - 2; i >= 0; i-- {
+		if m := borderRe.FindStringSubmatch(strings.TrimSpace(lines[i])); m != nil && m[1] != "" &&
+			strings.HasPrefix(strings.TrimSpace(lines[i+1]), "❯") {
+			name = m[1]
+			break
+		}
+	}
+	m := sessionRe.FindStringSubmatch(strings.TrimSpace(name))
+	if m == nil {
+		return "", ""
+	}
+	return m[1] + ":" + m[2], m[2]
+}
+
+// clearReady reports whether the last reply above the input box says CLEAR-READY.
+func clearReady(body string) bool {
+	lines := strings.Split(body, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.HasPrefix(strings.TrimSpace(lines[i]), "⏺") {
+			lines = lines[i:]
+			break
+		}
+	}
+	return strings.Contains(strings.Join(lines, "\n"), "CLEAR-READY")
+}
+
+// lastFrom gives the time of the newest whole line sent by who ("quotes:lead") on its project's bus. found is false
+// when the project has no bus.
+func lastFrom(home, who string) (last time.Time, found bool, err error) {
+	b, err := os.ReadFile(filepath.Join(home, "bus", strings.SplitN(who, ":", 2)[0]+".log"))
+	if os.IsNotExist(err) {
+		return last, false, nil
+	} else if err != nil {
+		return last, false, err
+	}
+	for _, line := range strings.Split(string(b[:bytes.LastIndexByte(b, '\n')+1]), "\n") {
+		m := lineRe.FindStringSubmatch(line)
+		if m == nil || m[3] != who {
+			continue
+		}
+		if at, err := lineTime(m[1]); err == nil && at.After(last) {
+			last = at
+		}
+	}
+	return last, true, nil
+}
 
 // asks reports whether a screen waits on someone: its newest status emoji is ❓, or a dialog offers numbered options.
 func asks(text string) bool {
