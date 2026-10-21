@@ -314,3 +314,53 @@ func TestWeeklyRunCutsLongTextsAndLogsWholeOutput(t *testing.T) {
 		}
 	}
 }
+
+// Live 10-22: the jobs ran binaries built from a work-in-progress worktree, and read it as CRIUS_REPO. The installer
+// installs only from a clean checkout at origin/main (what was pushed), such as ~/Projects/scifi/crius-live.
+func TestInstallOnlyFromPushedMain(t *testing.T) {
+	repo, home := t.TempDir(), t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	script, err := os.ReadFile("../bin/crius-install-launchd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(repo, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "bin", "crius-install-launchd"), script, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git("init", "-q")
+	git("add", ".")
+	git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "one")
+	git("update-ref", "refs/remotes/origin/main", "HEAD")
+	install := func() string {
+		cmd := exec.Command(filepath.Join(repo, "bin", "crius-install-launchd"))
+		cmd.Env = append(os.Environ(), "HOME="+home)
+		out, err := cmd.CombinedOutput()
+		if err == nil {
+			t.Fatalf("installed into a test home: %s", out)
+		}
+		return string(out)
+	}
+	// At origin/main and clean: past the check, stopped by the missing ~/.crius (nothing installed).
+	if out := install(); !strings.Contains(out, "~/.crius is missing") {
+		t.Fatal(out)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "new.go"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out := install(); !strings.Contains(out, "has changes not pushed") {
+		t.Fatal("untracked file:", out)
+	}
+	git("add", "new.go")
+	git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "two")
+	if out := install(); !strings.Contains(out, "is not at origin/main") {
+		t.Fatal("commit not pushed:", out)
+	}
+}

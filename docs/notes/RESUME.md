@@ -86,8 +86,8 @@ Spec: design §9 row 6, §3c tables (acceptance, defect, correction), §7 (M1, M
 
 - Steps 1-5 are closed by Crius (shas in GOAL). Their checklists and evidence: RESUME-HISTORY.md, STATUS.md.
 - Clean builds: a git clone in the scratchpad (a worktree build gets no vcs stamp, Go 1.25.6). GOTOOLCHAIN=local.
-- Install: clean clone of the main commit, then bin/crius-install-launchd (or install-bins.sh); check
-  `go version -m ~/.crius/bin/crius-ingest` shows vcs.modified=false.
+- Install: from the clone ~/Projects/scifi/crius-live (`git pull` after a push), bin/crius-install-launchd; it refuses
+  a checkout that is dirty or not at origin/main. Check `go version -m ~/.crius/bin/crius-ingest` shows vcs.modified=false.
 - Bus TYPE rule (Crius 16:58): CLEAR-READY is its own TYPE, `$(date +%FT%H:%M) CLEAR-READY crius:build -> crius:lead —
   text`, never INFO: INFO does not wake Crius (the 15:14 one left the builder idle ~2 h).
 - Bus lines under ~240 chars (300 hard limit); format `$(date +%FT%H:%M) TYPE crius:build -> crius:lead — text`.
