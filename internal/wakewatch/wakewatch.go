@@ -2,7 +2,7 @@
 // crius:lead line after it on the same bus for 20 min, a lead tab waiting on a question or dialog for 10 min, or a
 // lead tab idle for 15 min (or any tab whose last reply says CLEAR-READY), the Mac short of disk or deep in swap, and
 // a tool the team needs (cmux, gh, az, bun, docker) that fails or does not answer, and a lead still in the same session
-// 20 min after its DONE.
+// 20 min after its DONE. When ~/.crius/wakewatch-projects exists, only the projects it names are watched.
 // It runs as its own launchd job, outside
 // any chat, and wakes Crius by typing one line into Crius's own tab: Crius then acts, and sends the owner a push
 // notification when the owner is needed (owner 10-21 23:5x: no Telegram). Like the watchdog it imports nothing from
@@ -112,14 +112,16 @@ func Run(d Deps) error {
 		st.Screens = map[string]seenScreen{}
 	}
 
-	alerts, err := missed(d.Home, d.Now)
+	watch, alerts := watched(d.Home)
+	m, err := missed(d.Home, d.Now, watch)
 	if err != nil {
 		return err
 	}
-	alerts = append(alerts, waiting(&st, d)...)
+	alerts = append(alerts, m...)
+	alerts = append(alerts, waiting(&st, d, watch)...)
 	alerts = append(alerts, resources(d)...)
 	alerts = append(alerts, tools(d)...)
-	alerts = append(alerts, fresh(d)...)
+	alerts = append(alerts, fresh(d, watch)...)
 
 	active := map[string]bool{}
 	var sendErr error
@@ -190,8 +192,45 @@ func hash(s string) string {
 	return hex.EncodeToString(h[:8])
 }
 
+// projects is the set of projects watched; nil watches every project.
+type projects map[string]bool
+
+func (p projects) has(project string) bool { return p == nil || p[project] }
+
+// watched reads home/wakewatch-projects: the project names (bus file names: quotes, crius), split by spaces, commas or
+// lines, with # starting a comment (owner 10-22: only Quotes and Crius are watched). With no file every project is
+// watched. A file that cannot be read or names no project would silence every team: it is an alert, and every project
+// stays watched.
+func watched(home string) (projects, [][2]string) {
+	path := filepath.Join(home, "wakewatch-projects")
+	b, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, [][2]string{{"projects-failed", "the watched project list could not be read, so every project is watched: " + err.Error()}}
+	}
+	p := projects{}
+	for _, line := range strings.Split(string(b), "\n") {
+		line, _, _ = strings.Cut(line, "#")
+		for _, name := range strings.FieldsFunc(line, func(c rune) bool { return c == ',' || unicode.IsSpace(c) }) {
+			p[name] = true
+		}
+	}
+	if len(p) == 0 {
+		return nil, [][2]string{{"projects-failed", path + " names no project, so every project is watched"}}
+	}
+	return p, nil
+}
+
+// project gives the project of a bus name ("quotes:lead" -> "quotes").
+func project(who string) string {
+	p, _, _ := strings.Cut(who, ":")
+	return p
+}
+
 // missed gives [key, text] for each wake line to Crius, 20 min to 12 h old, with no reply line after it in its file.
-func missed(home string, now time.Time) ([][2]string, error) {
+func missed(home string, now time.Time, watch projects) ([][2]string, error) {
 	logs, err := filepath.Glob(filepath.Join(home, "bus", "*.log"))
 	if err != nil {
 		return nil, err
@@ -199,6 +238,9 @@ func missed(home string, now time.Time) ([][2]string, error) {
 	sort.Strings(logs)
 	var out [][2]string
 	for _, log := range logs {
+		if !watch.has(strings.TrimSuffix(filepath.Base(log), ".log")) {
+			continue
+		}
 		b, err := os.ReadFile(log)
 		if err != nil {
 			return nil, err
@@ -259,7 +301,7 @@ func lineTime(s string) (time.Time, error) {
 // for each idle tab: unchanged and with no bus line of its own for 15 min. A screen counts as unchanged by what is
 // above its input box: the status line below it holds a clock. A screen read that fails is an alert of its own: the
 // whole check, or one tab, which keeps its place meanwhile.
-func waiting(st *state, d Deps) [][2]string {
+func waiting(st *state, d Deps, watch projects) [][2]string {
 	screens, err := d.Screens()
 	if err != nil {
 		return [][2]string{{screensFailed, "the tab check failed to look: " + err.Error()}}
@@ -273,6 +315,12 @@ func waiting(st *state, d Deps) [][2]string {
 			continue
 		}
 		if s.Title == "crius" {
+			continue
+		}
+		// A tab of no team, or of a team not watched, stays quiet. A read failure above still alerts: it has no name to
+		// go by.
+		name, _ := session(s.Text, s.Title)
+		if watch != nil && (name == "" || !watch.has(project(name))) {
 			continue
 		}
 		body, foot, boxed := split(s.Text)
@@ -303,8 +351,7 @@ func waiting(st *state, d Deps) [][2]string {
 			}
 		}
 		live[s.Surface] = true
-		name, _ := session(s.Text, s.Title) // another session in the same tab starts afresh
-		h := hash(name + "\n" + body)
+		h := hash(name + "\n" + body) // another session in the same tab starts afresh
 		seen, ok := st.Screens[s.Surface]
 		if !ok || seen.Hash != h {
 			st.Screens[s.Surface] = seenScreen{Hash: h, Since: d.Now}
@@ -358,7 +405,7 @@ func resources(d Deps) [][2]string {
 // fresh gives an alert for each lead whose newest DONE (in the last 12 h) is 20 min old while no session of that lead
 // started after it and Crius sent it no ORDER after it: no /clear and no relaunch (cmux-team SKILL §5, fresh context
 // per item).
-func fresh(d Deps) [][2]string {
+func fresh(d Deps, watch projects) [][2]string {
 	ss, err := d.Sessions()
 	if err != nil {
 		return [][2]string{{"sessions-failed", "the lead fresh-start check failed to look: " + err.Error()}}
@@ -367,7 +414,7 @@ func fresh(d Deps) [][2]string {
 	var whos []string
 	for _, s := range ss {
 		m := sessionRe.FindStringSubmatch(strings.TrimSpace(s.Name))
-		if m == nil || !leadRe.MatchString(m[2]) {
+		if m == nil || !leadRe.MatchString(m[2]) || !watch.has(m[1]) {
 			continue
 		}
 		who, started := m[1]+":"+m[2], s.Started

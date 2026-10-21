@@ -772,3 +772,79 @@ func TestTheFreshStartCheckSkipsOldAndNonLeadDONEs(t *testing.T) {
 		t.Fatalf("%q", got)
 	}
 }
+
+// projectAlerts runs the watch over two projects, quotes and axi, each with a missed DONE, a tab waiting on a question,
+// an idle lead tab and a lead with no fresh start, and gives the lines sent for each project.
+func projectAlerts(t *testing.T, list string) (quotes, axi []string) {
+	t.Helper()
+	axiDone := strings.Replace(done(t0), "quotes:lead", "axi:lead", 1)
+	home := setup(t, map[string]string{"quotes.log": done(t0), "axi.log": axiDone})
+	if list != "" {
+		testutil.Write(t, filepath.Join(home, "wakewatch-projects"), list)
+	}
+	f := &fake{ses: []Session{{Name: "quotes: lead", ID: "1", Started: t0.Add(-time.Hour)},
+		{Name: "axi: lead", ID: "2", Started: t0.Add(-time.Hour)}}}
+	draw := func(at time.Time) []Screen {
+		return []Screen{{Surface: "surface:1", Title: "quotes: qa", Text: question},
+			{Surface: "surface:2", Title: "quotes", Text: tab("quotes: lead", "Rerun is on.", "", at)},
+			{Surface: "surface:3", Title: "axi: qa", Text: question},
+			{Surface: "surface:4", Title: "axi", Text: tab("axi: lead", "Rerun is on.", "", at)}}
+	}
+	runAt(t, home, f, draw, 0, 11, 16, 21, 30)
+	for _, m := range f.sent {
+		if strings.Contains(m, "axi") {
+			axi = append(axi, m)
+		} else {
+			quotes = append(quotes, m)
+		}
+	}
+	return quotes, axi
+}
+
+// kinds names the alert kinds among lines: a missed wake, a waiting tab, an idle lead, a lead with no fresh start.
+func kinds(lines []string) []string {
+	var out []string
+	for _, k := range []string{".log: ", "waits on a question", "is idle", "no fresh start"} {
+		for _, m := range lines {
+			if strings.Contains(m, k) {
+				out = append(out, k)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// Owner 10-22 02:2x (Crius ORDER 02:16): only the projects in ~/.crius/wakewatch-projects are watched, so wakes about
+// other teams do not fill Crius's context. Disk, swap and tools belong to the Mac and are always watched.
+func TestOnlyTheListedProjectsAreWatched(t *testing.T) {
+	all := []string{".log: ", "waits on a question", "is idle", "no fresh start"}
+	quotes, axi := projectAlerts(t, "")
+	if fmt.Sprint(kinds(quotes)) != fmt.Sprint(all) || fmt.Sprint(kinds(axi)) != fmt.Sprint(all) {
+		t.Fatalf("with no list every project is watched: quotes %q, axi %q", quotes, axi)
+	}
+	for _, list := range []string{"quotes\ncrius\n", "# owner 10-22\nquotes, crius", "crius quotes # Quotes and Crius"} {
+		quotes, axi := projectAlerts(t, list)
+		if len(axi) != 0 {
+			t.Errorf("%q: axi is not listed, yet: %q", list, axi)
+		}
+		if fmt.Sprint(kinds(quotes)) != fmt.Sprint(all) {
+			t.Errorf("%q: quotes is listed, got %q", list, quotes)
+		}
+	}
+}
+
+// A list that names no project would silence every team: it is an alert of its own, and everything stays watched.
+func TestAnEmptyProjectListIsAnAlert(t *testing.T) {
+	quotes, axi := projectAlerts(t, "# nothing yet\n")
+	if len(axi) == 0 {
+		t.Fatal("an empty list watched nothing")
+	}
+	var said bool
+	for _, m := range quotes {
+		said = said || strings.Contains(m, "wakewatch-projects") && strings.Contains(m, "names no project")
+	}
+	if !said {
+		t.Fatal(quotes)
+	}
+}
