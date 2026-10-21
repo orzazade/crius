@@ -123,6 +123,18 @@ Added by the owner 2026-10-21. Written from general knowledge, not checked again
   query behind each number. Idea: goal reports as a live page instead of text twice a day.
 - **Motion** (beta, Team/Enterprise, `/motion`): prompt to a short animation built as code, MP4 export.
 
+### Claude Duet (Anthropic, research preview 2026-10-21)
+
+- A separate app (iOS, Android, claude.ai) where Claude acts first: a morning brief across connected apps, then
+  quiet until something needs you; runs tasks in its own cloud VM and browser while your devices are off; shows
+  the exact action and waits for OK before it sends, pays, signs or deletes. Uses your Claude memory, skills and
+  connectors. Opus 5.5, Pro and Max in the US only, waitlist; Team and Enterprise not included; checks every few
+  hours and counts against the plan's limits.
+- Fit: it does the personal side of Falcon (morning brief, inbox, "what needs me"), not Crius's job of running
+  coding sessions. Not for Appxite: a personal Max account must not read work mail or Teams.
+- Ideas to take: **one brief plus messages only when needed** instead of Falcon's card queue (the cards pile-up
+  item); **check every few hours** rather than nonstop, to save quota; **show the exact action before approval**.
+
 ## Trial plan (after 2026-11-01)
 
 1. Herdr first: closest to cmux. Test: can our waiters and prompt watching move onto its state + socket API?
