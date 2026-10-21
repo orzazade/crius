@@ -293,7 +293,7 @@ func RecordRevoke(db *sql.DB, in RevokeInput) (string, error) {
 var correctable = []struct {
 	table, idOf, itemOf string // idOf: a row's id as a correction names it; itemOf: the item it belongs to
 	target              *regexp.Regexp
-	fields        map[string]func(ctx context.Context, conn *sql.Conn, target, v string) error
+	fields              map[string]func(ctx context.Context, conn *sql.Conn, target, v string) error
 }{
 	{"item", "item.id", "item.id", itemIDRe, map[string]func(context.Context, *sql.Conn, string, string) error{
 		"project": func(_ context.Context, _ *sql.Conn, _, v string) error {
@@ -302,7 +302,7 @@ var correctable = []struct {
 			}
 			return nil
 		},
-		"kind":  func(_ context.Context, _ *sql.Conn, _, v string) error { return oneOf("kind", v, Kinds) },
+		"kind": func(_ context.Context, _ *sql.Conn, _, v string) error { return oneOf("kind", v, Kinds) },
 		"title": func(_ context.Context, _ *sql.Conn, _, v string) error {
 			if t, err := oneLine("title", v); err != nil || t != v || utf8.RuneCountInString(v) > MaxLen {
 				return refused("title must be one line of 1-%d chars, with no space around it", MaxLen)
