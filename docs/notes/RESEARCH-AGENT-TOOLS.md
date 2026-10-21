@@ -64,6 +64,23 @@ Best parts to take:
 - **Approvals and audit log** as data, not only bus lines.
 - **Goals tied to each agent**, close to our GOAL blocks.
 
+### LiteLLM (github.com/BerriAI/litellm)
+
+Open-source gateway (proxy) in front of 100+ model APIs (Anthropic, OpenAI, Gemini, local models via Ollama or
+vLLM), all behind one OpenAI-style API. Python. Added by the owner 2026-10-21.
+
+Best parts to take:
+- **Virtual keys with budgets and spend tracking** per key, team or agent: a hard money stop per builder.
+- **Fallbacks and load balancing:** when one model or account hits its limit, calls move to the next one.
+- **One endpoint for local models**, for the local LLM trial: agents point at the gateway, not at each model.
+- Can sit in front of Claude Code (`ANTHROPIC_BASE_URL` to the gateway). Does not apply to the Max plan
+  login, only to API-key use.
+
+Caution: on 2026-03-24 the PyPI package was hijacked (versions 1.82.7 and 1.82.8 stole credentials; last clean
+1.82.6), through a compromised scanner in LiteLLM's CI. If we try it: pin an exact version checked against
+GitHub tags, prefer the official container image, run it in a container with no access to `~/.secrets`, and
+never give it production keys.
+
 ### Smaller ones found on the way
 
 - **Agent Herder** (MCP server): watches and inspects agent sessions across Claude Code, Codex, OpenCode.
@@ -82,6 +99,8 @@ Best parts to take:
    lines for us?
 3. Ghostex: script control (send, read) and handoff Claude to Codex in the middle of a task.
 4. Paperclip: only the budget and approval ideas; we probably do not run it.
+5. LiteLLM: with the local LLM trial. One gateway for local and API models, a budget per key, fallback
+   when a model is out. Pinned version, in a container, test keys only.
 
 For each trial write down: what it replaces in our setup, what it cannot do (clean-checkout re-runs,
 the bus rules), and the cost to move. Keep Crius's own checks either way.
@@ -95,6 +114,8 @@ the bus rules), and the cost to move. Keep Crius's own checks either way.
 - Ghostex: https://ghostex.dev/, https://github.com/maddada/Ghostex/releases
 - Paperclip: https://abduzeedo.com/paperclip-open-source-ai-agent-orchestration-builders,
   https://betterstack.com/community/guides/ai/paperclip-multi-agent/
+- LiteLLM hijack: https://simonwillison.net/2026/Mar/24/malicious-litellm/,
+  https://www.comet.com/site/blog/litellm-supply-chain-attack/
 - Agent Herder: https://glama.ai/mcp/servers/megamen32/agent-herder
 - Herd: https://pkg.go.dev/github.com/herd-os/herd
 - Claude Dashboards and Motion: https://claude.com/resources/articles/dashboards-and-motion
