@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeCmux puts a cmux on PATH that records each call, one per line, and gives Crius's tab in a config file.
@@ -157,5 +158,34 @@ func TestSendFinishesItsOwnStuckLine(t *testing.T) {
 		if !strings.HasPrefix(string(b), want) {
 			t.Errorf("%q: got\n%s", draft, b)
 		}
+	}
+}
+
+// Brief P7 item 4: each tool is asked once; a failure says which tool and why, a hang says it did not answer.
+func TestToolsSaysWhichToolFailsOrHangs(t *testing.T) {
+	_, dir := fakeTab(t, "")
+	for name, body := range map[string]string{
+		"gh": "echo 'You are not logged into any GitHub hosts' >&2; exit 1",
+		"az": "echo 0f7b", "docker": "echo 29.1.0",
+		"bun": "sleep 5",
+	} {
+		os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"+body+"\n"), 0o755)
+	}
+	real := toolWait
+	t.Cleanup(func() { toolWait = real })
+	toolWait = 300 * time.Millisecond
+	start := time.Now()
+	res := tools()
+	if len(res) != 5 || res["cmux"] != nil || res["az"] != nil || res["docker"] != nil {
+		t.Fatalf("%v", res)
+	}
+	if res["gh"] == nil || !strings.Contains(res["gh"].Error(), "not logged into any GitHub hosts") {
+		t.Errorf("gh: %v", res["gh"])
+	}
+	if res["bun"] == nil || !strings.Contains(res["bun"].Error(), "no answer") {
+		t.Errorf("bun: %v", res["bun"])
+	}
+	if d := time.Since(start); d > 3*time.Second {
+		t.Errorf("a hung tool held the check for %v", d)
 	}
 }

@@ -25,11 +25,13 @@ type fake struct {
 	freeGB  float64 // free disk; 0 means a healthy 100
 	swapGB  float64
 	resErr  error
+	tools   map[string]error
 }
 
 func (f *fake) deps(home string, now time.Time) Deps {
 	return Deps{Home: home, Now: now,
 		Screens: func() ([]Screen, error) { return f.screens, f.scrErr },
+		Tools:   func() map[string]error { return f.tools },
 		Resources: func() (float64, float64, error) {
 			if f.freeGB == 0 {
 				return 100, f.swapGB, f.resErr
@@ -637,5 +639,32 @@ func TestADiskOrSwapReadFailureIsAnAlert(t *testing.T) {
 	}
 	if len(f.sent) != 1 || !strings.Contains(f.sent[0], "sysctl: exit status 1") {
 		t.Fatal(f.sent)
+	}
+}
+
+// Brief P7 item 4: a tool the team needs (cmux, gh, az, bun, docker) that fails or does not answer wakes Crius, one
+// alert per tool, on the same 20 min rhythm; a tool that answers again stops it.
+func TestAToolThatDoesNotAnswerWakesCrius(t *testing.T) {
+	home := setup(t, nil)
+	f := &fake{tools: map[string]error{"gh": errors.New("gh auth status: exit status 1: token invalid"), "bun": nil,
+		"docker": errors.New("no answer in 10s")}}
+	for _, m := range []int{0, 5, 21} {
+		if err := Run(f.deps(home, t0.Add(time.Duration(m)*time.Minute))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(f.sent) != 4 {
+		t.Fatalf("want gh and docker at 0 and 21 min: %q", f.sent)
+	}
+	all := strings.Join(f.sent, "\n")
+	for _, want := range []string{"gh", "token invalid", "docker", "no answer in 10s"} {
+		if !strings.Contains(all, want) {
+			t.Errorf("no %q in %q", want, f.sent)
+		}
+	}
+	f.sent, f.tools = nil, map[string]error{"gh": nil, "bun": nil, "docker": nil}
+	Run(f.deps(home, t0.Add(45*time.Minute)))
+	if len(f.sent) != 0 {
+		t.Fatalf("tools answer again: %q", f.sent)
 	}
 }

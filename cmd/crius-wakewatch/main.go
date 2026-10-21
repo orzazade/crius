@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,6 +11,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -26,7 +28,9 @@ var (
 )
 
 func main() {
-	err := wakewatch.Run(wakewatch.Deps{Home: store.Home(), Now: time.Now(), Screens: screens, Send: send, Resources: resources})
+	os.Setenv("PATH", toolPath())
+	err := wakewatch.Run(wakewatch.Deps{Home: store.Home(), Now: time.Now(), Screens: screens, Send: send,
+		Resources: resources, Tools: tools})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, time.Now().Format(time.RFC3339), "crius-wakewatch:", err)
 		os.Exit(1)
@@ -162,4 +166,50 @@ func swapUsed(s string) (float64, error) {
 		n /= 1024
 	}
 	return n, nil
+}
+
+// toolChecks asks each tool the team needs for an answer that needs its login or daemon where it has one.
+var toolChecks = map[string][]string{
+	"cmux":   {"cmux", "ping"},
+	"gh":     {"gh", "auth", "status", "--active"},
+	"az":     {"az", "account", "show", "--query", "id", "-o", "tsv"},
+	"bun":    {"bun", "--version"},
+	"docker": {"docker", "version", "--format", "{{.Server.Version}}"},
+}
+
+var toolWait = 10 * time.Second
+
+// tools runs the checks at once and gives each tool's failure, or nil.
+func tools() map[string]error {
+	res := map[string]error{}
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for name, c := range toolChecks {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), toolWait)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, c[0], c[1:]...)
+			cmd.WaitDelay = time.Second // a killed tool's children may hold its output open
+			out, err := cmd.CombinedOutput()
+			if ctx.Err() != nil {
+				err = fmt.Errorf("%s: no answer in %v", strings.Join(c, " "), toolWait)
+			} else if err != nil {
+				lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+				err = fmt.Errorf("%s: %v: %s", strings.Join(c, " "), err, strings.TrimSpace(lines[len(lines)-1]))
+			}
+			mu.Lock()
+			res[name] = err
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	return res
+}
+
+// toolPath adds the folders the team's tools live in to launchd's short PATH (/usr/bin:/bin and cmux's folder).
+func toolPath() string {
+	home, _ := os.UserHomeDir()
+	return os.Getenv("PATH") + ":/opt/homebrew/bin:/usr/local/bin:" + filepath.Join(home, ".bun", "bin")
 }

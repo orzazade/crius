@@ -1,6 +1,7 @@
 // Package wakewatch tells the owner when Crius missed a wake: a lead's DONE, NEED, CLEAR-READY or ASK to Crius with no
 // crius:lead line after it on the same bus for 20 min, a lead tab waiting on a question or dialog for 10 min, or a
-// lead tab idle for 15 min (or any tab whose last reply says CLEAR-READY), and the Mac short of disk or deep in swap.
+// lead tab idle for 15 min (or any tab whose last reply says CLEAR-READY), the Mac short of disk or deep in swap, and
+// a tool the team needs (cmux, gh, az, bun, docker) that fails or does not answer.
 // It runs as its own launchd job, outside
 // any chat, and wakes Crius by typing one line into Crius's own tab: Crius then acts, and sends the owner a push
 // notification when the owner is needed (owner 10-21 23:5x: no Telegram). Like the watchdog it imports nothing from
@@ -63,6 +64,7 @@ type Deps struct {
 	Screens   func() ([]Screen, error)
 	Send      func(text string) error
 	Resources func() (freeDiskGB, swapUsedGB float64, err error)
+	Tools     func() map[string]error // each tool the team needs, and why it failed or did not answer (nil: fine)
 }
 
 type seenScreen struct {
@@ -107,6 +109,7 @@ func Run(d Deps) error {
 	}
 	alerts = append(alerts, waiting(&st, d)...)
 	alerts = append(alerts, resources(d)...)
+	alerts = append(alerts, tools(d)...)
 
 	active := map[string]bool{}
 	var sendErr error
@@ -333,6 +336,23 @@ func resources(d Deps) [][2]string {
 	}
 	if swap > maxSwapGB {
 		out = append(out, [2]string{"swap", fmt.Sprintf("swap: %.1f GB in use, above %d GB", swap, maxSwapGB)})
+	}
+	return out
+}
+
+// tools gives one alert per tool that failed or did not answer.
+func tools(d Deps) [][2]string {
+	res := d.Tools()
+	names := make([]string, 0, len(res))
+	for name, err := range res {
+		if err != nil {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	var out [][2]string
+	for _, name := range names {
+		out = append(out, [2]string{"tool:" + name, fmt.Sprintf("tool check: %s does not answer: %v", name, res[name])})
 	}
 	return out
 }
