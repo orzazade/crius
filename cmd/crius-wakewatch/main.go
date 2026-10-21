@@ -22,7 +22,6 @@ import (
 )
 
 var (
-	tabRe  = regexp.MustCompile(`^(workspace:\d+)\s+(surface:\d+)$`)
 	swapRe = regexp.MustCompile(`used = ([\d.]+)([MG])`)
 	cmux   = runCmux
 )
@@ -113,28 +112,28 @@ func screens() ([]wakewatch.Screen, error) {
 	return out, nil
 }
 
-// send types text into Crius's own tab, then Enter. The tab is in ~/.crius/crius-tab: "workspace:N surface:N" on one
-// line (# starts a comment). Without both, nothing is typed: a cmux send with no target goes to the caller's tab.
+// send types text into Crius's own tab, then Enter. The tab is the one terminal in cmux titled "crius" (a file naming
+// it went stale when Crius handed over to a new tab). None or several is loud and types nothing: a cmux send with no
+// target goes to the caller's tab, and the alert is sent again on the next run.
 func send(text string) error {
-	path := filepath.Join(store.Home(), "crius-tab")
-	b, err := os.ReadFile(path)
+	tabs, err := terminals()
 	if err != nil {
-		return fmt.Errorf("Crius's tab is not known: %v (crius-tab holds \"workspace:N surface:N\")", err)
-	}
-	var ref []string
-	for _, line := range strings.Split(string(b), "\n") {
-		if line = strings.TrimSpace(line); line != "" && !strings.HasPrefix(line, "#") {
-			ref = append(ref, line)
-		}
-	}
-	m := tabRe.FindStringSubmatch(strings.Join(ref, "\n"))
-	if m == nil {
-		return fmt.Errorf("%s: want one line \"workspace:N surface:N\" (crius-tab), got %q", path, strings.Join(ref, " | "))
-	}
-	if err := claudeInFront(m[1], m[2]); err != nil {
 		return err
 	}
-	draft, err := inputBox(m[1], m[2])
+	var found []terminal
+	for _, tab := range tabs {
+		if tab.Title == wakewatch.CriusTitle {
+			found = append(found, tab)
+		}
+	}
+	if len(found) != 1 {
+		return fmt.Errorf("cmux tree --all has %d terminals titled %q, want one (Crius's own tab): nothing typed", len(found), wakewatch.CriusTitle)
+	}
+	if err := claudeInFront(found[0]); err != nil {
+		return err
+	}
+	ws, surface := found[0].Workspace, found[0].Surface
+	draft, err := inputBox(ws, surface)
 	if err != nil {
 		return err
 	}
@@ -149,10 +148,10 @@ func send(text string) error {
 		if err != nil || squash(draft) != squash(string(last)) {
 			return fmt.Errorf("Crius's prompt holds a draft that is not wakewatch's: nothing typed")
 		}
-		if out, err := cmux("send-key", "--workspace", m[1], "--surface", m[2], "enter"); err != nil {
+		if out, err := cmux("send-key", "--workspace", ws, "--surface", surface, "enter"); err != nil {
 			return fmt.Errorf("cmux send-key: %v: %s", err, strings.TrimSpace(string(out)))
 		}
-		if draft, err := waitBox(m[1], m[2], ""); err != nil || draft != "" {
+		if draft, err := waitBox(ws, surface, ""); err != nil || draft != "" {
 			return fmt.Errorf("Crius's prompt still holds %q after Enter on wakewatch's earlier line: %v", draft, err)
 		}
 	}
@@ -162,21 +161,21 @@ func send(text string) error {
 	if err := os.WriteFile(pending, []byte(text), 0o600); err != nil {
 		return err
 	}
-	if out, err := cmux("send", "--workspace", m[1], "--surface", m[2], "--", text); err != nil {
+	if out, err := cmux("send", "--workspace", ws, "--surface", surface, "--", text); err != nil {
 		return fmt.Errorf("cmux send: %v: %s", err, strings.TrimSpace(string(out)))
 	}
 	// Someone may have typed at the same moment: Enter would send the mix.
-	if draft, err = waitBox(m[1], m[2], text); err != nil {
+	if draft, err = waitBox(ws, surface, text); err != nil {
 		return err
 	}
 	if squash(draft) != squash(text) {
 		return fmt.Errorf("Crius's prompt holds %q after typing, not the alert alone: Enter not pressed", draft)
 	}
-	if out, err := cmux("send-key", "--workspace", m[1], "--surface", m[2], "enter"); err != nil {
+	if out, err := cmux("send-key", "--workspace", ws, "--surface", surface, "enter"); err != nil {
 		return fmt.Errorf("cmux send-key: %v: %s", err, strings.TrimSpace(string(out)))
 	}
 	// The line stays pending until the box is empty, so the next send can finish it.
-	if draft, err = waitBox(m[1], m[2], ""); err != nil || draft != "" {
+	if draft, err = waitBox(ws, surface, ""); err != nil || draft != "" {
 		return fmt.Errorf("Crius's prompt still holds %q after Enter: %v", draft, err)
 	}
 	return os.Remove(pending)
@@ -215,21 +214,12 @@ func inputBox(workspace, surface string) (string, error) {
 // squash drops all white space, so a line the input box wrapped equals the line as typed.
 func squash(s string) string { return strings.Join(strings.Fields(s), "") }
 
-// claudeInFront checks that Claude is the foreground process of the surface's terminal. If Claude has exited, the tab
-// is a shell, and Enter would run the alert text there.
-func claudeInFront(workspace, surface string) error {
-	tabs, err := terminals()
-	if err != nil {
-		return err
-	}
-	tty := ""
-	for _, tab := range tabs {
-		if tab.Workspace == workspace && tab.Surface == surface {
-			tty = tab.TTY
-		}
-	}
+// claudeInFront checks that Claude is the foreground process of the tab's terminal. If Claude has exited, the tab is a
+// shell, and Enter would run the alert text there.
+func claudeInFront(tab terminal) error {
+	surface, tty := tab.Surface, tab.TTY
 	if tty == "" {
-		return fmt.Errorf("Crius's tab %s %s has no terminal in cmux tree --all: nothing typed", workspace, surface)
+		return fmt.Errorf("Crius's tab %s %s has no tty in cmux tree --all: nothing typed", tab.Workspace, surface)
 	}
 	out, err := exec.Command("ps", "-t", tty, "-o", "pid=,tpgid=,comm=").Output()
 	if err != nil {

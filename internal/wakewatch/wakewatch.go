@@ -41,6 +41,7 @@ const (
 	maxLine     = 500
 
 	Prefix        = "WAKEWATCH: "
+	CriusTitle    = "crius" // the cmux title of Crius's own tab: waiting() skips it, and alerts are typed into it
 	screensFailed = "screens-failed"
 )
 
@@ -322,7 +323,7 @@ func waiting(st *state, d Deps, watch projects) [][2]string {
 			out = append(out, [2]string{"screen-failed:" + s.Surface, fmt.Sprintf("tab %q (%s) could not be read: %s", s.Title, s.Surface, s.Err)})
 			continue
 		}
-		if s.Title == "crius" {
+		if s.Title == CriusTitle {
 			continue
 		}
 		// A tab of a team not watched stays quiet. A dialog hides the named input box: then the title's first word names
