@@ -351,7 +351,8 @@ func resources(d Deps) [][2]string {
 }
 
 // fresh gives an alert for each lead whose newest DONE (in the last 12 h) is 20 min old while no session of that lead
-// started after it: no /clear and no relaunch (cmux-team SKILL §5, fresh context per item).
+// started after it and Crius sent it no ORDER after it: no /clear and no relaunch (cmux-team SKILL §5, fresh context
+// per item).
 func fresh(d Deps) [][2]string {
 	ss, err := d.Sessions()
 	if err != nil {
@@ -384,6 +385,15 @@ func fresh(d Deps) [][2]string {
 			continue
 		}
 		if !found || at.IsZero() || d.Now.Sub(at) < freshAfter || d.Now.Sub(at) > window || newest[who].After(at) {
+			continue
+		}
+		// Crius sent the lead back to work after the DONE (Crius 10-22 01:07): a decision, so no alert. An ACK is not.
+		order, _, err := lastLine(d.Home, who, "crius:lead", who, "ORDER")
+		if err != nil {
+			out = append(out, [2]string{"fresh-failed:" + who, fmt.Sprintf("the lead fresh-start check failed to look at %s's bus: %v", who, err)})
+			continue
+		}
+		if order.After(at) {
 			continue
 		}
 		when := at.Format("2006-01-02T15:04")
@@ -484,7 +494,13 @@ func clearReady(body string) bool {
 // lastFrom gives the time of the newest whole line sent by who ("quotes:lead") on its project's bus, of type typ or
 // any type for "". found is false when the project has no bus.
 func lastFrom(home, who, typ string) (last time.Time, found bool, err error) {
-	b, err := os.ReadFile(filepath.Join(home, "bus", strings.SplitN(who, ":", 2)[0]+".log"))
+	return lastLine(home, who, who, "", typ)
+}
+
+// lastLine gives the time of the newest line from "from" (to "to", when given) of type typ in the bus log of the
+// project of "in". found is false when that log does not exist yet.
+func lastLine(home, in, from, to, typ string) (last time.Time, found bool, err error) {
+	b, err := os.ReadFile(filepath.Join(home, "bus", strings.SplitN(in, ":", 2)[0]+".log"))
 	if os.IsNotExist(err) {
 		return last, false, nil
 	} else if err != nil {
@@ -492,7 +508,7 @@ func lastFrom(home, who, typ string) (last time.Time, found bool, err error) {
 	}
 	for _, line := range strings.Split(string(b[:bytes.LastIndexByte(b, '\n')+1]), "\n") {
 		m := lineRe.FindStringSubmatch(line)
-		if m == nil || m[3] != who || typ != "" && m[2] != typ {
+		if m == nil || m[3] != from || typ != "" && m[2] != typ || to != "" && strings.TrimSpace(m[4]) != to {
 			continue
 		}
 		if at, err := lineTime(m[1]); err == nil && at.After(last) {

@@ -719,6 +719,35 @@ func TestALeadDONEWithNoFreshStartWakesCrius(t *testing.T) {
 	}
 }
 
+// Crius 10-22 01:07: Crius's ORDER to the lead after its DONE closes the alert (a send-back is a decision); an ACK
+// does not (above), nor an ORDER before the DONE or to another lead.
+func TestCriusOrderAfterTheDONEClosesTheFreshStartAlert(t *testing.T) {
+	old := []Session{{Name: "quotes: lead", ID: "1", Started: t0.Add(-2 * time.Hour)}}
+	order := func(at time.Time, to string) string {
+		return stamp(at) + " ORDER crius:lead -> " + to + " — fix review P2 on the same item\n"
+	}
+	for name, c := range map[string]struct {
+		bus  string
+		want int
+	}{
+		"order after the DONE":    {done(t0) + order(t0.Add(2*time.Minute), "quotes:lead"), 0},
+		"order before the DONE":   {order(t0.Add(-time.Minute), "quotes:lead") + done(t0), 2},
+		"order to another lead":   {done(t0) + order(t0.Add(2*time.Minute), "quotes:qa-api"), 2},
+		"order from someone else": {done(t0) + stamp(t0.Add(2*time.Minute)) + " ORDER quotes:qa-api -> quotes:lead — x\n", 2},
+	} {
+		home := setup(t, map[string]string{"quotes.log": c.bus})
+		f := &fake{ses: old}
+		for _, m := range []int{10, 21, 30, 41} {
+			if err := Run(f.deps(home, t0.Add(time.Duration(m)*time.Minute))); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if got := freshSent(f); len(got) != c.want {
+			t.Errorf("%s: want %d, got %q", name, c.want, got)
+		}
+	}
+}
+
 // A DONE older than the 12 h window, or from a role that is not a lead, does not count; a failed session read is loud.
 func TestTheFreshStartCheckSkipsOldAndNonLeadDONEs(t *testing.T) {
 	old := Session{Name: "quotes: lead", ID: "1", Started: t0.Add(-20 * time.Hour)}
