@@ -153,9 +153,16 @@ func ParseLine(line string, st *State, strict bool) *Line {
 		Refs: RefsOf(text), At: instant, DatedByGuess: guessed, Late: late}
 }
 
-// Recipients splits To, as written ("crius:lead, quotes:b1" or "crius:lead quotes:all"), into names.
+// Recipients splits To, as written ("crius:lead, quotes:b1", "crius:lead quotes:all" or "quotes:p1 (cc quotes:p2)"), into
+// names; a cc'd name is one too.
 func (l *Line) Recipients() []string {
-	return strings.FieldsFunc(l.To, func(r rune) bool { return r == ',' || r == ' ' })
+	to := l.To
+	if main, cc, ok := strings.Cut(to, " (cc "); ok {
+		if cc, ok = strings.CutSuffix(cc, ")"); ok && strings.TrimSpace(cc) != "" {
+			to = main + "," + cc
+		}
+	}
+	return strings.FieldsFunc(to, func(r rune) bool { return r == ',' || r == ' ' })
 }
 
 // minutes is the minute of the day of a checked "HH:MM", 0 for "".

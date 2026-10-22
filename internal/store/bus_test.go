@@ -358,3 +358,33 @@ func TestSeveralRecipients(t *testing.T) {
 		}
 	}
 }
+
+// Live quotes.log 10-22: 11 lines copy others in, "-> quotes:p1 (cc quotes:p2, quotes:p6)", and the digest counted
+// them malformed. bus-post and the digest share this parser, so both take the form; a cc'd name is a recipient.
+func TestCcRecipients(t *testing.T) {
+	for line, want := range map[string][]string{
+		"2026-10-22T16:25 ANSWER quotes:lead -> quotes:p1 (cc quotes:p2, quotes:p6) — your NEED": {"quotes:p1", "quotes:p2", "quotes:p6"},
+		"2026-10-22T16:26 ORDER quotes:lead -> quotes:p1, quotes:p3 (cc crius:lead) — go":        {"quotes:p1", "quotes:p3", "crius:lead"},
+	} {
+		p := ParseLine(line, nil, true)
+		if p == nil {
+			t.Errorf("not parsed: %q", line)
+			continue
+		}
+		if got := p.Recipients(); !slices.Equal(got, want) {
+			t.Errorf("%q: recipients %q, want %q", line, got, want)
+		}
+	}
+	if _, err := FormatLine("ANSWER", "quotes", "lead", "x", "quotes:p1 (cc quotes:p2)", time.Now()); err != nil {
+		t.Errorf("bus-post refuses a cc line: %v", err)
+	}
+	for _, line := range []string{
+		"2026-10-22T16:27 INFO crius:lead -> quotes:p1 (cc password: hunter2) — x",
+		"2026-10-22T16:28 INFO crius:lead -> quotes:p1 (cc quotes:p2 — x",
+		"2026-10-22T16:29 INFO crius:lead -> quotes:p1 (cc ) — x",
+	} {
+		if ParseLine(line, nil, true) != nil {
+			t.Errorf("parsed %q", line)
+		}
+	}
+}
