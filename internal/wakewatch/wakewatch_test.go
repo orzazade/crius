@@ -400,17 +400,18 @@ func runAt(t *testing.T, home string, f *fake, draw func(at time.Time) []Screen,
 }
 
 // Case 10-21 23:30: quotes:lead finished a turn, posted nothing and sat idle; the owner found it, Crius did not.
-func TestAnIdleLeadAlertsAfter15MinAndWakesCrius(t *testing.T) {
+// Owner (ORDER 10-22 13:13): any idle tab of a team alerts after 10 min.
+func TestAnIdleLeadAlertsAfter10MinAndWakesCrius(t *testing.T) {
 	home := setup(t, map[string]string{"quotes.log": busFrom("quotes:lead", t0)})
 	f := &fake{}
 	draw := func(at time.Time) []Screen {
 		return []Screen{screen("quotes", tab("quotes: lead", "The f177 rerun is on :7090.", "  ⏵⏵ bypass permissions on\n", at))}
 	}
-	runAt(t, home, f, draw, 0, 5, 10, 14)
+	runAt(t, home, f, draw, 0, 5, 9)
 	if len(f.sent) != 0 || len(alertLines(t, home)) != 0 {
 		t.Fatal(f.sent, alertLines(t, home))
 	}
-	runAt(t, home, f, draw, 16, 21, 26)
+	runAt(t, home, f, draw, 11)
 	if len(f.sent) != 1 || !strings.Contains(f.sent[0], "quotes:lead") || !strings.Contains(f.sent[0], "idle") {
 		t.Fatal(f.sent)
 	}
@@ -446,11 +447,11 @@ func TestOnlyALineFromTheLeadItselfResetsIdle(t *testing.T) {
 	draw := func(at time.Time) []Screen {
 		return []Screen{screen("quotes", tab("quotes: lead", "waiting", "", at))}
 	}
-	runAt(t, home, f, draw, 0, 16, 24)
+	runAt(t, home, f, draw, 0, 16, 19)
 	if len(f.sent) != 0 {
 		t.Fatal(f.sent)
 	}
-	runAt(t, home, f, draw, 26)
+	runAt(t, home, f, draw, 21)
 	if len(f.sent) != 1 {
 		t.Fatal(f.sent)
 	}
@@ -472,8 +473,8 @@ func TestOnlyTabsWithABusAreCheckedForIdle(t *testing.T) {
 
 // Crius 10-22 12:09 ORDER: Quotes builders sat idle after a turn with nothing running (10:33: 6 of 8 since 06:36-09:56;
 // 12:09: P3 since its READY at 12:00), and only Crius's own round found them. Any tab of a watched team counts, after
-// 20 min. Builders post as "P3", not "quotes:p3", so their screen alone tells how long they have sat.
-func TestAnIdleBuilderAlertsAfter20Min(t *testing.T) {
+// 10 min (owner, ORDER 10-22 13:13). Builders post as "P3", not "quotes:p3", so their screen alone tells how long they have sat.
+func TestAnIdleBuilderAlertsAfter10Min(t *testing.T) {
 	for _, c := range []struct{ title, bus, reply string }{
 		{"quotes · p6", stamp(t0.Add(-4*time.Hour)) + " READY P6 -> quotes:lead — F-226 on stream/l1\n", "Waiting for another stream on main.\n\n⏳"},
 		{"quotes · p3", stamp(t0) + " READY P3 -> quotes:lead — F-141 on stream/d\n", "READY posted; QA2 checks it next.\n\n⏳"},
@@ -482,17 +483,17 @@ func TestAnIdleBuilderAlertsAfter20Min(t *testing.T) {
 		home := setup(t, map[string]string{"quotes.log": c.bus})
 		f := &fake{}
 		draw := func(at time.Time) []Screen { return []Screen{screen(c.title, tab(c.title, c.reply, "", at))} }
-		runAt(t, home, f, draw, 0, 10, 19)
+		runAt(t, home, f, draw, 0, 5, 9)
 		if len(f.sent) != 0 {
-			t.Fatal(c.title, "alerted before 20 min:", f.sent)
+			t.Fatal(c.title, "alerted before 10 min:", f.sent)
 		}
-		runAt(t, home, f, draw, 21, 30)
+		runAt(t, home, f, draw, 11, 20)
 		who := strings.Replace(c.title, " · ", ":", 1)
 		if len(f.sent) != 1 || !strings.Contains(f.sent[0], who+" (tab") || !strings.Contains(f.sent[0], "is idle") {
 			t.Fatal(c.title, f.sent)
 		}
 		// Review 897b5c1 P3: no line is sent as quotes:p6, so only the screen's age is known.
-		if !strings.Contains(f.sent[0], "screen unchanged for 21 min, no bus line from "+who) {
+		if !strings.Contains(f.sent[0], "screen unchanged for 11 min, no bus line from "+who) {
 			t.Fatal(c.title, f.sent)
 		}
 	}
@@ -548,13 +549,14 @@ func TestCLEARREADYOnAScreenAlertsForAnyRole(t *testing.T) {
 	}
 }
 
+// Every role waits 10 min now (owner, ORDER 10-22 13:13), so CLEAR-READY only adds its note to the alert.
 func TestCLEARREADYAboveTheLastReplyDoesNotCount(t *testing.T) {
 	home := setup(t, map[string]string{"crius.log": busFrom("crius:build", t0)})
 	f := &fake{}
 	runAt(t, home, f, func(at time.Time) []Screen {
 		return []Screen{screen("crius · build", "  at ~200K write CLEAR-READY and stop\n"+tab("crius · build", "Waiting for GO.\n\n⏳", "", at))}
 	}, 0, 16)
-	if len(f.sent) != 0 {
+	if len(f.sent) != 1 || strings.Contains(f.sent[0], "CLEAR-READY") {
 		t.Fatal(f.sent)
 	}
 }
@@ -593,7 +595,7 @@ func TestCLEARREADYWithNoReplyMarkerDoesNotCount(t *testing.T) {
 	runAt(t, home, f, func(at time.Time) []Screen {
 		return []Screen{screen("crius · build", strings.Replace(tab("crius · build", "x", "", at), "⏺ x", "  at ~200K write CLEAR-READY and stop", 1))}
 	}, 0, 16)
-	if len(f.sent) != 0 {
+	if len(f.sent) != 1 || strings.Contains(f.sent[0], "CLEAR-READY") {
 		t.Fatal(f.sent)
 	}
 }
@@ -606,11 +608,11 @@ func TestANewSessionInTheSameTabStartsAfresh(t *testing.T) {
 		return []Screen{screen("x", tab("quotes: lead", "done", "", at))}
 	}, 0, 16)
 	draw := func(at time.Time) []Screen { return []Screen{screen("x", tab("cortex · lead", "done", "", at))} }
-	runAt(t, home, f, draw, 17, 30)
+	runAt(t, home, f, draw, 17, 26)
 	if len(f.sent) != 1 {
 		t.Fatal(f.sent)
 	}
-	runAt(t, home, f, draw, 33)
+	runAt(t, home, f, draw, 28)
 	if len(f.sent) != 2 || !strings.Contains(f.sent[1], "cortex:lead") {
 		t.Fatal(f.sent)
 	}

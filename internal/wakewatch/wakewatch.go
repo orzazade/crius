@@ -1,6 +1,6 @@
 // Package wakewatch tells the owner when Crius missed a wake: a lead's DONE, NEED, CLEAR-READY or ASK to Crius with no
-// crius:lead line after it on the same bus for 20 min, a lead tab waiting on a question or dialog for 10 min, or a
-// lead tab idle for 15 min (or any tab whose last reply says CLEAR-READY) and any other tab of a team for 20 min, the
+// crius:lead line after it on the same bus for 20 min, a lead tab waiting on a question or dialog for 10 min, or any
+// tab of a team idle for 10 min (noting when its last reply says CLEAR-READY), the
 // Mac short of disk or deep in swap, and a tool the team needs (cmux, gh, az, bun, docker) that fails or does not answer, and a lead still in the same session
 // 20 min after its DONE. When ~/.crius/wakewatch-projects exists, only the projects it names are watched.
 // It runs as its own launchd job, outside
@@ -34,8 +34,7 @@ import (
 const (
 	wakeAfter   = 20 * time.Minute
 	screenAfter = 10 * time.Minute
-	idleAfter   = 15 * time.Minute // a lead, or a tab that says CLEAR-READY
-	workerAfter = 20 * time.Minute // any other tab of a team: builders, QA
+	idleAfter   = 10 * time.Minute // any tab of a team, lead or not (owner, ORDER 10-22 13:13)
 	window      = 12 * time.Hour   // older lines are history: a first run must not wake Crius for them
 	resend      = 20 * time.Minute // an item still open wakes Crius again, never more often
 	freshAfter  = 20 * time.Minute // a lead's DONE with no new session of that lead this long wakes Crius
@@ -324,9 +323,8 @@ func lineTime(s string) (time.Time, error) {
 }
 
 // waiting gives [key, text] for each tab whose screen has waited on a question or dialog, unchanged, for 10 min, and
-// for each idle tab: unchanged and with no bus line of its own for 15 min (a lead, or any tab whose last reply says
-// CLEAR-READY) or 20 min (any other role: builders, QA, the rig). A screen counts as unchanged by what is
-// above its input box: the status line below it holds a clock. A screen read that fails is an alert of its own: the
+// for each idle tab: unchanged and with no bus line of its own for 10 min, any role. A screen counts as unchanged by
+// what is above its input box: the status line below it holds a clock. A screen read that fails is an alert of its own: the
 // whole check, or one tab, which keeps its place meanwhile.
 func waiting(st *state, d Deps, watch projects) [][2]string {
 	screens, err := d.Screens()
@@ -366,18 +364,14 @@ func waiting(st *state, d Deps, watch projects) [][2]string {
 		var who string
 		var clear bool
 		var lastLine time.Time
-		after := idleAfter
 		if !ask {
 			if !boxed || strings.Contains(s.Text, "esc to interrupt") || jobsRe.MatchString(foot) {
 				continue
 			}
-			var role string
-			if who, role = session(s.Text, s.Title); who == "" {
+			if who, _ = session(s.Text, s.Title); who == "" {
 				continue
 			}
-			if clear = clearReady(body); !leadRe.MatchString(role) && !clear {
-				after = workerAfter
-			}
+			clear = clearReady(body)
 			var found bool
 			var err error
 			if lastLine, found, err = lastFrom(d.Home, who, ""); err != nil {
@@ -406,7 +400,7 @@ func waiting(st *state, d Deps, watch projects) [][2]string {
 		if lastLine.After(from) {
 			from = lastLine
 		}
-		seen.Idle = d.Now.Sub(from) >= after
+		seen.Idle = d.Now.Sub(from) >= idleAfter
 		st.Screens[s.Surface] = seen
 		if wait := d.Now.Sub(from); seen.Idle {
 			text := fmt.Sprintf("%s (tab %q, %s) is idle: not working, nothing running, no bus line from it for %d min", who, s.Title, s.Surface, int(wait.Minutes()))
