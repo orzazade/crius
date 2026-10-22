@@ -630,6 +630,38 @@ func TestFlushPostsWhatTheOutboxSetsAside(t *testing.T) {
 	}
 }
 
+// OF8 (round 4): when one post to the bus failed, flushOutbox returned and the other set-aside messages were named
+// nowhere, though they had already left the outbox. Each one not posted is named in the error, which goes to the log.
+func TestFlushNamesEverySetAsideMessageTheBusMissed(t *testing.T) {
+	fakeTab(t)
+	home := os.Getenv("CRIUS_HOME")
+	os.MkdirAll(filepath.Join(home, "outbox"), 0o700)
+	os.MkdirAll(filepath.Join(home, "bus", "crius.log"), 0o700) // a folder: every post fails
+	for i, text := range []string{"merge it", "ship it"} {
+		old, _ := json.Marshal(outbox.Message{To: "quotes · lead", Text: text, Created: time.Now().Add(-2 * outbox.MaxAge)})
+		os.WriteFile(filepath.Join(home, "outbox", fmt.Sprintf("0000000000000000000%d-old.json", i+1)), old, 0o600)
+	}
+	err := flushOutbox(home, time.Now())
+	if err == nil || !strings.Contains(err.Error(), "merge it") || !strings.Contains(err.Error(), "ship it") {
+		t.Errorf("flushOutbox: %v, want both set-aside messages named", err)
+	}
+}
+
+// OF8 review: the post to the bus is redacted, but a message it missed went to the log as the outbox named it: the
+// text it was typed onto, unredacted.
+func TestFlushRedactsWhatTheBusMissed(t *testing.T) {
+	fakeTab(t)
+	home := os.Getenv("CRIUS_HOME")
+	os.MkdirAll(filepath.Join(home, "outbox"), 0o700)
+	os.MkdirAll(filepath.Join(home, "bus", "crius.log"), 0o700)
+	onto, _ := json.Marshal(outbox.Message{To: "crius", Text: "merge it", Created: time.Now(), Onto: "password=hunter22x"})
+	os.WriteFile(filepath.Join(home, "outbox", "00000000000000000001-onto.json"), onto, 0o600)
+	err := flushOutbox(home, time.Now())
+	if err == nil || !strings.Contains(err.Error(), "merge it") || strings.Contains(err.Error(), "hunter22x") {
+		t.Errorf("flushOutbox: %v, want the message named and the password gone", err)
+	}
+}
+
 // OF7: a status file left by a process that ended, whose pid now belongs to a later process, is not a live session:
 // Claude's own start time in the file differs from the live process's.
 func TestSessionsSkipsAStatusFileWhosePidWasReused(t *testing.T) {

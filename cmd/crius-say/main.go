@@ -49,12 +49,13 @@ func say(home, to, text string) error {
 	return outbox.Send(home, to, text)
 }
 
-// exitCode tells the caller whether to send again: 3 means the message is stored or in the box, 1 that it is not.
+// exitCode tells the caller whether to send again: 3 means the message is stored, in the box, or may have gone, 1 that
+// it is none of these.
 func exitCode(err error) int {
 	switch {
 	case err == nil:
 		return 0
-	case errors.Is(err, outbox.ErrHeld), errors.Is(err, outbox.ErrOnto):
+	case errors.Is(err, outbox.ErrHeld), errors.Is(err, outbox.ErrOnto), errors.Is(err, outbox.ErrMaybeSent):
 		return 3
 	}
 	return 1

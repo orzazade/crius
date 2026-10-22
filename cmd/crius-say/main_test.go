@@ -87,6 +87,7 @@ func TestExitCodeTellsHeldFromLost(t *testing.T) {
 		{nil, 0},
 		{fmt.Errorf("x: %w", outbox.ErrHeld), 3},
 		{fmt.Errorf("x: %w: set aside", outbox.ErrOnto), 3},
+		{fmt.Errorf("x: %w, so it is not typed again", outbox.ErrMaybeSent), 3},
 		{errors.New("lock: timed out"), 1},
 	} {
 		if got := exitCode(c.err); got != c.want {

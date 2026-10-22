@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/orzazade/crius/internal/outbox"
+	"github.com/orzazade/crius/internal/redact"
 	"github.com/orzazade/crius/internal/sessionstate"
 	"github.com/orzazade/crius/internal/store"
 	"github.com/orzazade/crius/internal/wakewatch"
@@ -50,14 +51,21 @@ func main() {
 
 // flushOutbox types what earlier runs held. Each message or file the outbox set aside goes to Crius's bus, as nobody
 // else hears of it (a crius-say sender has gone); what it still holds is only logged, as every run would post it again.
+// One the bus does not take is named in the error, so the log still has it: it has already left the outbox. The error is
+// redacted as the bus line is: it can quote the text a message was typed onto.
 func flushOutbox(home string, now time.Time) error {
 	aside, held := outbox.Flush(home)
+	errs := []error{held}
 	for _, e := range aside {
 		if err := watchdog.Post(home, now, "outbox set aside a message: "+e.Error()); err != nil {
-			return errors.Join(held, err)
+			errs = append(errs, fmt.Errorf("not posted to the bus (%v): outbox set aside a message: %w", err, e))
 		}
 	}
-	return held
+	if err := errors.Join(errs...); err != nil {
+		text, _ := redact.Redact(err.Error())
+		return errors.New(text)
+	}
+	return nil
 }
 
 // workspaces lists every workspace of every cmux window with its name and colour, which the JSON tree does not show.

@@ -29,6 +29,9 @@ import (
 // Cmux runs cmux. Tests replace it.
 var Cmux = runCmux
 
+// readFile reads a stored message. Tests replace it.
+var readFile = os.ReadFile
+
 var (
 	// MaxAge is how long a message waits for its tab. An older one is set aside in outbox/dropped, never typed: its
 	// tab is gone or its news is old, and a later tab with the same title must not get it.
@@ -41,11 +44,13 @@ var (
 
 // ErrHeld marks a message still stored, to be typed once its tab's box is empty: sending it again would type it twice.
 // ErrOnto marks a message typed onto text already in the box (cmux's draft check let it through) and set aside: it
-// must not be typed onto the same text again. errKilled marks a cmux call stopped at CmuxTimeout: what it did is unknown.
+// must not be typed onto the same text again. ErrMaybeSent marks a message set aside untyped after an Enter that may have
+// gone: sending it again could type it twice. errKilled marks a cmux call stopped at CmuxTimeout: what it did is unknown.
 var (
-	ErrHeld   = errors.New("held")
-	ErrOnto   = errors.New("typed onto other text in the box")
-	errKilled = errors.New("killed")
+	ErrHeld      = errors.New("held")
+	ErrOnto      = errors.New("typed onto other text in the box")
+	ErrMaybeSent = errors.New("its Enter was pressed before, so it may have gone")
+	errKilled    = errors.New("killed")
 )
 
 // runCmux gives cmux's stdout, or on failure its stdout and stderr: a warning on stderr must not reach a JSON parse.
@@ -85,19 +90,53 @@ type stored struct {
 }
 
 // Send stores text for the tab titled to (once: the same text already waiting is not stored again), then types what
-// is stored for that tab, oldest first. An error wrapping ErrHeld means text is still stored, one wrapping ErrOnto that
-// it was set aside; any other, that this text was not stored. Damaged and old files are left to Flush: they are not
-// this send's, and an error about them would tell the caller this text failed.
+// is stored for that tab, oldest first. What it says comes from what became of this text's file, whatever flush met on
+// the way (OF8): an error wrapping ErrHeld means the text is still stored, one wrapping ErrOnto or ErrMaybeSent that it
+// was set aside after it may have gone; any other, that it was not stored or was set aside untyped, so it may be sent
+// again. Damaged and old files of other messages are left to Flush: an error about them would tell the caller this text
+// failed.
 func Send(home, to, text string) error {
 	unlock, err := lock(home)
 	if err != nil {
 		return err
 	}
 	defer unlock()
-	if err := add(home, to, text); err != nil {
+	m, err := add(home, to, text)
+	if err != nil {
 		return err
 	}
-	return flush(home, to)
+	all, err := list(home)
+	// passed says this text passed MaxAge before it was listed for typing: no other message's error is about it.
+	passed := err == nil
+	for _, s := range all {
+		passed = passed && s.path != m.path
+	}
+	if err == nil {
+		err = typeOut(to, all)
+	}
+	name := filepath.Base(m.path)
+	// aside says this text was set aside untyped; after an earlier Enter on it, it may have gone all the same.
+	aside := func(why string) error {
+		if m.Entered {
+			return fmt.Errorf("%s %s: %w, so it is not typed again", name, why, ErrMaybeSent)
+		}
+		return fmt.Errorf("%s %s: not typed", name, why)
+	}
+	if _, serr := os.Lstat(m.path + ".unread"); serr == nil {
+		return aside("could not be read when it was due, so it is set aside as damaged")
+	}
+	if _, serr := os.Lstat(m.path); errors.Is(serr, os.ErrNotExist) {
+		return err // typed and removed, or set aside by flush, which says so
+	}
+	switch {
+	case passed:
+		return aside(fmt.Sprintf("waited past %v before it was due, so it is set aside", MaxAge))
+	case errors.Is(err, ErrHeld), errors.Is(err, ErrOnto):
+		return err
+	case old(m.Message):
+		return aside(fmt.Sprintf("waited past %v before it was due, so it is set aside", MaxAge))
+	}
+	return fmt.Errorf("%v: %w: %s is stored and typed by a later run", err, ErrHeld, name)
 }
 
 // Flush types every stored message, tab by tab. It gives each message or file it set aside, which nobody else hears
@@ -162,9 +201,17 @@ func lock(home string) (func(), error) {
 	}
 }
 
-// sweep sets aside what must not be typed: a file that does not parse goes to outbox/damaged, and a message older
+// sweep sets aside what must not be typed: a file that does not parse, or that a send could not read, goes to
+// outbox/damaged, and a message older
 // than MaxAge to outbox/dropped. Each is named in aside, so nothing is lost without a word, and the rest still go.
 func sweep(home string) (aside []error, err error) {
+	unread, err := filepath.Glob(filepath.Join(home, "outbox", "*.json.unread"))
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range unread {
+		aside = append(aside, setAside(p, "damaged", fmt.Errorf("%s could not be read when a send looked, so the same text may have been stored and typed since: not typed", filepath.Base(p))))
+	}
 	paths, err := filepath.Glob(filepath.Join(home, "outbox", "*.json"))
 	if err != nil {
 		return nil, err
@@ -205,8 +252,11 @@ func setAside(path, dir string, why error) error {
 	return fmt.Errorf("%w: set aside in %s", why, to)
 }
 
-// list gives every stored message, oldest first: a file's name starts with its creation time. A file that does not
-// parse, a message past MaxAge or one typed onto other text is left out for sweep to set aside.
+// list gives every stored message, oldest first: a file's name starts with its creation time. A message past MaxAge
+// or one typed onto other text is left out for sweep to set aside. A file that cannot be read or does not parse is
+// renamed .unread for sweep, as a send did not check its text: once readable it must not be typed beside a later copy.
+// One bad file must not stop every send (OF8). One that can be neither read nor renamed stops them, named: a send
+// cannot tell whether it holds the same text.
 func list(home string) ([]stored, error) {
 	paths, err := filepath.Glob(filepath.Join(home, "outbox", "*.json"))
 	if err != nil {
@@ -215,32 +265,37 @@ func list(home string) ([]stored, error) {
 	sort.Strings(paths)
 	var out []stored
 	for _, p := range paths {
-		b, err := os.ReadFile(p)
-		if err != nil {
-			return nil, err
-		}
+		b, err := readFile(p)
 		s := stored{path: p}
-		if json.Unmarshal(b, &s.Message) == nil && !old(s.Message) && s.Onto == "" {
+		if err == nil {
+			err = json.Unmarshal(b, &s.Message)
+		}
+		if err != nil {
+			if rerr := os.Rename(p, p+".unread"); rerr != nil {
+				return nil, fmt.Errorf("%s can be neither read (%v) nor moved aside (%v), so a send cannot tell whether it holds the same text: nothing sent", filepath.Base(p), err, rerr)
+			}
+		} else if !old(s.Message) && s.Onto == "" {
 			out = append(out, s)
 		}
 	}
 	return out, nil
 }
 
-func add(home, to, text string) error {
+// add stores text for to, or finds it already stored, and gives the message with the file that holds it.
+func add(home, to, text string) (stored, error) {
 	all, err := list(home)
 	if err != nil {
-		return err
+		return stored{}, err
 	}
 	for _, m := range all {
 		if m.To == to && m.Text == text {
-			return nil
+			return m, nil
 		}
 	}
 	now := time.Now()
 	sum := sha256.Sum256([]byte(to + "\x00" + text))
-	return write(filepath.Join(home, "outbox", fmt.Sprintf("%020d-%x.json", now.UnixNano(), sum[:4])),
-		Message{To: to, Text: text, Created: now})
+	s := stored{filepath.Join(home, "outbox", fmt.Sprintf("%020d-%x.json", now.UnixNano(), sum[:4])), Message{To: to, Text: text, Created: now}}
+	return s, write(s.path, s.Message)
 }
 
 // write replaces a message's file whole and on disk, so neither a reader nor a power cut leaves half of one.
@@ -273,6 +328,11 @@ func flush(home, to string) error {
 	if err != nil {
 		return err
 	}
+	return typeOut(to, all)
+}
+
+// typeOut types the listed messages for the tab titled to, as flush does.
+func typeOut(to string, all []stored) error {
 	for i, m := range all {
 		if m.To != to {
 			continue

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -227,8 +228,191 @@ func TestADamagedFileIsSetAsideAndTheRestStillGo(t *testing.T) {
 	if err != nil || len(aside) == 0 || !strings.Contains(fmt.Sprint(aside), "damaged") || !strings.Contains(fmt.Sprint(aside), "stale") {
 		t.Errorf("Flush: set aside %v, err %v, want the damaged file and the old message named", aside, err)
 	}
-	if kept, _ := filepath.Glob(filepath.Join(home, "outbox", "damaged", "*.json")); len(kept) != 1 {
+	if kept, _ := filepath.Glob(filepath.Join(home, "outbox", "damaged", "*.json*")); len(kept) != 1 {
 		t.Errorf("damaged/ holds %q, want the bad file", kept)
+	}
+}
+
+// OF8: one stored file that cannot be read (here a folder named like one) failed every Send, so no message reached any
+// tab. It is not this send's: Send types its own text, and Flush sets the file aside in damaged/.
+func TestAnUnreadableFileFailsNoSend(t *testing.T) {
+	tab := &box{title: "crius"}
+	fake(t, tab)
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, "outbox", "00000000000000000001-00000000.json"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := Send(home, "crius", "WAKEWATCH: one"); err != nil {
+		t.Errorf("Send: %v, want nil: the message went", err)
+	}
+	if len(tab.typed) != 1 || tab.typed[0] != "WAKEWATCH: one" {
+		t.Errorf("typed %q, want the new message", tab.typed)
+	}
+	aside, err := Flush(home)
+	if err != nil || !strings.Contains(fmt.Sprint(aside), "damaged") {
+		t.Errorf("Flush: set aside %v, err %v, want the unreadable file named damaged", aside, err)
+	}
+}
+
+// OF8 review: a file Send could not read was not checked for the same text, so Send typed it anew; once readable
+// again, Flush typed the old copy as well. A file Send cannot read is put out of the outbox for good.
+func TestAFileThatWasUnreadableIsNotTypedWhenItCanBeReadAgain(t *testing.T) {
+	tab := &box{title: "crius"}
+	fake(t, tab)
+	home := t.TempDir()
+	p := filepath.Join(home, "outbox", "00000000000000000001-00000000.json")
+	os.MkdirAll(filepath.Dir(p), 0o700)
+	if err := write(p, Message{To: "crius", Text: "WAKEWATCH: one", Created: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	os.Chmod(p, 0)
+	if err := Send(home, "crius", "WAKEWATCH: one"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	os.Chmod(p+".unread", 0o600)
+	os.Chmod(p, 0o600)
+	aside, err := Flush(home)
+	if len(tab.typed) != 1 {
+		t.Errorf("typed %q, want the text once", tab.typed)
+	}
+	if err != nil || !strings.Contains(fmt.Sprint(aside), "damaged") {
+		t.Errorf("Flush: set aside %v, err %v, want the once unreadable file named damaged", aside, err)
+	}
+}
+
+// OF8 round 3: a send's own message whose file could not be read when it was due was set aside untyped, and the send
+// still said it went. It says it did not.
+func TestASendWhoseOwnFileCannotBeReadSaysItDidNotGo(t *testing.T) {
+	tab := &box{title: "crius"}
+	fake(t, tab)
+	home := t.TempDir()
+	// The outbox starts empty, so the one file read is flush's read of the new message.
+	readFile = func(string) ([]byte, error) { return nil, errors.New("input/output error") }
+	t.Cleanup(func() { readFile = os.ReadFile })
+	err := Send(home, "crius", "WAKEWATCH: one")
+	if err == nil || !strings.Contains(err.Error(), "not typed") || len(tab.typed) != 0 {
+		t.Errorf("Send: %v, typed %q, want an error saying it was not typed, and nothing typed", err, tab.typed)
+	}
+}
+
+// OF8 round 4: what Send says comes from what became of its own message, whatever happened to the others.
+func TestASendSaysWhatBecameOfItsOwnMessage(t *testing.T) {
+	const own, other = "00000000000000000001-00000000.json", "00000000000000000002-00000000.json"
+	// failOn fails the nth read of the file named name, and calls then (if set) on the read before.
+	failOn := func(name string, nth int, then func()) {
+		reads := 0
+		readFile = func(p string) ([]byte, error) {
+			if filepath.Base(p) != name {
+				return os.ReadFile(p)
+			}
+			if reads++; reads == nth {
+				if then != nil {
+					then()
+					return os.ReadFile(p)
+				}
+				return nil, errors.New("input/output error")
+			}
+			return os.ReadFile(p)
+		}
+	}
+	for _, c := range []struct {
+		name    string
+		tab     *box
+		stored  map[string]Message // filled in before the send
+		setup   func(t *testing.T, home string)
+		want    error // nil: an error that is none of the outbox's marks, so the caller may send again
+		wantMsg string
+	}{
+		{name: "its own file, entered before, could not be read when due", tab: &box{title: "crius"},
+			stored: map[string]Message{own: {To: "crius", Text: "WAKEWATCH: one", Entered: true}},
+			setup:  func(t *testing.T, home string) { failOn(own, 2, nil) }, want: ErrMaybeSent},
+		{name: "its own new file could not be read when due, and an older one is held", tab: &box{title: "crius", draft: "half a thought"},
+			stored: map[string]Message{other: {To: "crius", Text: "WAKEWATCH: older"}},
+			setup: func(t *testing.T, home string) {
+				readFile = func(p string) ([]byte, error) {
+					if filepath.Base(p) != other {
+						return nil, errors.New("input/output error")
+					}
+					return os.ReadFile(p)
+				}
+			}, wantMsg: "not typed"},
+		{name: "another file can be neither read nor moved once its own is stored", tab: &box{title: "crius"},
+			stored: map[string]Message{other: {To: "quotes", Text: "QUOTES: hi"}},
+			setup: func(t *testing.T, home string) {
+				p := filepath.Join(home, "outbox", other)
+				if err := syscall.Chflags(p, 0x2); err != nil { // UF_IMMUTABLE: it cannot be renamed
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { syscall.Chflags(p, 0) })
+				failOn(other, 2, nil)
+			}, want: ErrHeld},
+		{name: "its own file passed MaxAge between the store and the typing", tab: &box{title: "crius"},
+			stored: map[string]Message{own: {To: "crius", Text: "WAKEWATCH: one"}},
+			setup:  func(t *testing.T, home string) { failOn(own, 2, func() { MaxAge = 0 }) }, wantMsg: "not typed"},
+		{name: "its own file, entered before, passed MaxAge between the store and the typing", tab: &box{title: "crius"},
+			stored: map[string]Message{own: {To: "crius", Text: "WAKEWATCH: one", Entered: true}},
+			setup:  func(t *testing.T, home string) { failOn(own, 2, func() { MaxAge = 0 }) }, want: ErrMaybeSent},
+		// OF8 round 5: a later message held by a draft said its own expired one was still stored.
+		{name: "its own file passed MaxAge between the store and the typing, and a later one is held", tab: &box{title: "crius", draft: "half a thought"},
+			stored: map[string]Message{own: {To: "crius", Text: "WAKEWATCH: one"}, other: {To: "crius", Text: "WAKEWATCH: later"}},
+			setup: func(t *testing.T, home string) {
+				failOn(own, 2, func() {
+					m := Message{To: "crius", Text: "WAKEWATCH: one", Created: time.Now().Add(-2 * MaxAge)}
+					if err := write(filepath.Join(home, "outbox", own), m); err != nil {
+						t.Fatal(err)
+					}
+				})
+			}, wantMsg: "not typed"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			fake(t, c.tab)
+			home := t.TempDir()
+			age := MaxAge
+			t.Cleanup(func() { readFile, MaxAge = os.ReadFile, age })
+			if err := os.MkdirAll(filepath.Join(home, "outbox"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			for name, m := range c.stored {
+				m.Created = time.Now()
+				if err := write(filepath.Join(home, "outbox", name), m); err != nil {
+					t.Fatal(err)
+				}
+			}
+			c.setup(t, home)
+			err := Send(home, "crius", "WAKEWATCH: one")
+			marked := errors.Is(err, ErrHeld) || errors.Is(err, ErrOnto) || errors.Is(err, ErrMaybeSent)
+			switch {
+			case c.want != nil && !errors.Is(err, c.want):
+				t.Errorf("Send: %v, want %v", err, c.want)
+			case c.want == nil && (err == nil || marked || !strings.Contains(err.Error(), c.wantMsg)):
+				t.Errorf("Send: %v, want an unmarked error saying %q", err, c.wantMsg)
+			}
+			if len(c.tab.typed) != 0 {
+				t.Errorf("typed %q, want nothing", c.tab.typed)
+			}
+		})
+	}
+}
+
+// OF8 re-review: a file that can be neither read nor renamed stayed in the outbox unchecked, so a send typed the same
+// text anew and the old copy could be typed later too. The send stops and names the file.
+func TestAFileThatCanBeNeitherReadNorMovedStopsTheSend(t *testing.T) {
+	tab := &box{title: "crius"}
+	fake(t, tab)
+	home := t.TempDir()
+	p := filepath.Join(home, "outbox", "00000000000000000001-00000000.json")
+	os.MkdirAll(filepath.Dir(p), 0o700)
+	if err := write(p, Message{To: "crius", Text: "WAKEWATCH: one", Created: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	os.Chmod(p, 0)
+	if err := syscall.Chflags(p, 0x2); err != nil { // UF_IMMUTABLE: no rename
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { syscall.Chflags(p, 0) })
+	err := Send(home, "crius", "WAKEWATCH: one")
+	if err == nil || !strings.Contains(err.Error(), filepath.Base(p)) || len(tab.typed) != 0 {
+		t.Errorf("Send: %v, typed %q, want an error naming the file and nothing typed", err, tab.typed)
 	}
 }
 
