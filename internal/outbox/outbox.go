@@ -446,6 +446,20 @@ func deliver(to, text string, entered bool, mark func(entered bool) error) error
 	return nil
 }
 
+// Typed asks cmux whether the input box of the tab with this ref (surface:N) holds typed text, not grey text.
+func Typed(surface string) (bool, error) {
+	tabs, err := Terminals()
+	if err != nil {
+		return false, err
+	}
+	for _, tab := range tabs {
+		if tab.Surface == surface {
+			return typedText(tab)
+		}
+	}
+	return false, fmt.Errorf("cmux tree lists no terminal tab %s", surface)
+}
+
 // typedText asks cmux whether a tab's input box holds typed text, typing nothing. Unlike read-screen it keeps the
 // faint style, so a box with only grey text in it is empty. It asks by the tab's id and checks the answer names that
 // tab: cmux answers an id it does not know with another tab's state.

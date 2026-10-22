@@ -40,11 +40,13 @@ func main() {
 	}
 	flag.Parse()
 	d := launch.Deps{
-		Lock:  filepath.Join(store.Home(), "launch.lock"),
-		Cmux:  runCmux,
-		Place: func(project string) (string, string, string, error) { return ingest.Place(store.Home(), project) },
-		Wait:  time.Second,
-		Front: outbox.Front,
+		Lock:    filepath.Join(store.Home(), "launch.lock"),
+		Cmux:    runCmux,
+		Place:   func(project string) (string, string, string, error) { return ingest.Place(store.Home(), project) },
+		Persona: func(project string) (string, error) { return ingest.Persona(store.Home(), project) },
+		Wait:    time.Second,
+		Front:   outbox.Front,
+		Typed:   outbox.Typed,
 	}
 	if *again {
 		if flag.NArg() != 2 || *account != "" || *parent != "" || *item != "" {

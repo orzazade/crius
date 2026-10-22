@@ -54,11 +54,13 @@ var (
 const reads = 120
 
 type Deps struct {
-	Lock  string // file locked while finding or making the workspace, so two launches make one
-	Cmux  func(args ...string) (string, error)
-	Place func(project string) (cwd, account, persona string, err error) // from projects.toml
-	Wait  time.Duration                                                  // between two reads of the new tab
-	Front func(tty string) (string, error)                               // the command in front on a tty, as ps shows it
+	Lock    string // file locked while finding or making the workspace, so two launches make one
+	Cmux    func(args ...string) (string, error)
+	Place   func(project string) (cwd, account, persona string, err error) // from projects.toml
+	Persona func(project string) (string, error)                           // from projects.toml; -resume needs no launch folder
+	Wait    time.Duration                                                  // between two reads of the new tab
+	Front   func(tty string) (string, error)                               // the command in front on a tty, as ps shows it
+	Typed   func(surface string) (bool, error)                             // whether a tab's box holds typed text, not grey text (cmux input state)
 }
 
 // Spawn is one session to open: Parent (the leader's session id) and Item ("quotes#41") go in the provenance tag when
@@ -186,7 +188,7 @@ func Resume(project, role, id, cwd string, d Deps) (ws, surface string, err erro
 			}
 		}
 	} else {
-		_, _, persona, err := d.Place(project)
+		persona, err := d.Persona(project)
 		if err != nil {
 			return "", "", err
 		}
@@ -345,7 +347,9 @@ func start(d Deps, ws, surface, model, tag, prompt string) error {
 		if !boxed {
 			continue
 		}
-		if draft != "" {
+		if held, err := typed(d, surface, draft); err != nil {
+			return err
+		} else if held {
 			return fmt.Errorf("the new tab's input box already holds text: %q", draft)
 		}
 		// Live 10-22: the banner names the model at start ("Sonnet 5.5 · Claude Max"); the status bar does only after the
@@ -396,12 +400,23 @@ func start(d Deps, ws, surface, model, tag, prompt string) error {
 	// never started. Only that line counts, and only with no work showing: the prompt may name an API error, and a
 	// line that says it is retrying may still recover (review 10-22).
 	var failed string
+	var stateErr error
 	err := until(d, ws, surface, `work ("esc to interrupt") or the sent tag above an empty box`, func(screen string) bool {
+		stateErr = nil // only the last read counts: an old failure is no reason a later wait timed out
 		if strings.Contains(screen, "esc to interrupt") {
 			return true
 		}
 		draft, boxed := wakewatch.Prompt(screen)
-		if !boxed || draft != "" || !strings.Contains(screen, "[crius account=") {
+		if !boxed || !strings.Contains(screen, "[crius account=") {
+			return false
+		}
+		// A read taken just before Claude takes the prompt still draws it in the box, while the input state read after
+		// it says empty: that screen proves nothing and may hide the API error drawn next (review 10-22).
+		if squash(draft) == squash(tag+prompt) {
+			return false
+		}
+		held, err := typed(d, surface, draft)
+		if stateErr = err; err != nil || held { // one failed read is no answer: the next read decides (review 10-22)
 			return false
 		}
 		for _, line := range strings.Split(screen, "\n") {
@@ -411,10 +426,25 @@ func start(d Deps, ws, surface, model, tag, prompt string) error {
 		}
 		return true
 	})
-	if err == nil && failed != "" {
+	if err != nil { // after Enter: a rerun would send the prompt twice (review 10-22)
+		if stateErr != nil {
+			err = fmt.Errorf("%v; its input state cannot be read: %v", err, stateErr)
+		}
+		return fmt.Errorf("the prompt was sent to %s %s, but %v; look at the tab, do not rerun", ws, surface, err)
+	}
+	if failed != "" {
 		return fmt.Errorf("the first turn failed: %s", strings.TrimSpace(failed))
 	}
-	return err
+	return nil
+}
+
+// typed tells typed text in the box from grey text (Claude's placeholder 'Try "…"'), which read-screen gives as plain
+// text (qa3 10-22): only cmux's input state keeps the faint style.
+func typed(d Deps, surface, draft string) (bool, error) {
+	if draft == "" {
+		return false, nil
+	}
+	return d.Typed(surface)
 }
 
 // until reads the tab until ok holds, or fails naming what never showed.

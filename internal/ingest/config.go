@@ -17,7 +17,7 @@ import (
 var defaultRoots = map[string]string{"personal": "~/.claude-personal/projects", "work": "~/.claude-work/projects"}
 
 type project struct {
-	slug, persona                                string
+	slug, persona, launch                        string
 	accounts, cwd, repos, teamLogs, artifactDirs []string
 	leads                                        map[string]Lead // role -> status file holding the GOAL block (no Name)
 }
@@ -54,6 +54,7 @@ func loadConfig(home string) (*config, error) {
 			Persona      string
 			Accounts     []string
 			CWD          []string `toml:"cwd"`
+			Launch       string
 			Repos        []string
 			TeamLogs     []string `toml:"team_logs"`
 			ArtifactDirs []string `toml:"artifact_dirs"`
@@ -103,7 +104,13 @@ func loadConfig(home string) (*config, error) {
 			}
 			leads[role] = Lead{StatusFile: object, Repo: expand(repo)}
 		}
-		c.projects = append(c.projects, project{slug: slug, persona: p.Persona, accounts: p.Accounts, cwd: expandAll(p.CWD), repos: expandAll(p.Repos),
+		cwd := expandAll(p.CWD)
+		for i, d := range cwd {
+			if d != "" { // "c/" and "./d" match as the folder they name (review round 10)
+				cwd[i] = filepath.Clean(d)
+			}
+		}
+		c.projects = append(c.projects, project{slug: slug, persona: p.Persona, launch: expand(p.Launch), accounts: p.Accounts, cwd: cwd, repos: expandAll(p.Repos),
 			teamLogs: expandAll(p.TeamLogs), artifactDirs: expandAll(p.ArtifactDirs), leads: leads})
 	}
 	sort.Slice(c.projects, func(i, j int) bool { return c.projects[i].slug < c.projects[j].slug })
@@ -226,8 +233,10 @@ func (c *config) projectForCwd(cwd string) string {
 	return best
 }
 
-// Place gives where a project's sessions start, on which account and for which persona: its first cwd, first account
-// and persona in projects.toml (crius-spawn).
+// Place gives where a project's sessions start, on which account and for which persona: its launch folder (its one
+// cwd when it has no launch), first account and persona in projects.toml (crius-spawn). cwd is the list of folders
+// whose sessions belong to the project, so the first of several is no place to start (qa3 10-22: quotes opened in
+// svc_cpq). The launch folder must be filed under the project, or its sessions would land under another.
 func Place(home, slug string) (cwd, account, persona string, err error) {
 	c, err := loadConfig(home)
 	if err != nil {
@@ -240,7 +249,39 @@ func Place(home, slug string) (cwd, account, persona string, err error) {
 		if len(p.cwd) == 0 || len(p.accounts) == 0 {
 			return "", "", "", fmt.Errorf("projects.toml: project %s needs cwd and accounts to be launched", slug)
 		}
-		return p.cwd[0], p.accounts[0], p.persona, nil
+		launch := p.launch
+		if launch == "" && len(p.cwd) > 1 {
+			return "", "", "", fmt.Errorf("projects.toml: project %s has %d cwd folders; set launch to the folder its sessions start in", slug, len(p.cwd))
+		} else if launch == "" {
+			launch = p.cwd[0]
+		}
+		// The folder as cmux and claude see it: absolute, with no "..", and there before a tab opens (review round 10).
+		if !filepath.IsAbs(launch) {
+			return "", "", "", fmt.Errorf("projects.toml: project %s: launch %s must be an absolute folder (or start with ~/)", slug, launch)
+		}
+		launch = filepath.Clean(launch)
+		if fi, err := os.Stat(launch); err != nil || !fi.IsDir() {
+			return "", "", "", fmt.Errorf("projects.toml: project %s: launch %s: no folder there", slug, launch)
+		}
+		if got := c.projectForCwd(launch); got != slug {
+			return "", "", "", fmt.Errorf("projects.toml: project %s: launch %s is filed under project %q, not under %s", slug, launch, got, slug)
+		}
+		return launch, p.accounts[0], p.persona, nil
 	}
 	return "", "", "", fmt.Errorf("projects.toml has no project %s", slug)
+}
+
+// Persona gives the persona projects.toml names for a project (crius-spawn -resume: the session's own folder is its
+// cwd, so it needs no launch folder).
+func Persona(home, slug string) (string, error) {
+	c, err := loadConfig(home)
+	if err != nil {
+		return "", err
+	}
+	for _, p := range c.projects {
+		if p.slug == slug {
+			return p.persona, nil
+		}
+	}
+	return "", fmt.Errorf("projects.toml has no project %s", slug)
 }

@@ -29,27 +29,34 @@ const tree = `window window:1 [current] ◀ active
 // fake is cmux with one new Claude tab: the screens it draws before the input box (boot: shells, dialogs), then the
 // box with what was typed and the status bar's model, then work once a prompt is sent.
 type fake struct {
-	calls   []string
-	trees   []string // answers to "tree --all", in order; the last one repeats
-	list    string   // answer to "workspace list"
-	persona string   // from projects.toml; "" means work
-	boot    []string // screens before Claude is up, one per read; a dialog is drawn from dialog instead
-	dialog  []string // options of an open dialog, cursor at pick
-	pick    int
-	model   string // status bar model; "" means the one the command asked for
-	cmd     string
-	draft   string
-	sent    bool
-	noWork  bool   // the prompt is sent but the screen never shows work
-	fast    bool   // the prompt is answered before a read can see work, as live 10-22 ("ready" in 5 s)
-	apiErr  string // the line under an emptied box after the first turn, as "⎿  API Error: 529 Overloaded"
-	asks    string // the dialog question; "" means the folder-trust one
-	linger  int    // reads an answered dialog stays drawn, cursor where it was
-	shown   []string
-	tip     string // a line under the banner
-	exited  bool   // the dialog was answered No
-	front   string // what runs in front on a tab's tty; "" means zsh
-	noConv  bool   // claude --resume finds no conversation and exits, as with the wrong config folder
+	calls    []string
+	trees    []string // answers to "tree --all", in order; the last one repeats
+	list     string   // answer to "workspace list"
+	persona  string   // from projects.toml; "" means work
+	boot     []string // screens before Claude is up, one per read; a dialog is drawn from dialog instead
+	dialog   []string // options of an open dialog, cursor at pick
+	pick     int
+	model    string // status bar model; "" means the one the command asked for
+	cmd      string
+	draft    string
+	sent     bool
+	noWork   bool   // the prompt is sent but the screen never shows work
+	fast     bool   // the prompt is answered before a read can see work, as live 10-22 ("ready" in 5 s)
+	apiErr   string // the line under an emptied box after the first turn, as "⎿  API Error: 529 Overloaded"
+	asks     string // the dialog question; "" means the folder-trust one
+	linger   int    // reads an answered dialog stays drawn, cursor where it was
+	shown    []string
+	tip      string // a line under the banner
+	exited   bool   // the dialog was answered No
+	front    string // what runs in front on a tab's tty; "" means zsh
+	noConv   bool   // claude --resume finds no conversation and exits, as with the wrong config folder
+	ghost    string // grey text in an empty box (Claude's placeholder), which read-screen gives as plain text
+	typedErr error  // what cmux surface.input_state fails with
+	sentErr  error  // what it fails with once the prompt is sent
+	sentErrs int    // how many input-state reads after Enter fail with sentErr; 0: all
+	failed   int
+	noLaunch bool // projects.toml gives the project several cwd and no launch folder
+	stale    int  // reads after Enter that still show the typed prompt, as a read taken just before Claude takes it
 }
 
 const statusBar = "  %s │ main │ ██░░░░░░░░ ctx 2%%\n"
@@ -109,9 +116,26 @@ func (f *fake) deps() Deps {
 			}
 			return f.front, nil
 		},
+		Typed: func(surface string) (bool, error) {
+			f.calls = append(f.calls, "input_state "+surface)
+			if f.sent && f.sentErr != nil && (f.sentErrs == 0 || f.failed < f.sentErrs) {
+				f.failed++
+				return false, f.sentErr
+			}
+			return !f.sent && f.draft != "", f.typedErr
+		},
+		Persona: func(project string) (string, error) {
+			if f.persona == "" {
+				return "work", nil
+			}
+			return f.persona, nil
+		},
 		Place: func(project string) (string, string, string, error) {
 			if project == "falcon" {
 				return "", "", "", errors.New("projects.toml has no project falcon")
+			}
+			if f.noLaunch {
+				return "", "", "", errors.New("projects.toml: project " + project + " has 3 cwd folders; set launch to the folder its sessions start in")
 			}
 			if f.persona == "" {
 				return "/Users/o/Projects/" + project, "max", "work", nil
@@ -122,6 +146,11 @@ func (f *fake) deps() Deps {
 }
 
 func (f *fake) screen() string {
+	if f.sent && f.stale > 0 { // drawn as before Enter; Typed already says the box is empty
+		f.stale--
+		f.sent = false
+		defer func() { f.sent = true }()
+	}
 	switch {
 	case f.noConv && f.sent:
 		return "No conversation found with session ID: " + resumeID + "\no@mac quotes % \n"
@@ -177,6 +206,9 @@ func (f *fake) screen() string {
 	draft := f.draft
 	if f.sent {
 		draft = ""
+	}
+	if draft == "" {
+		draft = f.ghost
 	}
 	return body + "──────────────────────────────── openrig · lead ─\n❯ " + strings.ReplaceAll(draft, "\n", "\n  ") +
 		"\n────────────────────────────────\n" + bar
@@ -434,7 +466,7 @@ func TestASpawnThatNeverComesUpOrNeverWorksFails(t *testing.T) {
 	}
 	f = &fake{trees: []string{tree}, noWork: true}
 	_, _, _, err = Run(Spawn{Project: "quotes", Role: "lead", Prompt: "Read your brief."}, f.deps())
-	if err == nil || !strings.Contains(err.Error(), "esc to interrupt") {
+	if err == nil || !strings.Contains(err.Error(), "esc to interrupt") || !strings.Contains(err.Error(), "do not rerun") {
 		t.Fatal(err)
 	}
 }
@@ -525,6 +557,16 @@ func TestANewWorkspaceIsColouredBeforeWaitingForItsTab(t *testing.T) {
 func TestAPromptThatNamesAnAPIErrorStillStarts(t *testing.T) {
 	f := &fake{trees: []string{tree}, fast: true}
 	if _, _, _, err := Run(Spawn{Project: "quotes", Role: "lead", Prompt: "Fix the API Error in checkout retries."}, f.deps()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Review 10-22 (2): a read taken just before Claude takes the prompt shows it in the box, while the input state read
+// after it says the box is empty. That stale screen is no proof the turn started: the API error drawn later counts.
+func TestAStaleScreenWithTheTypedPromptDoesNotEndTheWait(t *testing.T) {
+	f := &fake{trees: []string{tree}, apiErr: "⎿  API Error: 529 Overloaded", stale: 1}
+	_, _, _, err := Run(Spawn{Project: "quotes", Role: "lead", Prompt: "Read your brief."}, f.deps())
+	if err == nil || !strings.Contains(err.Error(), "API Error: 529") {
 		t.Fatal(err)
 	}
 }
@@ -635,5 +677,61 @@ func TestResumeWithTheFailureWordsOnAnUpScreenSucceeds(t *testing.T) {
 	f := &fake{trees: []string{treeWith("quotes · lead")}, tip: "  grep for: No conversation found with session ID"}
 	if _, _, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/quotes", f.deps()); err != nil {
 		t.Fatalf("err %v, want resumed", err)
+	}
+}
+
+// qa3 10-22 19:2x: a new tab's box showed Claude's grey placeholder 'Try "refactor <filepath>"', which read-screen gives
+// as plain text, and crius-spawn stopped on "already holds text". cmux's input state keeps the faint style (O4).
+func TestAGreyPlaceholderInTheNewBoxIsNotADraft(t *testing.T) {
+	f := &fake{trees: []string{tree}, ghost: `Try "refactor <filepath>"`}
+	if _, _, _, err := Run(Spawn{Project: "quotes", Role: "qa3", Prompt: "Read your brief."}, f.deps()); err != nil {
+		t.Fatalf("err %v, want launched", err)
+	}
+	if !f.sent || len(f.called("input_state surface:99")) == 0 {
+		t.Errorf("sent %v, input_state calls %q", f.sent, f.called("input_state"))
+	}
+}
+
+func TestTypedTextInTheNewBoxStillStopsTheLaunch(t *testing.T) {
+	f := &fake{trees: []string{tree}, draft: "hello"}
+	_, _, _, err := Run(Spawn{Project: "quotes", Role: "qa3", Prompt: "Read your brief."}, f.deps())
+	if err == nil || !strings.Contains(err.Error(), `already holds text: "hello"`) {
+		t.Fatalf("err %v, want the draft named", err)
+	}
+}
+
+func TestAnUnreadableInputStateFailsTheLaunchLoudly(t *testing.T) {
+	f := &fake{trees: []string{tree}, ghost: `Try "refactor <filepath>"`, typedErr: errors.New("cmux rpc surface.input_state: no such method")}
+	_, _, _, err := Run(Spawn{Project: "quotes", Role: "qa3", Prompt: "Read your brief."}, f.deps())
+	if err == nil || !strings.Contains(err.Error(), "no such method") || f.sent {
+		t.Fatalf("err %v sent %v, want the input-state failure and nothing sent", err, f.sent)
+	}
+}
+
+// Review 10-22: -resume needs only the persona; the session's own folder is its cwd. A project with several cwd and no
+// launch folder (trading, quotes before its launch line) still comes back after a reboot.
+func TestResumeDoesNotNeedALaunchFolder(t *testing.T) {
+	f := &fake{trees: []string{tree}, noLaunch: true}
+	if _, _, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/axon", f.deps()); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.called("new-surface "); len(got) != 1 || !strings.Contains(got[0], "--working-directory /Users/o/Projects/axon ") {
+		t.Errorf("new-surface %q", got)
+	}
+}
+
+// Review 10-22 (3): an input state that cannot be read after Enter comes after the prompt was sent; the error says so
+// and names the tab, so no one reruns the launch and sends the prompt twice.
+func TestAnInputStateFailureAfterEnterSaysThePromptWasSent(t *testing.T) {
+	f := &fake{trees: []string{tree}, fast: true, ghost: `Try "refactor <filepath>"`, sentErr: errors.New("cmux rpc surface.input_state: timeout")}
+	_, _, _, err := Run(Spawn{Project: "quotes", Role: "qa3", Prompt: "Read your brief."}, f.deps())
+	if err == nil || !f.sent || !strings.Contains(err.Error(), "the prompt was sent to workspace:2 surface:99") ||
+		!strings.Contains(err.Error(), "timeout") {
+		t.Fatalf("err %v sent %v, want the sent prompt and its tab named", err, f.sent)
+	}
+	// One failed read is no answer: the next read decides (review 10-22).
+	f = &fake{trees: []string{tree}, fast: true, ghost: `Try "refactor <filepath>"`, sentErr: errors.New("cmux rpc surface.input_state: timeout"), sentErrs: 1}
+	if _, _, _, err := Run(Spawn{Project: "quotes", Role: "qa3", Prompt: "Read your brief."}, f.deps()); err != nil || f.failed != 1 {
+		t.Fatalf("err %v after %d failed reads, want nil after 1", err, f.failed)
 	}
 }
