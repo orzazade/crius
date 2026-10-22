@@ -803,3 +803,73 @@ func TestStatelogReportsEachLogAndTheDisagreements(t *testing.T) {
 		t.Errorf("bad line: rc %d out %q", rc, out)
 	}
 }
+
+// OF6: wakewatch moves its state log to .1 past a size; statelog reads that file first, so a disagreement logged
+// before the move and closed after it (a "gone" line) still counts.
+func TestStatelogReadsTheMovedLogFirst(t *testing.T) {
+	_, home := testutil.Temp(t)
+	if rc, out := run("init"); rc != 0 {
+		t.Fatal(rc, out)
+	}
+	testutil.Write(t, filepath.Join(home, "logs", "wakewatch-state.log.1"),
+		`2026-10-22T16:23:29+04:00 tab:surface:1 "quotes · p1" screen=idle state=busy decides=screen`+"\n")
+	testutil.Write(t, filepath.Join(home, "logs", "wakewatch-state.log"),
+		`2026-10-22T16:30:00+04:00 tab:surface:1 "" screen=gone state=gone decides=screen`+"\n")
+	testutil.Write(t, filepath.Join(home, "sessions", "s-p1.json"), `{"session_id":"s-p1","project":"quotes","role":"p1"}`)
+	db, err := store.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	rc, out := run("statelog")
+	for _, want := range []string{"wakewatch-state.log.1: 1 lines", "wakewatch-state.log: 1 lines", "total: 1 disagreements", "for 6m31s"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("no %q in:\n%s", want, out)
+		}
+	}
+	if rc != 0 {
+		t.Errorf("rc %d", rc)
+	}
+}
+
+// OF6 review 2: statelog opened .1, then the current log, so a move to .1 between the two opens lost the moved lines.
+// It reads the two files as they stood at one moment.
+func TestStatelogLosesNoLinesWhenTheLogMovesBetweenOpens(t *testing.T) {
+	_, home := testutil.Temp(t)
+	if rc, out := run("init"); rc != 0 {
+		t.Fatal(rc, out)
+	}
+	dir := filepath.Join(home, "logs")
+	testutil.Write(t, filepath.Join(dir, "wakewatch-state.log.1"),
+		`2026-10-22T16:00:00+04:00 tab:surface:9 "quotes · p1" screen=idle state=busy decides=screen`+"\n")
+	testutil.Write(t, filepath.Join(dir, "wakewatch-state.log"),
+		`2026-10-22T16:23:00+04:00 tab:surface:1 "quotes · p1" screen=idle state=busy decides=screen`+"\n")
+	testutil.Write(t, filepath.Join(home, "sessions", "s-p1.json"), `{"session_id":"s-p1","project":"quotes","role":"p1"}`)
+	db, err := store.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	old := openLog
+	t.Cleanup(func() { openLog = old })
+	moved := false
+	openLog = func(p string) (*os.File, error) {
+		if filepath.Base(p) == "wakewatch-state.log" && !moved { // wakewatch rotates just before this open
+			moved = true
+			if err := os.Rename(p, p+".1"); err != nil {
+				t.Fatal(err)
+			}
+			testutil.Write(t, p, `2026-10-22T16:30:00+04:00 tab:surface:1 "" screen=gone state=gone decides=screen`+"\n")
+		}
+		return old(p)
+	}
+	rc, out := run("statelog")
+	for _, want := range []string{"wakewatch-state.log.1: 1 lines", "wakewatch-state.log: 1 lines", "total: 1 disagreements", "for 7m0s"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("no %q in:\n%s", want, out)
+		}
+	}
+	if rc != 0 {
+		t.Errorf("rc %d", rc)
+	}
+}

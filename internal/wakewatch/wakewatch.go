@@ -149,6 +149,7 @@ func Run(d Deps) error {
 	screens, err := d.Screens()
 	if err != nil {
 		alerts = append(alerts, [2]string{screensFailed, "the tab check failed to look: " + err.Error()})
+		hv.blind = true
 	} else {
 		alerts = append(alerts, waiting(&st, d, watch, park, screens, hv)...)
 	}
@@ -157,8 +158,10 @@ func Run(d Deps) error {
 	alerts = append(alerts, fresh(d, watch, park, screens, ss, sesErr, hv)...)
 	alerts = append(alerts, unnamed(d, screens)...)
 	alerts = append(alerts, hookLog(d.Home, &st)...)
+	hv.finish()
 	st.Views = hv.views
 	if err := appendLines(filepath.Join(d.Home, "logs", "wakewatch-state.log"), hv.log); err != nil {
+		st.Views = hv.prev // the log holds none of this run's lines: the next run logs them anew, a "gone" line too (OF6)
 		alerts = append(alerts, [2]string{"statelog-failed", "wakewatch could not write its screen-versus-state log: " + err.Error()})
 	}
 
@@ -397,6 +400,9 @@ func waiting(st *state, d Deps, watch projects, park parked, screens []Screen, h
 		// shows nothing: then the title's first word that starts with a letter or digit names the project (a lead tab
 		// is titled "quotes"; a mark like "✳" may come first). A tab that cannot be read and has no such word still
 		// alerts: nothing says whose it is.
+		if s.Err != "" {
+			hv.keep("tab:" + s.Surface) // unread, whatever its title now says: its pair stays as last seen (OF6)
+		}
 		name, _ := session(s.Text, s.Title)
 		team := project(name)
 		parkAs := name
@@ -514,12 +520,14 @@ func resources(d Deps) [][2]string {
 func fresh(d Deps, watch projects, park parked, screens []Screen, ss []Session, err error, hv *hooks) [][2]string {
 	used := map[string]int{} // the most any tab of that session shows
 	text := map[string]string{}
+	unread := map[string]bool{} // tabs cmux could not read: they show no text to judge from
 	for _, s := range screens {
 		if who, _ := session(s.Text, s.Title); who != "" {
 			used[who] = max(used[who], ctxUsed(s.Text))
 		}
 		if s.ID != "" {
 			text[s.ID] = s.Text
+			unread[s.ID] = s.Err != ""
 		}
 	}
 	if err != nil {
@@ -551,6 +559,7 @@ func fresh(d Deps, watch projects, park parked, screens []Screen, ss []Session, 
 		at, found, err := lastFrom(d.Home, who, "DONE")
 		if err != nil {
 			out = append(out, [2]string{"fresh-failed:" + who, fmt.Sprintf("the lead fresh-start check failed to look at %s's bus: %v", who, err)})
+			hv.keep("fresh:" + who)
 			continue
 		}
 		u, shown := used[who]
@@ -562,6 +571,7 @@ func fresh(d Deps, watch projects, park parked, screens []Screen, ss []Session, 
 		ordered, err := orderAfterDone(d.Home, who)
 		if err != nil {
 			out = append(out, [2]string{"fresh-failed:" + who, fmt.Sprintf("the lead fresh-start check failed to look at %s's bus: %v", who, err)})
+			hv.keep("fresh:" + who)
 			continue
 		}
 		if ordered {
@@ -571,6 +581,9 @@ func fresh(d Deps, watch projects, park parked, screens []Screen, ss []Session, 
 		for _, id := range ids[who] {
 			if s, ok := hv.session[id]; ok {
 				hs = append(hs, s)
+				if unread[s.Surface] {
+					hv.keep("fresh:" + who) // its pair stays as last seen (OF6)
+				}
 			}
 		}
 		if len(hs) > 0 {
@@ -821,6 +834,8 @@ type hooks struct {
 	views   map[string][2]string
 	log     []string
 	now     time.Time
+	blind   bool            // this run could not read the sessions, the states or the screens: what it did not see stays as last seen
+	kept    map[string]bool // pairs this run could not look at (keep): a later pick leaves them as last seen
 }
 
 // readHooks reads the mode file and the state of each live session: one Claude Code lists as running (ss) and the
@@ -828,7 +843,7 @@ type hooks struct {
 // A missing state folder is loud only in decide mode: before the hook is installed it is expected.
 func readHooks(d Deps, prev map[string][2]string, ss []Session, sesErr error) (*hooks, [][2]string) {
 	h := &hooks{surface: map[string]sessionstate.State{}, session: map[string]sessionstate.State{}, prev: prev,
-		views: map[string][2]string{}, now: d.Now}
+		views: map[string][2]string{}, kept: map[string]bool{}, now: d.Now}
 	var out [][2]string
 	p := filepath.Join(d.Home, "wakewatch-mode")
 	if b, err := os.ReadFile(p); err != nil && !os.IsNotExist(err) {
@@ -842,6 +857,7 @@ func readHooks(d Deps, prev map[string][2]string, ss []Session, sesErr error) (*
 	if err != nil && (h.decide || !errors.Is(err, fs.ErrNotExist)) {
 		out = append(out, [2]string{"states-failed", "crius-hook's session states could not be read: " + err.Error()})
 	}
+	h.blind = err != nil || sesErr != nil
 	if sesErr != nil {
 		return h, out
 	}
@@ -866,11 +882,17 @@ func readHooks(d Deps, prev map[string][2]string, ss []Session, sesErr error) (*
 }
 
 // pick gives the view that decides, the screen's or the state's, and logs the pair when it changed since the last run
-// and either pair disagrees: one line when they start to disagree, one when they agree again.
+// and either pair disagrees: one line when they start to disagree, one when they agree again. A run blind to the
+// screens, sessions or states logs nothing and keeps the last pair: what it judged from may be missing (OF6). So does a
+// pair this run kept, its tab unread.
 func (h *hooks) pick(key, what, screen, state string) string {
-	v := [2]string{screen, state}
-	h.views[key] = v
-	if p := h.prev[key]; v != p && (screen != state || p[0] != p[1]) {
+	v, p := [2]string{screen, state}, h.prev[key]
+	if h.blind || h.kept[key] {
+		h.keep(key)
+	} else {
+		h.views[key] = v
+	}
+	if !h.blind && !h.kept[key] && v != p && (screen != state || p[0] != p[1]) {
 		decides := "screen"
 		if h.decide {
 			decides = "state"
@@ -882,6 +904,32 @@ func (h *hooks) pick(key, what, screen, state string) string {
 		return state
 	}
 	return screen
+}
+
+// keep carries a pair this run could not look at (its tab or bus unread) as last seen, so the next run that sees it
+// does not log it again as new (OF6).
+func (h *hooks) keep(key string) {
+	h.kept[key] = true
+	if v, ok := h.prev[key]; ok {
+		h.views[key] = v
+	}
+}
+
+// finish closes the pairs of the last run that this run did not see: kept as they were when it was blind, and a
+// disagreement that went (its tab gone or no longer watched) gets one "gone" line, so statelog does not judge it open.
+func (h *hooks) finish() {
+	for _, key := range slices.Sorted(maps.Keys(h.prev)) {
+		p := h.prev[key]
+		if _, ok := h.views[key]; ok {
+			continue
+		}
+		if h.blind {
+			h.views[key] = p
+		} else if p[0] != p[1] {
+			h.pick(key, "", "gone", "gone")
+			delete(h.views, key)
+		}
+	}
 }
 
 // spinRe is Claude Code's working line above the input box: a mark, a verb ending in "…", then the time it has worked
@@ -957,28 +1005,76 @@ func hookLog(home string, st *state) [][2]string {
 	if fi.Size() == st.HookLog {
 		return nil
 	}
-	b := make([]byte, fi.Size()-st.HookLog)
-	f, err := os.Open(p)
-	if err == nil {
-		_, err = f.ReadAt(b, st.HookLog)
-		f.Close()
-	}
+	n, last, err := countLines(p, st.HookLog, fi.Size())
 	if err != nil {
 		return [][2]string{{"hooklog-failed", "crius-hook's error log could not be read: " + err.Error()}}
 	}
 	st.HookLog = fi.Size()
-	lines := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
 	return [][2]string{{fmt.Sprintf("hooklog:%d", fi.Size()), fmt.Sprintf("crius-hook logged %d new error line(s) in %s; "+
-		"the last: %s", len(lines), p, lines[len(lines)-1])}}
+		"the last: %s", n, p, last)}}
 }
 
-// appendLines adds lines to the file at p, making its folder.
+// countLines counts the lines of the file at p from byte from to byte to and gives the last one, reading 64 KB at a
+// time: the first run after a start sees all of a log that may be big (OF6).
+func countLines(p string, from, to int64) (n int, last string, err error) {
+	f, err := os.Open(p)
+	if err != nil {
+		return 0, "", err
+	}
+	defer f.Close()
+	buf := make([]byte, 64<<10)
+	var end byte
+	for at := from; at < to; {
+		k, err := f.ReadAt(buf[:min(int64(len(buf)), to-at)], at)
+		if err != nil {
+			return 0, "", err
+		}
+		n += bytes.Count(buf[:k], []byte("\n"))
+		end = buf[k-1]
+		at += int64(k)
+	}
+	if end != '\n' {
+		n++
+	}
+	// The last line starts after the last "\n" before its own end: look back for it, then give up to 64 KB from there.
+	stop, start := to, from
+	if end == '\n' {
+		stop--
+	}
+	for at := stop; at > from; {
+		k := min(int64(len(buf)), at-from)
+		if _, err := f.ReadAt(buf[:k], at-k); err != nil {
+			return 0, "", err
+		}
+		if i := bytes.LastIndexByte(buf[:k], '\n'); i >= 0 {
+			start = at - k + int64(i) + 1
+			break
+		}
+		at -= k
+	}
+	line := buf[:min(int64(len(buf)), stop-start)]
+	if _, err := f.ReadAt(line, start); err != nil {
+		return 0, "", err
+	}
+	return n, string(line), nil
+}
+
+// stateLogMax is the size at which a state log is moved to <name>.1 and started afresh.
+const stateLogMax = 1 << 20
+
+// appendLines adds lines to the file at p, making its folder. A file past stateLogMax first moves to p.1, replacing
+// the one there.
 func appendLines(p string, lines []string) error {
 	if len(lines) == 0 {
 		return nil
 	}
 	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 		return err
+	}
+	if fi, err := os.Stat(p); err == nil && fi.Size() >= stateLogMax {
+		if err := os.Rename(p, p+".1"); err != nil {
+			return err
+		}
 	}
 	f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {

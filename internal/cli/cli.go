@@ -945,28 +945,81 @@ func lastSnapshot(dir string) (digest.Snapshot, time.Time, error) {
 	return s, at, nil
 }
 
+// openLog opens a state log (a variable so a test can move the log between two opens).
+var openLog = os.Open
+
+// openMissing opens the file at p, or gives nil when there is none.
+func openMissing(p string) (*os.File, error) {
+	f, err := openLog(p)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	return f, err
+}
+
+// openRotated opens p.1 and p as they stood at one moment (OF6): wakewatch may move p to p.1 between the two opens,
+// which leaves the first one stale and the moved lines unread, so it opens both again. A file not there is nil.
+func openRotated(p string) (old, cur *os.File, err error) {
+	for range 10 {
+		if old, err = openMissing(p + ".1"); err != nil {
+			return nil, nil, err
+		}
+		if cur, err = openMissing(p); err != nil {
+			old.Close()
+			return nil, nil, err
+		}
+		fi, err := os.Stat(p + ".1")
+		if errors.Is(err, os.ErrNotExist) && old == nil {
+			return old, cur, nil
+		}
+		if err == nil && old != nil {
+			ofi, err := old.Stat()
+			if err == nil && os.SameFile(fi, ofi) {
+				return old, cur, nil
+			}
+		}
+		old.Close()
+		cur.Close()
+	}
+	return nil, nil, fmt.Errorf("%s kept moving to %s.1 while it was opened", p, filepath.Base(p))
+}
+
 // statelogCmd reads wakewatch's and promptwatch's state logs and judges each disagreement from the store.
 func statelogCmd(home string, stdout, stderr io.Writer) int {
+	dir := filepath.Join(home, "logs")
+	old, cur, err := openRotated(filepath.Join(dir, "wakewatch-state.log"))
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return exitError
+	}
+	defer old.Close()
+	defer cur.Close()
+	prompt, err := openMissing(filepath.Join(dir, "promptwatch-state.log"))
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return exitError
+	}
+	defer prompt.Close()
 	var lines []statelog.Line
 	found := false
-	for _, log := range []string{"wakewatch", "promptwatch"} {
-		name := filepath.Join(home, "logs", log+"-state.log")
-		f, err := os.Open(name)
-		if errors.Is(err, os.ErrNotExist) {
-			fmt.Fprintf(stdout, "%s: no file (nothing logged)\n", filepath.Base(name))
+	// wakewatch moves its log to .1 past a size: that file holds the older lines, so it goes first.
+	for _, l := range []struct {
+		name string
+		f    *os.File
+	}{{"wakewatch-state.log.1", old}, {"wakewatch-state.log", cur}, {"promptwatch-state.log", prompt}} {
+		if l.f == nil {
+			if !strings.HasSuffix(l.name, ".1") {
+				fmt.Fprintf(stdout, "%s: no file (nothing logged)\n", l.name)
+			}
 			continue
 		}
+		log, _, _ := strings.Cut(l.name, "-")
+		ls, err := statelog.Parse(log, l.f)
 		if err != nil {
-			fmt.Fprintf(stderr, "error: %v\n", err)
+			fmt.Fprintf(stderr, "error: %s: %v\n", filepath.Join(dir, l.name), err)
 			return exitError
 		}
-		ls, err := statelog.Parse(log, f)
-		f.Close()
-		if err != nil {
-			fmt.Fprintf(stderr, "error: %s: %v\n", name, err)
-			return exitError
-		}
-		fmt.Fprintf(stdout, "%s: %d lines\n", filepath.Base(name), len(ls))
+		fmt.Fprintf(stdout, "%s: %d lines\n", l.name, len(ls))
 		found = true
 		lines = append(lines, ls...)
 	}

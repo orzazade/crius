@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -1426,5 +1427,211 @@ func TestAParkedLeadTitledWithItsProjectFiresNoWake(t *testing.T) {
 		if fmt.Sprint(got) != fmt.Sprint(c.want) {
 			t.Errorf("parked %q: woke for %q, want %q (sent %q)", c.parked, got, c.want, f.sent)
 		}
+	}
+}
+
+// OF6 (O3 re-review 10-22): a run that could not read the screens, the sessions or one tab dropped the open
+// disagreement, so the next run logged it again as new; and a disagreeing tab that went away got no closing line, so
+// crius-rec statelog judged it open until the tab's next line. A run that could not look keeps what it last saw; a
+// run that looked and found the pair gone closes it with one "gone" line.
+func TestTheStateLogKeepsWhatItCouldNotSeeAndClosesWhatWent(t *testing.T) {
+	home := setup(t, map[string]string{"quotes.log": busFrom("quotes:p3", t0)})
+	setMode(t, home, "observe")
+	quoted := "the fixture:\n Do you want to proceed?\n ❯ 1. Yes\n   2. No, and tell Claude what to do differently (esc)"
+	f := &fake{states: []sessionstate.State{hookState("s1", sessionstate.Idle, "quotes", "p3")},
+		ses: []Session{{Name: "quotes: p3", ID: "s1", Started: t0.Add(-time.Hour)}}}
+	draw := func(at time.Time) []Screen {
+		return []Screen{withID(screen("quotes · p3", tab("quotes: p3", quoted, "  ⏵⏵ bypass permissions on\n", at)))}
+	}
+	lines := func() int { return strings.Count(stateLog(t, home), "\n") }
+	runAt(t, home, f, draw, 0)
+	if lines() != 1 {
+		t.Fatalf("want one line for the disagreement:\n%s", stateLog(t, home))
+	}
+	blind := map[string]func(){
+		"screens":  func() { f.scrErr = errors.New("cmux: no answer") },
+		"sessions": func() { f.sesErr = errors.New("sessions: no answer") },
+		"states":   func() { f.stErr = errors.New("sessions/x.json: damaged") },
+		"one tab": func() {
+			draw = func(at time.Time) []Screen {
+				s := withID(screen("quotes · p3", ""))
+				s.Err = "cmux read-screen: no answer"
+				return []Screen{s}
+			}
+		},
+	}
+	m := 0
+	for _, name := range []string{"screens", "sessions", "states", "one tab"} {
+		old := draw
+		blind[name]()
+		m += 5
+		runAt(t, home, f, draw, m)
+		f.scrErr, f.sesErr, f.stErr, draw = nil, nil, nil, old
+		m += 5
+		runAt(t, home, f, draw, m)
+		if lines() != 1 {
+			t.Fatalf("after a run blind to %s, the open disagreement was logged again:\n%s", name, stateLog(t, home))
+		}
+	}
+	gone := func(at time.Time) []Screen {
+		return []Screen{screen("quotes · p4", tab("quotes: p4", "ok", "  ⏵⏵ bypass permissions on\n", at))}
+	}
+	runAt(t, home, f, gone, m+5, m+10)
+	if log := stateLog(t, home); lines() != 2 || !strings.Contains(log, `tab:surface:7 "" screen=gone state=gone decides=screen`) {
+		t.Fatalf("want one gone line for the tab that went:\n%s", log)
+	}
+}
+
+// OF6 review 2: a tab that could not be read and whose title names a team not watched (a shell's "zsh") was skipped
+// before its pair was kept, so the run closed with a "gone" line a disagreement it never saw.
+func TestAnUnreadTabUnderAnotherTitleKeepsItsPair(t *testing.T) {
+	home := setup(t, map[string]string{"quotes.log": busFrom("quotes:p3", t0)})
+	testutil.Write(t, filepath.Join(home, "wakewatch-projects"), "quotes\n")
+	setMode(t, home, "observe")
+	quoted := "the fixture:\n Do you want to proceed?\n ❯ 1. Yes\n   2. No, and tell Claude what to do differently (esc)"
+	f := &fake{states: []sessionstate.State{hookState("s1", sessionstate.Idle, "quotes", "p3")},
+		ses: []Session{{Name: "quotes: p3", ID: "s1", Started: t0.Add(-time.Hour)}}}
+	draw := func(at time.Time) []Screen {
+		return []Screen{withID(screen("quotes · p3", tab("quotes: p3", quoted, "  ⏵⏵ bypass permissions on\n", at)))}
+	}
+	failed := func(time.Time) []Screen {
+		s := withID(screen("zsh", ""))
+		s.Err = "cmux read-screen: no answer"
+		return []Screen{s}
+	}
+	runAt(t, home, f, draw, 0)
+	runAt(t, home, f, failed, 5)
+	runAt(t, home, f, draw, 10)
+	if log := stateLog(t, home); strings.Count(log, "\n") != 1 {
+		t.Fatalf("want the one line for the disagreement:\n%s", log)
+	}
+}
+
+// OF6 review 2: a run that could not read the screens still judged the lead's fresh start from no screen text, so the
+// pair flipped and was logged, then flipped back on the next run. A blind run logs nothing and keeps every pair.
+func TestARunBlindToTheScreensKeepsTheFreshPair(t *testing.T) {
+	home := setup(t, map[string]string{"quotes.log": done(t0)})
+	setMode(t, home, "observe")
+	f := &fake{ses: []Session{{Name: "quotes: lead", ID: "1", Started: t0.Add(-2 * time.Hour)}},
+		states: []sessionstate.State{hookState("1", sessionstate.Idle, "quotes", "lead")}}
+	asks := func(at time.Time) []Screen {
+		return []Screen{withID(screen("quotes · lead", tab("quotes: lead", "Which branch should the fix go to, main or develop?\n\n❓",
+			"  ⏵⏵ bypass permissions on\n", at)))}
+	}
+	runAt(t, home, f, asks, 21)
+	if log := stateLog(t, home); strings.Count(log, "\n") != 1 || !strings.Contains(log, "fresh:quotes:lead") {
+		t.Fatalf("want one fresh line:\n%s", log)
+	}
+	f.scrErr = errors.New("cmux: no answer")
+	runAt(t, home, f, func(time.Time) []Screen { return nil }, 26)
+	f.scrErr = nil
+	runAt(t, home, f, asks, 31)
+	if log := stateLog(t, home); strings.Count(log, "\n") != 1 {
+		t.Fatalf("a run blind to the screens logged the fresh pair:\n%s", log)
+	}
+}
+
+// OF6 review 3: one lead tab that could not be read, while cmux answered for the rest, still judged the fresh start
+// from no text, so the pair flipped and was logged, then flipped back. The lead's pair stays as last seen.
+func TestAnUnreadLeadTabKeepsTheFreshPair(t *testing.T) {
+	home := setup(t, map[string]string{"quotes.log": done(t0)})
+	setMode(t, home, "observe")
+	f := &fake{ses: []Session{{Name: "quotes: lead", ID: "1", Started: t0.Add(-2 * time.Hour)}},
+		states: []sessionstate.State{hookState("1", sessionstate.Idle, "quotes", "lead")}}
+	asks := func(at time.Time) []Screen {
+		return []Screen{withID(screen("quotes · lead", tab("quotes: lead", "Which branch should the fix go to, main or develop?\n\n❓",
+			"  ⏵⏵ bypass permissions on\n", at)))}
+	}
+	runAt(t, home, f, asks, 21)
+	runAt(t, home, f, func(at time.Time) []Screen {
+		s := asks(at)
+		s[0].Text, s[0].Err = "", "surface not readable"
+		return s
+	}, 26)
+	runAt(t, home, f, asks, 31)
+	if log := stateLog(t, home); strings.Count(log, "\n") != 1 {
+		t.Fatalf("an unread lead tab changed the fresh pair:\n%s", log)
+	}
+}
+
+// OF6 review 3: a run that could not write the state log still saved its pairs, so a disagreement that went while the
+// log was unwritable never got its "gone" line and statelog judged it open for ever. The next run logs it.
+func TestAGoneLineLostToAnUnwritableLogIsWrittenNextRun(t *testing.T) {
+	home := setup(t, map[string]string{"quotes.log": done(t0)})
+	setMode(t, home, "observe")
+	f := &fake{ses: []Session{{Name: "quotes: lead", ID: "1", Started: t0.Add(-2 * time.Hour)}},
+		states: []sessionstate.State{hookState("1", sessionstate.Idle, "quotes", "lead")}}
+	asks := func(at time.Time) []Screen {
+		return []Screen{withID(screen("quotes · lead", tab("quotes: lead", "Which branch should the fix go to, main or develop?\n\n❓",
+			"  ⏵⏵ bypass permissions on\n", at)))}
+	}
+	runAt(t, home, f, asks, 21)
+	p := filepath.Join(home, "logs", "wakewatch-state.log")
+	if err := os.Rename(p, p+".kept"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(p, 0o700); err != nil { // a folder in its place: the append fails
+		t.Fatal(err)
+	}
+	f.ses, f.states = nil, nil // the lead went: its open pair is gone
+	runAt(t, home, f, func(time.Time) []Screen { return nil }, 26)
+	if err := os.Remove(p); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(p+".kept", p); err != nil {
+		t.Fatal(err)
+	}
+	runAt(t, home, f, func(time.Time) []Screen { return nil }, 31)
+	if log := stateLog(t, home); strings.Count(log, "\n") != 2 || !strings.Contains(log, "gone") {
+		t.Fatalf("want the fresh line and its gone line:\n%s", log)
+	}
+}
+
+// OF6 review 2: the last line came from the last 64 KB, so a longer line lost its start: the time and the session.
+func TestTheLastLineOfTheHookLogComesFromItsStart(t *testing.T) {
+	_, home := testutil.Temp(t)
+	p := filepath.Join(home, "crius-hook.log")
+	head := "2026-10-22T15:03:00Z crius-hook: Stop s1: "
+	testutil.Write(t, p, "first\n"+head+strings.Repeat("x", 70<<10)+"\n")
+	fi, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, last, err := countLines(p, 0, fi.Size())
+	if err != nil || n != 2 || !strings.HasPrefix(last, head) || len(last) > 64<<10 {
+		t.Errorf("n=%d err=%v last starts %.40q (%d bytes), want 2 lines and the last from its start", n, err, last, len(last))
+	}
+}
+
+// OF6: the first run after a start read all of crius-hook.log, however big, to give its last line. It reads the tail.
+func TestABigHookLogIsNotReadWhole(t *testing.T) {
+	home := setup(t, nil)
+	line := "2026-10-22T15:00:00Z crius-hook: Stop s1: open sessions/.lock: permission denied\n"
+	testutil.Write(t, filepath.Join(home, "logs", "crius-hook.log"), strings.Repeat(line, 100000)+"2026-10-22T15:03:00Z crius-hook: the last\n")
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	out := hookLog(home, &state{})
+	runtime.ReadMemStats(&after)
+	if len(out) != 1 || !strings.Contains(out[0][1], "100001 new error line(s)") || !strings.Contains(out[0][1], "the last") {
+		t.Errorf("%q", out)
+	}
+	if n := after.TotalAlloc - before.TotalAlloc; n > 1<<20 {
+		t.Errorf("read %d bytes for an %d-byte log, want its tail", n, 100001*len(line))
+	}
+}
+
+// OF6: wakewatch-state.log grew without end. Past stateLogMax it moves to .1, and crius-rec statelog reads both.
+func TestTheStateLogRotates(t *testing.T) {
+	home := setup(t, nil)
+	p := filepath.Join(home, "logs", "wakewatch-state.log")
+	testutil.Write(t, p, strings.Repeat("x", stateLogMax)+"\n")
+	if err := appendLines(p, []string{"new"}); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(p); string(b) != "new\n" {
+		t.Errorf("state log holds %d bytes, want the new line alone", len(b))
+	}
+	if fi, err := os.Stat(p + ".1"); err != nil || fi.Size() != int64(stateLogMax+1) {
+		t.Errorf("%s.1: %v, want the old log", p, err)
 	}
 }
