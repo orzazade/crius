@@ -878,6 +878,21 @@ func TestATabReadFailureOfAnUnlistedProjectStaysQuiet(t *testing.T) {
 	}
 }
 
+// A wake goes by its sender's team as well as its bus: an unlisted team's DONE on a listed bus stays quiet. A sender
+// with no team ("QA2" on quotes.log) goes by its bus.
+func TestAnUnlistedSenderOnAListedBusStaysQuiet(t *testing.T) {
+	axiDone := strings.Replace(done(t0), "quotes:lead", "axi:lead", 1)
+	qaDone := strings.Replace(done(t0), "quotes:lead", "QA2", 1)
+	home := setup(t, map[string]string{"quotes.log": qaDone, "crius.log": axiDone})
+	testutil.Write(t, filepath.Join(home, "wakewatch-projects"), "quotes crius\n")
+	f := &fake{}
+	Run(f.deps(home, t0.Add(21*time.Minute)))
+	got := strings.Join(f.sent, "\n")
+	if !strings.Contains(got, "quotes.log: ") || !strings.Contains(got, "QA2") || strings.Contains(got, "axi") {
+		t.Fatal(f.sent)
+	}
+}
+
 // A listed name with no bus file (a capital, a typo, "quotes.log") would silence that team with no word: it is an
 // alert that names it. Names match bus files whatever their case.
 func TestAListedNameWithNoBusIsAnAlert(t *testing.T) {

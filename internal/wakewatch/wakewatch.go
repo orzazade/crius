@@ -270,6 +270,10 @@ func missed(home string, now time.Time, watch projects) ([][2]string, error) {
 			if !wakeTypes[typ] || !toCrius(to) {
 				continue
 			}
+			// A team's line on another team's bus ("aitch:build" on crius.log) goes by the sender's team.
+			if team, _, ok := strings.Cut(from, ":"); ok && !watch.has(team) {
+				continue
+			}
 			at, err := lineTime(m[1])
 			if err != nil {
 				continue
