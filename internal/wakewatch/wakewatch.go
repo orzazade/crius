@@ -22,6 +22,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -60,6 +61,8 @@ var (
 	// Under the input box: background shells, monitors, tasks or agents still running.
 	jobsRe = regexp.MustCompile(`\b\d+ (?:shells?|monitors?|background tasks?|agents?)\b|(?m)^\s*◯ `)
 	leadRe = regexp.MustCompile(`^lead(?:er)?$`)
+	// The status line's context use: "██░░░░░░░░ ctx 21%".
+	ctxRe = regexp.MustCompile(`\bctx (\d{1,3})%`)
 )
 
 // Screen is one tab. Err is set when its read failed; Text is then empty.
@@ -123,10 +126,15 @@ func Run(d Deps) error {
 		return err
 	}
 	alerts = append(alerts, m...)
-	alerts = append(alerts, waiting(&st, d, watch)...)
+	screens, err := d.Screens()
+	if err != nil {
+		alerts = append(alerts, [2]string{screensFailed, "the tab check failed to look: " + err.Error()})
+	} else {
+		alerts = append(alerts, waiting(&st, d, watch, screens)...)
+	}
 	alerts = append(alerts, resources(d)...)
 	alerts = append(alerts, tools(d)...)
-	alerts = append(alerts, fresh(d, watch)...)
+	alerts = append(alerts, fresh(d, watch, screens)...)
 
 	active := map[string]bool{}
 	var sendErr error
@@ -324,13 +332,9 @@ func lineTime(s string) (time.Time, error) {
 
 // waiting gives [key, text] for each tab whose screen has waited on a question or dialog, unchanged, for 10 min, and
 // for each idle tab: unchanged and with no bus line of its own for 10 min, any role. A screen counts as unchanged by
-// what is above its input box: the status line below it holds a clock. A screen read that fails is an alert of its own: the
-// whole check, or one tab, which keeps its place meanwhile.
-func waiting(st *state, d Deps, watch projects) [][2]string {
-	screens, err := d.Screens()
-	if err != nil {
-		return [][2]string{{screensFailed, "the tab check failed to look: " + err.Error()}}
-	}
+// what is above its input box: the status line below it holds a clock. A tab whose read failed is an alert of its own
+// and keeps its place meanwhile (Run reports a failed read of all tabs).
+func waiting(st *state, d Deps, watch projects, screens []Screen) [][2]string {
 	var out [][2]string
 	live := map[string]bool{}
 	for _, s := range screens {
@@ -439,8 +443,15 @@ func resources(d Deps) [][2]string {
 
 // fresh gives an alert for each lead whose newest DONE (in the last 12 h) is 20 min old while no session of that lead
 // started after it and Crius sent it no ORDER after it: no /clear and no relaunch (cmux-team SKILL §5, fresh context
-// per item).
-func fresh(d Deps, watch projects) [][2]string {
+// per item). A lead whose tabs all show ctx under 50% in the status line below the input box has room left and needs
+// no fresh start yet (Crius 10-22 13:23).
+func fresh(d Deps, watch projects, screens []Screen) [][2]string {
+	used := map[string]int{} // the most any tab of that session shows
+	for _, s := range screens {
+		if who, _ := session(s.Text, s.Title); who != "" {
+			used[who] = max(used[who], ctxUsed(s.Text))
+		}
+	}
 	ss, err := d.Sessions()
 	if err != nil {
 		return [][2]string{{"sessions-failed", "the lead fresh-start check failed to look: " + err.Error()}}
@@ -471,7 +482,9 @@ func fresh(d Deps, watch projects) [][2]string {
 			out = append(out, [2]string{"fresh-failed:" + who, fmt.Sprintf("the lead fresh-start check failed to look at %s's bus: %v", who, err)})
 			continue
 		}
-		if !found || at.IsZero() || d.Now.Sub(at) < freshAfter || d.Now.Sub(at) > window || newest[who].After(at) {
+		u, shown := used[who]
+		if !found || at.IsZero() || d.Now.Sub(at) < freshAfter || d.Now.Sub(at) > window || newest[who].After(at) ||
+			shown && u < 50 {
 			continue
 		}
 		// Crius sent the lead back to work after the DONE (Crius 10-22 01:07): a decision, so no alert. An ACK is not.
@@ -554,6 +567,23 @@ func split(text string) (body, foot string, boxed bool) {
 		}
 	}
 	return text, "", false
+}
+
+// ctxUsed gives the context % a screen's status line shows below the input box's bottom border (the last border line:
+// a draft may hold a dash line), or 100 when it shows none. Text typed in the box does not count.
+func ctxUsed(text string) int {
+	_, foot, boxed := split(text)
+	lines := strings.Split(foot, "\n")
+	for i := len(lines) - 1; boxed && i >= 1; i-- {
+		if borderRe.MatchString(strings.TrimSpace(lines[i])) {
+			if m := ctxRe.FindStringSubmatch(strings.Join(lines[i+1:], "\n")); m != nil {
+				n, _ := strconv.Atoi(m[1])
+				return n
+			}
+			break
+		}
+	}
+	return 100
 }
 
 // session gives the bus name ("quotes:lead") and role of a tab, from the input box border or else the tab title.

@@ -830,6 +830,56 @@ func TestTheFreshStartCheckSkipsOldAndNonLeadDONEs(t *testing.T) {
 	}
 }
 
+// Crius ORDER 10-22 13:23: quotes:lead at ctx 21% with 2 monitors, landing train after train, was told it had no fresh
+// start. A lead whose own tab shows ctx under 50% in the status line below its input box has room left: no alert.
+func TestALeadWithContextUnder50PercentNeedsNoFreshStart(t *testing.T) {
+	old := []Session{{Name: "quotes: lead", ID: "1", Started: t0.Add(-2 * time.Hour)}}
+	status := func(ctx string) string {
+		return "  Opus 5.5 ENT │ main │ $22.97 │ ██░░░░░░░░ " + ctx + " │ spend $0 of $600\n"
+	}
+	lead := func(ctx string) func(time.Time) []Screen {
+		return func(at time.Time) []Screen {
+			return []Screen{screen("quotes", tab("quotes: lead", "landed", status(ctx)+"  ⏵⏵ bypass permissions on · 2 monitors\n", at))}
+		}
+	}
+	for name, c := range map[string]struct {
+		draw func(time.Time) []Screen
+		want int
+	}{
+		"ctx 21%":      {lead("ctx 21%"), 0},
+		"ctx 49%":      {lead("ctx 49%"), 0},
+		"ctx 50%":      {lead("ctx 50%"), 2},
+		"ctx 87%":      {lead("ctx 87%"), 2},
+		"no ctx shown": {lead("ctx –"), 2},
+		"no lead tab":  {func(time.Time) []Screen { return nil }, 2},
+		"another lead's tab": {func(at time.Time) []Screen {
+			return []Screen{screen("axi", tab("axi: lead", "landed", status("ctx 21%"), at))}
+		}, 2},
+		"a builder's tab": {func(at time.Time) []Screen {
+			return []Screen{screen("quotes · p3", tab("quotes: p3", "landed", status("ctx 21%"), at))}
+		}, 2},
+		"ctx typed in the box": {func(at time.Time) []Screen {
+			text := strings.Replace(tab("quotes: lead", "landed", status("ctx 87%"), at), "❯ \n", "❯ it said ctx 21%\n", 1)
+			return []Screen{screen("quotes", text)}
+		}, 2},
+		// Review: a dash line in a draft is not the box's bottom border, and a second tab of the same lead decides too.
+		"ctx typed under a dash line": {func(at time.Time) []Screen {
+			text := strings.Replace(tab("quotes: lead", "landed", status("ctx 87%"), at), "❯ \n", "❯ see\n  ───\n  ctx 21%\n", 1)
+			return []Screen{screen("quotes", text)}
+		}, 2},
+		"two tabs of the lead": {func(at time.Time) []Screen {
+			return append(lead("ctx 21%")(at), screen("quotes", tab("quotes: lead", "landed", status("ctx 87%"), at)))
+		}, 2},
+	} {
+		home := setup(t, map[string]string{"quotes.log": done(t0), "axi.log": ""})
+		f := &fake{ses: old}
+		runAt(t, home, f, c.draw, 10, 21, 30, 41)
+		if got := freshSent(f); len(got) != c.want {
+			t.Errorf("%s: want %d, got %q", name, c.want, got)
+		}
+	}
+}
+
 // projectAlerts runs the watch over two projects, quotes and axi, each with a missed DONE, a tab waiting on a question,
 // an idle lead tab and a lead with no fresh start, and gives the lines sent for each project.
 func projectAlerts(t *testing.T, list string) (quotes, axi []string) {
