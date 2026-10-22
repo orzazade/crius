@@ -19,13 +19,78 @@ or read at the code level yet.
 ### OpenRig (github.com/mvschwarz/openrig)
 
 A team of Claude Code and Codex sessions in tmux, described in one YAML file and started with one command.
-Apache 2.0, npm `@openrig/cli`, Node 22/24 plus tmux. Trended late September 2026; very new.
+Apache 2.0, npm `@openrig/cli`, Node 22/24 plus tmux.
+
+**Code read 2026-10-22** (clone of main e124a74, v0.6.12; read only, nothing installed or run). Repo: created
+2026-04-01, about 4,200 commits, 8K stars, 160 open issues, 69 contributors but one author wrote 2,136 commits
+(next: 218). About 270K lines of TypeScript, 1,787 test files.
+
+What it is: a local daemon (`packages/daemon`, Hono HTTP on port 7433, SQLite in WAL mode under `~/.openrig`),
+a CLI (`@openrig/cli`), a TUI and a web UI. Agents are ordinary Claude Code or Codex processes in tmux panes.
+Flow: CLI/TUI -> HTTP -> daemon -> SQLite queue -> tmux paste into the pane; Claude Code hooks post back to
+the daemon. It routes and restores work; it does **not** check work (no test re-run, no VERIFIED-style gate).
+
+How it does what we do by hand (paths under `packages/daemon/src/`):
+- **Session state from Claude Code hooks**, not screen regex: `PermissionRequest` and `Notification`
+  (`permission_prompt`, `elicitation_dialog`) -> needs input; `idle_prompt`, `Stop`, `SessionEnd` -> idle;
+  `UserPromptSubmit`, `PreToolUse` -> running (`domain/agent-activity-store.ts:351-361`, checked by Crius).
+  Screen sampling only as fallback (`domain/seat-activity-service.ts`).
+- **Grey suggestion text** told apart from typed text by the faint text style (`domain/session-transport.ts:262-279`,
+  checked). This is the cause of our 10-22 lost wakes (wakewatch read grey text as a draft, 8 times).
+- **Draft guard:** refuses to type into a box with unsent text (`draft_input_busy`,
+  `domain/seat-delivery-guard.ts:375`, checked) and keeps the message queued.
+- **Messages as SQLite rows:** the row is stored once; the wake retries until delivered, and the retry state is
+  rebuilt from a transition log, so a daemon restart does not reset or lose it (`domain/queue-wake-ladder.ts:12-19`).
+- **Restore** with each session's exact `--resume` id (`adapters/claude-resume.ts`); managed `/compact`
+  (`domain/claude-compaction-enforcer.ts`); usage and cost columns per session, Claude quota read from the
+  statusline.
+- **Adopts running sessions** (`rig discover`, `rig adopt`, `rig bind`), but only tmux sessions. Ours run in
+  cmux: a live session moves by restarting it in tmux with `claude --resume <id>` (about a minute of pause).
+- Cost: no model calls of its own (no Anthropic or OpenAI client in `packages/*/src`); outbound calls only for
+  optional OpenRouter, Slack and ntfy. No telemetry library found.
+- Not confirmed in code: the whole team coming back after a reboot (changelog only), an end-to-end test that
+  drives real Claude Code, Codex handoff, the YAML field list.
+- Risks: one main author; pre-1.0 and changing daily; tmux, not cmux; default permission floor is
+  `acceptEdits`, and YOLO mode adds `--dangerously-skip-permissions` (`adapters/yolo-mode.ts`).
+
+Verdict: far ahead of Crius on plumbing (watching, delivery, restore), absent on judgement (checking claims,
+done rule, goal reports). Fit: OpenRig under Crius, not instead of it.
 
 Best parts to take:
 - **Seats:** fixed role addresses (`dev-owner@project`) that stay the same across sessions. Ours are names
   like `quotes:lead`, but the session behind a name is found by hand.
 - **Queues per seat:** work items wait in a queue owned by the assignee, not only as bus lines.
 - **Team in one file + one start command**, and the team comes back after a reboot. Our relaunch is manual.
+- **Hook-based session state** and the **faint-text check**, even if we never run OpenRig.
+
+#### OpenRig trial (owner asked 2026-10-22; waits for the owner's go)
+
+Steps: (1) side trial in `~/Projects/yolo/`, two test sessions on Haiku, own tmux server (`tmux -L`), own
+Claude config folder, pinned OpenRig version, 1-2 hours; (2) if it passes, move one Quotes builder (P6 or QA1)
+with `--resume` and run it beside the others for half a day; (3) the whole team only after M1, never mid-push.
+Its hook install into a session's settings needs the owner's OK for steps 2 and 3.
+
+Tests for step 1 (each PASS/FAIL with command, output and timestamps):
+
+| # | Test | Pass when |
+|---|------|-----------|
+| 1 | Idle session with grey suggestion text gets a message | delivered, not held |
+| 2 | Unsent typed text in the box, then a message | held, no mixed text, delivered once the box is empty, nothing lost |
+| 3 | Session hits an "ask" permission rule | "needs input" within 5 s, from the hook |
+| 4 | A dialog is open (question box, menu) | "needs input"; nothing typed into the dialog |
+| 5 | Session finishes its turn | idle within seconds, with a timestamp (our 10-minute rule becomes a query) |
+| 6 | Daemon killed mid-delivery, restarted | message arrives exactly once |
+| 7 | One session's process killed | restored with `--resume`; it still knows a code word told earlier |
+| 8 | Daemon and tmux both stopped (a reboot) | both sessions back with their conversations |
+| 9 | A script reads each session's state as data and sends with a delivery status | could replace team-wait, promptwatch and wakewatch's typing |
+| 10 | tmux inside a cmux tab | tabs still visible; `cmux read-screen` still works |
+| 11 | Overhead: CPU, memory, network connections, tokens added to sessions | no outside connections we did not turn on, no hidden model calls |
+| 12 | Where its hooks are installed | only the test sessions' settings, never `~/.claude/settings.json` |
+| 13 | Default permission mode | not YOLO |
+
+A real usage limit cannot be triggered on demand: only check that it reads the quota numbers. The report
+ends with what it can replace in our scripts, what it cannot (clean-checkout checks stay with Crius), and
+whether to do step 2.
 
 ### Herdr / Herder (terminal agent multiplexer)
 
@@ -138,8 +203,8 @@ Added by the owner 2026-10-21. Written from general knowledge, not checked again
 ## Trial plan (after 2026-11-01)
 
 1. Herdr first: closest to cmux. Test: can our waiters and prompt watching move onto its state + socket API?
-2. OpenRig: start a 2-seat team from YAML; reboot the machine; does it come back? Do seats + queues beat bus
-   lines for us?
+2. OpenRig: code read 2026-10-22; trial steps and the 13 tests are under "OpenRig trial" above. The owner asked
+   about starting it now, before 11-01.
 3. Ghostex: script control (send, read) and handoff Claude to Codex in the middle of a task.
 4. Paperclip: only the budget and approval ideas; we probably do not run it.
 5. LiteLLM: with the local LLM trial. One gateway for local and API models, a budget per key, fallback
