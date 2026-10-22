@@ -864,6 +864,20 @@ func TestATabTitledOnlyByItsProjectIsWatched(t *testing.T) {
 	}
 }
 
+// A tab that cannot be read is named by its title too: another project's stays quiet, a listed project's alerts, and
+// one with no title still alerts, as nothing says whose it is.
+func TestATabReadFailureOfAnUnlistedProjectStaysQuiet(t *testing.T) {
+	home := setup(t, map[string]string{"quotes.log": ""})
+	testutil.Write(t, filepath.Join(home, "wakewatch-projects"), "quotes crius\n")
+	f := &fake{screens: []Screen{{Surface: "surface:1", Title: "quotes: qa", Err: "surface gone"},
+		{Surface: "surface:2", Title: "axi: lead", Err: "surface gone"}, {Surface: "surface:3", Err: "surface gone"}}}
+	Run(f.deps(home, t0))
+	got := strings.Join(f.sent, "\n")
+	if !strings.Contains(got, "surface:1") || strings.Contains(got, "surface:2") || !strings.Contains(got, "surface:3") {
+		t.Fatal(f.sent)
+	}
+}
+
 // A listed name with no bus file (a capital, a typo, "quotes.log") would silence that team with no word: it is an
 // alert that names it. Names match bus files whatever their case.
 func TestAListedNameWithNoBusIsAnAlert(t *testing.T) {
