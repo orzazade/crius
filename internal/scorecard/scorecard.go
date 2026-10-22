@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -17,12 +18,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/orzazade/crius/internal/quota"
 	"github.com/orzazade/crius/internal/redact"
 )
 
 // Def is the scorecard definition; a week written under another one is not compared with this one. v2 (owner 10-19,
-// P3c): defects and revokes on the outcomes' accepted child tasks count against the outcome's week.
-const Def = "v2"
+// P3c): defects and revokes on the outcomes' accepted child tasks count against the outcome's week. v3 (P3b): the
+// week's list-price $ by account and project, and the enterprise guard's violations.
+const Def = "v3"
 
 const (
 	week   = 7 * 24 * time.Hour
@@ -37,10 +40,12 @@ type Week struct {
 	Lo, Hi     int64
 }
 
-// Numbers are what a revised line compares. MaxPct is -1 when the week has no Max sample.
+// Numbers are what a revised line compares. MaxPct is -1 when the week has no Max sample. They come from the store
+// alone, so the violation count (it reads projects.toml) is in the text only: an edit there must not revise a week.
 type Numbers struct {
 	Code, Research, Falcon, Other, Revoked, Defects, Escapes, ChildRevoked int
 	MaxPct                                                                 float64
+	MaxUSD, EntUSD                                                         int
 }
 
 type Card struct {
@@ -146,7 +151,7 @@ func parse(s string) (time.Time, error) {
 }
 
 // Build computes the week's card as the store holds it now.
-func Build(db *sql.DB, w Week, now time.Time) (*Card, error) {
+func Build(db *sql.DB, w Week, p quota.Projects, now time.Time) (*Card, error) {
 	from, to := w.Start.UTC().Format(stamp), w.End.UTC().Format(stamp)
 	// An outcome is an item with no parent (as corrected); the work under it is not counted (design §7).
 	rows, err := db.Query("select a.item, i.project, i.kind, a.state, a.revision, coalesce(a.defect, ''), i.opened,"+
@@ -297,6 +302,11 @@ func Build(db *sql.DB, w Week, now time.Time) (*Card, error) {
 	if maxPct.Valid {
 		n.MaxPct = maxPct.Float64
 	}
+	sp, err := quota.Spent(db, p, w.Start, w.End, w.Lo, w.Hi)
+	if err != nil {
+		return nil, err
+	}
+	n.MaxUSD, n.EntUSD = int(math.Round(sp.MaxUSD)), int(math.Round(sp.EntUSD))
 
 	status := "complete"
 	if !maxPct.Valid {
@@ -338,7 +348,7 @@ func Build(db *sql.DB, w Week, now time.Time) (*Card, error) {
 	if maxPct.Valid {
 		qt = fmt.Sprintf("Quota      Max (both personas): %.0f%% observed (%d samples)", maxPct.Float64, samples)
 	}
-	lines = append(lines, qt+" · enterprise $ and project shares: not in def "+Def+" (crius-rec quota: running week)",
+	lines = append(lines, qt+spendText(sp), sharesText(sp),
 		"Waits      not measured (step 7)", "Flow       "+flow(cycle),
 		fmt.Sprintf("Quality    defects on these outcomes and their child tasks %d (found by us %d, owner %d, others %d) · escapes %d ·"+
 			" revoked %d of %d · corrections recorded %d · guards opened %d", n.Defects, foundBy["us"],
@@ -556,7 +566,68 @@ func changes(a, b Numbers) string {
 		}
 		ss = append(ss, fmt.Sprintf("Max %s -> %s", pct(a.MaxPct), pct(b.MaxPct)))
 	}
+	if a.MaxUSD != b.MaxUSD {
+		ss = append(ss, fmt.Sprintf("Max $%d -> $%d", a.MaxUSD, b.MaxUSD))
+	}
+	if a.EntUSD != b.EntUSD {
+		ss = append(ss, fmt.Sprintf("enterprise $%d -> $%d", a.EntUSD, b.EntUSD))
+	}
 	return strings.Join(ss, ", ")
+}
+
+// spendText is the week's $ after the Max share: Max list-price and its part with no sample near, then the
+// enterprise $ by project and its violations (design §7 M2e); $ of no known account is in neither.
+func spendText(sp *quota.Spend) string {
+	t := ", list $" + whole(sp.MaxUSD)
+	if sp.MaxUSD > 0 {
+		t += ", uncovered " + whole(100*sp.Uncovered/sp.MaxUSD) + "%"
+	}
+	t += " · enterprise: $" + whole(sp.EntUSD)
+	if len(sp.Ent) > 0 {
+		var ps []string
+		for _, s := range sp.Ent {
+			ps = append(ps, s.Project+" "+whole(s.USD))
+		}
+		t += " (" + strings.Join(ps, ", ") + ")"
+	}
+	if t += fmt.Sprintf(", %d violation", len(sp.Violations)); len(sp.Violations) != 1 {
+		t += "s"
+	}
+	if sp.UnknownUSD > 0 {
+		t += " · account unknown: $" + whole(sp.UnknownUSD) + " (not measured)"
+	}
+	if sp.Unpriced > 0 {
+		t += fmt.Sprintf(" · %d requests unpriced (in no $)", sp.Unpriced)
+	}
+	return t
+}
+
+// sharesText is each project's part of the week's Max list-price $ (design §7 M2b), the six largest and the rest.
+func sharesText(sp *quota.Spend) string {
+	if sp.MaxUSD <= 0 {
+		return "Shares     Max list-price: no priced Max request in the week"
+	}
+	var ps []string
+	rest := 0.0
+	for i, s := range sp.Shares {
+		if i < 6 {
+			ps = append(ps, s.Project+" "+whole(100*s.USD/sp.MaxUSD)+"%")
+		} else {
+			rest += s.USD
+		}
+	}
+	if rest > 0 {
+		ps = append(ps, "other "+whole(100*rest/sp.MaxUSD)+"%")
+	}
+	return "Shares     Max list-price: " + strings.Join(ps, " · ")
+}
+
+// whole rounds v to a whole number; an amount above 0 that rounds to 0 is "<1", so it does not read as none.
+func whole(v float64) string {
+	if v > 0 && v < 0.5 {
+		return "<1"
+	}
+	return fmt.Sprintf("%.0f", math.Round(v)) // fmt rounds a half to even
 }
 
 // since names the record events (defect, revoke, correction) after event id that touch one of items (outcomes and

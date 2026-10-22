@@ -43,7 +43,7 @@ Goal: build the Crius record (design §9 steps 1-9) so Crius answers the owner's
 - [x] 4b fail-closed key=value + gitleaks rules · 86a776a
 - [x] 5 digest + Crius daily start (09:00/18:00 goal report) · 23052fe .. 50e2384
 - [x] 3b Enterprise fallback: included usage + spend limit (owner 10-19 14:44, Crius NEED 15:06) · 72e9793, 97dc0d1
-- [ ] 6 record accept + scorecard (P1-P6, P3c done; P3b, P7 open)
+- [ ] 6 record accept + scorecard (P1-P6, P3c, P3b done; P7 open)
 - [ ] 9 Falcon source
 - [x] O1 OpenRig lessons doc (docs/notes/OPENRIG-LESSONS.md) · 23165f5, VERIFIED bus 14:47
 - [x] O2 crius-hook writes a state file per session · 6268b49, VERIFIED bus 15:32, live (owner OK) 15:33
@@ -51,7 +51,7 @@ Goal: build the Crius record (design §9 steps 1-9) so Crius answers the owner's
 - [x] O4 messages stored (~/.crius/outbox), held while the box has typed text, retried until delivered (crius-say; wakewatch alerts) · 86f33e3 + a2f74f8 (test token fix), VERIFIED bus 17:23 (in the O5 line: items 1-5 all verified)
 - [x] O5 crius-spawn -resume <project> <role> by session id (role file ~/.crius/roles/<project>.<role>.json, kept by crius-hook) · f12739b, VERIFIED bus 17:23, installed; role file written live; -resume and /clear not yet tried on a live tab
 Done: 86% (12 of 14 required rows: 1-5, 4b, 3b, 6, 9, O1-O5, equal weight; 7 and 8 only if needed)
-Next: OpenRig brief observe one day, then decide (owner brief 10-22 14:27); first live -resume and /clear check; crius#P7 build items and their P3 follow-ups done (64848d1, VERIFIED 04:07); step 6 P7 descriptive read on 10-23 (after the 10-22 02:00 reset); P3b open
+Next: OpenRig brief observe one day, then decide (owner brief 10-22 14:27); first live -resume and /clear check; crius#P7 build items and their P3 follow-ups done (64848d1, VERIFIED 04:07); step 6 P7 descriptive read on 10-23 (after the 10-22 02:00 reset); P3b done (def v3)
 Needs owner: OK to install hook (a) no-ai-attribution.py from ~/.crius/state/crius/proposals/p7-3/ (58/58 tests); after the observe day, ~/.crius/wakewatch-mode = decide (O3), brought by Crius
 
 ## NOW
@@ -66,7 +66,7 @@ a timed-out codex review of another session stored as review-uncounted (not zero
 Found + fixed: git ingest read local main only; crius local main sat at 50e2384 (10-17), so the store missed every
 step 6 commit while health said complete. Now the newer of main and origin/main; diverged: local + partial warning.
 
-Next: P7 on 10-23 (after the 10-22 02:00 reset); P3b open; step 9 paused with Falcon.
+Next: P7 on 10-23 (after the 10-22 02:00 reset); step 9 paused with Falcon.
 
 ## Open work (step 6 checklist; each part red first, then build, codex review, one DONE with evidence + commit)
 
@@ -74,7 +74,7 @@ Spec: design §9 row 6, §3c tables (acceptance, defect, correction), §7 (M1, M
 1. [x] P1 (3c86343) `record accept` with revision-bound checks/review (spec in design §4 "record accept as built").
 2. [x] P2 (d4d9f61 + 4a102aa) `record defect` / `revoke` / `correct` + guard item + `show ITEM --history`.
 3. [x] P3 (61fdb75 + 93957fc) `crius-rec scorecard [--week EPOCH] [--write]` -> state/scorecards/<week>.md.
-3b. [ ] P3b per-week enterprise $ + project shares in the scorecard (needs a quota.Build for a past epoch).
+3b. [x] P3b per-week enterprise $ + project shares in the scorecard: quota.Spent over the week, card def v3 (10-22).
 3c. [x] P3c (c133717 + 27c2a73) child defect/revoke lowers the parent outcome's week (owner 10-19 ~17:25).
 4. [x] P4 (e304c4d) parity with review-1016 REPORT §4: store numbers within 2%.
 5. [x] P5 (3f93098) restore-after-expiry test, weekly launchd Thu 04:00, `health` shows it.

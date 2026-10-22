@@ -3,6 +3,7 @@ package scorecard
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/orzazade/crius"
+	"github.com/orzazade/crius/internal/quota"
 	"github.com/orzazade/crius/internal/store"
 	"github.com/orzazade/crius/internal/testutil"
 )
@@ -80,7 +82,7 @@ func weekOf(t *testing.T, db *sql.DB, ts string) Week {
 
 func build(t *testing.T, db *sql.DB, week, now string) *Card {
 	t.Helper()
-	c, err := Build(db, weekOf(t, db, week), at(now))
+	c, err := Build(db, weekOf(t, db, week), demoProjects, at(now))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +176,7 @@ func TestRevokeLowersTheWeekItWasAcceptedIn(t *testing.T) {
 		t.Errorf("week A names the revoked outcome and its defect:\n%s", a.Text)
 	}
 	now := weekOf(t, db, time.Now().UTC().Format(time.RFC3339)) // the week the revoke was found in
-	if c, err := Build(db, now, time.Now()); err != nil || c.Numbers.Revoked != 0 || c.Numbers.Defects != 0 {
+	if c, err := Build(db, now, demoProjects, time.Now()); err != nil || c.Numbers.Revoked != 0 || c.Numbers.Defects != 0 {
 		t.Fatalf("the week found: %+v %v", c, err)
 	}
 }
@@ -375,7 +377,7 @@ func TestChildDefectsCountAgainstTheOutcomeWeek(t *testing.T) {
 		t.Fatalf("week B: %+v\n%s", n, b.Text)
 	}
 	now := weekOf(t, db, time.Now().UTC().Format(time.RFC3339))
-	if c, err := Build(db, now, time.Now()); err != nil || c.Numbers.ChildRevoked != 0 || c.Numbers.Defects != 0 {
+	if c, err := Build(db, now, demoProjects, time.Now()); err != nil || c.Numbers.ChildRevoked != 0 || c.Numbers.Defects != 0 {
 		t.Fatalf("the week found: %+v %v", c, err)
 	}
 }
@@ -399,8 +401,8 @@ func TestChildRevokeRevisesTheOutcomeWeek(t *testing.T) {
 			t.Errorf("revised line lacks %q: %q", want, added)
 		}
 	}
-	if !strings.Contains(orig, "def v2") {
-		t.Errorf("the definition changed with P3c: %s", orig)
+	if !strings.Contains(orig, "def "+Def) {
+		t.Errorf("the card does not name def %s: %s", Def, orig)
 	}
 }
 
@@ -430,7 +432,170 @@ func TestManyChildTasksBuild(t *testing.T) {
 		" select 'demo#' || n, 'demo', n, 'demo#1', 'code', 't', '[]', '2026-09-11T09:00:00Z', 'open' from k"); err != nil {
 		t.Fatal(err)
 	}
-	if c, err := Build(db, weekOf(t, db, "2026-09-12T00:00:00Z"), at("2026-10-20T00:00:00Z")); err != nil || len(c.Children) != 33002 {
+	if c, err := Build(db, weekOf(t, db, "2026-09-12T00:00:00Z"), demoProjects, at("2026-10-20T00:00:00Z")); err != nil || len(c.Children) != 33002 {
 		t.Fatalf("children %v, err %v", c != nil && len(c.Children) > 0, err)
+	}
+}
+
+// demoProjects: quotes and axi may run on the enterprise account; no folder names a project.
+var demoProjects = quota.Projects{EnterpriseOK: map[string]bool{"quotes": true, "axi": true},
+	ForCwd: func(string) string { return "" }}
+
+// P3b (design §7, M2e and M2b): the week's list-price $ from the store. Max $ with the part no sample covers, enterprise
+// $ by project with its violations, and each project's share of the Max $; requests of the next week do not count.
+func TestCardShowsTheWeeksMoneyByAccountAndProject(t *testing.T) {
+	db, _ := fixture(t)
+	for _, s := range []struct{ id, account, project string }{
+		{"s1", "max", "quotes"}, {"s2", "max", "crius"}, {"s3", "enterprise", "quotes"}, {"s4", "enterprise", "axi"},
+		{"s5", "enterprise", "crius"},
+	} {
+		if _, err := db.Exec("insert into assignment (session, account, project, from_ts, source) values"+
+			" (?, ?, ?, '2026-09-10T01:00:00Z', 'tag')", s.id, s.account, s.project); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, r := range []struct {
+		session, ts string
+		usd         float64
+	}{
+		{"s1", "2026-09-15T10:10:00Z", 30}, // within 45 min of the 10:00 sample
+		{"s1", "2026-09-12T10:00:00Z", 10}, // no sample near it
+		{"s2", "2026-09-15T09:50:00Z", 10},
+		{"s3", "2026-09-14T10:00:00Z", 260},
+		{"s4", "2026-09-13T10:00:00Z", 152},
+		{"s5", "2026-09-13T11:00:00Z", 5}, // crius may not run on enterprise
+		{"s6", "2026-09-14T11:00:00Z", 7}, // no tag, no statusline: account unknown
+		{"s1", "2026-09-18T10:00:00Z", 1000},
+	} {
+		if _, err := db.Exec("insert into request (request_id, session, ts_first, ts_last, cost_list_usd) values (?, ?, ?, ?, ?)",
+			fmt.Sprint("r", i), r.session, r.ts, r.ts, r.usd); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c := build(t, db, "2026-09-12T00:00:00Z", "2026-10-20T00:00:00Z")
+	for _, want := range []string{
+		"Quota      Max (both personas): 71% observed (1 samples), list $50, uncovered 20% · enterprise: $417 (quotes 260," +
+			" axi 152, crius 5), 1 violation · account unknown: $7 (not measured)\n",
+		"Shares     Max list-price: quotes 80% · crius 20%\n",
+	} {
+		if !strings.Contains(c.Text, want) {
+			t.Errorf("card lacks %q:\n%s", want, c.Text)
+		}
+	}
+	if n := c.Numbers; n.MaxUSD != 50 || n.EntUSD != 417 {
+		t.Errorf("numbers %+v", n)
+	}
+	later := c.Numbers
+	later.MaxUSD, later.EntUSD = 60, 400
+	if d := changes(c.Numbers, later); d != "Max $50 -> $60, enterprise $417 -> $400" {
+		t.Errorf("changes: %q", d)
+	}
+}
+
+func TestSmallAmountsDoNotReadAsNothing(t *testing.T) {
+	sp := &quota.Spend{MaxUSD: 100.2, Shares: []quota.Share{{Project: "a", USD: 99.9}, {Project: "b", USD: 0.3}},
+		EntUSD: 0.2, Ent: []quota.Share{{Project: "falcon", USD: 0.2}}, UnknownUSD: 0.3}
+	if got, want := spendText(sp), ", list $100, uncovered 0% · enterprise: $<1 (falcon <1), 0 violations"+
+		" · account unknown: $<1 (not measured)"; got != want {
+		t.Errorf("spend:\n got %q\nwant %q", got, want)
+	}
+	if got, want := sharesText(sp), "Shares     Max list-price: a 100% · b <1%"; got != want {
+		t.Errorf("shares:\n got %q\nwant %q", got, want)
+	}
+}
+
+// A session's violation is counted in the week of its request, not in every week the session has a request in
+// (review of P3b): s7 ran crius on enterprise the week before and is on Max in this one.
+func TestViolationCountsInTheWeekOfItsRequest(t *testing.T) {
+	db, _ := fixture(t)
+	for _, a := range []struct{ account, from, to string }{
+		{"enterprise", "2026-09-05T00:00:00Z", "2026-09-11T00:00:00Z"}, {"max", "2026-09-11T00:00:00Z", ""},
+	} {
+		if _, err := db.Exec("insert into assignment (session, account, project, from_ts, to_ts, source) values"+
+			" ('s7', ?, 'crius', ?, nullif(?, ''), 'tag')", a.account, a.from, a.to); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, ts := range []string{"2026-09-08T10:00:00Z", "2026-09-13T10:00:00Z"} {
+		if _, err := db.Exec("insert into request (request_id, session, ts_first, ts_last, cost_list_usd) values"+
+			" (?, 's7', ?, ?, 2)", fmt.Sprint("r", i), ts, ts); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if c := build(t, db, "2026-09-12T00:00:00Z", "2026-10-20T00:00:00Z"); !strings.Contains(c.Text, "enterprise: $0, 0 violations") {
+		t.Errorf("this week has no enterprise request:\n%s", c.Text)
+	}
+	if c := build(t, db, "2026-09-08T00:00:00Z", "2026-10-20T00:00:00Z"); !strings.Contains(c.Text, "enterprise: $2 (crius 2), 1 violation") {
+		t.Errorf("the week of the enterprise request lacks its violation:\n%s", c.Text)
+	}
+}
+
+// The card counts what guard() counts for the week's requests (review of P3b): an unpriced request still breaks the
+// rule, and an enterprise tag on a project not allowed there is a violation whatever the statusline measured.
+func TestViolationsMatchTheGuardsRules(t *testing.T) {
+	for _, c := range []struct {
+		name, seen, cost, want string
+	}{
+		{"unpriced", "", "", "enterprise: $0, 1 violation · 1 requests unpriced"},
+		{"tag under a Max statusline", "2026-09-13T10:00:00Z", "3", "enterprise: $0, 2 violations"}, // mismatch and s1
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			db, _ := fixture(t)
+			if _, err := db.Exec("insert into assignment (session, account, project, from_ts, source) values" +
+				" ('s8', 'enterprise', 'crius', '2026-09-10T01:00:00Z', 'tag')"); err != nil {
+				t.Fatal(err)
+			}
+			if c.seen != "" {
+				if _, err := db.Exec("insert into account_seen (source_key, session, ts, rl) values ('a1', 's8', ?, 1)",
+					c.seen); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := db.Exec("insert into request (request_id, session, ts_first, ts_last, cost_list_usd) values"+
+				" ('r1', 's8', '2026-09-13T10:00:00Z', '2026-09-13T10:00:00Z', nullif(?, ''))", c.cost); err != nil {
+				t.Fatal(err)
+			}
+			if card := build(t, db, "2026-09-12T00:00:00Z", "2026-10-20T00:00:00Z"); !strings.Contains(card.Text, c.want) {
+				t.Errorf("card lacks %q:\n%s", c.want, card.Text)
+			}
+		})
+	}
+}
+
+// The compared numbers come from the store alone: a projects.toml edit (here crius allowed on enterprise) must not
+// revise a written week (review of P3b).
+func TestProjectsEditDoesNotReviseAWrittenWeek(t *testing.T) {
+	db, home := fixture(t)
+	if _, err := db.Exec("insert into assignment (session, account, project, from_ts, source) values" +
+		" ('s5', 'enterprise', 'crius', '2026-09-10T01:00:00Z', 'tag')"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("insert into request (request_id, session, ts_first, ts_last, cost_list_usd) values" +
+		" ('r1', 's5', '2026-09-13T11:00:00Z', '2026-09-13T11:00:00Z', 5)"); err != nil {
+		t.Fatal(err)
+	}
+	dir, now := filepath.Join(home, "state", "scorecards"), at("2026-09-19T00:00:00Z")
+	w := weekOf(t, db, "2026-09-12T00:00:00Z")
+	if _, _, err := Write(db, dir, build(t, db, "2026-09-12T00:00:00Z", "2026-09-19T00:00:00Z"), now); err != nil {
+		t.Fatal(err)
+	}
+	ok := quota.Projects{EnterpriseOK: map[string]bool{"quotes": true, "axi": true, "crius": true}, ForCwd: demoProjects.ForCwd}
+	c, err := Build(db, w, ok, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(c.Text, "(crius 5), 0 violations") { // the edit took effect
+		t.Errorf("crius allowed, still a violation:\n%s", c.Text)
+	}
+	if _, what, err := Write(db, dir, c, now); err != nil || what != "unchanged" {
+		t.Errorf("after the edit: %s, %v", what, err)
+	}
+}
+
+func TestWholeRoundsHalfUp(t *testing.T) {
+	for v, want := range map[float64]string{0.5: "1", 2.5: "3", 1232.5: "1233", 0.49: "<1", 0: "0"} {
+		if got := whole(v); got != want {
+			t.Errorf("whole(%v) = %q, want %q", v, got, want)
+		}
 	}
 }

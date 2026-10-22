@@ -39,7 +39,7 @@ func backup(t *testing.T, db *sql.DB, home, day string) {
 
 func restoreTest(t *testing.T, home, now string) *Restore {
 	t.Helper()
-	r, err := RestoreTest(home, at(now))
+	r, err := RestoreTest(home, demoProjects, at(now))
 	if err != nil {
 		t.Fatal(err)
 	}

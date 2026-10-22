@@ -773,7 +773,12 @@ func scorecardCmd(home string, now time.Time, day string, write bool, stdout, st
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return exitError
 	}
-	c, err := scorecard.Build(db, w, now)
+	projects, err := ingest.QuotaProjects(home)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return exitError
+	}
+	c, err := scorecard.Build(db, w, projects, now)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return exitError
@@ -804,7 +809,12 @@ func restoreTestCmd(home string, now time.Time, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "unavailable: %s is missing; run crius-rec init\n", home)
 		return exitUnavailable
 	}
-	r, err := scorecard.RestoreTest(home, now)
+	projects, err := ingest.QuotaProjects(home)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return exitError
+	}
+	r, err := scorecard.RestoreTest(home, projects, now)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return exitError

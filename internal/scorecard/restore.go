@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/orzazade/crius/internal/quota"
 	"github.com/orzazade/crius/internal/redact"
 	"github.com/orzazade/crius/internal/store"
 )
@@ -39,9 +40,9 @@ type RestoreWeek struct{ Week, Result string }
 func restorePath(home string) string { return filepath.Join(home, "state", "restore-test.json") }
 
 // RestoreTest runs the test and saves its result; the error is only for a result that could not be saved.
-func RestoreTest(home string, now time.Time) (*Restore, error) {
+func RestoreTest(home string, p quota.Projects, now time.Time) (*Restore, error) {
 	r := &Restore{Ran: now.UTC().Format(stamp)}
-	if err := restore(home, now, r); err != nil {
+	if err := restore(home, p, now, r); err != nil {
 		r.Status, r.Text = "fail", err.Error()
 	}
 	r.Text, _ = redact.Redact(r.Text)
@@ -71,7 +72,7 @@ func ReadRestore(home string) (*Restore, error) {
 	return &r, nil
 }
 
-func restore(home string, now time.Time, r *Restore) error {
+func restore(home string, p quota.Projects, now time.Time, r *Restore) error {
 	names, err := filepath.Glob(filepath.Join(home, "backup", "record-*.db.gz"))
 	if err != nil {
 		return err
@@ -152,7 +153,7 @@ func restore(home string, now time.Time, r *Restore) error {
 			r.Weeks = append(r.Weeks, RestoreWeek{name, fmt.Sprintf("not compared: written with def %s, not %s", old.Def, Def)})
 			continue
 		}
-		res, err := compareWeek(db, base, w, old, lastEvent, now)
+		res, err := compareWeek(db, base, w, old, lastEvent, p, now)
 		if err != nil {
 			return fmt.Errorf("week %s: %w", name, err)
 		}
@@ -205,7 +206,7 @@ func gunzip(src, dst string) error {
 }
 
 // compareWeek regenerates week w from the restored store and compares it with base.md and base.json as last written.
-func compareWeek(db *sql.DB, base string, w Week, old written, lastEvent int64, now time.Time) (string, error) {
+func compareWeek(db *sql.DB, base string, w Week, old written, lastEvent int64, p quota.Projects, now time.Time) (string, error) {
 	var diff []string
 	md, err := os.ReadFile(base + ".md")
 	if err != nil {
@@ -213,7 +214,7 @@ func compareWeek(db *sql.DB, base string, w Week, old written, lastEvent int64, 
 	} else if mdHash(md) != old.MD {
 		diff = append(diff, "the .md is not what crius-rec wrote")
 	}
-	c, err := Build(db, w, now)
+	c, err := Build(db, w, p, now)
 	if err != nil {
 		return "", err
 	}
