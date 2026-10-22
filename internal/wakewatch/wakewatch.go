@@ -95,8 +95,8 @@ type state struct {
 }
 
 // Run checks every bus log and every tab once and sends each alert that is new, or still open 20 min after it was
-// last sent, as one line. A line that fails is not marked sent, so the next run tries again; the first failure in a
-// row also goes to Crius's bus.
+// last sent, as one line. A line that cannot be typed goes on crius.log as an ALERT instead, and the first failure in a
+// row also says why there.
 func Run(d Deps) error {
 	path := filepath.Join(d.Home, "state", "wakewatch.json")
 	st := state{}

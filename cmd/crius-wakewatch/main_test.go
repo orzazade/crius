@@ -430,4 +430,30 @@ func TestSendSaysWhatTheDraftIs(t *testing.T) {
 			t.Errorf("err %v, want it to name %s", err, want)
 		}
 	}
+	// Review of e871917, P2: the error goes to wakewatch.log and the bus, so the draft is redacted before the cut; a
+	// token that crosses rune 50 would be too short for the redactor after it. Built here so no scanner flags the file.
+	token := "ghp_" + strings.Repeat("a1B2c3D4e", 4)
+	_, dir := fakeTab(t)
+	os.WriteFile(filepath.Join(dir, "draft"), []byte("please push the fix to main with "+token+" and then"), 0o644)
+	if err := send("WAKEWATCH: new"); err == nil || strings.Contains(err.Error(), "ghp_a1B") || !strings.Contains(err.Error(), "please push") {
+		t.Errorf("err %v, want the draft without any part of the token", err)
+	}
+	// Review of the fix, P2 + P3: the box wraps a long line, so a token can reach Redact as two short pieces; and every
+	// error that quotes the box (here: the owner typed while wakewatch typed) shows it the same safe way.
+	for name, put := range map[string][2]string{
+		"wrapped": {"draft", "push with " + token[:17] + "\n" + token[17:] + " now"},
+		"typed":   {"extra", " " + token},
+		// Re-review P1: a hit on the box text as shown must not let a wrapped secret next to it through.
+		"two":      {"draft", "use " + token + "\n" + token[:17] + "\n" + token[17:] + " ok"},
+		"password": {"draft", "password=hunt\ner2 is it"},
+		// A wrap ate the space before it, so the glued text has no word break; low entropy, so only the ghp rule can see it.
+		"spaced": {"draft", "use\nghp_" + strings.Repeat("B", 13) + "\n" + strings.Repeat("B", 23) + " ok"},
+	} {
+		_, dir := fakeTab(t)
+		os.WriteFile(filepath.Join(dir, put[0]), []byte(put[1]), 0o644)
+		err := send("WAKEWATCH: new")
+		if err == nil || strings.Contains(err.Error(), "ghp_a1B") || strings.Contains(err.Error(), "c3D4ea1B2c3D4e") || strings.Contains(err.Error(), "er2") || strings.Contains(err.Error(), "BBB") {
+			t.Errorf("%s: err %v, want no part of the token", name, err)
+		}
+	}
 }

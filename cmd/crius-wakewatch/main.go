@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/orzazade/crius/internal/redact"
 	"github.com/orzazade/crius/internal/store"
 	"github.com/orzazade/crius/internal/wakewatch"
 )
@@ -114,7 +115,7 @@ func screens() ([]wakewatch.Screen, error) {
 
 // send types text into Crius's own tab, then Enter. The tab is the one terminal in cmux titled "crius" (a file naming
 // it went stale when Crius handed over to a new tab). None or several is loud and types nothing: a cmux send with no
-// target goes to the caller's tab, and the alert is sent again on the next run.
+// target goes to the caller's tab, and Run posts the alert on crius.log instead.
 func send(text string) error {
 	tabs, err := terminals()
 	if err != nil {
@@ -147,17 +148,13 @@ func send(text string) error {
 	if draft != "" {
 		if err != nil || squash(draft) != squash(string(last)) {
 			// read-screen has no colours: the draft's start lets Crius or the owner see what the box holds.
-			shown := strings.Join(strings.Fields(draft), " ")
-			if r := []rune(shown); len(r) > 50 {
-				shown = string(r[:50]) + "…"
-			}
-			return fmt.Errorf("Crius's prompt holds a draft that is not wakewatch's (%q): nothing typed", shown)
+			return fmt.Errorf("Crius's prompt holds a draft that is not wakewatch's (%q): nothing typed", shown(draft))
 		}
 		if out, err := cmux("send-key", "--workspace", ws, "--surface", surface, "enter"); err != nil {
 			return fmt.Errorf("cmux send-key: %v: %s", err, strings.TrimSpace(string(out)))
 		}
 		if draft, err := waitBox(ws, surface, ""); err != nil || draft != "" {
-			return fmt.Errorf("Crius's prompt still holds %q after Enter on wakewatch's earlier line: %v", draft, err)
+			return fmt.Errorf("Crius's prompt still holds %q after Enter on wakewatch's earlier line: %v", shown(draft), err)
 		}
 	}
 	if err := os.MkdirAll(filepath.Dir(pending), 0o700); err != nil {
@@ -174,16 +171,38 @@ func send(text string) error {
 		return err
 	}
 	if squash(draft) != squash(text) {
-		return fmt.Errorf("Crius's prompt holds %q after typing, not the alert alone: Enter not pressed", draft)
+		return fmt.Errorf("Crius's prompt holds %q after typing, not the alert alone: Enter not pressed", shown(draft))
 	}
 	if out, err := cmux("send-key", "--workspace", ws, "--surface", surface, "enter"); err != nil {
 		return fmt.Errorf("cmux send-key: %v: %s", err, strings.TrimSpace(string(out)))
 	}
 	// The line stays pending until the box is empty, so the next send can finish it.
 	if draft, err = waitBox(ws, surface, ""); err != nil || draft != "" {
-		return fmt.Errorf("Crius's prompt still holds %q after Enter: %v", draft, err)
+		return fmt.Errorf("Crius's prompt still holds %q after Enter: %v", shown(draft), err)
 	}
 	return os.Remove(pending)
+}
+
+// shown gives what an error may say about a draft: these errors go to wakewatch.log and the bus. It is redacted before
+// the cut (a cut could split a secret). A wrap in the box splits a secret into pieces the redactor may catch only in
+// part, or not at all, so a draft of several lines with a secret in it leaves nothing but the marker. The wraps are
+// taken out from each line on: Prompt trims a wrap's space away, and a token glued to the word before it has no word
+// break to match at.
+func shown(draft string) string {
+	text, hits := redact.Redact(draft)
+	lines := strings.Split(draft, "\n")
+	for i := range lines {
+		_, n := redact.Redact(strings.Join(lines[i:], ""))
+		hits += n
+	}
+	if len(lines) > 1 && hits > 0 {
+		return "[redacted]"
+	}
+	text = strings.Join(strings.Fields(text), " ")
+	if r := []rune(text); len(r) > 50 {
+		text = string(r[:50]) + "…"
+	}
+	return text
 }
 
 var boxWait = 100 * time.Millisecond
