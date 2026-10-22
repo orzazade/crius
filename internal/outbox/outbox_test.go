@@ -355,15 +355,15 @@ func TestAHungCmuxIsKilled(t *testing.T) {
 
 // Review 10-22: a failed read-screen put the screen into the error, which reaches the bus and the stored message.
 func TestAFailedReadKeepsSecretsOutOfTheError(t *testing.T) {
-	tab := &box{title: "crius", readErr: "partial screen: export TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789"}
+	tab := &box{title: "crius", readErr: "partial screen: export TOKEN=ghp_" + strings.Repeat("a1B2c3D4e", 4)}
 	fake(t, tab)
 	home := t.TempDir()
 	err := Send(home, "crius", "WAKEWATCH: one")
-	if err == nil || strings.Contains(err.Error(), "ghp_abcdef") {
+	if err == nil || strings.Contains(err.Error(), "ghp_a1B") {
 		t.Errorf("Send: err %v, want an error without the token", err)
 	}
 	left, _ := list(home)
-	if len(left) != 1 || strings.Contains(left[0].LastError, "ghp_abcdef") {
+	if len(left) != 1 || strings.Contains(left[0].LastError, "ghp_a1B") {
 		t.Errorf("stored %+v, want the message with no token in its error", left)
 	}
 }

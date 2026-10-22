@@ -13,12 +13,14 @@ import (
 // (sk_live_...), which the test decodes. Not checked: the generic rule (it matches go.sum hashes and every
 // password = x fixture, and push protection looks for token formats), and the vendored rule files, which are
 // upstream's as pinned.
+// Untracked files count too: a gate run on files copied in before the commit passed while 86f33e3 held a token
+// (Crius 10-22 17:2x).
 func TestRepoHoldsNoRawToken(t *testing.T) {
 	root, err := filepath.Abs("../..")
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := exec.Command("git", "-C", root, "ls-files", "-z").Output()
+	out, err := exec.Command("git", "-C", root, "ls-files", "-z", "--cached", "--others", "--exclude-standard").Output()
 	if err != nil {
 		t.Fatalf("git ls-files in %s: %v", root, err)
 	}
