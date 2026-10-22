@@ -33,7 +33,7 @@ main = origin/main = this RESUME commit (P6b). Local main ref is behind: it is c
   after the work statusline, red first. Status: done (main c133717, 27c2a73; scorecard def v2).
 - Standing (memory): personal repo, push to main after review; effort medium/high only; no AI attribution.
 
-## GOAL (2026-10-19 19:10)
+## GOAL (2026-10-22 09:02)
 
 Goal: build the Crius record (design §9 steps 1-9) so Crius answers the owner's questions from its own store
 - [x] 1 store layout, leak test, decisions, items, bus grammar · 060610f
@@ -46,8 +46,8 @@ Goal: build the Crius record (design §9 steps 1-9) so Crius answers the owner's
 - [ ] 6 record accept + scorecard (P1-P6, P3c done; P3b, P7 open)
 - [ ] 9 Falcon source
 Done: 70% (7 of 10 required steps incl. 3b, equal weight; 7 and 8 only if needed)
-Next: step 6 P7 descriptive read on 10-23 (after the 10-22 02:00 reset); P3b open
-Needs owner: nothing
+Next: crius#P7 build items and their P3 follow-ups done (64848d1, VERIFIED 04:07); step 6 P7 descriptive read on 10-23 (after the 10-22 02:00 reset); P3b open
+Needs owner: run ~/Projects/scifi/crius-live/bin/crius-install-launchd (clean clone at 64848d1; replaces the live launchd jobs); OK to install hook (a) no-ai-attribution.py from ~/.crius/state/crius/proposals/p7-3/ (58/58 tests)
 
 ## NOW
 
