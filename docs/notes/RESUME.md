@@ -33,7 +33,7 @@ main = origin/main = this RESUME commit (P6b). Local main ref is behind: it is c
   after the work statusline, red first. Status: done (main c133717, 27c2a73; scorecard def v2).
 - Standing (memory): personal repo, push to main after review; effort medium/high only; no AI attribution.
 
-## GOAL (2026-10-22 15:30)
+## GOAL (2026-10-22 15:36)
 
 Goal: build the Crius record (design §9 steps 1-9) so Crius answers the owner's questions from its own store, and its watchers decide from session state (OpenRig parts)
 - [x] 1 store layout, leak test, decisions, items, bus grammar · 060610f
@@ -46,13 +46,13 @@ Goal: build the Crius record (design §9 steps 1-9) so Crius answers the owner's
 - [ ] 6 record accept + scorecard (P1-P6, P3c done; P3b, P7 open)
 - [ ] 9 Falcon source
 - [x] O1 OpenRig lessons doc (docs/notes/OPENRIG-LESSONS.md) · 23165f5, VERIFIED bus 14:47
-- [ ] O2 crius-hook writes a state file per session: pushed (sha in the DONE line), waiting for Crius to verify; settings diff in ~/.crius/state/crius/proposals/o2-crius-hook/ (installed only after the owner's OK)
-- [ ] O3 wakewatch and promptwatch read session state first, screen as fallback
+- [x] O2 crius-hook writes a state file per session · 6268b49, VERIFIED bus 15:32, live (owner OK) 15:33
+- [ ] O3 wakewatch and promptwatch read session state first, screen as fallback: pushed (sha in the DONE line), waiting for Crius to verify; promptwatch change in ~/.crius/state/crius/proposals/o3-readers/; both stay observe-only until ~/.crius/wakewatch-mode says decide
 - [ ] O4 messages stored, held while the box has typed text, retried until delivered
 - [ ] O5 crius-spawn --resume <project> <role> by session id
-Done: 57% (8 of 14 required rows: 1-5, 4b, 3b, 6, 9, O1-O5, equal weight; 7 and 8 only if needed)
-Next: O3-O5 (owner brief 10-22 14:27); crius#P7 build items and their P3 follow-ups done (64848d1, VERIFIED 04:07); step 6 P7 descriptive read on 10-23 (after the 10-22 02:00 reset); P3b open
-Needs owner: OK to install hook (a) no-ai-attribution.py from ~/.crius/state/crius/proposals/p7-3/ (58/58 tests); later the crius-hook settings diff (O2), brought by Crius
+Done: 64% (9 of 14 required rows: 1-5, 4b, 3b, 6, 9, O1-O5, equal weight; 7 and 8 only if needed)
+Next: O3 verify, then O4, O5 (owner brief 10-22 14:27); crius#P7 build items and their P3 follow-ups done (64848d1, VERIFIED 04:07); step 6 P7 descriptive read on 10-23 (after the 10-22 02:00 reset); P3b open
+Needs owner: OK to install hook (a) no-ai-attribution.py from ~/.crius/state/crius/proposals/p7-3/ (58/58 tests); after the observe day, ~/.crius/wakewatch-mode = decide (O3), brought by Crius
 
 ## NOW
 
@@ -88,6 +88,8 @@ OpenRig parts (brief ~/.crius/state/crius/BRIEF-openrig-parts-2026-10-22.md; O1-
 - [ ] OF3 sessions on one config folder can message each other (status file messagingSocketPath, peerFeatures): undocumented, watch it before building on it.
 - [ ] OF4 prune ~/.crius/sessions: ended sessions' files and their lock files stay forever.
 - [ ] OF5 crius-hook takes the session name from the first live Claude status file with its session id; a reused pid on a stale file can give an old name. Prefer the hook's parent pid.
+- [ ] OF6 wakewatch: the state log repeats an open disagreement after a run whose screen or session read failed, and writes no line when a disagreeing tab goes away; the first run after start reads all of crius-hook.log for one line; wakewatch-state.log and promptwatch-state.log are not rotated (O3 re-review 10-22).
+- [ ] OF7 sessions(): a stale ~/.claude*/sessions/<pid>.json whose pid now belongs to another process counts as live, so its last state (even "waiting") speaks for its tab. Check the process is claude and started before the file.
 
 ## Waiting on
 

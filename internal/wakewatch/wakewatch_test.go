@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/orzazade/crius/internal/sessionstate"
 	"github.com/orzazade/crius/internal/testutil"
 )
 
@@ -30,6 +31,8 @@ type fake struct {
 	sesErr  error
 	wss     []Workspace
 	wsErr   error
+	states  []sessionstate.State // crius-hook's session files
+	stErr   error
 }
 
 func (f *fake) deps(home string, now time.Time) Deps {
@@ -38,6 +41,7 @@ func (f *fake) deps(home string, now time.Time) Deps {
 		Tools:      func() map[string]error { return f.tools },
 		Sessions:   func() ([]Session, error) { return f.ses, f.sesErr },
 		Workspaces: func() ([]Workspace, error) { return f.wss, f.wsErr },
+		States:     func() ([]sessionstate.State, error) { return f.states, f.stErr },
 		Resources: func() (float64, float64, error) {
 			if f.freeGB == 0 {
 				return 100, f.swapGB, f.resErr
@@ -1097,5 +1101,209 @@ func TestAFailedWorkspaceReadAlerts(t *testing.T) {
 	}
 	if len(f.sent) != 1 || !strings.Contains(f.sent[0], "failed to look: cmux workspace list: socket closed") {
 		t.Fatal(f.sent)
+	}
+}
+
+// OpenRig parts item 3 (owner brief 10-22 14:27): wakewatch reads crius-hook's session state first; the screen is the
+// fallback and the cross-check. ~/.crius/wakewatch-mode says which decides: "observe" (the default, for the first day
+// after the hook goes in) keeps the screen deciding; "decide" lets the state decide. Either way each disagreement goes
+// to ~/.crius/logs/wakewatch-state.log.
+
+const sfID = "6F1C0A2E-surface" // the tab's cmux surface id, as CMUX_SURFACE_ID gives it to the hook
+
+func withID(s Screen) Screen { s.ID = sfID; return s }
+
+func hookState(id, state, project, role string) sessionstate.State {
+	return sessionstate.State{SessionID: id, State: state, Time: t0, Surface: sfID, Project: project, Role: role}
+}
+
+func setMode(t *testing.T, home, mode string) {
+	testutil.Write(t, filepath.Join(home, "wakewatch-mode"), mode+"\n")
+}
+
+func stateLog(t *testing.T, home string) string {
+	b, err := os.ReadFile(filepath.Join(home, "logs", "wakewatch-state.log"))
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// Case 10-22 14:10: crius-build's tab showed its own test text, a dialog quoted in code, while it worked; the screen
+// read it as a dialog waiting on a person. The hook knows the session is running, or idle after its turn.
+func TestADialogQuotedOnScreenIsNotADialogWhenTheHookSaysOtherwise(t *testing.T) {
+	quoted := "the fixture:\n Do you want to proceed?\n ❯ 1. Yes\n   2. No, and tell Claude what to do differently (esc)"
+	quotedTab := func(at time.Time) []Screen {
+		return []Screen{withID(screen("quotes · p3", tab("quotes: p3", quoted, "  ⏵⏵ bypass permissions on\n", at)))}
+	}
+	spinning := func(at time.Time) []Screen { // the 14:10 case: a running tool printed the text, the spinner under it
+		return []Screen{withID(screen("quotes · p3", tab("quotes: p3", quoted+"\n\n✽ Garnishing… (3m 14s · ↓ 3.4k tokens)", "  ⏵⏵ bypass permissions on\n", at)))}
+	}
+	// re-review 10-22: Claude Code 2.1.308's verbs include Razzle-dazzling, Topsy-turvying and Beboppin'
+	spinningHyphen := func(at time.Time) []Screen {
+		return []Screen{withID(screen("quotes · p3", tab("quotes: p3", quoted+"\n\n✻ Razzle-dazzling… (4s · ↓ 1.2k tokens)", "  ⏵⏵ bypass permissions on\n", at)))}
+	}
+	spinningApos := func(at time.Time) []Screen {
+		return []Screen{withID(screen("quotes · p3", tab("quotes: p3", quoted+"\n\n✻ Beboppin'… (1m 2s · ↓ 9k tokens)", "  ⏵⏵ bypass permissions on\n", at)))}
+	}
+	// review 10-22: a real dialog under tool output that quotes the spinner's words
+	quotesSpinner := func(at time.Time) []Screen {
+		out := "⏺ Bash(grep -n interrupt wakewatch.go)\n  ⎿ 849: busy when the text has \"esc to interrupt\"\n"
+		return []Screen{withID(screen("quotes · p3", tab("quotes: p3", out+quoted, "  ⏵⏵ bypass permissions on\n", at)))}
+	}
+	plainTab := func(at time.Time) []Screen {
+		return []Screen{withID(screen("quotes · p3", tab("quotes: p3", "ok", "  ⏵⏵ bypass permissions on\n", at)))}
+	}
+	runningTab := func(at time.Time) []Screen { // a tool approved in its dialog runs: no hook says so
+		return []Screen{withID(screen("quotes · p3", tab("quotes: p3", "Bash(make test)\n\n✻ Running… (12s · esc to interrupt)", "  ⏵⏵ bypass permissions on\n", at)))}
+	}
+	live := []Session{{Name: "quotes: p3", ID: "s1", Started: t0.Add(-time.Hour)}}
+	for name, c := range map[string]struct {
+		mode   string
+		draw   func(time.Time) []Screen
+		states []sessionstate.State
+		ses    []Session
+		want   string // "" no alert, "dialog" a waiting alert, "idle" an idle alert
+		logged bool
+	}{
+		"running, decide":          {"decide", spinning, []sessionstate.State{hookState("s1", sessionstate.Running, "quotes", "p3")}, live, "", true},
+		"running, hyphenated verb": {"decide", spinningHyphen, []sessionstate.State{hookState("s1", sessionstate.Running, "quotes", "p3")}, live, "", true},
+		"running, verb with '":     {"decide", spinningApos, []sessionstate.State{hookState("s1", sessionstate.Running, "quotes", "p3")}, live, "", true},
+		"running, no spinner":      {"decide", quotedTab, []sessionstate.State{hookState("s1", sessionstate.Running, "quotes", "p3")}, live, "dialog", false},
+		"waiting, phrase quoted":   {"decide", quotesSpinner, []sessionstate.State{hookState("s1", sessionstate.Waiting, "quotes", "p3")}, live, "dialog", false},
+		"idle, decide":             {"decide", quotedTab, []sessionstate.State{hookState("s1", sessionstate.Idle, "quotes", "p3")}, live, "idle", true},
+		"running, observe":         {"observe", spinning, []sessionstate.State{hookState("s1", sessionstate.Running, "quotes", "p3")}, live, "dialog", true},
+		"no mode file is observe":  {"", spinning, []sessionstate.State{hookState("s1", sessionstate.Running, "quotes", "p3")}, live, "dialog", true},
+		"no state: screen decides": {"decide", quotedTab, nil, live, "dialog", false},
+		"dead session's state":     {"decide", quotedTab, []sessionstate.State{hookState("s1", sessionstate.Running, "quotes", "p3")}, nil, "dialog", false},
+		"ended session's state":    {"decide", quotedTab, []sessionstate.State{hookState("s1", sessionstate.Ended, "quotes", "p3")}, live, "dialog", false},
+		"waiting with no dialog":   {"decide", plainTab, []sessionstate.State{hookState("s1", sessionstate.Waiting, "quotes", "p3")}, live, "dialog", true},
+		"waiting, observe":         {"observe", plainTab, []sessionstate.State{hookState("s1", sessionstate.Waiting, "quotes", "p3")}, live, "idle", true},
+		"waiting, tool approved":   {"decide", runningTab, []sessionstate.State{hookState("s1", sessionstate.Waiting, "quotes", "p3")}, live, "", false},
+		"agree: no log":            {"observe", plainTab, []sessionstate.State{hookState("s1", sessionstate.Idle, "quotes", "p3")}, live, "idle", false},
+		"another tab's state":      {"decide", quotedTab, []sessionstate.State{{SessionID: "s1", State: sessionstate.Running, Surface: "other"}}, live, "dialog", false},
+	} {
+		home := setup(t, map[string]string{"quotes.log": stamp(t0) + " INFO quotes:p3 -> quotes:lead — on it\n"})
+		if c.mode != "" {
+			setMode(t, home, c.mode)
+		}
+		f := &fake{states: c.states, ses: c.ses}
+		runAt(t, home, f, c.draw, 0, 5, 11)
+		got := ""
+		for _, m := range f.sent {
+			switch {
+			case strings.Contains(m, "waits on a question or dialog"):
+				got += "dialog"
+			case strings.Contains(m, "is idle"):
+				got += "idle"
+			default:
+				t.Errorf("%s: other alert %q", name, m)
+			}
+		}
+		if got != c.want {
+			t.Errorf("%s: want %q, got %q", name, c.want, f.sent)
+		}
+		if l := stateLog(t, home); (l != "") != c.logged || c.logged && !strings.Contains(l, "screen=") {
+			t.Errorf("%s: state log %q", name, l)
+		}
+	}
+}
+
+// A child claude run inside a tab (codex-ask's, qa1's quotes-demo-3d 10-22 15:36) shares the tab's surface id and
+// writes its own state file. Its newer "running" must not hide the parent's open dialog (review 10-22).
+func TestAChildSessionInTheTabDoesNotHideItsParentsDialog(t *testing.T) {
+	quoted := "Do you want to proceed?\n ❯ 1. Yes\n   2. No, and tell Claude what to do differently (esc)"
+	draw := func(at time.Time) []Screen {
+		return []Screen{withID(screen("quotes · p3", tab("quotes: p3", quoted, "  ⏵⏵ bypass permissions on\n", at)))}
+	}
+	live := []Session{{Name: "quotes: p3", ID: "s1", Started: t0.Add(-time.Hour)}, {Name: "child", ID: "s2", Started: t0.Add(-time.Minute)}}
+	parent := hookState("s1", sessionstate.Waiting, "quotes", "p3")
+	child := hookState("s2", sessionstate.Running, "appxite", "unknown")
+	child.Time = parent.Time.Add(time.Second)
+	home := setup(t, map[string]string{"quotes.log": stamp(t0) + " INFO quotes:p3 -> quotes:lead — on it\n"})
+	setMode(t, home, "decide")
+	f := &fake{states: []sessionstate.State{child, parent}, ses: live}
+	runAt(t, home, f, draw, 0, 5, 11)
+	if len(f.sent) != 1 || !strings.Contains(f.sent[0], "waits on a question or dialog") {
+		t.Errorf("want one dialog alert, got %q (state log %q)", f.sent, stateLog(t, home))
+	}
+}
+
+// Case 10-22 13:23 (Crius ORDER): "quotes:lead DONE, no fresh start in 23 min" while the lead was running, landing
+// train after train. A lead whose hook state says it is working gets no fresh-start alert.
+func TestABusyLeadByItsHookStateNeedsNoFreshStart(t *testing.T) {
+	old := []Session{{Name: "quotes: lead", ID: "1", Started: t0.Add(-2 * time.Hour)}, {Name: "quotes-demo-3d", ID: "2", Started: t0.Add(-time.Hour)}}
+	for name, c := range map[string]struct {
+		mode   string
+		states []sessionstate.State
+		want   int
+		logged bool
+	}{
+		"running, decide":        {"decide", []sessionstate.State{hookState("1", sessionstate.Running, "quotes", "lead")}, 0, true},
+		"waiting, decide":        {"decide", []sessionstate.State{hookState("1", sessionstate.Waiting, "quotes", "lead")}, 0, true},
+		"idle, decide":           {"decide", []sessionstate.State{hookState("1", sessionstate.Idle, "quotes", "lead")}, 2, false},
+		"running, observe":       {"observe", []sessionstate.State{hookState("1", sessionstate.Running, "quotes", "lead")}, 2, true},
+		"another role running":   {"decide", []sessionstate.State{hookState("2", sessionstate.Running, "quotes", "p3")}, 2, false},
+		"a dead session running": {"decide", []sessionstate.State{hookState("9", sessionstate.Running, "quotes", "lead")}, 2, false},
+		"no state":               {"decide", nil, 2, false},
+		// review 10-22: the lead's own session by its id, not any session that names the lead's project and role
+		"the lead's, no role": {"decide", []sessionstate.State{hookState("1", sessionstate.Running, "quotes", "")}, 0, true},
+		"a child with its role": {"decide", []sessionstate.State{hookState("1", sessionstate.Idle, "quotes", "lead"),
+			hookState("2", sessionstate.Running, "quotes", "lead")}, 2, false},
+	} {
+		home := setup(t, map[string]string{"quotes.log": done(t0)})
+		setMode(t, home, c.mode)
+		f := &fake{ses: old, states: c.states}
+		runAt(t, home, f, func(time.Time) []Screen { return nil }, 10, 21, 30, 41)
+		if got := freshSent(f); len(got) != c.want {
+			t.Errorf("%s: want %d, got %q", name, c.want, got)
+		}
+		if l := stateLog(t, home); (l != "") != c.logged || c.logged && !strings.Contains(l, "quotes:lead") {
+			t.Errorf("%s: state log %q", name, l)
+		}
+	}
+}
+
+// crius-hook logs its own errors to ~/.crius/logs/crius-hook.log and exits 0, so a session is never blocked: the log
+// growing is how anyone hears of them. Each growth alerts once, with its last line.
+func TestTheHookLogGrowingAlertsOnce(t *testing.T) {
+	home := setup(t, nil)
+	f := &fake{}
+	p := filepath.Join(home, "logs", "crius-hook.log")
+	Run(f.deps(home, t0))
+	testutil.Write(t, p, "2026-10-22T15:00:00Z crius-hook: Stop s1: open sessions/.lock: permission denied\n")
+	Run(f.deps(home, t0.Add(time.Minute)))
+	Run(f.deps(home, t0.Add(2*time.Minute)))
+	if len(f.sent) != 1 || !strings.Contains(f.sent[0], "crius-hook") || !strings.Contains(f.sent[0], "permission denied") {
+		t.Fatalf("%q", f.sent)
+	}
+	b, _ := os.ReadFile(p)
+	testutil.Write(t, p, string(b)+"2026-10-22T15:03:00Z crius-hook: unreadable hook input: EOF\n")
+	Run(f.deps(home, t0.Add(3*time.Minute)))
+	if len(f.sent) != 2 || !strings.Contains(f.sent[1], "unreadable hook input") {
+		t.Fatalf("%q", f.sent)
+	}
+}
+
+// A mode file that says neither, a state read that fails, or a decide mode with no state folder at all (the hook is
+// not installed) is loud; the screen decides. In observe mode a missing folder is expected (before the install).
+func TestABadModeOrAFailedStateReadIsLoud(t *testing.T) {
+	for name, c := range map[string]struct {
+		mode string
+		err  error
+		want string
+	}{
+		"unknown mode":       {"decides", nil, "wakewatch-mode"},
+		"read fails":         {"observe", errors.New("open sessions/x.json: damaged session file"), "damaged"},
+		"no folder, decide":  {"decide", fmt.Errorf("open sessions: %w", os.ErrNotExist), "does not exist"},
+		"no folder, observe": {"observe", fmt.Errorf("open sessions: %w", os.ErrNotExist), ""},
+	} {
+		home := setup(t, nil)
+		setMode(t, home, c.mode)
+		f := &fake{stErr: c.err}
+		Run(f.deps(home, t0))
+		if c.want == "" && len(f.sent) != 0 || c.want != "" && (len(f.sent) != 1 || !strings.Contains(f.sent[0], c.want)) {
+			t.Errorf("%s: %q", name, f.sent)
+		}
 	}
 }

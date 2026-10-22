@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/orzazade/crius/internal/redact"
+	"github.com/orzazade/crius/internal/sessionstate"
 	"github.com/orzazade/crius/internal/store"
 	"github.com/orzazade/crius/internal/wakewatch"
 )
@@ -47,6 +48,8 @@ func main() {
 				return nil, err
 			}
 			return sessions(home)
+		}, States: func() ([]sessionstate.State, error) {
+			return sessionstate.List(filepath.Join(store.Home(), "sessions"))
 		}})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, time.Now().Format(time.RFC3339), "crius-wakewatch:", err)
@@ -55,12 +58,12 @@ func main() {
 }
 
 // terminal is one terminal tab in cmux.
-type terminal struct{ Workspace, Surface, Title, TTY string }
+type terminal struct{ Workspace, Surface, ID, Title, TTY string }
 
 // terminals lists every terminal tab from cmux's JSON tree. The text tree prints titles as they are, so a title can
 // look like another tab's row.
 func terminals() ([]terminal, error) {
-	b, err := cmux("--json", "tree", "--all")
+	b, err := cmux("--json", "--id-format", "both", "tree", "--all")
 	if err != nil {
 		return nil, fmt.Errorf("cmux tree: %v: %s", err, strings.TrimSpace(string(b)))
 	}
@@ -69,7 +72,7 @@ func terminals() ([]terminal, error) {
 			Workspaces []struct {
 				Ref   string
 				Panes []struct {
-					Surfaces []struct{ Ref, Title, TTY, Type string }
+					Surfaces []struct{ ID, Ref, Title, TTY, Type string }
 				}
 			}
 		}
@@ -83,7 +86,7 @@ func terminals() ([]terminal, error) {
 			for _, p := range ws.Panes {
 				for _, s := range p.Surfaces {
 					if s.Type == "terminal" {
-						out = append(out, terminal{ws.Ref, s.Ref, s.Title, s.TTY})
+						out = append(out, terminal{ws.Ref, s.Ref, s.ID, s.Title, s.TTY})
 					}
 				}
 			}
@@ -135,10 +138,10 @@ func screens() ([]wakewatch.Screen, error) {
 	for _, tab := range tabs {
 		text, err := cmux("read-screen", "--surface", tab.Surface, "--lines", "30")
 		if err != nil {
-			out = append(out, wakewatch.Screen{Surface: tab.Surface, Title: tab.Title, Err: fmt.Sprintf("cmux read-screen: %v: %s", err, strings.TrimSpace(string(text)))})
+			out = append(out, wakewatch.Screen{Surface: tab.Surface, ID: tab.ID, Title: tab.Title, Err: fmt.Sprintf("cmux read-screen: %v: %s", err, strings.TrimSpace(string(text)))})
 			continue
 		}
-		out = append(out, wakewatch.Screen{Surface: tab.Surface, Title: tab.Title, Text: string(text)})
+		out = append(out, wakewatch.Screen{Surface: tab.Surface, ID: tab.ID, Title: tab.Title, Text: string(text)})
 	}
 	if len(out) == 0 {
 		return nil, fmt.Errorf("cmux tree lists no terminal tab")

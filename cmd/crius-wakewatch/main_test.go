@@ -489,3 +489,24 @@ func TestWorkspacesAreReadFromEveryWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// OpenRig parts item 3: a tab's screen carries cmux's surface id, which a session in it has as CMUX_SURFACE_ID and
+// crius-hook writes in its state file. cmux --json tree prints ids only with --id-format both.
+func TestScreensCarryTheSurfaceIDTheHookSees(t *testing.T) {
+	real := cmux
+	t.Cleanup(func() { cmux = real })
+	cmux = func(args ...string) ([]byte, error) {
+		switch strings.Join(args, " ") {
+		case "--json --id-format both tree --all":
+			return []byte(`{"windows":[{"ref":"window:1","workspaces":[{"ref":"workspace:1","panes":[{"surfaces":[` +
+				`{"id":"6F1C0A2E-surface","ref":"surface:1","title":"quotes · p3","tty":"ttys001","type":"terminal"}]}]}]}]}`), nil
+		case "--json tree --all":
+			return []byte(treeJSON(map[string][3]string{"workspace:1": {"surface:1", "quotes · p3", "ttys001"}})), nil
+		}
+		return []byte("ok\n"), nil
+	}
+	got, err := screens()
+	if err != nil || len(got) != 1 || got[0].ID != "6F1C0A2E-surface" || got[0].Surface != "surface:1" {
+		t.Fatalf("%+v %v", got, err)
+	}
+}

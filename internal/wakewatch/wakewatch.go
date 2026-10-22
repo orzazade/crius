@@ -15,7 +15,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
@@ -29,6 +31,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/orzazade/crius/internal/redact"
+	"github.com/orzazade/crius/internal/sessionstate"
 	"github.com/orzazade/crius/internal/watchdog"
 )
 
@@ -65,8 +68,9 @@ var (
 	ctxRe = regexp.MustCompile(`\bctx (\d{1,3})%`)
 )
 
-// Screen is one tab. Err is set when its read failed; Text is then empty.
-type Screen struct{ Surface, Title, Text, Err string }
+// Screen is one tab. Err is set when its read failed; Text is then empty. ID is cmux's surface id (a UUID), which a
+// session in the tab has as CMUX_SURFACE_ID: crius-hook's state file names it.
+type Screen struct{ Surface, ID, Title, Text, Err string }
 
 type Deps struct {
 	Home       string
@@ -77,6 +81,7 @@ type Deps struct {
 	Tools      func() map[string]error // each tool the team needs, and why it failed or did not answer (nil: fine)
 	Sessions   func() ([]Session, error)
 	Workspaces func() ([]Workspace, error)
+	States     func() ([]sessionstate.State, error) // crius-hook's file of each session (package sessionstate)
 }
 
 // Workspace is one cmux workspace: Named is false while it shows a default title, and Color is "" when none is set.
@@ -102,6 +107,8 @@ type state struct {
 	Alerted     map[string]time.Time // key -> when last typed, or posted on crius.log when typing failed
 	Screens     map[string]seenScreen
 	SendFailing bool
+	Views       map[string][2]string // check -> what the screen and crius-hook's state said on the last run
+	HookLog     int64                // how much of crius-hook.log was already reported
 }
 
 // Run checks every bus log and every tab once and sends each alert that is new, or still open 20 min after it was
@@ -134,16 +141,24 @@ func Run(d Deps) error {
 		return err
 	}
 	alerts = append(alerts, m...)
+	ss, sesErr := d.Sessions()
+	hv, ha := readHooks(d, st.Views, ss, sesErr)
+	alerts = append(alerts, ha...)
 	screens, err := d.Screens()
 	if err != nil {
 		alerts = append(alerts, [2]string{screensFailed, "the tab check failed to look: " + err.Error()})
 	} else {
-		alerts = append(alerts, waiting(&st, d, watch, screens)...)
+		alerts = append(alerts, waiting(&st, d, watch, screens, hv)...)
 	}
 	alerts = append(alerts, resources(d)...)
 	alerts = append(alerts, tools(d)...)
-	alerts = append(alerts, fresh(d, watch, screens)...)
+	alerts = append(alerts, fresh(d, watch, screens, ss, sesErr, hv)...)
 	alerts = append(alerts, unnamed(d, screens)...)
+	alerts = append(alerts, hookLog(d.Home, &st)...)
+	st.Views = hv.views
+	if err := appendLines(filepath.Join(d.Home, "logs", "wakewatch-state.log"), hv.log); err != nil {
+		alerts = append(alerts, [2]string{"statelog-failed", "wakewatch could not write its screen-versus-state log: " + err.Error()})
+	}
 
 	active := map[string]bool{}
 	var sendErr error
@@ -342,8 +357,9 @@ func lineTime(s string) (time.Time, error) {
 // waiting gives [key, text] for each tab whose screen has waited on a question or dialog, unchanged, for 10 min, and
 // for each idle tab: unchanged and with no bus line of its own for 10 min, any role. A screen counts as unchanged by
 // what is above its input box: the status line below it holds a clock. A tab whose read failed is an alert of its own
-// and keeps its place meanwhile (Run reports a failed read of all tabs).
-func waiting(st *state, d Deps, watch projects, screens []Screen) [][2]string {
+// and keeps its place meanwhile (Run reports a failed read of all tabs). When a live session's crius-hook state names
+// the tab, the screen and the state each say whether it asks, works or is idle; the mode file says which one decides.
+func waiting(st *state, d Deps, watch projects, screens []Screen, hv *hooks) [][2]string {
 	var out [][2]string
 	live := map[string]bool{}
 	for _, s := range screens {
@@ -372,15 +388,19 @@ func waiting(st *state, d Deps, watch projects, screens []Screen) [][2]string {
 		if s.Title == CriusTitle {
 			continue
 		}
-		body, foot, boxed := split(s.Text)
-		ask := asks(s.Text)
+		body, _, _ := split(s.Text)
+		view := screenView(s.Text)
+		if hs, ok := hv.surface[s.ID]; ok {
+			view = hv.pick("tab:"+s.Surface, s.Title, view, stateView(hs, s.Text))
+		}
+		if view == "busy" {
+			continue
+		}
+		ask := view == "asks"
 		var who string
 		var clear bool
 		var lastLine time.Time
 		if !ask {
-			if !boxed || strings.Contains(s.Text, "esc to interrupt") || jobsRe.MatchString(foot) {
-				continue
-			}
 			if who, _ = session(s.Text, s.Title); who == "" {
 				continue
 			}
@@ -453,19 +473,23 @@ func resources(d Deps) [][2]string {
 // fresh gives an alert for each lead whose newest DONE (in the last 12 h) is 20 min old while no session of that lead
 // started after it and Crius sent it no ORDER after it: no /clear and no relaunch (cmux-team SKILL §5, fresh context
 // per item). A lead whose tabs all show ctx under 50% in the status line below the input box has room left and needs
-// no fresh start yet (Crius 10-22 13:23).
-func fresh(d Deps, watch projects, screens []Screen) [][2]string {
+// no fresh start yet (Crius 10-22 13:23). Nor does a lead whose crius-hook state says it works, when the state decides.
+func fresh(d Deps, watch projects, screens []Screen, ss []Session, err error, hv *hooks) [][2]string {
 	used := map[string]int{} // the most any tab of that session shows
+	text := map[string]string{}
 	for _, s := range screens {
 		if who, _ := session(s.Text, s.Title); who != "" {
 			used[who] = max(used[who], ctxUsed(s.Text))
 		}
+		if s.ID != "" {
+			text[s.ID] = s.Text
+		}
 	}
-	ss, err := d.Sessions()
 	if err != nil {
 		return [][2]string{{"sessions-failed", "the lead fresh-start check failed to look: " + err.Error()}}
 	}
 	newest := map[string]time.Time{}
+	ids := map[string][]string{} // the lead's own sessions, by id: a child claude can carry the lead's project and role
 	var whos []string
 	for _, s := range ss {
 		m := sessionRe.FindStringSubmatch(strings.TrimSpace(s.Name))
@@ -482,6 +506,7 @@ func fresh(d Deps, watch projects, screens []Screen) [][2]string {
 		if started.After(newest[who]) {
 			newest[who] = started
 		}
+		ids[who] = append(ids[who], s.ID)
 	}
 	sort.Strings(whos)
 	var out [][2]string
@@ -504,6 +529,23 @@ func fresh(d Deps, watch projects, screens []Screen) [][2]string {
 		}
 		if ordered {
 			continue
+		}
+		var hs []sessionstate.State
+		for _, id := range ids[who] {
+			if s, ok := hv.session[id]; ok {
+				hs = append(hs, s)
+			}
+		}
+		if len(hs) > 0 {
+			state := "alert"
+			for _, s := range hs {
+				if stateView(s, text[s.Surface]) != "idle" {
+					state = "none"
+				}
+			}
+			if hv.pick("fresh:"+who, who+" fresh start", "alert", state) == "none" {
+				continue
+			}
 		}
 		when := at.Format("2006-01-02T15:04")
 		out = append(out, [2]string{"fresh:" + who + ":" + when, fmt.Sprintf("%s posted DONE at %s and has had no fresh "+
@@ -674,9 +716,11 @@ func busLines(home, who string) (lines [][]string, found bool, err error) {
 
 // asks reports whether a screen waits on someone: its newest status emoji is ❓, or a dialog offers numbered options.
 func asks(text string) bool {
-	if dialogRe.MatchString(text) {
-		return true
-	}
+	return dialogRe.MatchString(text) || asksOwner(text)
+}
+
+// asksOwner reports whether a screen's newest status emoji is ❓: the last reply asks the owner something.
+func asksOwner(text string) bool {
 	lines := strings.Split(text, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
 		if j := strings.LastIndexAny(lines[i], "❓✅⏳"); j >= 0 {
@@ -716,4 +760,183 @@ func unnamed(d Deps, screens []Screen) [][2]string {
 		}
 	}
 	return alerts
+}
+
+// hooks is what crius-hook's state files say on this run, and the log lines where they and the screen disagree.
+type hooks struct {
+	decide  bool                          // ~/.crius/wakewatch-mode says "decide": the state decides, not the screen
+	surface map[string]sessionstate.State // cmux surface id -> the state that speaks for that tab
+	session map[string]sessionstate.State // session id -> its live state
+	prev    map[string][2]string
+	views   map[string][2]string
+	log     []string
+	now     time.Time
+}
+
+// readHooks reads the mode file and the state of each live session: one Claude Code lists as running (ss) and the
+// hook has not marked ended. With no session list nothing says which states are live, so the screen decides alone.
+// A missing state folder is loud only in decide mode: before the hook is installed it is expected.
+func readHooks(d Deps, prev map[string][2]string, ss []Session, sesErr error) (*hooks, [][2]string) {
+	h := &hooks{surface: map[string]sessionstate.State{}, session: map[string]sessionstate.State{}, prev: prev,
+		views: map[string][2]string{}, now: d.Now}
+	var out [][2]string
+	p := filepath.Join(d.Home, "wakewatch-mode")
+	if b, err := os.ReadFile(p); err != nil && !os.IsNotExist(err) {
+		out = append(out, [2]string{"mode-failed", fmt.Sprintf("%s could not be read, so the screen decides: %v", p, err)})
+	} else if m := strings.TrimSpace(string(b)); m == "decide" {
+		h.decide = true
+	} else if m != "observe" && m != "" {
+		out = append(out, [2]string{"mode-failed", fmt.Sprintf("%s says %q, not observe or decide, so the screen decides", p, m)})
+	}
+	states, err := d.States()
+	if err != nil && (h.decide || !errors.Is(err, fs.ErrNotExist)) {
+		out = append(out, [2]string{"states-failed", "crius-hook's session states could not be read: " + err.Error()})
+	}
+	if sesErr != nil {
+		return h, out
+	}
+	live := map[string]bool{}
+	for _, s := range ss {
+		live[s.ID] = true
+	}
+	for _, s := range states {
+		if !live[s.SessionID] || s.State != sessionstate.Running && s.State != sessionstate.Waiting && s.State != sessionstate.Idle {
+			continue
+		}
+		h.session[s.SessionID] = s
+		// A child claude run inside a tab (codex-ask's) shares its surface id. A waiting session speaks for the tab, so
+		// a child's newer "running" never hides the parent's dialog; otherwise the newest state does.
+		o, ok := h.surface[s.Surface]
+		waits, owaits := s.State == sessionstate.Waiting, o.State == sessionstate.Waiting
+		if s.Surface != "" && (!ok || waits && !owaits || waits == owaits && s.Time.After(o.Time)) {
+			h.surface[s.Surface] = s
+		}
+	}
+	return h, out
+}
+
+// pick gives the view that decides, the screen's or the state's, and logs the pair when it changed since the last run
+// and either pair disagrees: one line when they start to disagree, one when they agree again.
+func (h *hooks) pick(key, what, screen, state string) string {
+	v := [2]string{screen, state}
+	h.views[key] = v
+	if p := h.prev[key]; v != p && (screen != state || p[0] != p[1]) {
+		decides := "screen"
+		if h.decide {
+			decides = "state"
+		}
+		h.log = append(h.log, fmt.Sprintf("%s %s %q screen=%s state=%s decides=%s", h.now.Format(time.RFC3339), key, what,
+			screen, state, decides))
+	}
+	if h.decide {
+		return state
+	}
+	return screen
+}
+
+// spinRe is Claude Code's working line above the input box: a mark, a verb ending in "…", then the time it has worked
+// or "esc to interrupt" in brackets ("✽ Garnishing… (3m 14s · ↓ 3.4k tokens)" in 2.1.308). Its words quoted in a
+// tool's output are not one (review 10-22). A verb can hold any mark but "(": "Razzle-dazzling", "Beboppin'".
+var spinRe = regexp.MustCompile(`^\s*[^\s\w]\s+\w[^(]*…\s*\((?:\d+[hms]\b[^)]*|[^)]*esc to interrupt[^)]*)\)\s*$`)
+
+// spinning says whether the working line is in the last 15 lines above the input box (a todo list can sit between).
+func spinning(text string) bool {
+	body, _, boxed := split(text)
+	if !boxed {
+		return false
+	}
+	lines := strings.Split(body, "\n")
+	for _, l := range lines[max(0, len(lines)-15):] {
+		if spinRe.MatchString(l) {
+			return true
+		}
+	}
+	return false
+}
+
+// screenView is what a tab's screen says: "asks" (a dialog or a question), "busy" (working, jobs running, or no input
+// box to read) or "idle".
+func screenView(text string) string {
+	_, foot, boxed := split(text)
+	switch {
+	case asks(text):
+		return "asks"
+	case !boxed || strings.Contains(text, "esc to interrupt") || jobsRe.MatchString(foot):
+		return "busy"
+	}
+	return "idle"
+}
+
+// stateView is what a session's crius-hook state says, in screenView's words. The screen still adds what no hook
+// tells: a tool approved in its dialog runs (the working line) while the state still says waiting, a turn that ended
+// on a question (❓), and background jobs that run after the turn. "running" with no working line on screen is a
+// state the hook missed the end of (an API error, a dialog no hook sees): the screen decides.
+func stateView(s sessionstate.State, text string) string {
+	_, foot, _ := split(text)
+	switch {
+	case s.State == sessionstate.Running && spinning(text):
+		return "busy"
+	case s.State == sessionstate.Running:
+		return screenView(text)
+	case s.State == sessionstate.Waiting && spinning(text):
+		return "busy"
+	case s.State == sessionstate.Waiting:
+		return "asks"
+	case jobsRe.MatchString(foot):
+		return "busy"
+	case asksOwner(text):
+		return "asks"
+	}
+	return "idle"
+}
+
+// hookLog gives one alert each time crius-hook.log grows, with its last line: the hook exits 0 on its own errors so
+// it never blocks a session, and this log is the only place they show.
+func hookLog(home string, st *state) [][2]string {
+	p := filepath.Join(home, "logs", "crius-hook.log")
+	fi, err := os.Stat(p)
+	if os.IsNotExist(err) {
+		st.HookLog = 0
+		return nil
+	} else if err != nil {
+		return [][2]string{{"hooklog-failed", "crius-hook's error log could not be read: " + err.Error()}}
+	}
+	if fi.Size() < st.HookLog { // cut or replaced: all of it is new
+		st.HookLog = 0
+	}
+	if fi.Size() == st.HookLog {
+		return nil
+	}
+	b := make([]byte, fi.Size()-st.HookLog)
+	f, err := os.Open(p)
+	if err == nil {
+		_, err = f.ReadAt(b, st.HookLog)
+		f.Close()
+	}
+	if err != nil {
+		return [][2]string{{"hooklog-failed", "crius-hook's error log could not be read: " + err.Error()}}
+	}
+	st.HookLog = fi.Size()
+	lines := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
+	return [][2]string{{fmt.Sprintf("hooklog:%d", fi.Size()), fmt.Sprintf("crius-hook logged %d new error line(s) in %s; "+
+		"the last: %s", len(lines), p, lines[len(lines)-1])}}
+}
+
+// appendLines adds lines to the file at p, making its folder.
+func appendLines(p string, lines []string) error {
+	if len(lines) == 0 {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	_, err = f.WriteString(strings.Join(lines, "\n") + "\n")
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return err
 }
