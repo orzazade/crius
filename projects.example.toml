@@ -3,6 +3,9 @@
 # cwd: folder prefixes that map a session to this project when it has no launch tag.
 # repos: git checkouts the ingest reads (git log only). team_logs: BUILD-LOG files of active teams.
 # artifact_dirs: folders whose markdown files get a pointer row (path, sha256, title, headings).
+# launch (optional): the absolute folder crius-spawn starts sessions in; needed when cwd lists several folders.
+# pause_at (optional, 1-100): at this Max 7-day share the ingest posts PAUSE to <project>:all on the project's bus
+# and a NEED to crius:lead, once per weekly window.
 
 # Transcript folders per persona (these are the defaults when the table is missing).
 [transcripts]

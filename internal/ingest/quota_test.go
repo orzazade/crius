@@ -1022,3 +1022,153 @@ func TestQuotaEndedSessionWithoutTranscriptSaysItEnded(t *testing.T) {
 		t.Fatalf("got %q", x.alerts())
 	}
 }
+
+const guardedProject = `
+[projects.quotes]
+persona = "work"
+accounts = ["max"]
+cwd = ["/work/quotes"]
+pause_at = 70
+`
+
+func (x *ic) bus(project string) []string {
+	x.t.Helper()
+	b, err := os.ReadFile(filepath.Join(x.home, "bus", project+".log"))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		x.t.Fatal(err)
+	}
+	return strings.Split(strings.TrimSpace(string(b)), "\n")
+}
+
+// Crius 10-22 20:38 (owner: Quotes pauses at 70% of the weekly quota): a project with pause_at gets one PAUSE on its
+// own bus when the Max 7d share reaches it, and Crius one NEED, which wakes it (an ALERT does not). Once per window.
+func TestQuotaGuardPausesAProjectAtItsShareAndWakesCrius(t *testing.T) {
+	clock = func() time.Time { return qNow }
+	t.Cleanup(func() { clock = time.Now })
+	x := newIC(t, cfg{extra: axiProject + guardedProject})
+	reset := qNow.Add(4 * 24 * time.Hour)
+	x.session("personal", x.sid, "/work/demo", "", qNow.Add(-20*time.Minute))
+	x.spool(sampleAt(x.sid, qNow.Add(-30*time.Minute), 69, reset))
+	x.run()
+	if p := grepAlerts(x.bus("quotes"), "PAUSE"); len(p) != 0 {
+		t.Fatalf("69%% is under 70%%: %q", p)
+	}
+	x.spool(sampleAt(x.sid, qNow.Add(-10*time.Minute), 71, reset))
+	x.run()
+	x.run()
+	p := grepAlerts(x.bus("quotes"), " PAUSE crius:ingest -> quotes:all — ")
+	if len(p) != 1 || !strings.Contains(p[0], "71%") || !strings.Contains(p[0], "70%") {
+		t.Fatalf("want one PAUSE to quotes:all naming 71%% and 70%%, got %q", x.bus("quotes"))
+	}
+	need := grepAlerts(x.alerts(), " NEED crius:ingest -> crius:lead — ")
+	if len(need) != 1 || !strings.Contains(need[0], "quotes") || !strings.Contains(need[0], "71%") {
+		t.Fatalf("want one NEED to crius:lead naming quotes and 71%%, got %q", x.alerts())
+	}
+	if x.bus("axi") != nil {
+		t.Fatalf("axi has no pause_at: %q", x.bus("axi"))
+	}
+	// The next weekly window pauses again.
+	x.spool(sampleAt(x.sid, qNow.Add(-5*time.Minute), 72, reset.Add(7*24*time.Hour)))
+	x.run()
+	if p := grepAlerts(x.bus("quotes"), " PAUSE "); len(p) != 2 {
+		t.Fatalf("want a second PAUSE in the next window, got %q", x.bus("quotes"))
+	}
+}
+
+// The guard cannot tell a project under its share from a sampler that stopped: a stale sample while sessions are
+// open is a NEED that wakes Crius when some project has pause_at (the stopgap exits 1), once per gap.
+func TestQuotaGuardThatCannotSeeTheShareWakesCrius(t *testing.T) {
+	clock = func() time.Time { return qNow }
+	t.Cleanup(func() { clock = time.Now })
+	x := newIC(t, cfg{extra: axiProject + guardedProject})
+	x.session("personal", x.sid, "/work/demo", "", qNow.Add(-10*time.Minute))
+	x.spool(sampleAt(x.sid, qNow.Add(-50*time.Minute), 20, qNow.Add(4*24*time.Hour)))
+	x.run()
+	x.run()
+	need := grepAlerts(x.alerts(), " NEED crius:ingest -> crius:lead — ")
+	if len(need) != 1 || !strings.Contains(need[0], "quotes") || !strings.Contains(need[0], "blind") {
+		t.Fatalf("want one NEED saying the quotes guard is blind, got %q", x.alerts())
+	}
+	// Without pause_at the stale sample stays an ALERT only (TestQuotaOpenSessionsWithNoRecentSampleAreStale).
+	y := quotaCase(t)
+	y.session("personal", y.sid, "/work/demo", "", qNow.Add(-10*time.Minute))
+	y.spool(sampleAt(y.sid, qNow.Add(-50*time.Minute), 20, qNow.Add(4*24*time.Hour)))
+	y.run()
+	if n := grepAlerts(y.alerts(), " NEED "); len(n) != 0 {
+		t.Fatalf("no guarded project, no NEED: %q", n)
+	}
+}
+
+func TestQuotaGuardShareMustBeAPercent(t *testing.T) {
+	for _, v := range []string{"0", "101", "-5", `"70%"`} {
+		home := t.TempDir()
+		testutil.Write(t, filepath.Join(home, "projects.toml"),
+			"[projects.quotes]\naccounts = [\"max\"]\ncwd = [\"/q\"]\npause_at = "+v+"\n")
+		if _, err := loadConfig(home); err == nil || !strings.Contains(err.Error(), "pause_at") {
+			t.Errorf("pause_at = %s: err %v, want one naming pause_at", v, err)
+		}
+	}
+	home := t.TempDir()
+	testutil.Write(t, filepath.Join(home, "projects.toml"),
+		"[projects.quotes]\naccounts = [\"max\"]\ncwd = [\"/q\"]\npause_at = 70\n")
+	if c, err := loadConfig(home); err != nil || c.projects[0].pauseAt != 70 {
+		t.Fatalf("pause_at = 70: %v", err)
+	}
+}
+
+// Samples of one weekly window carry resets seconds apart (quota.avgPerDay): a later sample's reset is the same window,
+// so the guard and the used-up push say it once (review round 13).
+func TestQuotaKeysOneWindowWhateverItsResetSecond(t *testing.T) {
+	clock = func() time.Time { return qNow }
+	t.Cleanup(func() { clock = time.Now })
+	x := newIC(t, cfg{extra: axiProject + guardedProject})
+	reset := qNow.Add(4 * 24 * time.Hour)
+	x.session("personal", x.sid, "/work/demo", "", qNow.Add(-20*time.Minute))
+	x.spool(sampleAt(x.sid, qNow.Add(-15*time.Minute), 71, reset))
+	x.run()
+	x.spool(sampleAt(x.sid, qNow.Add(-10*time.Minute), 100, reset.Add(3*time.Second)))
+	x.run()
+	x.spool(sampleAt(x.sid, qNow.Add(-5*time.Minute), 100, reset.Add(5*time.Second)))
+	x.run()
+	if p := grepAlerts(x.bus("quotes"), " PAUSE "); len(p) != 1 {
+		t.Errorf("want one PAUSE in one window, got %q", x.bus("quotes"))
+	}
+	if n := grepAlerts(x.alerts(), " NEED crius:ingest -> crius:lead — quota guard:"); len(n) != 1 {
+		t.Errorf("want one NEED in one window, got %q", x.alerts())
+	}
+	if u := grepAlerts(x.alerts(), "quota used up"); len(u) != 1 {
+		t.Errorf("want one used-up push in one window, got %q", x.alerts())
+	}
+}
+
+// A bus that cannot be written holds back its own lines and the lines that say they were posted, not the other buses:
+// Crius still gets its used-up push while quotes.log is broken, and the PAUSE and its NEED follow once it is fixed
+// (review round 13).
+func TestABrokenBusHoldsBackOnlyItsOwnLines(t *testing.T) {
+	clock = func() time.Time { return qNow }
+	t.Cleanup(func() { clock = time.Now })
+	x := newIC(t, cfg{extra: axiProject + guardedProject})
+	broken := filepath.Join(x.home, "bus", "quotes.log")
+	if err := os.MkdirAll(broken, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	x.session("personal", x.sid, "/work/demo", "", qNow.Add(-20*time.Minute))
+	x.spool(sampleAt(x.sid, qNow.Add(-10*time.Minute), 100, qNow.Add(4*24*time.Hour)))
+	x.run()
+	if u := grepAlerts(x.alerts(), "quota used up"); len(u) != 1 {
+		t.Fatalf("a broken quotes.log held back Crius's used-up push: %q", x.alerts())
+	}
+	if n := grepAlerts(x.alerts(), "PAUSE posted"); len(n) != 0 {
+		t.Fatalf("the NEED says the PAUSE was posted while quotes.log is broken: %q", n)
+	}
+	if err := os.Remove(broken); err != nil {
+		t.Fatal(err)
+	}
+	x.run()
+	if p, n := grepAlerts(x.bus("quotes"), " PAUSE "), grepAlerts(x.alerts(), "PAUSE posted"); len(p) != 1 || len(n) != 1 {
+		t.Fatalf("after the fix want one PAUSE and one NEED, got %q and %q", p, n)
+	}
+}

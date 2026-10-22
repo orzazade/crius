@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/orzazade/crius/internal/quota"
@@ -113,16 +116,29 @@ func (r *runner) quotaChecks(tx *sql.Tx) error {
 			return err
 		}
 	}
+	if err := r.pauseChecks(tx, rep); err != nil {
+		return err
+	}
 	if rep.Reset.IsZero() || !rep.Reset.After(rep.Now) {
 		return nil
 	}
-	epoch := fmt.Sprint(rep.Reset.Unix())
 	if rep.SevenPct >= 100 {
-		return r.queueAlert(tx, "quota:usedup:"+epoch, rep.UsedUpText(r.cfg.enterpriseOK()))
+		key, err := window(tx, "quota:usedup:", rep.Reset)
+		if err != nil {
+			return err
+		}
+		return r.queueAlert(tx, key, rep.UsedUpText(r.cfg.enterpriseOK()))
 	}
 	// Pace and runout pushes have their own keys; when both are new in one run, the runout push (which carries the
 	// pace facts) goes alone and the pace key is marked as said, so the owner gets one push (design §9).
-	runout, pace := "quota:runout:"+epoch, "quota:pace:"+epoch
+	runout, err := window(tx, "quota:runout:", rep.Reset)
+	if err != nil {
+		return err
+	}
+	pace, err := window(tx, "quota:pace:", rep.Reset)
+	if err != nil {
+		return err
+	}
 	ro, err := r.newAlert(tx, runout, rep.RunsOut())
 	if err != nil {
 		return err
@@ -143,6 +159,65 @@ func (r *runner) quotaChecks(tx *sql.Tx) error {
 		return r.queueAlert(tx, runout, rep.RunoutText(r.cfg.enterpriseOK()))
 	case pc:
 		return r.queueAlert(tx, pace, rep.PaceText())
+	}
+	return nil
+}
+
+// window is prefix plus the weekly window that resets at reset. Samples of one window carry resets seconds apart
+// (quota.avgPerDay), so a key already queued for a reset within an hour of it names the same window (review round 13).
+func window(tx *sql.Tx, prefix string, reset time.Time) (string, error) {
+	rows, err := tx.Query("select key from alert where substr(key, 1, ?) = ?", len(prefix), prefix)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return "", err
+		}
+		epoch, _, _ := strings.Cut(strings.TrimPrefix(key, prefix), ":")
+		if n, err := strconv.ParseInt(epoch, 10, 64); err == nil && math.Abs(float64(n-reset.Unix())) < 3600 {
+			return prefix + epoch, nil
+		}
+	}
+	return prefix + fmt.Sprint(reset.Unix()), rows.Err()
+}
+
+// pauseChecks is the quota guard (Crius 10-22 20:38; owner: Quotes pauses at 70% of the weekly quota): a project with
+// pause_at gets one PAUSE to <project>:all on its own bus when the Max 7d share reaches it in the current window, and
+// Crius one NEED, which wakes it (an ALERT does not). A stale sample while sessions are open means the guard cannot
+// see the share: that is a NEED too, once per gap, as the stopgap script exits 1.
+func (r *runner) pauseChecks(tx *sql.Tx, rep *quota.Report) error {
+	for _, p := range r.cfg.projects {
+		if p.pauseAt == 0 {
+			continue
+		}
+		for _, st := range rep.Stale {
+			if err := r.queueLine(tx, "quota:blind:"+p.slug+":"+st, "NEED", "crius", "crius:lead", fmt.Sprintf(
+				"quota guard for %s is blind: the Max 7d share is stale (%s), so it cannot tell whether %s reached its "+
+					"%d%% pause; check the statusline sampler", p.slug, st, p.slug, p.pauseAt)); err != nil {
+				return err
+			}
+		}
+		if rep.Reset.IsZero() || !rep.Reset.After(rep.Now) || rep.SevenPct < float64(p.pauseAt) {
+			continue
+		}
+		key, err := window(tx, "quota:pause:"+p.slug+":", rep.Reset)
+		if err != nil {
+			return err
+		}
+		at, resets := rep.SevenAt.Local().Format("15:04"), rep.Reset.Local().Format("Mon 15:04")
+		if err := r.queueLine(tx, key, "PAUSE", p.slug, p.slug+":all", fmt.Sprintf(
+			"quota: Max 7d at %g%% (%s) reached %s's pause at %d%%: stop all %s work now; Crius says when to resume "+
+				"(the window resets %s)", rep.SevenPct, at, p.slug, p.pauseAt, p.slug, resets)); err != nil {
+			return err
+		}
+		if err := r.queueLine(tx, key+":crius", "NEED", "crius", "crius:lead", fmt.Sprintf(
+			"quota guard: Max 7d at %g%% (%s) reached %s's pause at %d%%; PAUSE posted on %s.log. Park %s in "+
+				"~/.crius/parked and stop its tabs", rep.SevenPct, at, p.slug, p.pauseAt, p.slug, p.slug)); err != nil {
+			return err
+		}
 	}
 	return nil
 }

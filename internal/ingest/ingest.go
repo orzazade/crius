@@ -18,6 +18,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
@@ -181,44 +182,57 @@ func (r *runner) names(to string) []string {
 
 // queueAlert records an alert in the caller's transaction; flushAlerts posts it. One alert per key, ever.
 func (r *runner) queueAlert(tx *sql.Tx, key, text string) error {
-	_, err := tx.Exec("insert or ignore into alert (key, ts, text) values (?,?,?)", key, utcNow(), r.text(text))
+	return r.queueLine(tx, key, "ALERT", "crius", "crius", text)
+}
+
+// queueLine is queueAlert for a line of type typ on log's bus, sent to to.
+func (r *runner) queueLine(tx *sql.Tx, key, typ, log, to, text string) error {
+	_, err := tx.Exec("insert or ignore into alert (key, ts, text, line_type, log, recipient) values (?,?,?,?,?,?)",
+		key, utcNow(), r.text(text), typ, log, to)
 	return err
 }
 
 func (r *runner) flushAlerts() {
-	rows, err := r.db.Query("select key, text from alert where sent is null order by ts, key")
+	rows, err := r.db.Query(`select key, text, coalesce(line_type, 'ALERT'), coalesce(log, 'crius'),
+		coalesce(recipient, 'crius') from alert where sent is null order by ts, key`)
 	if err != nil {
 		r.warn(true, "cannot read the alert queue: %v", err)
 		return
 	}
-	var pending [][2]string
+	var pending [][5]string
 	for rows.Next() {
-		var k, t string
-		if err := rows.Scan(&k, &t); err != nil {
+		var a [5]string
+		if err := rows.Scan(&a[0], &a[1], &a[2], &a[3], &a[4]); err != nil {
 			rows.Close()
 			r.warn(true, "cannot read the alert queue: %v", err)
 			return
 		}
-		pending = append(pending, [2]string{k, t})
+		pending = append(pending, a)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		r.warn(true, "cannot read the alert queue: %v", err)
 		return
 	}
+	// A row that cannot be posted holds back the later rows of its bus and the rows keyed under it (a PAUSE's NEED says
+	// it was posted), not the other buses (review round 13).
+	heldLogs, heldKeys := map[string]bool{}, []string{}
 	for _, a := range pending {
+		if heldLogs[a[3]] || slices.ContainsFunc(heldKeys, func(k string) bool { return strings.HasPrefix(a[0], k+":") }) {
+			continue
+		}
 		// Posted as one bus line whatever the row holds: a long or multi-line row must not block the queue.
 		text := fit(strings.NewReplacer("\r", " ", "\n", " ").Replace(a[1]))
-		line, err := store.FormatLine("ALERT", "crius", "ingest", text, "crius", time.Now())
+		line, err := store.FormatLine(a[2], "crius", "ingest", text, a[4], time.Now())
 		if err == nil {
-			err = store.AppendLine(r.home, "crius", line)
+			err = store.AppendLine(r.home, a[3], line)
 		}
 		if err == nil {
 			_, err = r.db.Exec("update alert set sent=? where key=?", utcNow(), a[0])
 		}
 		if err != nil {
 			r.warn(true, "cannot post alert %s: %v", a[0], err)
-			return
+			heldLogs[a[3]], heldKeys = true, append(heldKeys, a[0])
 		}
 	}
 }

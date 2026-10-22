@@ -20,6 +20,7 @@ type project struct {
 	slug, persona, launch                        string
 	accounts, cwd, repos, teamLogs, artifactDirs []string
 	leads                                        map[string]Lead // role -> status file holding the GOAL block (no Name)
+	pauseAt                                      int             // Max 7d share at which the project pauses; 0: none
 }
 
 type root struct{ persona, path string }
@@ -59,6 +60,7 @@ func loadConfig(home string) (*config, error) {
 			TeamLogs     []string `toml:"team_logs"`
 			ArtifactDirs []string `toml:"artifact_dirs"`
 			Leads        map[string]string
+			PauseAt      *int `toml:"pause_at"`
 		}
 	}
 	path := filepath.Join(home, "projects.toml")
@@ -87,6 +89,13 @@ func loadConfig(home string) (*config, error) {
 				return nil, fmt.Errorf("%s: project %s: unknown account %q", path, slug, a)
 			}
 		}
+		pauseAt := 0
+		if a := p.PauseAt; a != nil {
+			if *a < 1 || *a > 100 {
+				return nil, fmt.Errorf("%s: project %s: pause_at %d is not a percent from 1 to 100", path, slug, *a)
+			}
+			pauseAt = *a
+		}
 		leads := map[string]Lead{}
 		for role, f := range p.Leads {
 			if !store.Slug.MatchString(role) {
@@ -111,7 +120,7 @@ func loadConfig(home string) (*config, error) {
 			}
 		}
 		c.projects = append(c.projects, project{slug: slug, persona: p.Persona, launch: expand(p.Launch), accounts: p.Accounts, cwd: cwd, repos: expandAll(p.Repos),
-			teamLogs: expandAll(p.TeamLogs), artifactDirs: expandAll(p.ArtifactDirs), leads: leads})
+			teamLogs: expandAll(p.TeamLogs), artifactDirs: expandAll(p.ArtifactDirs), leads: leads, pauseAt: pauseAt})
 	}
 	sort.Slice(c.projects, func(i, j int) bool { return c.projects[i].slug < c.projects[j].slug })
 	return c, nil

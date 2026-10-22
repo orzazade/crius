@@ -116,6 +116,14 @@ func Open(home string) (*sql.DB, error) {
 		db.Close()
 		return nil, err
 	}
+	// An alert row posted as another type, on another bus or to another reader (the quota guard's PAUSE and NEED);
+	// null is an ALERT to crius on crius.log.
+	for _, c := range []string{"line_type", "log", "recipient"} {
+		if err := addColumn(db, "alert", c, "text"); err != nil {
+			db.Close()
+			return nil, err
+		}
+	}
 	if err := ensureViews(db); err != nil {
 		db.Close()
 		return nil, err
