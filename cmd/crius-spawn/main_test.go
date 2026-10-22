@@ -10,6 +10,7 @@ import (
 
 	"github.com/orzazade/crius/internal/launch"
 	"github.com/orzazade/crius/internal/sessionstate"
+	"github.com/orzazade/crius/internal/testutil"
 )
 
 // Live run 10-22: cmux prints a deprecation notice on stderr, and crius-spawn parsed it with the reply, so it failed
@@ -56,7 +57,7 @@ func TestResumeReadsTheRolesCurrentSession(t *testing.T) {
 func TestAResumeOfARunningSessionIsRefused(t *testing.T) {
 	home, config := t.TempDir(), t.TempDir()
 	id := "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b"
-	status := fmt.Sprintf(`{"pid":%d,"sessionId":%q,"name":"quotes · rig"}`, os.Getpid(), id)
+	status := fmt.Sprintf(`{"pid":%d,"sessionId":%q,"name":"quotes · rig","procStart":%q}`, os.Getpid(), id, testutil.ProcStart(t, os.Getpid()))
 	if err := os.MkdirAll(filepath.Join(config, "sessions"), 0o700); err != nil {
 		t.Fatal(err)
 	}

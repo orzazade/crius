@@ -43,7 +43,7 @@ func newWorld(t *testing.T) world {
 	testutil.Write(t, filepath.Join(w.crius, "projects.toml"), "[projects.quotes]\ncwd = [\"/w/quotes\"]\n")
 	pid := os.Getpid() // a live process: status files of dead ones are skipped
 	testutil.Write(t, filepath.Join(w.claude, "sessions", fmt.Sprintf("%d.json", pid)),
-		fmt.Sprintf(`{"pid":%d,"sessionId":"s-1","cwd":"/w/crius","name":"quotes · p1","status":"busy"}`, pid))
+		fmt.Sprintf(`{"pid":%d,"sessionId":"s-1","cwd":"/w/crius","name":"quotes · p1","status":"busy","procStart":%q}`, pid, testutil.ProcStart(t, pid)))
 	return w
 }
 
@@ -221,7 +221,7 @@ func TestADeadProcessesStatusFileGivesNoName(t *testing.T) {
 // session stays filed under the old project and role (review P3, 10-22).
 func TestALiveStatusFileWithNoNameClearsTheOldName(t *testing.T) {
 	w := newWorld(t)
-	testutil.Write(t, filepath.Join(w.claude, "sessions", "2.json"), fmt.Sprintf(`{"pid":%d,"sessionId":"s-2"}`, os.Getpid()))
+	testutil.Write(t, filepath.Join(w.claude, "sessions", "2.json"), fmt.Sprintf(`{"pid":%d,"sessionId":"s-2","procStart":%q}`, os.Getpid(), testutil.ProcStart(t, os.Getpid())))
 	dir := filepath.Join(w.crius, "sessions")
 	if err := sessionstate.Write(dir, sessionstate.State{SessionID: "s-2", Name: "quotes · p9"}); err != nil {
 		t.Fatal(err)
@@ -299,7 +299,7 @@ func TestARemoteCallIsNotASession(t *testing.T) {
 func TestARoleNamesItsCurrentSession(t *testing.T) {
 	w := newWorld(t)
 	testutil.Write(t, filepath.Join(w.claude, "sessions", "2.json"),
-		fmt.Sprintf(`{"pid":%d,"sessionId":"s-2","name":"quotes · p1"}`, os.Getpid()))
+		fmt.Sprintf(`{"pid":%d,"sessionId":"s-2","name":"quotes · p1","procStart":%q}`, os.Getpid(), testutil.ProcStart(t, os.Getpid())))
 	roles := filepath.Join(w.crius, "roles")
 	for _, c := range []struct{ in, want, detail string }{
 		{`{"session_id":"s-1","hook_event_name":"Stop","cwd":"/w/crius"}`, "s-1", ""},
@@ -330,7 +330,7 @@ func TestARoleWhoseSessionEndedGoesToTheNextOne(t *testing.T) {
 	run(t, w.env(), `{"session_id":"s-1","hook_event_name":"Stop","cwd":"/w/crius"}`)
 	// /clear: the same process now holds s-2
 	testutil.Write(t, filepath.Join(w.claude, "sessions", fmt.Sprintf("%d.json", os.Getpid())),
-		fmt.Sprintf(`{"pid":%d,"sessionId":"s-2","cwd":"/w/crius","name":"quotes · p1"}`, os.Getpid()))
+		fmt.Sprintf(`{"pid":%d,"sessionId":"s-2","cwd":"/w/crius","name":"quotes · p1","procStart":%q}`, os.Getpid(), testutil.ProcStart(t, os.Getpid())))
 	run(t, w.env(), `{"session_id":"s-2","hook_event_name":"UserPromptSubmit","prompt":"go","cwd":"/w/crius"}`)
 	s, err := sessionstate.ReadRole(roles, "quotes", "p1")
 	if err != nil || s.SessionID != "s-2" || s.Config != w.claude {

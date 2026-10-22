@@ -2,6 +2,7 @@ package sessionstate
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -9,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/orzazade/crius/internal/testutil"
 )
 
 var t0 = time.Date(2026, 10, 22, 14, 30, 0, 0, time.UTC)
@@ -249,5 +252,21 @@ func TestAnInterruptedToolEndsTheTurn(t *testing.T) {
 	s = Apply(State{}, Input{SessionID: "s1", Event: "PreToolUse", AgentID: "b"}, t0)
 	if got := Apply(s, Input{SessionID: "s1", Event: "PostToolUseFailure", AgentID: "b", IsInterrupt: true}, t0); got.State != Running {
 		t.Errorf("subagent interrupted: %+v", got)
+	}
+}
+
+// OF7: a status file left by a process that ended, whose pid the system gave to a later process, is not that session's
+// process. Claude writes its own start time in the file; the live process with that pid started at another time.
+func TestProcessSkipsAStatusFileWhosePidWasReused(t *testing.T) {
+	config, me := t.TempDir(), os.Getpid()
+	testutil.Write(t, filepath.Join(config, "sessions", "1.json"),
+		fmt.Sprintf(`{"pid":%d,"sessionId":"s-old","name":"quotes · p1","procStart":"Thu Jan  1 00:00:00 2026"}`, me))
+	testutil.Write(t, filepath.Join(config, "sessions", "2.json"),
+		fmt.Sprintf(`{"pid":%d,"sessionId":"s-now","name":"quotes · p2","procStart":%q}`, me, testutil.ProcStart(t, me)))
+	if pid, name, err := Process(config, "s-old"); err != nil || pid != 0 || name != "" {
+		t.Errorf("reused pid: %d %q %v", pid, name, err)
+	}
+	if pid, name, err := Process(config, "s-now"); err != nil || pid != me || name != "quotes · p2" {
+		t.Errorf("own file: %d %q %v", pid, name, err)
 	}
 }

@@ -224,12 +224,18 @@ func sessions(home string) ([]wakewatch.Session, error) {
 			PID       int    `json:"pid"`
 			SessionID string `json:"sessionId"`
 			Name      string `json:"name"`
+			ProcStart string `json:"procStart"`
 		}
 		if err := json.Unmarshal(b, &s); err != nil {
 			return nil, fmt.Errorf("%s: %v", f, err)
 		}
-		// A file left by a session that ended; pid 0 would test our own process group.
-		if s.PID <= 0 || seen[s.PID] || syscall.Kill(s.PID, 0) == syscall.ESRCH {
+		if seen[s.PID] {
+			continue
+		}
+		// A file left by a session that ended, its pid gone or given to a later process.
+		if live, err := sessionstate.Live(s.PID, s.ProcStart); err != nil {
+			return nil, fmt.Errorf("%s: %v", f, err)
+		} else if !live {
 			continue
 		}
 		seen[s.PID] = true

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/orzazade/crius/internal/outbox"
+	"github.com/orzazade/crius/internal/testutil"
 	"github.com/orzazade/crius/internal/wakewatch"
 	"os"
 	"path/filepath"
@@ -302,11 +303,11 @@ func TestSessionsReadsLiveSessionsWithTheirStart(t *testing.T) {
 	}
 	me, parent := os.Getpid(), os.Getppid()
 	write(filepath.Join(home, ".claude", "sessions", fmt.Sprint(me)+".json"),
-		fmt.Sprintf(`{"pid":%d,"sessionId":"aaa","name":"quotes: lead","status":"busy"}`, me))
+		fmt.Sprintf(`{"pid":%d,"sessionId":"aaa","name":"quotes: lead","status":"busy","procStart":%q}`, me, testutil.ProcStart(t, me)))
 	write(filepath.Join(home, ".claude", "sessions", "99999999.json"), `{"pid":99999999,"sessionId":"dead","name":"axi: lead"}`)
 	write(filepath.Join(home, ".claude", "projects", "-Users-o-x", "aaa.jsonl"), "{}\n")
 	write(filepath.Join(home, ".claude-work", "sessions", fmt.Sprint(parent)+".json"),
-		fmt.Sprintf(`{"pid":%d,"sessionId":"bbb","name":"cortex · lead"}`, parent))
+		fmt.Sprintf(`{"pid":%d,"sessionId":"bbb","name":"cortex · lead","procStart":%q}`, parent, testutil.ProcStart(t, parent)))
 	if err := os.Symlink(filepath.Join(home, ".claude"), filepath.Join(home, ".claude-personal")); err != nil {
 		t.Fatal(err)
 	}
@@ -626,5 +627,19 @@ func TestFlushPostsWhatTheOutboxSetsAside(t *testing.T) {
 	bus, _ := os.ReadFile(filepath.Join(home, "bus", "crius.log"))
 	if !strings.Contains(string(bus), "merge it") || strings.Contains(string(bus), "WAKEWATCH: held") {
 		t.Errorf("bus:\n%s\nwant the set-aside message and not the held one", bus)
+	}
+}
+
+// OF7: a status file left by a process that ended, whose pid now belongs to a later process, is not a live session:
+// Claude's own start time in the file differs from the live process's.
+func TestSessionsSkipsAStatusFileWhosePidWasReused(t *testing.T) {
+	home, me := t.TempDir(), os.Getpid()
+	testutil.Write(t, filepath.Join(home, ".claude", "sessions", "1.json"),
+		fmt.Sprintf(`{"pid":%d,"sessionId":"old","name":"quotes · p1","procStart":"Thu Jan  1 00:00:00 2026"}`, me))
+	testutil.Write(t, filepath.Join(home, ".claude-work", "sessions", "2.json"),
+		fmt.Sprintf(`{"pid":%d,"sessionId":"now","name":"quotes · p2","procStart":%q}`, me, testutil.ProcStart(t, me)))
+	ss, err := sessions(home)
+	if err != nil || len(ss) != 1 || ss[0].ID != "now" {
+		t.Errorf("%v %+v", err, ss)
 	}
 }
