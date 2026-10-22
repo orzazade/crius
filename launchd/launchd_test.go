@@ -375,3 +375,51 @@ func TestInstallOnlyFromPushedMain(t *testing.T) {
 		t.Fatal("not a checkout:", out)
 	}
 }
+
+// Crius 10-22 14:19: the installer built a hand-typed list, so crius-spawn (and crius-bash-guard before it) was never
+// built. It builds every command under cmd/.
+func TestInstallBuildsEveryCommand(t *testing.T) {
+	repo, home, fakes := t.TempDir(), t.TempDir(), t.TempDir()
+	script, err := os.ReadFile("../bin/crius-install-launchd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"bin/crius-install-launchd", "cmd/alpha/main.go", "cmd/beta/main.go"} {
+		if err := os.MkdirAll(filepath.Join(repo, filepath.Dir(f)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(repo, f), script, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, args := range [][]string{{"init", "-q"}, {"add", "."}, {"-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "one"},
+		{"update-ref", "refs/remotes/origin/main", "HEAD"}} {
+		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".crius", "state"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// go records each build; launchctl refuses, so nothing can reach the real launchd.
+	log := filepath.Join(fakes, "builds")
+	for name, body := range map[string]string{"go": `echo "$@" >> ` + log, "launchctl": "exit 1"} {
+		if err := os.WriteFile(filepath.Join(fakes, name), []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cmd := exec.Command(filepath.Join(repo, "bin", "crius-install-launchd"))
+	cmd.Env = append(os.Environ(), "HOME="+home, "PATH="+fakes+":"+os.Getenv("PATH"))
+	out, _ := cmd.CombinedOutput() // stops at the missing run scripts, after the builds
+	builds, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err, string(out))
+	}
+	var built []string
+	for _, l := range strings.Split(strings.TrimSpace(string(builds)), "\n") {
+		built = append(built, l[strings.LastIndex(l, " ")+1:])
+	}
+	if want := []string{"./cmd/alpha", "./cmd/beta"}; !reflect.DeepEqual(built, want) {
+		t.Fatalf("built %v, want %v", built, want)
+	}
+}
