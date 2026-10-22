@@ -58,3 +58,23 @@ func TestLeadsNameAGitObject(t *testing.T) {
 		}
 	}
 }
+
+// crius-hook files a session as ingest does: by its -n name (crius-spawn writes "project · role"), else by its folder.
+func TestFilingGivesProjectAndRoleFromNameElseFolder(t *testing.T) {
+	home := t.TempDir()
+	testutil.Write(t, filepath.Join(home, "projects.toml"), "[projects.crius]\ncwd = [\"/w/crius\"]\n[projects.quotes]\ncwd = [\"/w/quotes\"]\n")
+	for _, c := range []struct{ cwd, name, project, role string }{
+		{"/w/crius", "quotes · p1", "quotes", "p1"},
+		{"/w/crius/sub", "", "crius", "unknown"},
+		{"/elsewhere", "crius-build: build", "crius", "build"},
+		{"/elsewhere", "", "", "unknown"},
+	} {
+		p, r, err := Filing(home, c.cwd, c.name)
+		if err != nil || p != c.project || r != c.role {
+			t.Errorf("%+v: got %q %q %v", c, p, r, err)
+		}
+	}
+	if _, _, err := Filing(t.TempDir(), "/w/crius", "crius · build"); err == nil {
+		t.Error("no projects.toml gave no error")
+	}
+}

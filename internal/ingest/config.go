@@ -203,6 +203,16 @@ func (c *config) filing(cwd, title string) (project, role string, byTitle bool) 
 	return project, role, byTitle
 }
 
+// Filing reads projects.toml in home and files a session as ingest does (see filing): crius-hook's project and role.
+func Filing(home, cwd, title string) (project, role string, err error) {
+	c, err := loadConfig(home)
+	if err != nil {
+		return "", "", err
+	}
+	project, role, _ = c.filing(cwd, title)
+	return project, role, nil
+}
+
 // projectForCwd maps a folder to the project with the longest matching cwd prefix.
 func (c *config) projectForCwd(cwd string) string {
 	best, bestLen := "", -1
