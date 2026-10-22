@@ -1,15 +1,25 @@
 // Command crius-bash-guard is a Claude Code PreToolUse hook for Bash. It refuses two commands that broke the team:
-// team-wait.sh run detached with `&` (a detached waiter cannot wake the session; 10-21 22:44), and a VERIFIED line
-// written straight onto a bus log instead of through bus-post (10-20 and 10-21: UTC time slip, VERIFIED before the
-// run). Exit 2 refuses, with the reason on stderr; anything else passes.
+// team-wait.sh run detached with `&` (a detached waiter cannot wake the session; 10-21 22:44), and a line written
+// straight onto a bus log instead of through bus-post (10-20 and 10-21: UTC time slip, VERIFIED before the run; 10-22:
+// 332 quotes.log lines ingest cannot read). Exit 2 refuses, with the reason on stderr; anything else passes.
+//
+// It catches habits, not intent: fifteen review rounds showed a list of shell forms is never complete, and the full
+// check is the digest's count of lines it cannot read. Known gaps: function bodies run later, source and ., a script
+// file a shell runs (bash <(...)), xargs, find -exec, coproc, other shells and languages (ruby -e, node -e,
+// awk -i inplace), other writers (ln, rsync, truncate, sponge), a symlink to the bus folder, declare -n, a cd or
+// assignment that fails or runs only on one branch, ${D:=x} inside [[ ]] or a case word, a computed part whose own
+// text holds "..", a function or script named mktemp, $'...' quoting, a variable or cd set inside eval, an export
+// behind a wrapper (command export), and $CRIUS_HOME.
 package main
 
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path"
 	"regexp"
+	"slices"
 	"strings"
 
 	"mvdan.cc/sh/v3/syntax"
@@ -35,135 +45,793 @@ func main() {
 	}
 }
 
-// verifiedRe is a VERIFIED record (type, sender, arrow), not the word in passing ("waiting for VERIFIED").
 var (
-	verifiedRe = regexp.MustCompile(`VERIFIED\s+\S+\s+->`)
-	loneAmpRe  = regexp.MustCompile(`(^|[^&>|])&($|[^&>])`)
-	writeRe    = regexp.MustCompile(`(^|[^-])>|\btee\b`)
+	loneAmpRe = regexp.MustCompile(`(^|[^&>|])&($|[^&>])`)
+	writeRe   = regexp.MustCompile(`(^|[^-])>|\btee\b`)
+	// The disk ignores case: ~/.CRIUS/bus is the bus (review round 12).
+	busRe  = regexp.MustCompile(`(?i)(^|/)\.crius/bus(/|$)`)
+	nameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 )
+
+// unknown stands for text only the run shows: a $(...), $1, ${a[0]}, a variable read sets, a script on stdin. The
+// markers hold a NUL, which no shell word can, so a command cannot type them (review round 10).
+const unknown = "\x00unknown\x00"
+
+// newDir comes before the unknown part a mktemp names: one new file or folder, so a path after it stays in it unless it
+// climbs out with ".." ($T/.crius/bus is a test home, review round 10).
+const newDir = "\x00new\x00"
+
+// tempName stands for the one name a mktemp makes, so ".." out of it leaves a known path (review round 11).
+const tempName = "\x00name\x00"
 
 // check gives the reason to refuse command, or "".
 func check(command string) string {
-	f, err := syntax.NewParser().Parse(strings.NewReader(command), "")
-	if err != nil {
-		return checkText(command)
-	}
-	why, inBus, recordVar := "", false, false
-	syntax.Walk(f, func(n syntax.Node) bool {
-		switch n := n.(type) {
-		case *syntax.Stmt:
-			if n.Background && runsWaiter(n) {
-				why = detached
-			}
-		case *syntax.Assign:
-			recordVar = recordVar || verifiedRe.MatchString(print(n))
-		case *syntax.CallExpr:
-			args := unwrap(n.Args)
-			if len(args) == 0 {
-				break
-			}
-			switch base(args[0]) {
-			case "cd", "pushd":
-				for _, a := range args[1:] {
-					inBus = inBus || strings.Contains(print(a), ".crius/bus")
-				}
-			case "bash", "sh", "zsh":
-				if script := shellScript(args); script != nil && why == "" {
-					if text, ok := literal(script); ok {
-						why = check(text)
-					} else {
-						why = checkText(print(script))
-					}
-				}
-			}
-		}
-		return why == ""
-	})
-	if why != "" {
-		return why
-	}
-	namesBus := strings.Contains(command, ".crius/bus")
-	for _, top := range f.Stmts {
-		for _, u := range units(top) {
-			if writesBus(u, inBus, namesBus) && (recordVar || verifiedRe.MatchString(print(u))) {
-				return rawVerified
-			}
-		}
-	}
-	return ""
+	return (&walker{vars: map[string]string{}, named: namesBus(command)}).check(command)
 }
 
-// checkText judges a command the parser cannot read. Bash runs the lines before a syntax error, so it is strict.
-func checkText(text string) string {
+// namesBus says whether text names the bus folder, in any case.
+func namesBus(text string) bool { return strings.Contains(fold(text), ".crius/bus") }
+
+// fold is the name the disk opens: it ignores case, and ſ is s and K (Kelvin) is k (review round 13).
+func fold(s string) string { return strings.ToLower(strings.ToUpper(s)) }
+
+// walker follows a command in order: the folder cd moves to and the variables it sets, so each write is judged by the
+// path it names. A variable it did not set stays as written ("$TMPDIR/v.txt" is not the bus). A write to a path only
+// the run shows is refused when the command names the bus folder.
+type walker struct {
+	cwd   string // "" before a cd, or after one it cannot follow
+	vars  map[string]string
+	named bool // the command names .crius/bus
+	// anyVar: a computed word named the variable a command set (export $(...), read "$N"), so any variable is unknown
+	anyVar bool
+	why    string
+}
+
+func (w *walker) check(command string) string {
+	f, err := syntax.NewParser().Parse(strings.NewReader(command), "")
+	if err != nil {
+		return checkText(command, err)
+	}
+	syntax.Walk(f, func(n syntax.Node) bool {
+		if s, ok := n.(*syntax.Stmt); ok && s.Background && runsWaiter(s) {
+			w.why = detached
+		}
+		return w.why == ""
+	})
+	w.stmts(f.Stmts)
+	return w.why
+}
+
+func (w *walker) stmts(ss []*syntax.Stmt) {
+	for _, s := range ss {
+		w.stmt(s)
+	}
+}
+
+func (w *walker) stmt(s *syntax.Stmt) {
+	if w.why != "" {
+		return
+	}
+	if s.Background { // a job runs in a child shell: its cd and variables do not reach the commands after it
+		cwd, vars := w.cwd, maps.Clone(w.vars)
+		defer func() { w.cwd, w.vars = cwd, vars }()
+	}
+	switch c := s.Cmd.(type) {
+	case *syntax.CallExpr:
+		w.call(c, s.Redirs)
+	case *syntax.BinaryCmd:
+		if c.Op != syntax.Pipe && c.Op != syntax.PipeAll {
+			w.stmt(c.X)
+			w.stmt(c.Y)
+			break
+		}
+		// A pipe's parts run in child shells, but zsh runs the last part in this one: what the parts before it set
+		// does not reach the commands after the pipe, and what the last part changes is unknown (review round 8).
+		cwd, vars := w.cwd, maps.Clone(w.vars)
+		w.stmt(c.X)
+		w.cwd, w.vars = cwd, maps.Clone(vars)
+		w.stmt(c.Y)
+		if w.cwd != cwd {
+			w.cwd = unknown
+		}
+		for k, v := range w.vars {
+			if old, ok := vars[k]; !ok || old != v {
+				w.vars[k] = unknown
+			}
+		}
+	case *syntax.Block:
+		w.stmts(c.Stmts)
+	case *syntax.Subshell: // a child shell: its cd and variables do not reach the commands after it
+		cwd, vars := w.cwd, maps.Clone(w.vars)
+		w.stmts(c.Stmts)
+		w.cwd, w.vars = cwd, vars
+	case *syntax.IfClause:
+		for ; c != nil; c = c.Else {
+			w.stmts(c.Cond)
+			w.stmts(c.Then)
+		}
+	case *syntax.WhileClause:
+		w.stmts(c.Cond)
+		w.stmts(c.Do)
+	case *syntax.ForClause:
+		if it, ok := c.Loop.(*syntax.WordIter); ok && !it.InPos.IsValid() { // for f; do: the positional parameters
+			w.vars[it.Name.Value] = unknown
+		} else if ok {
+			var items []string
+			for _, i := range it.Items {
+				w.subs(i)
+				items = append(items, w.resolve(i))
+			}
+			w.vars[it.Name.Value] = strings.Join(items, " ")
+		} else if cl, ok := c.Loop.(*syntax.CStyleLoop); ok { // for ((i=$(...); ...))
+			w.nested(cl)
+		}
+		w.stmts(c.Do)
+	case *syntax.CaseClause:
+		w.subs(c.Word)
+		for _, it := range c.Items {
+			for _, p := range it.Patterns {
+				w.subs(p)
+			}
+			w.stmts(it.Stmts)
+		}
+	case *syntax.TestClause: // [[ ]], (( )) and let run the $(...) in them
+		w.nested(c.X)
+	case *syntax.ArithmCmd:
+		w.nested(c.X)
+	case *syntax.LetClause:
+		for _, e := range c.Exprs {
+			w.nested(e)
+		}
+	case *syntax.FuncDecl:
+		w.stmt(c.Body)
+	case *syntax.TimeClause:
+		if c.Stmt != nil {
+			w.stmt(c.Stmt)
+		}
+	case *syntax.DeclClause:
+		for _, a := range c.Args {
+			w.assign(a)
+			// export D={/tmp,~/.crius/bus}: bash expands braces in a declaration's word and the last one wins (review
+			// round 15); a plain D={a,b} keeps its text.
+			if a.Name != nil && !a.Naked && a.Value != nil && slices.ContainsFunc(a.Value.Parts, braces) {
+				w.vars[a.Name.Value] = unknown
+			}
+		}
+	}
+	for _, r := range s.Redirs {
+		w.subs(r.Word)
+		w.subs(r.Hdoc)
+		switch r.Op {
+		case syntax.RdrOut, syntax.AppOut, syntax.ClbOut, syntax.RdrAll, syntax.AppAll, syntax.RdrInOut:
+			w.target(w.resolve(r.Word))
+		case syntax.DplOut: // >&file, but not >&2 or >&-
+			if t := w.resolve(r.Word); t != "-" && strings.Trim(t, "0123456789") != "" {
+				w.target(t)
+			}
+		}
+	}
+}
+
+// call judges one command: cd moves the folder, a shell's script (-c, a here-document, stdin) and eval's text are
+// checked as commands, read sets variables to unknown, and tee, cp, mv, install, dd of= and sed or perl -i write to
+// files.
+func (w *walker) call(c *syntax.CallExpr, redirs []*syntax.Redirect) {
+	// VAR=v cmd and env VAR=v cmd: the value is the command's own; after it, and in its redirects, the old one holds.
+	old := map[string]*string{}
+	keep := func(name string) {
+		if _, ok := old[name]; ok {
+			return
+		}
+		if v, ok := w.vars[name]; ok {
+			old[name] = &v
+		} else {
+			old[name] = nil
+		}
+	}
+	defer func() {
+		for k, v := range old {
+			if v == nil {
+				delete(w.vars, k)
+			} else {
+				w.vars[k] = *v
+			}
+		}
+	}()
+	if len(c.Args) > 0 {
+		for _, a := range c.Assigns {
+			if a.Name != nil {
+				keep(a.Name.Value)
+			}
+		}
+	}
+	for _, a := range c.Assigns {
+		w.assign(a)
+	}
+	for _, a := range c.Args {
+		w.subs(a)
+	}
+	args, envs, hides, child := unwrap(c.Args)
+	if hides { // env -C dir, env -S "line": judged as a path only the run shows (review round 10)
+		w.refuseUnknown()
+		return
+	}
+	for _, e := range envs {
+		if k, v, ok := strings.Cut(w.resolve(e), "="); ok && nameRe.MatchString(k) {
+			keep(k)
+			w.vars[k] = v
+		}
+	}
+	if len(args) == 0 {
+		return
+	}
+	var rest []string
+	for _, a := range args[1:] {
+		rest = append(rest, w.resolve(a))
+	}
+	name := base(args[0])
+	if lit, _ := literal(args[0]); child || lit != name {
+		// CD, /usr/bin/cd and env cd run a program in a child process: the shell's folder and variables stay (review
+		// round 14). Writers are still judged by the folded name.
+		switch name {
+		case "cd", "pushd", "popd", "read", "mapfile", "readarray", "printf":
+			name = ""
+		}
+	}
+	switch name {
+	case "cd", "pushd":
+		w.cd(rest)
+	case "popd":
+		w.cwd = unknown
+	case "bash", "sh", "zsh":
+		if s := shellScript(args); s != nil {
+			w.script(w.resolve(s))
+		} else if readsStdin(args) {
+			w.stdin(redirs)
+		}
+	case "eval":
+		w.script(strings.Join(rest, " "))
+	case "read", "mapfile", "readarray":
+		for _, a := range rest {
+			if nameRe.MatchString(a) {
+				w.vars[a] = unknown
+			} else if !strings.HasPrefix(a, "-") && (strings.Contains(a, "$") || strings.Contains(a, unknown)) { // read "$(echo D)": any name
+				w.setAny()
+			}
+		}
+	case "printf":
+		if len(rest) > 1 && rest[0] == "-v" {
+			if nameRe.MatchString(rest[1]) {
+				w.vars[rest[1]] = unknown
+			} else {
+				w.setAny()
+			}
+		}
+	case "tee":
+		for _, a := range rest {
+			if !strings.HasPrefix(a, "-") {
+				w.target(a)
+			}
+		}
+	case "cp", "mv", "install", "gcp", "gmv", "ginstall":
+		if dir, ok := targetDir(rest); ok { // mv -t dir file...
+			w.target(dir + "/")
+		} else if len(rest) > 1 {
+			w.target(rest[len(rest)-1])
+		}
+	case "dd":
+		for _, a := range rest {
+			if of, ok := strings.CutPrefix(a, "of="); ok {
+				w.target(of)
+			}
+		}
+	case "sed", "perl":
+		for _, f := range edited(base(args[0]), rest) {
+			w.target(f)
+		}
+	}
+}
+
+// targetDir is the folder of cp, mv or install -t: -t dir, -tdir, -at dir, --target-directory dir, --target-directory=dir
+// or a prefix of it GNU takes (--target-dir, --t). Options end at --.
+func targetDir(args []string) (string, bool) {
+	for i, a := range args {
+		long, v, eq := strings.Cut(a, "=")
+		switch {
+		case a == "--":
+			return "", false
+		case len(long) > 2 && strings.HasPrefix("--target-directory", long):
+			if eq {
+				return v, true
+			}
+			if i+1 < len(args) {
+				return args[i+1], true
+			}
+		case strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--"):
+			for j := 1; j < len(a); j++ {
+				if a[j] == 't' && j+1 < len(a) {
+					return a[j+1:], true
+				} else if a[j] == 't' && i+1 < len(args) {
+					return args[i+1], true
+				}
+				if strings.IndexByte("Smog", a[j]) >= 0 { // -S suffix, install -m 644: the rest is its value
+					break
+				}
+			}
+		}
+	}
+	return "", false
+}
+
+// setAny: a computed word names the variable a command sets, so every variable may now hold anything (review round 10).
+func (w *walker) setAny() {
+	w.anyVar = true
+	for k := range w.vars {
+		w.vars[k] = unknown
+	}
+}
+
+func (w *walker) assign(a *syntax.Assign) {
+	w.subs(a.Value) // export "$(...)" runs it too
+	// export $(...) or "$X": the word may set any variable (review rounds 9 and 10); declare -a is an option
+	if a.Name == nil {
+		// export "D=$HOME/x": a quoted word is not split, so it sets the one variable it names (review round 11)
+		// A brace outside quotes may expand to several words: export "D="{/tmp,~/.crius/bus} (review round 14).
+		quoted := !slices.ContainsFunc(a.Value.Parts, func(p syntax.WordPart) bool {
+			_, lit := p.(*syntax.Lit)
+			_, sgl := p.(*syntax.SglQuoted)
+			d, dbl := p.(*syntax.DblQuoted)
+			return !lit && !sgl && !dbl || braces(p) || dbl && slices.ContainsFunc(d.Parts, splits)
+		})
+		if n, v, ok := strings.Cut(w.resolve(a.Value), "="); quoted && ok && nameRe.MatchString(n) {
+			w.vars[n] = v
+			return
+		}
+		if o, ok := literal(a.Value); !ok || !strings.HasPrefix(o, "-") {
+			w.setAny()
+		}
+	}
+	if a.Name == nil || a.Naked {
+		return
+	}
+	v := w.resolve(a.Value)
+	switch {
+	case a.Array != nil:
+		for _, e := range a.Array.Elems {
+			w.subs(e.Value)
+		}
+		v = unknown
+	case a.Index != nil:
+		v = unknown
+	case a.Append:
+		old, ok := w.vars[a.Name.Value]
+		if !ok {
+			old = "$" + a.Name.Value
+		}
+		v = old + v
+	}
+	w.vars[a.Name.Value] = v
+}
+
+// braces says whether a part outside quotes holds a brace, which may expand to several words.
+func braces(p syntax.WordPart) bool {
+	l, ok := p.(*syntax.Lit)
+	return ok && strings.Contains(l.Value, "{")
+}
+
+// cd follows a move to a folder it can name; after "cd -" the folder is unknown.
+func (w *walker) cd(args []string) {
+	dir := "~"
+	for i, a := range args { // cd -P dir, cd -- dir
+		if a == "--" {
+			if i+1 < len(args) {
+				dir = args[i+1]
+			}
+			break
+		}
+		if a == "-" || !strings.HasPrefix(a, "-") {
+			dir = a
+			break
+		}
+	}
+	switch {
+	case dir == "-":
+		w.cwd = unknown
+		return
+	// cd "$(...)/x": a computed folder is not a child of this one, and the text after it is kept (review round 10)
+	case strings.HasPrefix(dir, "/"), strings.HasPrefix(dir, "~"), strings.HasPrefix(dir, "$"), strings.HasPrefix(dir, unknown),
+		w.cwd == "":
+	default:
+		dir = w.cwd + "/" + dir
+	}
+	// After a computed part the folder is the run's, so it is the known folder before that part: a ".." after it must
+	// not cancel it, and the text after it is kept as written (cd ~/x/$(...)/.., review rounds 8 and 9).
+	if known, rest, cut := strings.Cut(dir, unknown); !cut {
+		w.cwd = path.Clean(dir)
+	} else if known == "" {
+		w.cwd = unknown + rest
+	} else if strings.HasSuffix(known, newDir) { // a mktemp name: the marker and its computed part are one name
+		w.cwd = path.Clean(known) + unknown + rest
+	} else {
+		w.cwd = path.Clean(known) + "/" + unknown + rest
+	}
+}
+
+// script checks the text a shell or eval runs, in the folder and with the variables reached so far.
+func (w *walker) script(text string) {
+	switch {
+	case w.why != "":
+	case strings.Contains(text, unknown): // a computed part may be any command
+		w.refuseUnknown()
+	default:
+		w.why = (&walker{cwd: w.cwd, vars: maps.Clone(w.vars), named: w.named || namesBus(text), anyVar: w.anyVar}).check(text)
+	}
+}
+
+// stdin checks the script a shell reads on stdin: a here-document or here-string; from a pipe or a file it is unknown.
+func (w *walker) stdin(redirs []*syntax.Redirect) {
+	for _, r := range redirs {
+		switch r.Op {
+		case syntax.Hdoc, syntax.DashHdoc:
+			if d, ok := literal(r.Word); ok && d == print(r.Word) { // <<EOF expands; <<'EOF' and <<\EOF keep the text
+				w.script(w.expand(r.Hdoc, true))
+			} else {
+				w.script(print(r.Hdoc))
+			}
+			return
+		case syntax.WordHdoc:
+			w.script(w.resolve(r.Word))
+			return
+		}
+	}
+	w.script(unknown)
+}
+
+func (w *walker) refuseUnknown() {
+	if w.named {
+		w.why = rawWrite
+	}
+}
+
+// target refuses a write to a path in the bus folder: relative to the folder cd reached, with // and /./ cleaned away.
+func (w *walker) target(p string) {
+	if p == "" || w.why != "" {
+		return
+	}
+	// A computed path ("$L" from $(ls ...)) may be absolute or relative to the folder cd reached, so it is judged both
+	// ways: a cd to ~/Projects/x does not make it a child of x (review round 6).
+	if strings.HasPrefix(p, unknown) {
+		if w.cwd != "" && !strings.HasPrefix(w.cwd, unknown) {
+			w.judge(w.cwd + "/" + p)
+		}
+		if w.why == "" {
+			w.refuseUnknown()
+		}
+		return
+	}
+	if !strings.HasPrefix(p, "/") && !strings.HasPrefix(p, "~") && !strings.HasPrefix(p, "$") && w.cwd != "" {
+		p = w.cwd + "/" + p
+	}
+	w.judge(p)
+}
+
+// judge refuses a write to a path that names the bus folder, or may.
+func (w *walker) judge(p string) {
+	known, rest, cut := strings.Cut(p, unknown)
+	if !cut {
+		if busRe.MatchString(path.Clean(p)) {
+			w.why = rawWrite
+		}
+		return
+	}
+	// The rest of the path only the run shows, so it is judged by the known folder before it: "/tmp/n-$(date +%s).txt"
+	// is not the bus, "~/.crius/$(...)" may be, and "~/$(...)" or a relative path in an unknown folder may be.
+	dir, _ := path.Split(known)
+	d := path.Clean(dir)
+	for _, h := range []string{"$HOME", "${HOME}"} {
+		if rest, ok := strings.CutPrefix(d, h); ok && (rest == "" || rest[0] == '/') {
+			d = "~" + rest
+		}
+	}
+	// A mktemp name and then a path in it: no other computed part, which may climb, and no name glued to an empty one.
+	// The path is known but for that one name: in it, it is a new folder; out of it with "..", the path is known.
+	if t, ok := strings.CutSuffix(known, newDir); ok && strings.HasPrefix(rest, "/") && !strings.Contains(rest, unknown) {
+		full := path.Clean(t + tempName + rest)
+		before, _, in := strings.Cut(full, tempName)
+		if !in && busRe.MatchString(full) || in && (busRe.MatchString(before) || strings.EqualFold(path.Base(before), ".crius")) {
+			w.why = rawWrite
+		}
+		return
+	}
+	climbs := slices.Contains(strings.Split(rest, "/"), "..")
+	switch {
+	// The computed part may climb anywhere (/tmp/$(...)/.crius/bus, review round 9).
+	case busRe.MatchString(rest):
+		w.why = rawWrite
+	case dir == "":
+		w.refuseUnknown()
+	case busRe.MatchString(d), strings.EqualFold(path.Base(d), ".crius"):
+		w.why = rawWrite
+	case d == "/", strings.HasPrefix("~/.crius/bus", fold(d)+"/"),
+		homeDir != "" && strings.HasPrefix(fold(homeDir+"/.crius/bus"), fold(d)+"/"),
+		climbs: // climbs out of a folder only the run shows
+		w.refuseUnknown()
+	}
+}
+
+var homeDir, _ = os.UserHomeDir()
+
+// subs checks the commands in a word's $(...) and <(...).
+func (w *walker) subs(word *syntax.Word) {
+	if word == nil {
+		return
+	}
+	w.nested(word)
+}
+
+// nested checks the commands in each $(...) and <(...) under n, in a child shell.
+func (w *walker) nested(n syntax.Node) {
+	syntax.Walk(n, func(n syntax.Node) bool {
+		var ss []*syntax.Stmt
+		switch n := n.(type) {
+		case *syntax.CmdSubst:
+			ss = n.Stmts
+		case *syntax.ProcSubst:
+			ss = n.Stmts
+		default:
+			return true
+		}
+		cwd, vars := w.cwd, maps.Clone(w.vars)
+		w.stmts(ss)
+		w.cwd, w.vars = cwd, vars
+		return false
+	})
+}
+
+// resolve gives a word's text with the variables the command set put in and other variables as written; an unset
+// variable's default (${D:-x}) is taken as its value. A $(...), `...`, $1, $@, ${a[i]}, ${!a} and an operation on a
+// set variable (${a%x}) are unknown; $(mktemp) is an unknown name in its folder.
+func (w *walker) resolve(word *syntax.Word) string { return w.expand(word, false) }
+
+// expand is resolve, with a here-document's backslash rules when hdoc is set.
+func (w *walker) expand(word *syntax.Word, hdoc bool) string {
+	if word == nil {
+		return ""
+	}
+	var b strings.Builder
+	var part func(p syntax.WordPart, escapes string)
+	part = func(p syntax.WordPart, escapes string) {
+		switch p := p.(type) {
+		case *syntax.Lit:
+			b.WriteString(unescape(p.Value, escapes))
+		case *syntax.SglQuoted:
+			b.WriteString(p.Value)
+		case *syntax.DblQuoted:
+			for _, q := range p.Parts {
+				part(q, quoted)
+			}
+		case *syntax.ParamExp:
+			v, ok := w.vars[p.Param.Value]
+			switch {
+			case p.Index != nil || p.Excl || strings.Trim(p.Param.Value, "0123456789@*") == "",
+				ok && (p.Slice != nil || p.Repl != nil || p.Exp != nil):
+				b.WriteString(unknown)
+			case ok:
+				b.WriteString(v)
+			case p.Exp != nil && p.Exp.Word != nil && (p.Exp.Op == syntax.DefaultUnset || p.Exp.Op == syntax.DefaultUnsetOrNull ||
+				p.Exp.Op == syntax.AssignUnset || p.Exp.Op == syntax.AssignUnsetOrNull):
+				start := b.Len()
+				for _, q := range p.Exp.Word.Parts {
+					part(q, escapes)
+				}
+				if p.Exp.Op == syntax.AssignUnset || p.Exp.Op == syntax.AssignUnsetOrNull { // ${X:=d} also sets X
+					w.vars[p.Param.Value] = b.String()[start:]
+				}
+			case w.anyVar:
+				b.WriteString(unknown)
+			default:
+				b.WriteString(print(p))
+			}
+		case *syntax.CmdSubst:
+			if dir := w.tempDir(p); dir != "" {
+				b.WriteString(dir + newDir)
+			}
+			b.WriteString(unknown)
+		default:
+			b.WriteString(print(p))
+		}
+	}
+	escapes := ""
+	if hdoc {
+		escapes = hereDoc
+	}
+	for _, p := range word.Parts {
+		part(p, escapes)
+	}
+	return b.String()
+}
+
+// The characters a backslash escapes inside double quotes and inside an unquoted here-document; outside both it
+// escapes any character.
+const (
+	quoted  = "$`\"\\\n"
+	hereDoc = "$`\\\n"
+)
+
+// unescape drops the backslashes bash removes from a word: before the characters in escapes, or before any when it
+// is empty.
+func unescape(s, escapes string) string {
+	if !strings.Contains(s, `\`) {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) && (escapes == "" || strings.IndexByte(escapes, s[i+1]) >= 0) {
+			i++
+			if s[i] == '\n' {
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
+// tempDir gives the folder a $(...) that is a mktemp (-d, -q, -u, -t prefix, 2>/dev/null) names a new file in: a temp
+// folder, or the folder of its one absolute template; "" for any other $(...).
+func (w *walker) tempDir(c *syntax.CmdSubst) string {
+	if len(c.Stmts) != 1 {
+		return ""
+	}
+	for _, r := range c.Stmts[0].Redirs {
+		if r.Op != syntax.RdrOut || r.N == nil || r.N.Value != "2" || w.resolve(r.Word) != "/dev/null" {
+			return ""
+		}
+	}
+	call, ok := c.Stmts[0].Cmd.(*syntax.CallExpr)
+	if !ok || len(call.Assigns) > 0 || len(call.Args) == 0 || base(call.Args[0]) != "mktemp" {
+		return ""
+	}
+	dir := "/tmp/"
+	if v, ok := w.vars["TMPDIR"]; ok { // with no template mktemp makes the file in $TMPDIR
+		dir = strings.TrimSuffix(v, "/") + "/"
+	}
+	for i, templates := 1, 0; i < len(call.Args); i++ {
+		switch a := w.resolve(call.Args[i]); {
+		case a == "-d", a == "-q", a == "-u":
+		case a == "-t":
+			i++
+		case templates == 0 && (strings.HasPrefix(a, "/") || strings.HasPrefix(a, "~")) && !strings.Contains(a, unknown):
+			templates++
+			dir, _ = path.Split(a)
+		default:
+			return ""
+		}
+	}
+	return dir
+}
+
+// checkText judges a command the parser cannot read. Bash runs the lines before a syntax error's line (a cp, a sed -i),
+// so a command naming the bus folder with an error past line 1 is refused, and on line 1 when it holds > or tee.
+func checkText(text string, err error) string {
 	if strings.Contains(text, "team-wait.sh") && loneAmpRe.MatchString(text) {
 		return detached
 	}
-	if verifiedRe.MatchString(text) && strings.Contains(text, ".crius/bus") && writeRe.MatchString(text) {
-		return rawVerified
+	if !namesBus(text) {
+		return ""
+	}
+	if pe, ok := err.(syntax.ParseError); !ok || pe.Pos.Line() > 1 {
+		return unparsed
+	}
+	if writeRe.MatchString(text) {
+		return rawWrite
 	}
 	return ""
 }
 
-// units splits a statement at && and || into the parts that write on their own; a pipeline stays one unit, since
-// its first command makes the text the last one writes.
-func units(stmt *syntax.Stmt) []*syntax.Stmt {
-	if b, ok := stmt.Cmd.(*syntax.BinaryCmd); ok && (b.Op == syntax.AndStmt || b.Op == syntax.OrStmt) {
-		return append(units(b.X), units(b.Y)...)
-	}
-	return []*syntax.Stmt{stmt}
-}
-
-// writesBus reports whether unit writes to a bus log: a redirect or tee into .crius/bus, a relative target after a
-// cd into the bus folder, or a target held in a variable when the command names the bus.
-func writesBus(unit *syntax.Stmt, inBus, namesBus bool) bool {
-	target := func(w *syntax.Word) bool {
-		if strings.Contains(print(w), ".crius/bus") {
-			return true
-		}
-		s, ok := literal(w)
-		if !ok {
-			return namesBus
-		}
-		return inBus && s != "/dev/null" && !strings.HasPrefix(s, "/") && !strings.HasPrefix(s, "~")
-	}
-	found := false
-	syntax.Walk(unit, func(n syntax.Node) bool {
-		switch n := n.(type) {
-		case *syntax.Redirect:
-			switch n.Op {
-			case syntax.RdrOut, syntax.AppOut, syntax.ClbOut, syntax.RdrAll, syntax.AppAll:
-				found = found || target(n.Word)
-			}
-		case *syntax.CallExpr:
-			if args := unwrap(n.Args); len(args) > 0 && base(args[0]) == "tee" {
-				for _, a := range args[1:] {
-					found = found || (!strings.HasPrefix(print(a), "-") && target(a))
-				}
-			}
-		}
-		return !found
-	})
-	return found
-}
-
-// shellScript gives the script word of `sh -c script` (also -lc, -ec, ...), or nil.
+// shellScript gives the script word of `sh -c script` (also -lc, -ec, --norc -c, -c -- script), or nil.
 func shellScript(args []*syntax.Word) *syntax.Word {
-	if len(args) < 3 {
-		return nil
-	}
-	for i, a := range args[1 : len(args)-1] {
-		if w, _ := literal(a); strings.HasPrefix(w, "-") && w != "--" && strings.Contains(w, "c") {
-			return args[i+2]
+	for i := 1; i < len(args); i++ {
+		a, _ := literal(args[i])
+		switch {
+		case a == "-o", a == "+o", a == "-O", a == "+O", a == "--rcfile", a == "--init-file":
+			i++
+		case strings.HasPrefix(a, "--"), strings.HasPrefix(a, "+"):
+		case strings.HasPrefix(a, "-") && strings.Contains(a, "c"):
+			if n, _ := literal(args[min(i+1, len(args)-1)]); n == "--" {
+				i++
+			}
+			if i+1 < len(args) {
+				return args[i+1]
+			}
+			return nil
+		case !strings.HasPrefix(a, "-"):
+			return nil // the script file; later words are its arguments
 		}
 	}
 	return nil
 }
 
+// readsStdin reports whether a shell with no -c script reads its script on stdin: it names no script file, or has -s.
+func readsStdin(args []*syntax.Word) bool {
+	for i := 1; i < len(args); i++ {
+		a, _ := literal(args[i])
+		switch {
+		case a == "-o", a == "+o", a == "-O", a == "+O", a == "--rcfile", a == "--init-file":
+			i++
+		case a == "--":
+			return i+1 == len(args)
+		case strings.HasPrefix(a, "--"), strings.HasPrefix(a, "+"):
+		case strings.HasPrefix(a, "-") && strings.Contains(a, "s"):
+			return true
+		case !strings.HasPrefix(a, "-"):
+			return false
+		}
+	}
+	return true
+}
+
+// edited gives the files sed or perl changes in place (-i, -i.bak, BSD sed -i with an empty word, perl -pi): the
+// words that are not options, less the script a -e (sed -f, perl -E) names or, without one, the first such word.
+func edited(tool string, args []string) []string {
+	var files []string
+	inPlace, script := false, false
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--":
+			files = append(files, args[i+1:]...)
+			i = len(args)
+		case strings.HasPrefix(a, "--"):
+			name, _, eq := strings.Cut(a[2:], "=")
+			switch name {
+			case "in-place":
+				inPlace = true
+			case "expression", "file":
+				script = true
+				if !eq {
+					i++
+				}
+			}
+		case strings.HasPrefix(a, "-") && len(a) > 1:
+			for j := 1; j < len(a); j++ {
+				c := a[j]
+				if c == 'i' { // the rest of the word is the backup suffix; BSD sed takes it as the next word
+					inPlace = true
+					if tool == "sed" && j == len(a)-1 && i+1 < len(args) && (args[i+1] == "" || strings.HasPrefix(args[i+1], ".")) {
+						i++
+					}
+					break
+				}
+				if c == 'e' || tool == "sed" && c == 'f' || tool == "perl" && c == 'E' { // the script: the rest or the next word
+					script = true
+					if j == len(a)-1 {
+						i++
+					}
+					break
+				}
+			}
+		default:
+			files = append(files, a)
+		}
+	}
+	if !inPlace {
+		return nil
+	}
+	if !script && len(files) > 0 {
+		files = files[1:]
+	}
+	return files
+}
+
 const (
 	detached = "team-wait.sh must not run detached with '&': a detached waiter cannot wake this session. " +
 		"Run it with the Bash tool's run_in_background: true instead."
-	rawVerified = "a VERIFIED line goes onto the bus only through bus-post " +
-		"(~/.crius/bin/bus-post <log> VERIFIED <from> <to> <text>): it stamps the time and checks the run log."
+	rawWrite = "a line goes onto the bus only through bus-post (~/.crius/bin/bus-post <log> <TYPE> <project:role> " +
+		"<to> <text>): it stamps the time and checks the line parses (a bus type, a project:role sender, recipients " +
+		"\"a, b\" or \"a (cc b)\") and, for VERIFIED, the run log."
+	unparsed = "this command names .crius/bus but its shell syntax cannot be read, so it may write a bus line: fix the " +
+		"syntax or split the command. A line goes onto the bus only through bus-post."
 )
 
 // runsWaiter reports whether stmt runs team-wait.sh itself, or a shell on it (not a grep that names it).
@@ -171,7 +839,7 @@ func runsWaiter(stmt *syntax.Stmt) bool {
 	found := false
 	syntax.Walk(stmt, func(n syntax.Node) bool {
 		if c, ok := n.(*syntax.CallExpr); ok {
-			args := unwrap(c.Args)
+			args, _, _, _ := unwrap(c.Args)
 			if len(args) > 0 && base(args[0]) == "team-wait.sh" {
 				found = true
 			}
@@ -186,39 +854,123 @@ func runsWaiter(stmt *syntax.Stmt) bool {
 }
 
 var (
-	wrappers   = map[string]bool{"command": true, "env": true, "nohup": true, "exec": true, "sudo": true, "timeout": true, "caffeinate": true, "nice": true, "setsid": true}
-	durationRe = regexp.MustCompile(`^\d+(\.\d+)?[smhd]?$`)
+	wrappers = map[string]bool{"command": true, "env": true, "nohup": true, "exec": true, "sudo": true, "timeout": true,
+		"caffeinate": true, "nice": true, "setsid": true, "xargs": true, "gtimeout": true, "genv": true, "time": true,
+		"builtin": true}
+	envRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
 )
 
+var (
+	// valued: a wrapper's short options that take the next word as their value (env -u X, timeout -s KILL, review round 10)
+	valued = map[string]string{"env": "uPa", "exec": "a", "timeout": "sk", "nice": "n", "sudo": "aCcghpRrTtUuD",
+		"xargs": "aEdILnPs", "caffeinate": "tw", "gtimeout": "sk", "genv": "uPa", "time": "f"}
+	// opaque: options that run the command somewhere or as something the words do not show (env -C dir, env -S "line");
+	// time -o writes a file the words name only as an option.
+	opaque = map[string]string{"env": "CS", "sudo": "DR", "genv": "CS", "time": "o"}
+	// Long options by wrapper; GNU takes any unique prefix of one (timeout --sig KILL, review round 11).
+	valuedLong = map[string][]string{"env": {"--unset", "--argv0"}, "timeout": {"--signal", "--kill-after"}, "nice": {"--adjustment"},
+		"sudo": {"--user", "--group", "--prompt", "--host", "--role", "--type", "--close-from", "--command-timeout",
+			"--other-user", "--auth-type"},
+		"xargs":    {"--arg-file", "--delimiter", "--max-args", "--max-procs", "--max-chars", "--process-slot-var"},
+		"gtimeout": {"--signal", "--kill-after"}, "genv": {"--unset", "--argv0"}, "time": {"--format"}}
+	opaqueLong = map[string][]string{"env": {"--chdir", "--split-string"}, "sudo": {"--chdir", "--chroot"},
+		"genv": {"--chdir", "--split-string"}, "time": {"--output"}}
+)
+
+// option reads one option word of a wrapper: whether the next word is its value, and whether it hides the command.
+func option(wrapper, o string) (next, hides bool) {
+	if strings.HasPrefix(o, "--") {
+		long, _, eq := strings.Cut(o, "=")
+		prefix := func(n string) bool { return strings.HasPrefix(n, long) }
+		return slices.ContainsFunc(valuedLong[wrapper], prefix) && !eq, slices.ContainsFunc(opaqueLong[wrapper], prefix)
+	}
+	for i := 1; i < len(o); i++ {
+		if strings.IndexByte(opaque[wrapper], o[i]) >= 0 {
+			return false, true
+		}
+		if strings.IndexByte(valued[wrapper], o[i]) >= 0 {
+			return i == len(o)-1, false // -uX holds its value
+		}
+	}
+	return false, false
+}
+
 // unwrap drops leading words that run the next word as the command: command, env (and its NAME=value), nohup, ...
-func unwrap(args []*syntax.Word) []*syntax.Word {
+// hides: a wrapper option runs it in a folder or line the words do not show (env -C dir, env -S "sh -c ...").
+// child: a wrapper other than command or builtin runs it as a program, so a builtin such as cd cannot move the shell.
+func unwrap(args []*syntax.Word) (cmd, envs []*syntax.Word, hides, child bool) {
 	for len(args) > 0 {
-		switch w, _ := literal(args[0]); {
-		case wrappers[w]:
+		w, _ := literal(args[0])
+		switch name := base(args[0]); {
+		// env D=~/.crius/bus/env: a word with "=" is an assignment, whatever its last path part (review round 15)
+		case strings.Contains(w, "=") && !strings.HasPrefix(w, "-"), envRe.MatchString(print(args[0])): // env D=$HOME/x
+			envs = append(envs, args[0])
 			args = args[1:]
-			for len(args) > 0 { // the wrapper's options and numbers: timeout 900, nice -n 5
-				o, _ := literal(args[0])
-				if !strings.HasPrefix(o, "-") && !durationRe.MatchString(o) {
+		case wrappers[name]: // /usr/bin/env and ENV too (review rounds 12 and 13)
+			args = args[1:]
+			child = child || name != "command" && name != "builtin"
+			// timeout's first word after its options is the duration, in any form strtod reads: 5, .5, 1e2, inf
+			dur := name == "timeout" || name == "gtimeout"
+			for len(args) > 0 { // the wrapper's options: nice -n 5
+				o, ok := literal(args[0])
+				if !ok {
+					o = print(args[0])
+				}
+				if o == "--" || !strings.HasPrefix(o, "-") && o != "{}" {
+					if o == "--" {
+						args = args[1:]
+					}
+					if dur && len(args) > 0 {
+						args = args[1:]
+					}
 					break
 				}
 				args = args[1:]
+				if name == "command" && strings.ContainsAny(o, "vV") { // command -v cd only prints (review round 15)
+					return nil, envs, hides, child
+				}
+				if strings.HasPrefix(o, "-") {
+					next, h := option(name, o)
+					hides = hides || h
+					if next && len(args) > 0 {
+						args = args[1:]
+					}
+				}
 			}
-		case strings.Contains(w, "=") && !strings.HasPrefix(w, "-"):
-			args = args[1:]
 		default:
-			return args
+			return args, envs, hides, child
 		}
 	}
-	return args
+	return args, envs, hides, child
 }
 
-// base is the last path part of a word's literal value ("/usr/bin/tee" and "\"tee\"" are both tee).
+// splits says whether a part makes several words even inside double quotes: "$@", "${a[@]}", "${!x@}" (review round 12),
+// also inside a default or alternate: "${X:-$@}" (review round 13), and zsh's "$a[@]" (review round 14). A $(...)
+// inside is one word.
+func splits(p syntax.WordPart) bool {
+	found := false
+	syntax.Walk(p, func(n syntax.Node) bool {
+		if _, sub := n.(*syntax.CmdSubst); sub {
+			return false
+		}
+		if l, ok := n.(*syntax.Lit); ok && strings.Contains(l.Value, "[@]") {
+			found = true
+		}
+		pe, ok := n.(*syntax.ParamExp)
+		found = found || ok && (pe.Param.Value == "@" || pe.Names != 0 || pe.Index != nil && print(pe.Index) == "@")
+		return !found
+	})
+	return found
+}
+
+// base is the last path part of a word's literal value, as the disk names it: "/usr/bin/tee", "\"tee\"" and "TEE" are
+// all tee (review round 13).
 func base(w *syntax.Word) string {
 	s, ok := literal(w)
 	if !ok {
 		return ""
 	}
-	return path.Base(s)
+	return fold(path.Base(s))
 }
 
 // literal gives a word's value when it holds no expansion: plain, 'single' or "double" quoted parts.
@@ -227,7 +979,7 @@ func literal(w *syntax.Word) (string, bool) {
 	for _, p := range w.Parts {
 		switch p := p.(type) {
 		case *syntax.Lit:
-			b.WriteString(p.Value)
+			b.WriteString(unescape(p.Value, ""))
 		case *syntax.SglQuoted:
 			b.WriteString(p.Value)
 		case *syntax.DblQuoted:
@@ -236,7 +988,7 @@ func literal(w *syntax.Word) (string, bool) {
 				if !ok {
 					return "", false
 				}
-				b.WriteString(l.Value)
+				b.WriteString(unescape(l.Value, quoted))
 			}
 		default:
 			return "", false
