@@ -490,6 +490,10 @@ func TestAnIdleBuilderAlertsAfter20Min(t *testing.T) {
 		if len(f.sent) != 1 || !strings.Contains(f.sent[0], who+" (tab") || !strings.Contains(f.sent[0], "is idle") {
 			t.Fatal(c.title, f.sent)
 		}
+		// Review 897b5c1 P3: no line is sent as quotes:p6, so only the screen's age is known.
+		if !strings.Contains(f.sent[0], "screen unchanged for 21 min, no bus line from "+who) {
+			t.Fatal(c.title, f.sent)
+		}
 	}
 }
 

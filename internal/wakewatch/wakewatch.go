@@ -313,7 +313,8 @@ func lineTime(s string) (time.Time, error) {
 }
 
 // waiting gives [key, text] for each tab whose screen has waited on a question or dialog, unchanged, for 10 min, and
-// for each idle tab: unchanged and with no bus line of its own for 15 min (a lead) or 20 min (a builder or QA). A screen counts as unchanged by what is
+// for each idle tab: unchanged and with no bus line of its own for 15 min (a lead, or any tab whose last reply says
+// CLEAR-READY) or 20 min (any other role: builders, QA, the rig). A screen counts as unchanged by what is
 // above its input box: the status line below it holds a clock. A screen read that fails is an alert of its own: the
 // whole check, or one tab, which keeps its place meanwhile.
 func waiting(st *state, d Deps, watch projects) [][2]string {
@@ -398,6 +399,9 @@ func waiting(st *state, d Deps, watch projects) [][2]string {
 		st.Screens[s.Surface] = seen
 		if wait := d.Now.Sub(from); seen.Idle {
 			text := fmt.Sprintf("%s (tab %q, %s) is idle: not working, nothing running, no bus line from it for %d min", who, s.Title, s.Surface, int(wait.Minutes()))
+			if lastLine.IsZero() { // Quotes builders post as "P3": only the screen's age is known
+				text = fmt.Sprintf("%s (tab %q, %s) is idle: not working, nothing running, screen unchanged for %d min, no bus line from %s", who, s.Title, s.Surface, int(wait.Minutes()), who)
+			}
 			if clear {
 				text += "; its screen says CLEAR-READY"
 			}
