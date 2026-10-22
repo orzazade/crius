@@ -148,9 +148,59 @@ func (r *runner) ingestTranscripts() {
 			r.warn(true, "cannot walk %s: %v", rt.path, err)
 		}
 	}
+	if err := r.recordWorktrees(); err != nil {
+		r.warn(true, "recording the git worktrees sessions ran in: %v", err)
+	}
 	if err := r.refile(); err != nil {
 		r.warn(true, "re-filing sessions by folder or title: %v", err)
 	}
+}
+
+// recordWorktrees records, for each session not yet recorded, the linked git worktree rollUp saw this run, else the one
+// its folder is in now (none included), and that worktree's main checkout, so the session keeps its main repo's project once the worktree is
+// removed, and a folder made a worktree later moves no session (projectForCwd).
+func (r *runner) recordWorktrees() error {
+	rows, err := r.db.Query("select id, cwd from session where cwd is not null and id not in (select session from session_worktree)")
+	if err != nil {
+		return err
+	}
+	found, seen := map[string]store.Worktree{}, map[string]store.Worktree{}
+	for rows.Next() {
+		var id, cwd string
+		if err := rows.Scan(&id, &cwd); err != nil {
+			rows.Close()
+			return err
+		}
+		if w := r.worktrees[id]; w != nil {
+			found[id] = *w
+			continue
+		}
+		w, ok := seen[cwd]
+		if !ok {
+			w.Path, w.Main = worktreeOf(cwd)
+			seen[cwd] = w
+		}
+		found[id] = w
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil || len(found) == 0 {
+		return err
+	}
+	tx, err := r.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for id, w := range found {
+		if _, err := tx.Exec("insert or ignore into session_worktree (session, path, main) values (?, ?, ?)", id, w.Path, w.Main); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	r.worktrees, err = store.Worktrees(r.db)
+	return err
 }
 
 // orgFile reads the lines of a main transcript that name the session's organization (credential_org) into org_seen.
@@ -219,7 +269,7 @@ func (r *runner) refile() error {
 			rows.Close()
 			return err
 		}
-		filed, titleRole, _ := r.cfg.filing(cwd, title)
+		filed, titleRole, _ := r.cfg.filing(cwd, title, r.worktrees[id])
 		if (filed != project || role != "" && titleRole != role) && !slices.Contains(stale, id) {
 			stale = append(stale, id)
 		}
@@ -560,7 +610,20 @@ func (r *runner) rollUp(tx *sql.Tx, sid string) error {
 	default:
 		return err
 	}
-	filed, titleRole, byTitle := r.cfg.filing(cwd.String, title.String)
+	if cwd.Valid {
+		// The first look at the session's folder is the one recorded: the worktree may be gone by recordWorktrees. A
+		// look kept from a transaction that rolled back is written again here, and recordWorktrees reuses it.
+		w := r.worktrees[sid]
+		if w == nil {
+			w = &store.Worktree{}
+			w.Path, w.Main = worktreeOf(cwd.String)
+			r.worktrees[sid] = w
+		}
+		if _, err := tx.Exec("insert or ignore into session_worktree (session, path, main) values (?, ?, ?)", sid, w.Path, w.Main); err != nil {
+			return err
+		}
+	}
+	filed, titleRole, byTitle := r.cfg.filing(cwd.String, title.String, r.worktrees[sid])
 	var attrib, account, project, role string
 	var parent, item sql.NullString
 	err = tx.QueryRow("select account, project, role, parent, item from assignment where session=?"+

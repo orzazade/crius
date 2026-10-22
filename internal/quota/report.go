@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/orzazade/crius/internal/store"
 )
 
 // Gap: a sample this far from a request (both sides) leaves the request unmeasured, and open sessions with no sample
@@ -63,8 +65,8 @@ type Querier interface {
 
 // Projects is what the report needs from projects.toml.
 type Projects struct {
-	EnterpriseOK map[string]bool         // projects that may run on the enterprise account
-	ForCwd       func(cwd string) string // the project of a folder, "" when none
+	EnterpriseOK map[string]bool                                   // projects that may run on the enterprise account
+	ForCwd       func(cwd string, recorded *store.Worktree) string // the project of a folder, "" when none
 }
 
 type obs struct {
@@ -261,13 +263,21 @@ func sessions(db Querier, p Projects) (out map[string]*sess, lastLine map[string
 		scan func(r *sql.Rows) error
 	}
 	loads := []load{
-		{"select id, coalesce(persona, ''), coalesce(cwd, '') from session", func(r *sql.Rows) error {
+		// Each session with its worktree record in one read: an ingest committing both between two reads would leave a
+		// session without its record.
+		{"select s.id, coalesce(s.persona, ''), coalesce(s.cwd, ''), w.path, w.main from session s" +
+			" left join session_worktree w on w.session = s.id", func(r *sql.Rows) error {
 			var id, persona, cwd string
-			if err := r.Scan(&id, &persona, &cwd); err != nil {
+			var path, main sql.NullString
+			if err := r.Scan(&id, &persona, &cwd, &path, &main); err != nil {
 				return err
 			}
+			var recorded *store.Worktree
+			if path.Valid {
+				recorded = &store.Worktree{Path: path.String, Main: main.String}
+			}
 			s := get(id)
-			s.persona, s.cwdProject = persona, p.ForCwd(cwd)
+			s.persona, s.cwdProject = persona, p.ForCwd(cwd, recorded)
 			return nil
 		}},
 		{"select session, coalesce(persona, ''), ts, rl from account_seen order by ts", func(r *sql.Rows) error {

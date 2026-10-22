@@ -91,6 +91,10 @@ create table if not exists source_run (
 -- One row per distinct alert, written in the same transaction as the rows that raised it; sent is set once the
 -- ALERT line is on the bus, so an alert that could not be posted is posted by the next run.
 create table if not exists alert (key text primary key, ts text not null, text text not null, sent text);
+-- The linked git worktree a session ran in (path, '' for none) and its main checkout, as ingest first saw its folder: the
+-- session keeps its main repo's project after the worktree is removed. One row per session, never changed, so a path
+-- made again as a plain folder or another repo's worktree moves no session filed before.
+create table if not exists session_worktree (session text primary key, path text not null, main text not null);
 `
 
 // Open opens (or creates, mode 600) the record store and applies the schema.
@@ -129,6 +133,31 @@ func Open(home string) (*sql.DB, error) {
 		return nil, err
 	}
 	return db, nil
+}
+
+// Worktree is the linked git worktree a session ran in (Path, "" for none) and its main checkout (Main).
+type Worktree struct{ Path, Main string }
+
+// Worktrees reads the session_worktree table: each session's recorded worktree, by session id (nil for a session not yet
+// recorded). q is a *sql.DB or a *sql.Tx.
+func Worktrees(q interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+}) (map[string]*Worktree, error) {
+	rows, err := q.Query("select session, path, main from session_worktree")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]*Worktree{}
+	for rows.Next() {
+		var id string
+		w := &Worktree{}
+		if err := rows.Scan(&id, &w.Path, &w.Main); err != nil {
+			return nil, err
+		}
+		out[id] = w
+	}
+	return out, rows.Err()
 }
 
 // addColumn gives a store made before a column existed that column: the schema only creates missing tables. Two

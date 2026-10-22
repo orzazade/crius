@@ -439,7 +439,7 @@ func TestManyChildTasksBuild(t *testing.T) {
 
 // demoProjects: quotes and axi may run on the enterprise account; no folder names a project.
 var demoProjects = quota.Projects{EnterpriseOK: map[string]bool{"quotes": true, "axi": true},
-	ForCwd: func(string) string { return "" }}
+	ForCwd: func(string, *store.Worktree) string { return "" }}
 
 // P3b (design §7, M2e and M2b): the week's list-price $ from the store. Max $ with the part no sample covers, enterprise
 // $ by project with its violations, and each project's share of the Max $; requests of the next week do not count.

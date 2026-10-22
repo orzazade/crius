@@ -200,8 +200,8 @@ var titleRe = regexp.MustCompile(`^\s*([a-z0-9][a-z0-9-]*)\s*(?:(?::|·)\s*(.*?)
 // -n title names (as written, else without "-build") when that project is configured, else its folder's; the role is
 // the title's part after the separator when it is one word, else unknown (prose like "fix: flaky test" is no role).
 // byTitle says the title gave either.
-func (c *config) filing(cwd, title string) (project, role string, byTitle bool) {
-	project, role = c.projectForCwd(cwd), "unknown"
+func (c *config) filing(cwd, title string, recorded *store.Worktree) (project, role string, byTitle bool) {
+	project, role = c.projectForCwd(cwd, recorded), "unknown"
 	m := titleRe.FindStringSubmatch(strings.ToLower(title))
 	if m == nil {
 		return project, role, false
@@ -225,12 +225,34 @@ func Filing(home, cwd, title string) (project, role string, err error) {
 	if err != nil {
 		return "", "", err
 	}
-	project, role, _ = c.filing(cwd, title)
+	project, role, _ = c.filing(cwd, title, nil)
 	return project, role, nil
 }
 
-// projectForCwd maps a folder to the project with the longest matching cwd prefix.
-func (c *config) projectForCwd(cwd string) string {
+// projectForCwd maps a folder to the project with the longest matching cwd prefix. A folder in a linked git worktree
+// is mapped as the same place in its main checkout, unless a project names the worktree or a folder in it (Crius
+// 22:46: quotes builders ran in <parent>/.worktrees/quotes-*, which only the parent folder's project named). A
+// session's record of its folder (store.Worktrees, nil for none) comes before the disk, so a worktree since removed or
+// made something else keeps the session where it was; one removed before it was recorded stays under its folder's
+// project.
+func (c *config) projectForCwd(cwd string, recorded *store.Worktree) string {
+	best, bestLen := c.longestCwd(cwd)
+	var wt, main string
+	if recorded != nil {
+		wt, main = recorded.Path, recorded.Main
+	} else {
+		wt, main = worktreeOf(cwd)
+	}
+	if wt != "" && bestLen < len(wt) {
+		if p, _ := c.longestCwd(main + strings.TrimPrefix(cwd, wt)); p != "" {
+			return p
+		}
+	}
+	return best
+}
+
+// longestCwd gives the project whose cwd prefix of cwd is the longest, and that prefix's length (-1 for none).
+func (c *config) longestCwd(cwd string) (string, int) {
 	best, bestLen := "", -1
 	for _, p := range c.projects {
 		for _, prefix := range p.cwd {
@@ -239,7 +261,49 @@ func (c *config) projectForCwd(cwd string) string {
 			}
 		}
 	}
-	return best
+	return best, bestLen
+}
+
+// worktreeOf is diskWorktree; tests swap it to remove a worktree between two looks.
+var worktreeOf = diskWorktree
+
+// diskWorktree gives the root of the linked git worktree holding dir and its main checkout, or "" when dir is in none.
+// A linked worktree's .git is a file "gitdir: <common>/worktrees/<name>", and that folder's commondir file names the
+// common .git (a submodule's .git file names a folder with no commondir: it is no worktree).
+func diskWorktree(dir string) (wt, main string) {
+	if !filepath.IsAbs(dir) {
+		return "", "" // "" is no folder: Clean would make it the process's own
+	}
+	for d := filepath.Clean(dir); ; d = filepath.Dir(d) {
+		if fi, err := os.Lstat(filepath.Join(d, ".git")); err == nil {
+			if fi.IsDir() {
+				return "", ""
+			}
+			b, err := os.ReadFile(filepath.Join(d, ".git"))
+			gitdir, ok := strings.CutPrefix(strings.TrimSpace(string(b)), "gitdir: ")
+			if err != nil || !ok {
+				return "", ""
+			}
+			if !filepath.IsAbs(gitdir) {
+				gitdir = filepath.Join(d, gitdir)
+			}
+			cb, err := os.ReadFile(filepath.Join(gitdir, "commondir"))
+			if err != nil {
+				return "", ""
+			}
+			common := strings.TrimSpace(string(cb))
+			if !filepath.IsAbs(common) {
+				common = filepath.Join(gitdir, common)
+			}
+			if filepath.Base(common) != ".git" {
+				return "", ""
+			}
+			return d, filepath.Dir(common)
+		}
+		if d == filepath.Dir(d) {
+			return "", ""
+		}
+	}
 }
 
 // Place gives where a project's sessions start, on which account and for which persona: its launch folder (its one
@@ -272,7 +336,7 @@ func Place(home, slug string) (cwd, account, persona string, err error) {
 		if fi, err := os.Stat(launch); err != nil || !fi.IsDir() {
 			return "", "", "", fmt.Errorf("projects.toml: project %s: launch %s: no folder there", slug, launch)
 		}
-		if got := c.projectForCwd(launch); got != slug {
+		if got := c.projectForCwd(launch, nil); got != slug {
 			return "", "", "", fmt.Errorf("projects.toml: project %s: launch %s is filed under project %q, not under %s", slug, launch, got, slug)
 		}
 		return launch, p.accounts[0], p.persona, nil

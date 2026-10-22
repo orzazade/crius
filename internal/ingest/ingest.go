@@ -49,6 +49,8 @@ type runner struct {
 	st      *Stats
 	partial bool
 	touched map[string]bool
+	// worktrees: each session's recorded git worktree (store.Worktrees), read at the start and again by recordWorktrees.
+	worktrees map[string]*store.Worktree
 }
 
 func utcNow() string { return time.Now().UTC().Format("2006-01-02T15:04:05Z") }
@@ -311,6 +313,9 @@ func Run(home string) (*Stats, error) {
 		return nil, fmt.Errorf("reprice: %w", err)
 	}
 	r := &runner{home: home, db: db, cfg: cfg, st: &Stats{UnknownTypes: map[string]int{}}, touched: map[string]bool{}}
+	if r.worktrees, err = store.Worktrees(db); err != nil {
+		return nil, err
+	}
 	started := utcNow()
 	r.ingestTranscripts()
 	r.ingestGit()
