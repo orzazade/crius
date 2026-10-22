@@ -41,7 +41,7 @@ func runCmux(args ...string) ([]byte, error) {
 func main() {
 	os.Setenv("PATH", toolPath())
 	err := wakewatch.Run(wakewatch.Deps{Home: store.Home(), Now: time.Now(), Screens: screens, Send: send,
-		Resources: resources, Tools: tools, Sessions: func() ([]wakewatch.Session, error) {
+		Workspaces: workspaces, Resources: resources, Tools: tools, Sessions: func() ([]wakewatch.Session, error) {
 			home, err := os.UserHomeDir()
 			if err != nil {
 				return nil, err
@@ -87,6 +87,39 @@ func terminals() ([]terminal, error) {
 					}
 				}
 			}
+		}
+	}
+	return out, nil
+}
+
+// workspaces lists every workspace of every cmux window with its name and colour, which the JSON tree does not show.
+func workspaces() ([]wakewatch.Workspace, error) {
+	b, err := cmux("--json", "tree", "--all")
+	if err != nil {
+		return nil, fmt.Errorf("cmux tree: %v: %s", err, strings.TrimSpace(string(b)))
+	}
+	var tree struct{ Windows []struct{ Ref string } }
+	if err := json.Unmarshal(b, &tree); err != nil {
+		return nil, fmt.Errorf("cmux --json tree: %v", err)
+	}
+	var out []wakewatch.Workspace
+	for _, w := range tree.Windows {
+		b, err := cmux("workspace", "list", "--window", w.Ref, "--json")
+		if err != nil {
+			return nil, fmt.Errorf("cmux workspace list --window %s: %v: %s", w.Ref, err, strings.TrimSpace(string(b)))
+		}
+		var list struct {
+			Workspaces []struct {
+				Ref, Title     string
+				HasCustomTitle bool   `json:"has_custom_title"`
+				CustomColor    string `json:"custom_color"`
+			}
+		}
+		if err := json.Unmarshal(b, &list); err != nil {
+			return nil, fmt.Errorf("cmux workspace list --window %s --json: %v", w.Ref, err)
+		}
+		for _, ws := range list.Workspaces {
+			out = append(out, wakewatch.Workspace{Ref: ws.Ref, Title: ws.Title, Named: ws.HasCustomTitle, Color: ws.CustomColor})
 		}
 	}
 	return out, nil

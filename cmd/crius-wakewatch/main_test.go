@@ -457,3 +457,35 @@ func TestSendSaysWhatTheDraftIs(t *testing.T) {
 		}
 	}
 }
+
+// ORDER 10-22 13:36: the name and colour check reads every window's workspaces; a window it cannot read fails loudly.
+func TestWorkspacesAreReadFromEveryWindow(t *testing.T) {
+	real := cmux
+	t.Cleanup(func() { cmux = real })
+	fail := false
+	cmux = func(args ...string) ([]byte, error) {
+		switch strings.Join(args, " ") {
+		case "--json tree --all":
+			return []byte(`{"windows":[{"ref":"window:1","workspaces":[]},{"ref":"window:2","workspaces":[]}]}`), nil
+		case "workspace list --window window:1 --json":
+			return []byte(`{"workspaces":[{"ref":"workspace:1","title":"Crius","has_custom_title":true,"custom_color":"#6A1B9A"},` +
+				`{"ref":"workspace:5","title":"~/Projects/openrig","has_custom_title":false,"custom_color":null}]}`), nil
+		case "workspace list --window window:2 --json":
+			if fail {
+				return []byte("no such window"), errors.New("exit status 1")
+			}
+			return []byte(`{"workspaces":[{"ref":"workspace:6","title":"Tamada","has_custom_title":true}]}`), nil
+		}
+		return nil, fmt.Errorf("unexpected cmux %q", args)
+	}
+	got, err := workspaces()
+	want := []wakewatch.Workspace{{Ref: "workspace:1", Title: "Crius", Named: true, Color: "#6A1B9A"},
+		{Ref: "workspace:5", Title: "~/Projects/openrig"}, {Ref: "workspace:6", Title: "Tamada", Named: true}}
+	if err != nil || fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("%+v %v", got, err)
+	}
+	fail = true
+	if _, err := workspaces(); err == nil || !strings.Contains(err.Error(), "window:2") || !strings.Contains(err.Error(), "no such window") {
+		t.Fatal(err)
+	}
+}

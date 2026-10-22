@@ -69,13 +69,21 @@ var (
 type Screen struct{ Surface, Title, Text, Err string }
 
 type Deps struct {
-	Home      string
-	Now       time.Time
-	Screens   func() ([]Screen, error)
-	Send      func(text string) error
-	Resources func() (freeDiskGB, swapUsedGB float64, err error)
-	Tools     func() map[string]error // each tool the team needs, and why it failed or did not answer (nil: fine)
-	Sessions  func() ([]Session, error)
+	Home       string
+	Now        time.Time
+	Screens    func() ([]Screen, error)
+	Send       func(text string) error
+	Resources  func() (freeDiskGB, swapUsedGB float64, err error)
+	Tools      func() map[string]error // each tool the team needs, and why it failed or did not answer (nil: fine)
+	Sessions   func() ([]Session, error)
+	Workspaces func() ([]Workspace, error)
+}
+
+// Workspace is one cmux workspace: Named is false while it shows a default title, and Color is "" when none is set.
+type Workspace struct {
+	Ref, Title string
+	Named      bool
+	Color      string
 }
 
 // Session is a live Claude Code session: its name ("quotes: lead"), id, and when it started (zero: nothing written yet).
@@ -135,6 +143,7 @@ func Run(d Deps) error {
 	alerts = append(alerts, resources(d)...)
 	alerts = append(alerts, tools(d)...)
 	alerts = append(alerts, fresh(d, watch, screens)...)
+	alerts = append(alerts, unnamed(d, screens)...)
 
 	active := map[string]bool{}
 	var sendErr error
@@ -675,4 +684,36 @@ func asks(text string) bool {
 		}
 	}
 	return false
+}
+
+// unnamed alerts on each workspace with a default name or no colour, and on each team tab (its input box names a
+// session) whose name does not start with its project: the owner found such tabs three times before (ORDER 10-22
+// 13:36). It looks at every workspace, watched project or not.
+func unnamed(d Deps, screens []Screen) [][2]string {
+	var alerts [][2]string
+	wss, err := d.Workspaces()
+	if err != nil {
+		alerts = append(alerts, [2]string{"looks-failed", "the workspace name and colour check failed to look: " + err.Error()})
+	}
+	for _, w := range wss {
+		var miss []string
+		if !w.Named {
+			miss = append(miss, "no name")
+		}
+		if w.Color == "" {
+			miss = append(miss, "no colour")
+		}
+		if miss != nil {
+			alerts = append(alerts, [2]string{"look:" + w.Ref, fmt.Sprintf("workspace %s %q has %s: crius-spawn names and colours a "+
+				"project's workspace, or set it with cmux workspace-action", w.Ref, w.Title, strings.Join(miss, " and "))})
+		}
+	}
+	for _, s := range screens {
+		who, role := session(s.Text, s.Title)
+		if project, _, _ := strings.Cut(who, ":"); who != "" && !strings.HasPrefix(strings.ToLower(s.Title), strings.ToLower(project)) {
+			alerts = append(alerts, [2]string{"tabname:" + s.Surface, fmt.Sprintf("tab %s %q runs %s but is not named for it: "+
+				"cmux rename-tab --surface %s -- '%s · %s'", s.Surface, s.Title, who, s.Surface, project, role)})
+		}
+	}
+	return alerts
 }

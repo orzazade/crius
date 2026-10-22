@@ -17,7 +17,7 @@ import (
 var defaultRoots = map[string]string{"personal": "~/.claude-personal/projects", "work": "~/.claude-work/projects"}
 
 type project struct {
-	slug                                         string
+	slug, persona                                string
 	accounts, cwd, repos, teamLogs, artifactDirs []string
 	leads                                        map[string]Lead // role -> status file holding the GOAL block (no Name)
 }
@@ -103,7 +103,7 @@ func loadConfig(home string) (*config, error) {
 			}
 			leads[role] = Lead{StatusFile: object, Repo: expand(repo)}
 		}
-		c.projects = append(c.projects, project{slug: slug, accounts: p.Accounts, cwd: expandAll(p.CWD), repos: expandAll(p.Repos),
+		c.projects = append(c.projects, project{slug: slug, persona: p.Persona, accounts: p.Accounts, cwd: expandAll(p.CWD), repos: expandAll(p.Repos),
 			teamLogs: expandAll(p.TeamLogs), artifactDirs: expandAll(p.ArtifactDirs), leads: leads})
 	}
 	sort.Slice(c.projects, func(i, j int) bool { return c.projects[i].slug < c.projects[j].slug })
@@ -216,21 +216,21 @@ func (c *config) projectForCwd(cwd string) string {
 	return best
 }
 
-// Place gives where a project's sessions start and on which account: its first cwd and first account in projects.toml
-// (crius-launch).
-func Place(home, slug string) (cwd, account string, err error) {
+// Place gives where a project's sessions start, on which account and for which persona: its first cwd, first account
+// and persona in projects.toml (crius-spawn).
+func Place(home, slug string) (cwd, account, persona string, err error) {
 	c, err := loadConfig(home)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	for _, p := range c.projects {
 		if p.slug != slug {
 			continue
 		}
 		if len(p.cwd) == 0 || len(p.accounts) == 0 {
-			return "", "", fmt.Errorf("projects.toml: project %s needs cwd and accounts to be launched", slug)
+			return "", "", "", fmt.Errorf("projects.toml: project %s needs cwd and accounts to be launched", slug)
 		}
-		return p.cwd[0], p.accounts[0], nil
+		return p.cwd[0], p.accounts[0], p.persona, nil
 	}
-	return "", "", fmt.Errorf("projects.toml has no project %s", slug)
+	return "", "", "", fmt.Errorf("projects.toml has no project %s", slug)
 }

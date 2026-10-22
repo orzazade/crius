@@ -28,13 +28,16 @@ type fake struct {
 	tools   map[string]error
 	ses     []Session
 	sesErr  error
+	wss     []Workspace
+	wsErr   error
 }
 
 func (f *fake) deps(home string, now time.Time) Deps {
 	return Deps{Home: home, Now: now,
-		Screens:  func() ([]Screen, error) { return f.screens, f.scrErr },
-		Tools:    func() map[string]error { return f.tools },
-		Sessions: func() ([]Session, error) { return f.ses, f.sesErr },
+		Screens:    func() ([]Screen, error) { return f.screens, f.scrErr },
+		Tools:      func() map[string]error { return f.tools },
+		Sessions:   func() ([]Session, error) { return f.ses, f.sesErr },
+		Workspaces: func() ([]Workspace, error) { return f.wss, f.wsErr },
 		Resources: func() (float64, float64, error) {
 			if f.freeGB == 0 {
 				return 100, f.swapGB, f.resErr
@@ -605,9 +608,11 @@ func TestANewSessionInTheSameTabStartsAfresh(t *testing.T) {
 	home := setup(t, map[string]string{"quotes.log": busFrom("quotes:lead", t0), "cortex.log": busFrom("cortex:lead", t0)})
 	f := &fake{}
 	runAt(t, home, f, func(at time.Time) []Screen {
-		return []Screen{screen("x", tab("quotes: lead", "done", "", at))}
+		return []Screen{screen("quotes · lead", tab("quotes: lead", "done", "", at))}
 	}, 0, 16)
-	draw := func(at time.Time) []Screen { return []Screen{screen("x", tab("cortex · lead", "done", "", at))} }
+	draw := func(at time.Time) []Screen {
+		return []Screen{screen("cortex · lead", tab("cortex · lead", "done", "", at))}
+	}
 	runAt(t, home, f, draw, 17, 26)
 	if len(f.sent) != 1 {
 		t.Fatal(f.sent)
@@ -1044,5 +1049,53 @@ func TestAnAlertThatCannotBeTypedGoesOnTheBus(t *testing.T) {
 	}
 	if n := len(alertLines(t, home)); n != 3 {
 		t.Fatalf("%d ALERT lines, want the reason and the two wakes:\n%s", n, got)
+	}
+}
+
+// ORDER 10-22 13:36, the owner's third complaint: the openrig workspace opened with no name and no colour, and its
+// tab kept a default name; nothing said so. A workspace with either missing, and a team tab whose name does not
+// start with its project, alert.
+func TestAWorkspaceWithNoNameOrNoColourAlerts(t *testing.T) {
+	home := setup(t, nil)
+	f := &fake{wss: []Workspace{
+		{Ref: "workspace:1", Title: "Crius", Named: true, Color: "#6A1B9A"},
+		{Ref: "workspace:5", Title: "~/Projects/openrig", Named: false, Color: ""},
+		{Ref: "workspace:6", Title: "Tamada", Named: true, Color: ""},
+	}}
+	if err := Run(f.deps(home, t0)); err != nil {
+		t.Fatal(err)
+	}
+	all := strings.Join(f.sent, "\n")
+	if len(f.sent) != 2 || !strings.Contains(all, `workspace:5 "~/Projects/openrig" has no name and no colour`) ||
+		!strings.Contains(all, `workspace:6 "Tamada" has no colour`) || strings.Contains(all, "Crius") {
+		t.Fatal(f.sent)
+	}
+}
+
+func TestATeamTabWithADefaultNameAlerts(t *testing.T) {
+	home := setup(t, nil)
+	f := &fake{screens: []Screen{
+		{Surface: "surface:7", Title: "claude", Text: tab("openrig: lead", "working", "", t0)},
+		{Surface: "surface:8", Title: "OpenRig · lead", Text: tab("openrig: lead", "working", "", t0)},
+		{Surface: "surface:9", Title: "quotes: rig", Text: tab("quotes: rig", "working", "", t0)},
+		{Surface: "surface:10", Title: "zsh", Text: "o@mac ~ % \n"},
+	}}
+	if err := Run(f.deps(home, t0)); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.sent) != 1 || !strings.Contains(f.sent[0], `tab surface:7 "claude" runs openrig:lead`) {
+		t.Fatal(f.sent)
+	}
+}
+
+// Failing to look is not finding nothing.
+func TestAFailedWorkspaceReadAlerts(t *testing.T) {
+	home := setup(t, nil)
+	f := &fake{wsErr: errors.New("cmux workspace list: socket closed")}
+	if err := Run(f.deps(home, t0)); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.sent) != 1 || !strings.Contains(f.sent[0], "failed to look: cmux workspace list: socket closed") {
+		t.Fatal(f.sent)
 	}
 }
