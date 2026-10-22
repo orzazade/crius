@@ -48,10 +48,10 @@ Goal: build the Crius record (design §9 steps 1-9) so Crius answers the owner's
 - [x] O1 OpenRig lessons doc (docs/notes/OPENRIG-LESSONS.md) · 23165f5, VERIFIED bus 14:47
 - [x] O2 crius-hook writes a state file per session · 6268b49, VERIFIED bus 15:32, live (owner OK) 15:33
 - [x] O3 wakewatch and promptwatch read session state first, screen as fallback · f095f7c, VERIFIED bus 16:03, installed observe-only until ~/.crius/wakewatch-mode says decide
-- [ ] O4 messages stored (~/.crius/outbox), held while the box has typed text, retried until delivered (crius-say; wakewatch alerts): pushed (sha in the DONE line), waiting for Crius to verify
-- [ ] O5 crius-spawn -resume <project> <role> by session id (role file ~/.crius/roles/<project>.<role>.json, kept by crius-hook): pushed (sha in the DONE line), waiting for Crius to install crius-hook + crius-spawn and verify, once with /clear in a role tab
-Done: 71% (10 of 14 required rows: 1-5, 4b, 3b, 6, 9, O1-O5, equal weight; 7 and 8 only if needed)
-Next: O4 and O5 verify (owner brief 10-22 14:27); crius#P7 build items and their P3 follow-ups done (64848d1, VERIFIED 04:07); step 6 P7 descriptive read on 10-23 (after the 10-22 02:00 reset); P3b open
+- [x] O4 messages stored (~/.crius/outbox), held while the box has typed text, retried until delivered (crius-say; wakewatch alerts) · 86f33e3 + a2f74f8 (test token fix), VERIFIED bus 17:23 (in the O5 line: items 1-5 all verified)
+- [x] O5 crius-spawn -resume <project> <role> by session id (role file ~/.crius/roles/<project>.<role>.json, kept by crius-hook) · f12739b, VERIFIED bus 17:23, installed; role file written live; -resume and /clear not yet tried on a live tab
+Done: 86% (12 of 14 required rows: 1-5, 4b, 3b, 6, 9, O1-O5, equal weight; 7 and 8 only if needed)
+Next: OpenRig brief observe one day, then decide (owner brief 10-22 14:27); first live -resume and /clear check; crius#P7 build items and their P3 follow-ups done (64848d1, VERIFIED 04:07); step 6 P7 descriptive read on 10-23 (after the 10-22 02:00 reset); P3b open
 Needs owner: OK to install hook (a) no-ai-attribution.py from ~/.crius/state/crius/proposals/p7-3/ (58/58 tests); after the observe day, ~/.crius/wakewatch-mode = decide (O3), brought by Crius
 
 ## NOW
