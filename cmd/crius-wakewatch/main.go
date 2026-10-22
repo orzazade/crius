@@ -146,7 +146,12 @@ func send(text string) error {
 	}
 	if draft != "" {
 		if err != nil || squash(draft) != squash(string(last)) {
-			return fmt.Errorf("Crius's prompt holds a draft that is not wakewatch's: nothing typed")
+			// read-screen has no colours: the draft's start lets Crius or the owner see what the box holds.
+			shown := strings.Join(strings.Fields(draft), " ")
+			if r := []rune(shown); len(r) > 50 {
+				shown = string(r[:50]) + "…"
+			}
+			return fmt.Errorf("Crius's prompt holds a draft that is not wakewatch's (%q): nothing typed", shown)
 		}
 		if out, err := cmux("send-key", "--workspace", ws, "--surface", surface, "enter"); err != nil {
 			return fmt.Errorf("cmux send-key: %v: %s", err, strings.TrimSpace(string(out)))

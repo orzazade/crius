@@ -416,3 +416,18 @@ func TestSendFindsCriusTabByItsTitle(t *testing.T) {
 		}
 	}
 }
+
+// S2 (10-22 11:37-12:42): eight refusals said only "holds a draft", so nobody could tell what was in Crius's box
+// ("Quote report"). The error names the draft's start; the rest of a long draft stays out of the bus.
+func TestSendSaysWhatTheDraftIs(t *testing.T) {
+	for draft, want := range map[string]string{
+		"Quote report":                    `"Quote report"`,
+		strings.Repeat("long draft ", 20): `"` + strings.Repeat("long draft ", 5)[:50] + `…"`,
+	} {
+		_, dir := fakeTab(t)
+		os.WriteFile(filepath.Join(dir, "draft"), []byte(draft), 0o644)
+		if err := send("WAKEWATCH: new"); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("err %v, want it to name %s", err, want)
+		}
+	}
+}

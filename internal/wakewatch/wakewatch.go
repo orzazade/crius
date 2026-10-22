@@ -4,7 +4,8 @@
 // Mac short of disk or deep in swap, and a tool the team needs (cmux, gh, az, bun, docker) that fails or does not answer, and a lead still in the same session
 // 20 min after its DONE. When ~/.crius/wakewatch-projects exists, only the projects it names are watched.
 // It runs as its own launchd job, outside
-// any chat, and wakes Crius by typing one line into Crius's own tab: Crius then acts, and sends the owner a push
+// any chat, and wakes Crius by typing one line into Crius's own tab (when it cannot, the line goes on crius.log as an
+// ALERT, which Crius's waiter wakes on): Crius then acts, and sends the owner a push
 // notification when the owner is needed (owner 10-21 23:5x: no Telegram). Like the watchdog it imports nothing from
 // the ingest or the store.
 package wakewatch
@@ -88,7 +89,7 @@ type seenScreen struct {
 }
 
 type state struct {
-	Alerted     map[string]time.Time // key -> when last sent
+	Alerted     map[string]time.Time // key -> when last typed, or posted on crius.log when typing failed
 	Screens     map[string]seenScreen
 	SendFailing bool
 }
@@ -130,9 +131,10 @@ func Run(d Deps) error {
 
 	active := map[string]bool{}
 	var sendErr error
+	tried := false
 	for _, a := range alerts {
 		active[a[0]] = true
-		if last, ok := st.Alerted[a[0]]; sendErr != nil || ok && d.Now.Sub(last) < resend {
+		if last, ok := st.Alerted[a[0]]; ok && d.Now.Sub(last) < resend {
 			continue
 		}
 		// Redact first: a cut could split a secret so the redactor no longer sees it, and redaction can grow the text.
@@ -143,16 +145,25 @@ func Run(d Deps) error {
 		if r := []rune(text); len(r) > maxLine {
 			text = string(r[:maxLine]) + "…"
 		}
-		if sendErr = d.Send(Prefix + text); sendErr == nil {
-			st.Alerted[a[0]] = d.Now
+		if sendErr == nil {
+			tried = true
+			if sendErr = d.Send(Prefix + text); sendErr != nil && !st.SendFailing {
+				if err := watchdog.Post(d.Home, d.Now, "wakewatch cannot reach Crius's tab: "+sendErr.Error()); err != nil {
+					return err
+				}
+			}
 		}
-	}
-	if sendErr != nil && !st.SendFailing {
-		if err := watchdog.Post(d.Home, d.Now, "wakewatch cannot reach Crius's tab: "+sendErr.Error()); err != nil {
-			return err
+		// Crius's waiter wakes on a bus line: a wake that cannot be typed goes there, so none is lost (S2, 10-22).
+		if sendErr != nil {
+			if err := watchdog.Post(d.Home, d.Now, text); err != nil {
+				return err
+			}
 		}
+		st.Alerted[a[0]] = d.Now
 	}
-	st.SendFailing = sendErr != nil
+	if tried { // a run with nothing to send says nothing about the tab: the streak goes on
+		st.SendFailing = sendErr != nil
+	}
 	// A key goes once its alert is no longer raised (line answered or past the window, tab stopped asking, check
 	// works again), so the same thing alerts at once when it comes back; a lasting one keeps its 20 min rhythm.
 	for surface, s := range st.Screens {

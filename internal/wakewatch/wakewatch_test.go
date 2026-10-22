@@ -161,17 +161,18 @@ func TestLinesOlderThanTheWindowAreSkipped(t *testing.T) {
 func TestASendFailureIsLoudAndRetried(t *testing.T) {
 	home := setup(t, map[string]string{"quotes.log": done(t0)})
 	f := &fake{sendErr: errors.New("cmux send: no surface:29")}
-	for _, m := range []time.Duration{21, 26} {
-		if err := Run(f.deps(home, t0.Add(m*time.Minute))); err == nil {
-			t.Fatal("no error")
+	// The reason goes on the bus once per failing streak; the wake itself keeps its 20 min rhythm there.
+	for _, c := range []struct{ m, want int }{{21, 2}, {26, 2}, {41, 3}} {
+		m, want := time.Duration(c.m), c.want
+		if err := Run(f.deps(home, t0.Add(m*time.Minute))); (err == nil) != (m == 26) {
+			t.Fatal(m, err)
+		}
+		if got := alertLines(t, home); len(got) != want || !strings.Contains(got[0], "no surface:29") {
+			t.Fatal(m, got)
 		}
 	}
-	b, _ := os.ReadFile(filepath.Join(home, "bus", "crius.log"))
-	if n := strings.Count(string(b), "ALERT"); n != 1 || !strings.Contains(string(b), "no surface:29") {
-		t.Fatal(n, string(b))
-	}
 	f.sendErr = nil
-	if err := Run(f.deps(home, t0.Add(31*time.Minute))); err != nil || len(f.sent) != 1 {
+	if err := Run(f.deps(home, t0.Add(61*time.Minute))); err != nil || len(f.sent) != 1 {
 		t.Fatal(err, f.sent)
 	}
 }
@@ -971,5 +972,25 @@ func TestAListedNameWithNoBusIsAnAlert(t *testing.T) {
 	}
 	if !said {
 		t.Fatal(quotes)
+	}
+}
+
+// S2 (10-22 11:37-12:42): wakewatch could not type into Crius's tab 8 times and dropped each wake; the bus said only
+// why. Crius's waiter wakes on a bus line, so a wake that cannot be typed goes there, every one, not only the reason.
+func TestAnAlertThatCannotBeTypedGoesOnTheBus(t *testing.T) {
+	second := stamp(t0) + " DONE quotes:p3 -> crius:lead — F-275 · 9a1b2c3 · suite 88 OK\n"
+	home := setup(t, map[string]string{"quotes.log": done(t0) + second})
+	f := &fake{sendErr: errors.New("Crius's prompt holds a draft that is not wakewatch's: nothing typed")}
+	if err := Run(f.deps(home, t0.Add(21*time.Minute))); err == nil {
+		t.Fatal("no error")
+	}
+	got := strings.Join(alertLines(t, home), "\n")
+	for _, want := range []string{"holds a draft", "F-86 · 1c6e705", "F-275 · 9a1b2c3"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("crius.log has no ALERT with %q:\n%s", want, got)
+		}
+	}
+	if n := len(alertLines(t, home)); n != 3 {
+		t.Fatalf("%d ALERT lines, want the reason and the two wakes:\n%s", n, got)
 	}
 }
