@@ -38,7 +38,7 @@ func TestResumeReadsTheRolesCurrentSession(t *testing.T) {
 	d := launch.Deps{Cmux: func(args ...string) (string, error) {
 		got = append(got, strings.Join(args, " "))
 		return "", errors.New("stop here")
-	}}
+	}, Lock: filepath.Join(home, "launch.lock")}
 	err := resume(home, "quotes", "lead", d)
 	if err == nil || !strings.Contains(err.Error(), filepath.Join(home, "roles", "quotes.lead.json")) {
 		t.Errorf("no role file: err %v, want one naming the file", err)

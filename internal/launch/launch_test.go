@@ -55,8 +55,13 @@ type fake struct {
 	sentErr  error  // what it fails with once the prompt is sent
 	sentErrs int    // how many input-state reads after Enter fail with sentErr; 0: all
 	failed   int
-	noLaunch bool // projects.toml gives the project several cwd and no launch folder
-	stale    int  // reads after Enter that still show the typed prompt, as a read taken just before Claude takes it
+	noLaunch bool   // projects.toml gives the project several cwd and no launch folder
+	stale    int    // reads after Enter that still show the typed prompt, as a read taken just before Claude takes it
+	dead     int    // a crashed tab: reads after Enter that still show the dead Claude's box with the shell line under it; -1: always
+	echo     int    // reads after a send that do not show the typed line yet
+	ran      string // the shell line Enter ran in a crashed tab
+	clip     int    // a crashed tab's shell shows a line longer than this as ">...." and its last runes, as zsh does
+	quote    bool   // the resumed Claude shows the shell line it was started with above its box (a restored message)
 }
 
 const statusBar = "  %s │ main │ ██░░░░░░░░ ctx 2%%\n"
@@ -94,6 +99,8 @@ func (f *fake) deps() Deps {
 				case key == "enter" && f.dialog != nil:
 					f.exited = !strings.HasPrefix(f.dialog[f.pick], "Yes")
 					f.shown, f.dialog = f.dialog, nil
+				case key == "enter" && strings.HasPrefix(f.draft, "clear && "): // a shell runs the line: clear wipes it
+					f.ran, f.draft, f.sent = f.draft, "", true
 				case key == "enter" && strings.HasSuffix(f.draft, `\`):
 					f.draft = strings.TrimSuffix(f.draft, `\`) + "\n"
 				case key == "enter" && f.draft != "":
@@ -146,6 +153,28 @@ func (f *fake) deps() Deps {
 }
 
 func (f *fake) screen() string {
+	if f.dead != 0 {
+		if f.sent && f.dead > 0 {
+			f.dead--
+		}
+		line := f.draft + f.ran
+		if f.echo > 0 {
+			f.echo--
+			line = ""
+		}
+		// As a crash leaves it: the dead Claude's box, then the shell's prompt and the line wrapped at the tab's width.
+		s := " ▐▛███▜▌   Claude Code v2.1.308\n\n──────────────── quotes · lead ─\n❯ \n────────────────\n  quota: no response yet\n"
+		shown := []rune("o@mac quotes % " + line)
+		if f.clip > 0 && len(shown) > f.clip {
+			shown = append([]rune(">...."), shown[len(shown)-f.clip+5:]...)
+		}
+		for r := shown; ; r = r[80:] {
+			if len(r) <= 80 {
+				return s + string(r) + "\n"
+			}
+			s += string(r[:80]) + "\n"
+		}
+	}
 	if f.sent && f.stale > 0 { // drawn as before Enter; Typed already says the box is empty
 		f.stale--
 		f.sent = false
@@ -191,6 +220,9 @@ func (f *fake) screen() string {
 	body := " ▐▛███▜▌   Claude Code v2.1.308\n▝▜█████▛▘  " + model + " · Claude Max\n  ▘▘ ▝▝    ~/Projects/openrig\n\n"
 	if f.tip != "" {
 		body += f.tip + "\n\n"
+	}
+	if f.quote && f.ran != "" {
+		body += "⏺ It was started with: " + f.ran + "\n\n"
 	}
 	bar := "  quota: no response yet\n"
 	if f.sent {
@@ -733,5 +765,101 @@ func TestAnInputStateFailureAfterEnterSaysThePromptWasSent(t *testing.T) {
 	f = &fake{trees: []string{tree}, fast: true, ghost: `Try "refactor <filepath>"`, sentErr: errors.New("cmux rpc surface.input_state: timeout"), sentErrs: 1}
 	if _, _, _, err := Run(Spawn{Project: "quotes", Role: "qa3", Prompt: "Read your brief."}, f.deps()); err != nil || f.failed != 1 {
 		t.Fatalf("err %v after %d failed reads, want nil after 1", err, f.failed)
+	}
+}
+
+// OF9: a crashed tab still shows the dead Claude's input box above the shell. A line that never runs (clear never
+// wipes that box) must fail, not pass as resumed.
+func TestAResumeIntoACrashedTabTakesNoDeadBoxForANewOne(t *testing.T) {
+	f := &fake{trees: []string{treeWith("quotes · lead")}, dead: -1}
+	_, _, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/quotes/src", f.deps())
+	if err == nil || !strings.Contains(err.Error(), "no Claude's input box after 120 reads") {
+		t.Fatalf("err %v, want no box seen", err)
+	}
+}
+
+// OF9: Enter goes only once the typed line shows (a read before the echo sees only the dead box), and the box counts
+// only after clear wiped the line.
+func TestAResumeIntoACrashedTabWaitsForTheLineThenForClear(t *testing.T) {
+	f := &fake{trees: []string{treeWith("quotes · lead")}, dead: 3, echo: 2}
+	if _, _, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/quotes/src", f.deps()); err != nil {
+		t.Fatal(err)
+	}
+	enter := slices.IndexFunc(f.calls, func(c string) bool { return strings.HasPrefix(c, "send-key") })
+	before, after := 0, 0
+	for i, c := range f.calls {
+		if strings.HasPrefix(c, "read-screen") && i < enter {
+			before++
+		} else if strings.HasPrefix(c, "read-screen") {
+			after++
+		}
+	}
+	if enter < 0 || before != 3 || after != 4 {
+		t.Errorf("Enter at call %d after %d reads, then %d reads; want 3 reads (2 before the echo), Enter, 4 reads (3 before clear): %q",
+			enter, before, after, f.calls)
+	}
+}
+
+// Review of OF9 (10-22): zsh clips a line wider than the tab to ">...." and its end, so the whole line never shows;
+// Enter goes once the line's end (--resume <id>) shows on the shell's line.
+func TestAResumeIntoACrashedTabPressesEnterOnAClippedLine(t *testing.T) {
+	f := &fake{trees: []string{treeWith("quotes · lead")}, dead: 2, clip: 70}
+	if _, _, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/quotes/src", f.deps()); err != nil || f.ran == "" {
+		t.Fatalf("err %v, ran %q: want the line run and the box seen", err, f.ran)
+	}
+}
+
+// Review of OF9 (10-22): the resumed Claude may quote the line it was started with above its new box (a restored
+// message); only the line under the last box is the shell's.
+func TestAResumedClaudeQuotingItsCommandIsUp(t *testing.T) {
+	f := &fake{trees: []string{treeWith("quotes · lead")}, dead: 1, quote: true}
+	if _, _, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/quotes/src", f.deps()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// OF9: two resumes of one role at once (crius-spawn run twice): the second waits for the first, then finds Claude in
+// front of the tab and leaves it alone. Without a lock both saw a shell and both typed.
+func TestTwoResumesOfOneRoleAtOnceTypeOnce(t *testing.T) {
+	var mu sync.Mutex
+	f := &fake{trees: []string{treeWith("quotes · lead")}}
+	d := f.deps()
+	d.Lock = filepath.Join(t.TempDir(), "launch.lock")
+	own, front := d.Cmux, d.Front
+	d.Cmux = func(args ...string) (string, error) {
+		if args[0] == "tree" || args[0] == "send" {
+			time.Sleep(50 * time.Millisecond) // cmux is slow: both read the tree and see a shell before either types
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		return own(args...)
+	}
+	d.Front = func(tty string) (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if f.sent { // the first resume's claude now runs in front
+			return "claude", nil
+		}
+		return front(tty)
+	}
+	errs := make(chan error, 2)
+	for range 2 {
+		go func() {
+			_, _, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/quotes/src", d)
+			errs <- err
+		}()
+	}
+	var left int
+	for range 2 {
+		if err := <-errs; err != nil && strings.Contains(err.Error(), "runs claude in front") {
+			left++
+		} else if err != nil {
+			t.Error(err)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if got := f.called("send "); len(got) != 1 || left != 1 {
+		t.Errorf("typed %d times, %d left alone; want 1 and 1", len(got), left)
 	}
 }

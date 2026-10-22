@@ -162,6 +162,16 @@ func Resume(project, role, id, cwd string, d Deps) (ws, surface string, err erro
 	case !filepath.IsAbs(cwd) || strings.ContainsAny(cwd, `'\`) || strings.IndexFunc(cwd, func(r rune) bool { return !unicode.IsPrint(r) }) >= 0:
 		return "", "", fmt.Errorf("bad folder %q: want an absolute path with no quote, backslash or control character", cwd)
 	}
+	if d.Lock == "" {
+		return "", "", fmt.Errorf("no launch lock file named: two resumes at once could both type into the tab")
+	}
+	// One resume of a role at a time, held until its box is up: a second one then finds Claude in front and leaves the
+	// tab alone, where both saw a shell and both typed (OF9).
+	lf, err := hold(d.Lock + "." + project + "." + role)
+	if err != nil {
+		return "", "", err
+	}
+	defer lf.Close()
 	name, _, cmd := command(project, role)
 	cmd += " --resume " + id
 	tree, err := d.Cmux("tree", "--all")
@@ -172,7 +182,8 @@ func Resume(project, role, id, cwd string, d Deps) (ws, surface string, err erro
 	if err != nil {
 		return "", "", err
 	}
-	if surface != "" {
+	typed := surface != "" // a shell line typed into a crashed tab
+	if typed {
 		front, err := d.Front(tty)
 		if err != nil {
 			return "", "", err
@@ -180,12 +191,17 @@ func Resume(project, role, id, cwd string, d Deps) (ws, surface string, err erro
 		if !shells[filepath.Base(strings.TrimPrefix(front, "-"))] {
 			return "", "", fmt.Errorf("%s (%s %s) runs %s in front, not a shell: left alone", name, ws, surface, front)
 		}
-		// clear first: the dead Claude's last screen may still show an input box, which the wait below would take for
-		// the new one.
-		for _, step := range [][]string{{"send", "--", "clear && cd '" + cwd + "' && " + cmd}, {"send-key", "enter"}} {
-			if out, err := d.Cmux(append([]string{step[0], "--workspace", ws, "--surface", surface}, step[1:]...)...); err != nil {
-				return "", "", fmt.Errorf("cmux %s: %v: %s", step[0], err, out)
-			}
+		line := "clear && cd '" + cwd + "' && " + cmd
+		if out, err := d.Cmux("send", "--workspace", ws, "--surface", surface, "--", line); err != nil {
+			return "", "", fmt.Errorf("cmux send: %v: %s", err, out)
+		}
+		// The dead Claude's last screen may still show an input box (OF9): Enter goes once the line is on the shell's
+		// line, and the wait below takes a box only once clear wiped that line.
+		if err := until(d, ws, surface, "typed line", func(s string) bool { return onShell(s, id) }); err != nil {
+			return "", "", fmt.Errorf("%s in %s %s: %v", name, ws, surface, err)
+		}
+		if out, err := d.Cmux("send-key", "--workspace", ws, "--surface", surface, "enter"); err != nil {
+			return "", "", fmt.Errorf("cmux send-key: %v: %s", err, out)
 		}
 	} else {
 		persona, err := d.Persona(project)
@@ -198,6 +214,9 @@ func Resume(project, role, id, cwd string, d Deps) (ws, surface string, err erro
 	}
 	failed := false
 	err = until(d, ws, surface, "Claude's input box", func(screen string) bool {
+		if typed && onShell(screen, id) { // clear has not run: the old screen
+			return false
+		}
 		_, boxed := wakewatch.Prompt(screen)
 		failed = !boxed && strings.Contains(screen, "No conversation found") // an up screen may quote the words
 		return boxed || failed
@@ -210,6 +229,19 @@ func Resume(project, role, id, cwd string, d Deps) (ws, surface string, err erro
 		return "", "", fmt.Errorf("%s in %s %s: %v", name, ws, surface, err)
 	}
 	return ws, surface, nil
+}
+
+// hold opens the lock file and waits for its lock; closing the file releases it.
+func hold(path string) (*os.File, error) {
+	lf, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("launch lock: %v", err)
+	}
+	if err := syscall.Flock(int(lf.Fd()), syscall.LOCK_EX); err != nil {
+		lf.Close()
+		return nil, fmt.Errorf("launch lock %s: %v", path, err)
+	}
+	return lf, nil
 }
 
 // shells are what may be in front of a tab whose Claude has ended.
@@ -237,14 +269,11 @@ func open(d Deps, title, color string, table bool, cwd, cmd string) (ws, surface
 	if d.Lock == "" {
 		return "", "", fmt.Errorf("no launch lock file named: two launches at once could make two workspaces")
 	}
-	lf, err := os.OpenFile(d.Lock, os.O_CREATE|os.O_RDWR, 0o600)
+	lf, err := hold(d.Lock)
 	if err != nil {
-		return "", "", fmt.Errorf("launch lock: %v", err)
+		return "", "", err
 	}
 	defer lf.Close() // closing releases the lock
-	if err := syscall.Flock(int(lf.Fd()), syscall.LOCK_EX); err != nil {
-		return "", "", fmt.Errorf("launch lock %s: %v", d.Lock, err)
-	}
 	tree, err := d.Cmux("tree", "--all")
 	if err != nil {
 		return "", "", fmt.Errorf("cmux tree: %v", err)
@@ -526,6 +555,30 @@ func display(model string) string {
 }
 
 func squash(s string) string { return strings.Join(strings.Fields(s), "") }
+
+// onShell reports whether a screen shows the end of a typed resume line (--resume <id>; zsh keeps the end when it clips
+// a line wider than the tab) with no input box under it: the shell's line, not a quote of it above Claude's box (review
+// of OF9). A wrapped line is read with the line breaks squashed out.
+func onShell(screen, id string) bool {
+	lines := strings.Split(screen, "\n")
+	var joined string
+	ends := make([]int, len(lines))
+	for i, l := range lines {
+		joined += squash(l)
+		ends[i] = len(joined)
+	}
+	mark := squash("--resume " + id)
+	at := strings.LastIndex(joined, mark)
+	if at < 0 {
+		return false
+	}
+	i := 0
+	for ends[i] < at+len(mark) {
+		i++
+	}
+	_, boxed := wakewatch.Prompt(strings.Join(lines[i+1:], "\n"))
+	return !boxed
+}
 
 // tail gives the last lines of a screen, for an error.
 func tail(screen string) string {
