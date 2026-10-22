@@ -193,6 +193,169 @@ func Write(dir string, s State) error {
 // ErrDamaged is a session file that is there but cannot be read as a state.
 var ErrDamaged = errors.New("damaged session file")
 
+// ErrLocked is a session lock that another process held for longer than the caller would wait.
+var ErrLocked = errors.New("locked")
+
+// Lock holds the session's lock file, <id>.json.lock, until unlock is called; the kernel lets go if the process is
+// killed. A lock still held after wait is ErrLocked. A lock file that Prune removed while this one waited on it is no
+// longer the session's lock: the path is opened again.
+func Lock(dir, id string, wait time.Duration) (unlock func(), err error) {
+	p, err := Path(dir, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, err
+	}
+	end := time.Now().Add(wait)
+	for {
+		f, err := os.OpenFile(p+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+		if err != nil {
+			return nil, err
+		}
+		lockOpened()
+		for {
+			err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+			if err == nil || !errors.Is(err, syscall.EWOULDBLOCK) || time.Now().After(end) {
+				break
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			f.Close()
+			return nil, fmt.Errorf("%s %w for %s", p+".lock", ErrLocked, wait)
+		} else if err != nil {
+			f.Close()
+			return nil, fmt.Errorf("lock %s: %w", p+".lock", err)
+		}
+		held, err := f.Stat()
+		if err != nil {
+			f.Close()
+			return nil, err
+		}
+		at, err := os.Stat(p + ".lock")
+		if err == nil && os.SameFile(held, at) {
+			return func() { f.Close() }, nil
+		}
+		f.Close()
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return nil, err
+		}
+	}
+}
+
+// lockOpened is called each time Lock has opened the lock file, before it waits on it: a seam for tests.
+var lockOpened = func() {}
+
+// How long Prune keeps a session's files after its last event: an ended session's for a week, any other's for 30 days,
+// as a session killed with no SessionEnd stays running in its file. A lock or temp file with no session file, and a
+// damaged session file, go 30 days after they last changed.
+const (
+	KeepEnded = 7 * 24 * time.Hour
+	KeepAny   = 30 * 24 * time.Hour
+)
+
+// Prune removes from dir the files of sessions kept longer than KeepEnded or KeepAny, with their lock files. Each session's
+// files go while Prune holds its lock; one whose lock is held is in use and stays. A file Prune cannot judge or remove is
+// named in the error and the others are still pruned.
+func Prune(dir string, now time.Time) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	var ids []string
+	seen := map[string]bool{}
+	var errs []error
+	for _, e := range entries {
+		name := e.Name()
+		if strings.HasPrefix(name, ".tmp-") { // Write's temp file, left by a writer that was killed
+			fi, err := e.Info()
+			if err == nil && now.Sub(fi.ModTime()) > KeepAny {
+				err = os.Remove(filepath.Join(dir, name))
+			}
+			if err != nil && !errors.Is(err, fs.ErrNotExist) {
+				errs = append(errs, err)
+			}
+			continue
+		}
+		id, ok := strings.CutSuffix(strings.TrimSuffix(name, ".lock"), ".json")
+		if ok && idRe.MatchString(id) && !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	for _, id := range ids {
+		if err := prune(dir, id, now); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// prune removes one session's files if they are kept no longer, under the session's lock. A session whose files changed
+// within KeepEnded is passed over without its lock: Lock would create a lock file for one that has none.
+func prune(dir, id string, now time.Time) error {
+	p, err := Path(dir, id)
+	if err != nil {
+		return err
+	}
+	if at, _, err := lastChange(p); err != nil || now.Sub(at) <= KeepEnded {
+		return ignoreGone(err)
+	}
+	unlock, err := Lock(dir, id, 0)
+	if errors.Is(err, ErrLocked) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	defer unlock()
+	at, hasFile, err := lastChange(p)
+	if err != nil {
+		return err
+	}
+	keep := KeepAny
+	if hasFile {
+		s, err := Read(dir, id)
+		if err != nil && !errors.Is(err, ErrDamaged) {
+			return err
+		}
+		if err == nil && s.State == Ended {
+			keep = KeepEnded
+		}
+	}
+	if now.Sub(at) <= keep {
+		return nil
+	}
+	if err := os.Remove(p); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return os.Remove(p + ".lock")
+}
+
+// lastChange is when a session's file last changed, or its lock file when it has none: its hook failed before the
+// first write.
+func lastChange(p string) (at time.Time, hasFile bool, err error) {
+	fi, err := os.Stat(p)
+	if errors.Is(err, fs.ErrNotExist) {
+		fi, err = os.Stat(p + ".lock")
+		if err != nil {
+			return time.Time{}, false, err
+		}
+		return fi.ModTime(), false, nil
+	} else if err != nil {
+		return time.Time{}, false, err
+	}
+	return fi.ModTime(), true, nil
+}
+
+// ignoreGone drops the error of a file that went while Prune looked: another Prune or the session took it.
+func ignoreGone(err error) error {
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
 // Read gives the state saved for one session id.
 func Read(dir, id string) (State, error) {
 	p, err := Path(dir, id)

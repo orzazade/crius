@@ -17,7 +17,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/orzazade/crius/internal/ingest"
@@ -43,6 +42,12 @@ func main() {
 	if err := record(in); err != nil {
 		fail(fmt.Errorf("%s %s: %w", in.Event, in.SessionID, err))
 	}
+	// Ended sessions' files would stay forever: each start prunes them, after its own lock has gone.
+	if in.Event == "SessionStart" {
+		if err := sessionstate.Prune(filepath.Join(store.Home(), "sessions"), time.Now()); err != nil {
+			fail(fmt.Errorf("prune: %w", err))
+		}
+	}
 }
 
 // record applies one hook event to the session's file. A missing projects.toml or Claude Code status file loses
@@ -59,9 +64,10 @@ func record(in sessionstate.Input) error {
 	if err != nil {
 		fail(err)
 	}
-	unlock, err := lock(dir, in.SessionID)
+	// A lock held for a second skips the event rather than wait until Claude Code's hook timeout.
+	unlock, err := sessionstate.Lock(dir, in.SessionID, time.Second)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w, event skipped", err)
 	}
 	defer unlock()
 	prev, err := sessionstate.Read(dir, in.SessionID)
@@ -99,36 +105,6 @@ func record(in sessionstate.Input) error {
 		}
 	}
 	return sessionstate.WriteRole(roles, s, replace)
-}
-
-// lock holds the session's lock file, <id>.json.lock, until unlock is called; the kernel lets go if the hook is killed.
-// A lock still held after a second is an error: the event is skipped, not waited on until Claude Code's hook timeout.
-func lock(dir, id string) (unlock func(), err error) {
-	p, err := sessionstate.Path(dir, id)
-	if err != nil {
-		return nil, err
-	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, err
-	}
-	f, err := os.OpenFile(p+".lock", os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return nil, err
-	}
-	for end := time.Now().Add(time.Second); ; time.Sleep(20 * time.Millisecond) {
-		err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
-		if err == nil {
-			return func() { f.Close() }, nil
-		}
-		if !errors.Is(err, syscall.EWOULDBLOCK) {
-			f.Close()
-			return nil, fmt.Errorf("lock %s: %w", p+".lock", err)
-		}
-		if time.Now().After(end) {
-			f.Close()
-			return nil, fmt.Errorf("%s locked for 1s, event skipped", p+".lock")
-		}
-	}
 }
 
 // configFailed logs a projects.toml error once until the file or the error changes: a bad file would otherwise log on

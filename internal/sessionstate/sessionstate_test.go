@@ -270,3 +270,107 @@ func TestProcessSkipsAStatusFileWhosePidWasReused(t *testing.T) {
 		t.Errorf("own file: %d %q %v", pid, name, err)
 	}
 }
+
+// OF4: ended sessions' files and their lock files stayed in ~/.crius/sessions forever (91 of each on 10-22). An ended
+// session's files go a week after its last event; any session's after 30 days, as one killed with no SessionEnd stays
+// running in its file; a lock or temp file left with no session file goes after 30 days too.
+func TestPruneRemovesOldSessionsAndTheirLocks(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "sessions")
+	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	day := 24 * time.Hour
+	put := func(id, state string, age time.Duration) {
+		t.Helper()
+		if err := Write(dir, State{SessionID: id, State: state, Time: now.Add(-age)}); err != nil {
+			t.Fatal(err)
+		}
+		testutil.Write(t, filepath.Join(dir, id+".json.lock"), "")
+		for _, f := range []string{id + ".json", id + ".json.lock"} {
+			if err := os.Chtimes(filepath.Join(dir, f), now.Add(-age), now.Add(-age)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	old := func(name string, age time.Duration) {
+		t.Helper()
+		p := filepath.Join(dir, name)
+		testutil.Write(t, p, "{")
+		if err := os.Chtimes(p, now.Add(-age), now.Add(-age)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	put("ended-old", Ended, 8*day)
+	put("ended-new", Ended, 6*day)
+	put("idle-week", Idle, 8*day)
+	put("running-dead", Running, 31*day)
+	put("ended-held", Ended, 8*day)
+	old("damaged-new.json", 8*day)
+	old("damaged-old.json", 31*day)
+	old("orphan-old.json.lock", 31*day)
+	old("orphan-new.json.lock", 8*day)
+	old(".tmp-old", 31*day)
+	old(".tmp-new", 8*day)
+	old(".config-error", 31*day)
+	held, err := Lock(dir, "ended-held", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held()
+	if err := Prune(dir, now); err != nil {
+		t.Fatal(err)
+	}
+	entries, _ := os.ReadDir(dir)
+	var left []string
+	for _, e := range entries {
+		left = append(left, e.Name())
+	}
+	// damaged-new is past KeepEnded, so Prune took its lock to judge it: the new lock file goes with it at 30 days.
+	want := []string{".config-error", ".tmp-new", "damaged-new.json", "damaged-new.json.lock", "ended-held.json", "ended-held.json.lock",
+		"ended-new.json", "ended-new.json.lock", "idle-week.json", "idle-week.json.lock", "orphan-new.json.lock"}
+	if !reflect.DeepEqual(left, want) {
+		t.Errorf("left %q\nwant %q", left, want)
+	}
+}
+
+// A process that opened a session's lock file before Prune removed it, and took it once Prune let go, holds a file no
+// longer at the path: a third process would create a new one and both would hold "the" lock. Lock opens the path again.
+func TestALockFilePrunedWhileWaitedOnIsOpenedAgain(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "sessions")
+	first, err := Lock(dir, "s-1", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened := make(chan struct{}, 1)
+	lockOpened = func() {
+		select {
+		case opened <- struct{}{}:
+		default:
+		}
+	}
+	defer func() { lockOpened = func() {} }()
+	got := make(chan func())
+	go func() {
+		second, err := Lock(dir, "s-1", 5*time.Second)
+		if err != nil {
+			t.Error(err)
+		}
+		got <- second
+	}()
+	<-opened // the second has opened the file and waits on it
+	if err := os.Remove(filepath.Join(dir, "s-1.json.lock")); err != nil {
+		t.Fatal(err)
+	}
+	first()
+	second := <-got
+	if second == nil {
+		return
+	}
+	defer second()
+	third, err := Lock(dir, "s-1", 0)
+	if err == nil {
+		third()
+		t.Fatal("a third process took the lock the second holds")
+	}
+	if !errors.Is(err, ErrLocked) {
+		t.Fatalf("third: %v, want ErrLocked", err)
+	}
+}

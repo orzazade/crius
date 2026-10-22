@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"syscall"
@@ -335,5 +336,34 @@ func TestARoleWhoseSessionEndedGoesToTheNextOne(t *testing.T) {
 	s, err := sessionstate.ReadRole(roles, "quotes", "p1")
 	if err != nil || s.SessionID != "s-2" || s.Config != w.claude {
 		t.Fatalf("role file %+v, %v; want s-2 with config %s", s, err, w.claude)
+	}
+}
+
+// OF4: a session's start prunes the files of sessions kept no longer; a prompt does not (it runs on every turn).
+func TestASessionStartPrunesOldSessions(t *testing.T) {
+	w := newWorld(t)
+	dir := filepath.Join(w.crius, "sessions")
+	old := time.Now().Add(-8 * 24 * time.Hour)
+	if err := sessionstate.Write(dir, sessionstate.State{SessionID: "gone-1", State: sessionstate.Ended, Time: old}); err != nil {
+		t.Fatal(err)
+	}
+	testutil.Write(t, filepath.Join(dir, "gone-1.json.lock"), "")
+	for _, f := range []string{"gone-1.json", "gone-1.json.lock"} {
+		if err := os.Chtimes(filepath.Join(dir, f), old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run(t, w.env(), `{"session_id":"s-1","hook_event_name":"UserPromptSubmit","prompt":"go"}`)
+	if _, err := os.Stat(filepath.Join(dir, "gone-1.json")); err != nil {
+		t.Fatalf("a prompt pruned: %v", err)
+	}
+	run(t, w.env(), `{"session_id":"s-1","hook_event_name":"SessionStart","source":"startup"}`)
+	left, _ := filepath.Glob(filepath.Join(dir, "*"))
+	want := []string{filepath.Join(dir, "s-1.json"), filepath.Join(dir, "s-1.json.lock")}
+	if !reflect.DeepEqual(left, want) {
+		t.Errorf("left %q, want %q", left, want)
+	}
+	if b, err := os.ReadFile(filepath.Join(w.crius, "logs", "crius-hook.log")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("log %q, %v", b, err)
 	}
 }
