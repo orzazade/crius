@@ -1323,3 +1323,108 @@ func TestEveryAlertGoesToSendAfterAFailure(t *testing.T) {
 		t.Fatalf("Send got %d alerts, want both: %q", len(f.tried), f.tried)
 	}
 }
+
+// Crius 10-22 20:40: P4 was parked on purpose, and Quotes pauses whole at 70% of the weekly quota. A role or project
+// named in ~/.crius/parked fires no idle or question wake; the roles not named still do, and a removed name wakes again.
+func TestAParkedRoleOrPausedProjectFiresNoWake(t *testing.T) {
+	bus := busFrom("quotes:lead", t0.Add(-time.Hour)) + strings.Replace(busFrom("quotes:lead", t0.Add(-time.Hour)), "quotes:lead", "axi:lead", 1)
+	draw := func(at time.Time) []Screen {
+		return []Screen{{Surface: "surface:1", Title: "quotes · p4", Text: tab("quotes · p4", "Parked until F-90 lands.", "", at)},
+			{Surface: "surface:2", Title: "quotes · p5", Text: tab("quotes · p5", "Waiting for QA2.", "", at)},
+			{Surface: "surface:3", Title: "quotes · qa1", Text: question},
+			{Surface: "surface:4", Title: "axi · p1", Text: tab("axi · p1", "Waiting for review.", "", at)}}
+	}
+	for _, c := range []struct {
+		parked string
+		want   []string // the tabs that wake Crius
+	}{
+		{"", []string{"quotes:p4", "quotes:p5", "quotes · qa1", "axi:p1"}},
+		{"quotes:p4\n", []string{"quotes:p5", "quotes · qa1", "axi:p1"}},
+		{"# Crius 20:40\nQuotes:P4, quotes:qa1", []string{"quotes:p5", "axi:p1"}},
+		{"quotes # 70% weekly PAUSE", []string{"axi:p1"}},
+	} {
+		home := setup(t, map[string]string{"quotes.log": bus, "axi.log": bus})
+		if c.parked != "" {
+			testutil.Write(t, filepath.Join(home, "parked"), c.parked)
+		}
+		f := &fake{}
+		runAt(t, home, f, draw, 0, 11)
+		var got []string
+		for _, who := range []string{"quotes:p4", "quotes:p5", "quotes · qa1", "axi:p1"} {
+			for _, m := range f.sent {
+				if strings.Contains(m, who) {
+					got = append(got, who)
+					break
+				}
+			}
+		}
+		if fmt.Sprint(got) != fmt.Sprint(c.want) {
+			t.Errorf("parked %q: woke for %q, want %q (sent %q)", c.parked, got, c.want, f.sent)
+		}
+	}
+	// Crius resumes P4 by removing its name: P4's idle spell starts afresh and wakes after 10 min.
+	home := setup(t, map[string]string{"quotes.log": bus, "axi.log": bus})
+	testutil.Write(t, filepath.Join(home, "parked"), "quotes:p4")
+	f := &fake{}
+	runAt(t, home, f, draw, 0, 11)
+	testutil.Write(t, filepath.Join(home, "parked"), "")
+	runAt(t, home, f, draw, 12)
+	if strings.Contains(strings.Join(f.sent, "\n"), "quotes:p4") {
+		t.Fatal("P4 woke at once on resume:", f.sent)
+	}
+	runAt(t, home, f, draw, 23)
+	if !strings.Contains(strings.Join(f.sent, "\n"), "quotes:p4") {
+		t.Fatal("P4 resumed and idle 11 min, no wake:", f.sent)
+	}
+}
+
+// A parked list that cannot be read parks nothing, loudly: silence there would hide a stuck team.
+func TestAnUnreadableParkedListIsAnAlert(t *testing.T) {
+	home := setup(t, map[string]string{"quotes.log": busFrom("quotes:lead", t0.Add(-time.Hour))})
+	if err := os.Mkdir(filepath.Join(home, "parked"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	f := &fake{}
+	draw := func(at time.Time) []Screen {
+		return []Screen{screen("quotes · p4", tab("quotes · p4", "Parked.", "", at))}
+	}
+	runAt(t, home, f, draw, 0, 11)
+	all := strings.Join(f.sent, "\n")
+	if !strings.Contains(all, "parked list") || !strings.Contains(all, "quotes:p4") {
+		t.Fatal(f.sent)
+	}
+}
+
+// A lead's tab may be titled with the project alone ("✳ quotes"); with a dialog up the screen names no one, so the
+// title says it is the lead (review round 13).
+func TestAParkedLeadTitledWithItsProjectFiresNoWake(t *testing.T) {
+	bus := busFrom("quotes:lead", t0.Add(-time.Hour))
+	draw := func(time.Time) []Screen {
+		return []Screen{{Surface: "surface:1", Title: "✳ quotes", Text: question},
+			{Surface: "surface:2", Title: "quotes · qa1", Text: question}}
+	}
+	for _, c := range []struct {
+		parked string
+		want   []string
+	}{
+		{"quotes:p4", []string{"✳ quotes", "quotes · qa1"}},
+		{"quotes:lead", []string{"quotes · qa1"}},
+	} {
+		home := setup(t, map[string]string{"quotes.log": bus})
+		testutil.Write(t, filepath.Join(home, "parked"), c.parked)
+		f := &fake{}
+		runAt(t, home, f, draw, 0, 11)
+		var got []string
+		for _, title := range []string{"✳ quotes", "quotes · qa1"} {
+			for _, m := range f.sent {
+				if strings.Contains(m, fmt.Sprintf("%q", title)) || strings.Contains(m, title) {
+					got = append(got, title)
+					break
+				}
+			}
+		}
+		if fmt.Sprint(got) != fmt.Sprint(c.want) {
+			t.Errorf("parked %q: woke for %q, want %q (sent %q)", c.parked, got, c.want, f.sent)
+		}
+	}
+}

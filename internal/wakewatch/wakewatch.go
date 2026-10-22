@@ -136,6 +136,8 @@ func Run(d Deps) error {
 	}
 
 	watch, alerts := watched(d.Home)
+	park, pa := readParked(d.Home)
+	alerts = append(alerts, pa...)
 	m, err := missed(d.Home, d.Now, watch)
 	if err != nil {
 		return err
@@ -148,11 +150,11 @@ func Run(d Deps) error {
 	if err != nil {
 		alerts = append(alerts, [2]string{screensFailed, "the tab check failed to look: " + err.Error()})
 	} else {
-		alerts = append(alerts, waiting(&st, d, watch, screens, hv)...)
+		alerts = append(alerts, waiting(&st, d, watch, park, screens, hv)...)
 	}
 	alerts = append(alerts, resources(d)...)
 	alerts = append(alerts, tools(d)...)
-	alerts = append(alerts, fresh(d, watch, screens, ss, sesErr, hv)...)
+	alerts = append(alerts, fresh(d, watch, park, screens, ss, sesErr, hv)...)
 	alerts = append(alerts, unnamed(d, screens)...)
 	alerts = append(alerts, hookLog(d.Home, &st)...)
 	st.Views = hv.views
@@ -253,13 +255,7 @@ func watched(home string) (projects, [][2]string) {
 	if err != nil {
 		return nil, [][2]string{{"projects-failed", "the watched project list could not be read, so every project is watched: " + err.Error()}}
 	}
-	p := projects{}
-	for _, line := range strings.Split(string(b), "\n") {
-		line, _, _ = strings.Cut(line, "#")
-		for _, name := range strings.FieldsFunc(line, func(c rune) bool { return c == ',' || unicode.IsSpace(c) }) {
-			p[strings.ToLower(name)] = true
-		}
-	}
+	p := projects(names(b))
 	if len(p) == 0 {
 		return nil, [][2]string{{"projects-failed", path + " names no project, so every project is watched"}}
 	}
@@ -270,6 +266,44 @@ func watched(home string) (projects, [][2]string) {
 		}
 	}
 	return p, out
+}
+
+// names reads a list of names split by spaces, commas or lines, with # starting a comment, in lower case.
+func names(b []byte) map[string]bool {
+	out := map[string]bool{}
+	for _, line := range strings.Split(string(b), "\n") {
+		line, _, _ = strings.Cut(line, "#")
+		for _, name := range strings.FieldsFunc(line, func(c rune) bool { return c == ',' || unicode.IsSpace(c) }) {
+			out[strings.ToLower(name)] = true
+		}
+	}
+	return out
+}
+
+// parked is the set of roles ("quotes:p4") and whole projects ("quotes") Crius stopped on purpose.
+type parked map[string]bool
+
+// has says whether a tab's bus name or its project is parked.
+func (p parked) has(who, team string) bool {
+	return p[strings.ToLower(who)] || p[strings.ToLower(team)] || p[strings.ToLower(project(who))]
+}
+
+// readParked reads home/parked, a list as in wakewatch-projects (Crius 10-22 20:40: P4 parked, and Quotes pauses whole
+// at 70% of the weekly quota): Crius adds a role or project when it parks it and removes it on resume. A parked tab
+// wakes no one when idle or asking, and a parked lead needs no fresh start. Not a field in roles/*.json: crius-hook
+// rewrites that file on every event. A file that cannot be read parks nothing and is an alert. A tab with no bus name
+// whose title is one word ("✳ quotes") counts as the lead, so a parked quotes:lead quiets any such tab; a lead under
+// another name (quotes:leader) is parked by that exact name.
+func readParked(home string) (parked, [][2]string) {
+	path := filepath.Join(home, "parked")
+	b, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, [][2]string{{"parked-failed", "the parked list could not be read, so no role is parked: " + err.Error()}}
+	}
+	return names(b), nil
 }
 
 // project gives the project of a bus name ("quotes:lead" -> "quotes").
@@ -355,7 +389,7 @@ func lineTime(s string) (time.Time, error) {
 // what is above its input box: the status line below it holds a clock. A tab whose read failed is an alert of its own
 // and keeps its place meanwhile (Run reports a failed read of all tabs). When a live session's crius-hook state names
 // the tab, the screen and the state each say whether it asks, works or is idle; the mode file says which one decides.
-func waiting(st *state, d Deps, watch projects, screens []Screen, hv *hooks) [][2]string {
+func waiting(st *state, d Deps, watch projects, park parked, screens []Screen, hv *hooks) [][2]string {
 	var out [][2]string
 	live := map[string]bool{}
 	for _, s := range screens {
@@ -365,12 +399,19 @@ func waiting(st *state, d Deps, watch projects, screens []Screen, hv *hooks) [][
 		// alerts: nothing says whose it is.
 		name, _ := session(s.Text, s.Title)
 		team := project(name)
+		parkAs := name
 		if name == "" {
+			var words []string
 			for _, w := range strings.Fields(strings.NewReplacer(":", " ", "·", " ").Replace(s.Title)) {
 				if r, _ := utf8.DecodeRuneInString(w); unicode.IsLetter(r) || unicode.IsDigit(r) {
-					team = w
-					break
+					words = append(words, w)
 				}
+			}
+			if len(words) > 0 {
+				team = words[0]
+			}
+			if len(words) == 1 { // "✳ quotes" is the lead's tab: a parked lead stays quiet (review round 13)
+				parkAs = team + ":lead"
 			}
 		}
 		if watch != nil && !watch.has(team) && (s.Err == "" || team != "") {
@@ -381,7 +422,7 @@ func waiting(st *state, d Deps, watch projects, screens []Screen, hv *hooks) [][
 			out = append(out, [2]string{"screen-failed:" + s.Surface, fmt.Sprintf("tab %q (%s) could not be read: %s", s.Title, s.Surface, s.Err)})
 			continue
 		}
-		if s.Title == CriusTitle {
+		if s.Title == CriusTitle || park.has(parkAs, team) {
 			continue
 		}
 		body, _, _ := split(s.Text)
@@ -470,7 +511,7 @@ func resources(d Deps) [][2]string {
 // started after it and Crius sent it no ORDER after it: no /clear and no relaunch (cmux-team SKILL §5, fresh context
 // per item). A lead whose tabs all show ctx under 50% in the status line below the input box has room left and needs
 // no fresh start yet (Crius 10-22 13:23). Nor does a lead whose crius-hook state says it works, when the state decides.
-func fresh(d Deps, watch projects, screens []Screen, ss []Session, err error, hv *hooks) [][2]string {
+func fresh(d Deps, watch projects, park parked, screens []Screen, ss []Session, err error, hv *hooks) [][2]string {
 	used := map[string]int{} // the most any tab of that session shows
 	text := map[string]string{}
 	for _, s := range screens {
@@ -489,7 +530,7 @@ func fresh(d Deps, watch projects, screens []Screen, ss []Session, err error, hv
 	var whos []string
 	for _, s := range ss {
 		m := sessionRe.FindStringSubmatch(strings.TrimSpace(s.Name))
-		if m == nil || !leadRe.MatchString(m[2]) || !watch.has(m[1]) {
+		if m == nil || !leadRe.MatchString(m[2]) || !watch.has(m[1]) || park.has(m[1]+":"+m[2], m[1]) {
 			continue
 		}
 		who, started := m[1]+":"+m[2], s.Started
