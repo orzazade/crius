@@ -444,7 +444,7 @@ func TestReviewRound10bFalseRefusalsPass(t *testing.T) {
 	for _, cmd := range []string{
 		`B=/tmp/o; declare -a A; echo x > $B/f; tail ~/.crius/bus/q.log`,
 		`B=/tmp/o; local -i n=0; echo x > $B/f; tail ~/.crius/bus/q.log`,
-		`B=/tmp/o; export -p; echo x > $B/f; tail ~/.crius/bus/q.log`,
+		`B=/tmp/o; export -n Z; echo x > $B/f; tail ~/.crius/bus/q.log`,
 		`B=/tmp/o; declare -A M=([a]=1); echo x > $B/f; tail ~/.crius/bus/q.log`,
 	} {
 		if why := check(cmd); why != "" {
@@ -603,5 +603,69 @@ func TestReviewRound15BypassesAreRefused(t *testing.T) {
 	// bash expands no braces in a plain assignment: D is the text as written
 	if why := check(`D={/tmp,~/.crius/bus}; echo x >> "/tmp/$D.log"`); why != "" {
 		t.Errorf("a plain assignment with braces: %q", why)
+	}
+}
+
+// Crius 10-22 21:25: a review agent ran a bare zsh `local`, which printed every variable with its value (a PAT and
+// cmux tokens among them) into the transcript and so to the API. A command that prints all variables is refused.
+func TestACommandThatPrintsEveryVariableIsRefused(t *testing.T) {
+	for _, cmd := range []string{
+		"local", "env", "set", "printenv", "export", "export -p", "declare", "declare -p", "declare -px", "typeset",
+		"typeset -x", "readonly", "local -p", "printenv -0", "env -0", "env -u PATH", "env -i X=1", "/usr/bin/env",
+		"command env", "sudo -u o env", "nohup env > /tmp/e.txt", "env | grep -i token", "set | head -50",
+		"builtin declare -p", "command export -p", "cd /tmp && env", "( set -o posix; set )", `bash -c 'printenv'`,
+		`zsh -c "local"`, "echo $(env)", "f() { env; }; f", "if true; then export; fi", "ENV", `"env"`,
+	} {
+		if why := check(cmd); !strings.Contains(why, "every variable") {
+			t.Errorf("%q: %q", cmd, why)
+		}
+	}
+}
+
+func TestCommandsThatPrintNoValuesPass(t *testing.T) {
+	for _, cmd := range []string{
+		"env go test ./...", "env -u PATH ls", "env X=1 go vet ./...", "printenv HOME", "export X=1", "export X",
+		"declare -p X", "local x=1", "typeset -i n=2", "declare -f", "declare -F", "typeset -f", "set -o", "set +o",
+		"set -e", "set -- a b", "readonly X=1", "command -v env", "which env", "echo env", "grep env file.go",
+		"cut -d= -f1 <<< x", "man env", "go doc os.Environ", "/usr/bin/env bash script.sh", "timeout 5 env true",
+	} {
+		if why := check(cmd); why != "" {
+			t.Errorf("%q refused: %s", cmd, why)
+		}
+	}
+}
+
+// Review of the rule (10-22): zsh syntax the parser cannot read switched the check off, even in the form the refusal
+// recommends; env -S and env -C hid the command after them; local - and typeset + print no values.
+func TestReviewOfTheVariableRuleCatchesZshAndEnvFlags(t *testing.T) {
+	for _, cmd := range []string{
+		"env\necho ${(k)parameters}", "local; echo ${(j:,:)arr}", "ls **/*.go(.); env", "cat =(env)",
+		"echo ${(k)parameters} && typeset -p", "env -S printenv", "env -C /tmp printenv",
+		// second review: the zsh path missed what the walker catches, and the hides branch did not unwrap again
+		"echo ${(k)parameters}; env 2>&1", "echo ${(k)parameters}; if true; then env; fi", "echo ${(k)parameters}; sudo env",
+		"echo ${(k)parameters}; printenv -0", "echo ${(k)parameters}; ENV", "echo ${(k)parameters}; ! env",
+		"echo ${=x}; time env", "env -C /tmp env", "sudo -D /tmp env", "env -C /tmp nohup printenv",
+		"env -C /tmp command export -p",
+		// third review: a qualifier is no $(...), and env -C in env -C is unwrapped again
+		"print ${(k)x}; echo *$(printenv)", "env -C /tmp env -C /tmp printenv",
+		`print ${(k)x}; echo '${(' ; set ; echo ')'`, // set runs in zsh too: the quote ends before it
+	} {
+		if why := check(cmd); !strings.Contains(why, "every variable") {
+			t.Errorf("%q: %q", cmd, why)
+		}
+	}
+	for _, cmd := range []string{
+		"f() { local -; set -e; }", "typeset +", "print -l ${(k)parameters}", "echo ${(k)parameters} | wc -l",
+		"setopt extended_glob; ls **/*.go(.)", "print -l ${(k)parameters} | grep -i env",
+		// second review: quoted text in a command the parser cannot read is no command
+		"print -l ${(k)parameters} | grep -iE 'token|env|key'", "print -l ${(k)parameters} | grep -E '(path|env)'",
+		`zsh -c 'echo ${(k)parameters} | grep -E "(env|path)"'`, `ls **/*.go(.) && git commit -m "docs: explain (env) handling"`,
+		"echo ${(k)parameters}; echo 'run: (local) is fine'", "echo ${(k)parameters}; cat <<'EOF'\nset\n| env |\nEOF",
+		// third review: the rewrite keeps quotes
+		"print ${(k)x}; echo 'a*(.); set'", `print ${(k)x}; echo "${(k)y} env"`,
+	} {
+		if why := check(cmd); why != "" {
+			t.Errorf("%q refused: %s", cmd, why)
+		}
 	}
 }

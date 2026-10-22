@@ -1,7 +1,9 @@
-// Command crius-bash-guard is a Claude Code PreToolUse hook for Bash. It refuses two commands that broke the team:
+// Command crius-bash-guard is a Claude Code PreToolUse hook for Bash. It refuses three commands that broke the team:
 // team-wait.sh run detached with `&` (a detached waiter cannot wake the session; 10-21 22:44), and a line written
 // straight onto a bus log instead of through bus-post (10-20 and 10-21: UTC time slip, VERIFIED before the run; 10-22:
-// 332 quotes.log lines ingest cannot read). Exit 2 refuses, with the reason on stderr; anything else passes.
+// 332 quotes.log lines ingest cannot read), and a command that prints every variable with its value (env, set,
+// printenv, export -p, declare -p or a bare local: 10-22 a bare zsh local put a token into a transcript). Exit 2
+// refuses, with the reason on stderr; anything else passes.
 //
 // It catches habits, not intent: fifteen review rounds showed a list of shell forms is never complete, and the full
 // check is the digest's count of lines it cannot read. Known gaps: function bodies run later, source and ., a script
@@ -9,7 +11,12 @@
 // awk -i inplace), other writers (ln, rsync, truncate, sponge), a symlink to the bus folder, declare -n, a cd or
 // assignment that fails or runs only on one branch, ${D:=x} inside [[ ]] or a case word, a computed part whose own
 // text holds "..", a function or script named mktemp, $'...' quoting, a variable or cd set inside eval, an export
-// behind a wrapper (command export), and $CRIUS_HOME.
+// behind a wrapper (command export), and $CRIUS_HOME. The value check misses one named variable (printenv X,
+// declare -p X, echo $X), names from a $(...) (declare -p $(compgen -v)), typeset -m, zsh's set -A, integer, float and
+// typeset -F, another machine's environment (kubectl exec ... -- env, docker exec c env, ssh host printenv), a computed
+// command name, options inside one env -S string (env -S 'printenv -0'), zsh text the parser cannot read once ${(k)x},
+// =(...) and glob qualifiers are put as bash, and other languages; it also refuses env | cut -d= -f1, xargs printenv,
+// printenv --help, typeset +x and zsh text holding a *(...) with a quote in it, which bash reads as an extglob.
 package main
 
 import (
@@ -51,6 +58,10 @@ var (
 	// The disk ignores case: ~/.CRIUS/bus is the bus (review round 12).
 	busRe  = regexp.MustCompile(`(?i)(^|/)\.crius/bus(/|$)`)
 	nameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	// zsh forms the bash parser cannot read, put as bash: ${(k)parameters} and ${=x} as ${x}, =(env) as <(env), a glob's
+	// qualifier dropped (**/*.go(.) as **/*.go). No match holds a quote or $, so quotes and $(...) stay (third review).
+	zshRe = regexp.MustCompile(`\$\{(\([^)'"$\s]*\)|[=~^])+|(^|[\s;&|(])=\(|` +
+		`[^\s;&|()<>{}'"$]*[*?][^\s;&|()<>{}'"$]*\([^()'"$\s]*\)`)
 )
 
 // unknown stands for text only the run shows: a $(...), $1, ${a[0]}, a variable read sets, a script on stdin. The
@@ -190,6 +201,19 @@ func (w *walker) stmt(s *syntax.Stmt) {
 			w.stmt(c.Stmt)
 		}
 	case *syntax.DeclClause:
+		var words []string
+		for _, a := range c.Args {
+			switch {
+			case a.Name != nil:
+				words = append(words, a.Name.Value)
+			case a.Value != nil:
+				words = append(words, w.resolve(a.Value))
+			}
+		}
+		if lists(c.Variant.Value, words) {
+			w.why = dump
+			return
+		}
 		for _, a := range c.Args {
 			w.assign(a)
 			// export D={/tmp,~/.crius/bus}: bash expands braces in a declaration's word and the last one wins (review
@@ -251,8 +275,16 @@ func (w *walker) call(c *syntax.CallExpr, redirs []*syntax.Redirect) {
 	for _, a := range c.Args {
 		w.subs(a)
 	}
-	args, envs, hides, child := unwrap(c.Args)
+	args, envs, hides, child, last := unwrap(c.Args)
+	if len(args) == 0 && (last == "env" || last == "genv") { // env, env -u X, sudo env: no command, so it lists them
+		w.why = dump
+		return
+	}
 	if hides { // env -C dir, env -S "line": judged as a path only the run shows (review round 10)
+		if w.hiddenDump(args) {
+			w.why = dump
+			return
+		}
 		w.refuseUnknown()
 		return
 	}
@@ -270,6 +302,10 @@ func (w *walker) call(c *syntax.CallExpr, redirs []*syntax.Redirect) {
 		rest = append(rest, w.resolve(a))
 	}
 	name := base(args[0])
+	if lists(name, rest) { // builtin declare -p, command export -p, printenv, set
+		w.why = dump
+		return
+	}
 	if lit, _ := literal(args[0]); child || lit != name {
 		// CD, /usr/bin/cd and env cd run a program in a child process: the shell's folder and variables stay (review
 		// round 14). Writers are still judged by the folded name.
@@ -711,11 +747,53 @@ func (w *walker) tempDir(c *syntax.CmdSubst) string {
 	return dir
 }
 
+// hiddenDump reports whether the words after env -C dir or env -S list every variable: env -S printenv, and env -C
+// keeps its folder as the first word, so the command is the first or second word, behind more wrappers (env -C /tmp
+// nohup printenv, env -C /tmp env -C /tmp printenv: second and third reviews).
+func (w *walker) hiddenDump(args []*syntax.Word) bool {
+	for i := range min(2, len(args)) {
+		cmd, _, hides, _, last := unwrap(args[i:])
+		if len(cmd) == 0 && (last == "env" || last == "genv") {
+			return true
+		}
+		if len(cmd) == 0 {
+			continue
+		}
+		if hides && len(cmd) < len(args[i:]) && w.hiddenDump(cmd) {
+			return true
+		}
+		var rest []string
+		for _, a := range cmd[1:] {
+			rest = append(rest, w.resolve(a))
+		}
+		if lists(base(cmd[0]), rest) {
+			return true
+		}
+	}
+	return false
+}
+
+// bashForm gives a zshRe match as bash writes it: ${(k)x} and ${=x} as ${x}, =( as <(, *(.) as *.
+func bashForm(m string) string {
+	if strings.HasPrefix(m, "${") {
+		return "${"
+	}
+	if strings.HasSuffix(m, ")") {
+		return m[:strings.LastIndex(m, "(")]
+	}
+	return strings.TrimSuffix(m, "=(") + "<("
+}
+
 // checkText judges a command the parser cannot read. Bash runs the lines before a syntax error's line (a cp, a sed -i),
 // so a command naming the bus folder with an error past line 1 is refused, and on line 1 when it holds > or tee.
 func checkText(text string, err error) string {
 	if strings.Contains(text, "team-wait.sh") && loneAmpRe.MatchString(text) {
 		return detached
+	}
+	// A command that prints every variable is refused in zsh text too, read as bash: quoted text and a heredoc stay text
+	// (second review of the rule). Text still unreadable gets no such check (a known gap).
+	if b := zshRe.ReplaceAllStringFunc(text, bashForm); b != text && check(b) == dump {
+		return dump
 	}
 	if !namesBus(text) {
 		return ""
@@ -832,14 +910,35 @@ const (
 		"\"a, b\" or \"a (cc b)\") and, for VERIFIED, the run log."
 	unparsed = "this command names .crius/bus but its shell syntax cannot be read, so it may write a bus line: fix the " +
 		"syntax or split the command. A line goes onto the bus only through bus-post."
+	dump = "this command prints every variable with its value (env, printenv, set, export, declare, typeset, local or " +
+		"readonly with no name): a token in the environment would go into the transcript and so to the API. Print names " +
+		"only (zsh: print -l ${(k)parameters}; bash: compgen -v) and test one value with [ -n \"$X\" ]."
 )
+
+// lists reports whether a command with these words after its name prints every variable with its value: printenv or
+// set with no name, or a declaration builtin with options only (declare -f and -F list functions, not values). A lone
+// - or + is no option: local - keeps set options inside a function, typeset + lists names only.
+func lists(name string, words []string) bool {
+	opts := !slices.ContainsFunc(words, func(s string) bool {
+		return s == "-" || s == "+" || !strings.HasPrefix(s, "-") && !strings.HasPrefix(s, "+")
+	})
+	switch name {
+	case "set":
+		return len(words) == 0
+	case "printenv", "gprintenv":
+		return opts
+	case "export", "declare", "typeset", "local", "readonly":
+		return opts && !slices.ContainsFunc(words, func(s string) bool { return strings.ContainsAny(s, "fF") })
+	}
+	return false
+}
 
 // runsWaiter reports whether stmt runs team-wait.sh itself, or a shell on it (not a grep that names it).
 func runsWaiter(stmt *syntax.Stmt) bool {
 	found := false
 	syntax.Walk(stmt, func(n syntax.Node) bool {
 		if c, ok := n.(*syntax.CallExpr); ok {
-			args, _, _, _ := unwrap(c.Args)
+			args, _, _, _, _ := unwrap(c.Args)
 			if len(args) > 0 && base(args[0]) == "team-wait.sh" {
 				found = true
 			}
@@ -898,7 +997,8 @@ func option(wrapper, o string) (next, hides bool) {
 // unwrap drops leading words that run the next word as the command: command, env (and its NAME=value), nohup, ...
 // hides: a wrapper option runs it in a folder or line the words do not show (env -C dir, env -S "sh -c ...").
 // child: a wrapper other than command or builtin runs it as a program, so a builtin such as cd cannot move the shell.
-func unwrap(args []*syntax.Word) (cmd, envs []*syntax.Word, hides, child bool) {
+// last: the last wrapper read; env with no command after it lists the environment.
+func unwrap(args []*syntax.Word) (cmd, envs []*syntax.Word, hides, child bool, last string) {
 	for len(args) > 0 {
 		w, _ := literal(args[0])
 		switch name := base(args[0]); {
@@ -908,6 +1008,7 @@ func unwrap(args []*syntax.Word) (cmd, envs []*syntax.Word, hides, child bool) {
 			args = args[1:]
 		case wrappers[name]: // /usr/bin/env and ENV too (review rounds 12 and 13)
 			args = args[1:]
+			last = name
 			child = child || name != "command" && name != "builtin"
 			// timeout's first word after its options is the duration, in any form strtod reads: 5, .5, 1e2, inf
 			dur := name == "timeout" || name == "gtimeout"
@@ -927,7 +1028,7 @@ func unwrap(args []*syntax.Word) (cmd, envs []*syntax.Word, hides, child bool) {
 				}
 				args = args[1:]
 				if name == "command" && strings.ContainsAny(o, "vV") { // command -v cd only prints (review round 15)
-					return nil, envs, hides, child
+					return nil, envs, hides, child, last
 				}
 				if strings.HasPrefix(o, "-") {
 					next, h := option(name, o)
@@ -938,10 +1039,10 @@ func unwrap(args []*syntax.Word) (cmd, envs []*syntax.Word, hides, child bool) {
 				}
 			}
 		default:
-			return args, envs, hides, child
+			return args, envs, hides, child, last
 		}
 	}
-	return args, envs, hides, child
+	return args, envs, hides, child, last
 }
 
 // splits says whether a part makes several words even inside double quotes: "$@", "${a[@]}", "${!x@}" (review round 12),
