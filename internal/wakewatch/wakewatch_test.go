@@ -1379,6 +1379,111 @@ func TestAParkedRoleOrPausedProjectFiresNoWake(t *testing.T) {
 	}
 }
 
+// Crius 10-23 00:26 (and ORDER 10-22 01:49, cortex:lead parked by an ORDER): a role whose newest bus line, from it or
+// to it by name, parks it fires no idle wake until a newer line from it or to it. A line that only mentions parking
+// ("then park" after work, another role parked) does not park it: a role told to work first still wakes when idle.
+func TestARoleParkedOnTheBusFiresNoIdleWake(t *testing.T) {
+	before := func(min int) string { return stamp(t0.Add(time.Duration(min-60) * time.Minute)) }
+	for _, c := range []struct {
+		lines []string // after the stamp, oldest first
+		wake  bool
+	}{
+		{[]string{"ANSWER quotes:lead -> quotes:p5 — thanks, QA judges it next."}, true},
+		{[]string{"ANSWER quotes:lead -> quotes:p5 — thanks. Park now, waiter armed."}, false},
+		{[]string{"ANSWER quotes:lead -> quotes:p5 — thanks; stay parked, waiter armed."}, false},
+		{[]string{"ORDER crius:lead -> quotes:p5 — parked: no work until the ticket is done. Keep STATUS current."}, false},
+		{[]string{"ANSWER quotes:lead -> quotes:p5, quotes:p6 — QA judges it now. Park."}, false},
+		{[]string{"ANSWER quotes:lead -> quotes:p5 — nothing for you. Park now (one STATUS line). A FAIL unparks you."}, false},
+		{[]string{"ANSWER quotes:lead -> quotes:p5 — QA judges it next. Stay parked for now."}, false},
+		{[]string{"INFO quotes:lead -> quotes:p5 — parked (Crius ORDER, quota): your brief is done."}, false},
+		{[]string{"ANSWER quotes:lead -> quotes:p5 — Parked pending QA."}, false},
+		{[]string{"ORDER quotes:lead -> quotes:p4, quotes:p5 — P4: parked; P5: fix item 4."}, true}, // review (codex)
+		{[]string{"ORDER quotes:lead -> quotes:p5, quotes:p6 — P6: fix item 4; P5: stay parked."}, false},
+		{[]string{"ANSWER quotes:lead -> quotes:p5 — Park now.", "INFO P5 -> quotes:lead — starting item 5"}, true},
+		{[]string{"ANSWER quotes:lead -> quotes:p5 — Park now.", "ORDER quotes:lead -> quotes:p4 (cc quotes:p5) — unpark; fix item 4."}, true},
+		{[]string{"INFO P5 -> crius — item 2 is READY. Parked until QA judges it."}, false},
+		{[]string{"PARKED quotes:lead -> quotes:p5 — until item 3 lands"}, false},
+		{[]string{"PAUSE crius:lead -> quotes:p5 — weekly quota"}, false},
+		{[]string{"INFO quotes:p5 -> quotes:lead — item 2 is READY. Parked until QA judges it."}, false},
+		{[]string{"ANSWER quotes:lead -> quotes:p5 — fix item 4, one READY, then park."}, true},
+		{[]string{"ANSWER quotes:lead -> quotes:p5 — OK to edit that file (P2 is parked)."}, true},
+		{[]string{"ORDER crius:lead -> quotes:p5 — you are parked, but no READY is on the bus: post it."}, true},
+		{[]string{"ORDER quotes:lead -> quotes:p5 — done. Park it in refs/wip/p5, then fix item 2."}, true},
+		{[]string{"ANSWER quotes:lead -> quotes:p6 — thanks. Park now."}, true},
+		{[]string{"PAUSE crius:lead -> quotes:all — 70% weekly"}, true}, // a whole project is the parked file's job
+		{[]string{"ANSWER quotes:lead -> quotes:p5 — Park now.", "INFO quotes:p5 -> quotes:lead — starting item 5"}, true},
+		{[]string{"ANSWER quotes:lead -> quotes:p5 — Park now.", "ORDER quotes:lead -> quotes:p5 — unpark for the FAIL on item 3."}, true},
+		{[]string{"ANSWER quotes:lead -> quotes:p5 — Park now.", "INFO quotes:lead -> quotes:all — queue depth 1"}, false},
+	} {
+		bus := busFrom("quotes:lead", t0.Add(-2*time.Hour))
+		for i, l := range c.lines {
+			bus += before(i) + " " + l + "\n"
+		}
+		home := setup(t, map[string]string{"quotes.log": bus})
+		f := &fake{}
+		draw := func(at time.Time) []Screen {
+			return []Screen{screen("quotes · p5", tab("quotes · p5", "Waiting.", "", at))}
+		}
+		runAt(t, home, f, draw, 0, 11)
+		if woke := strings.Contains(strings.Join(f.sent, "\n"), "quotes:p5"); woke != c.wake {
+			t.Errorf("%q: woke %v, want %v (sent %q)", c.lines, woke, c.wake, f.sent)
+		}
+	}
+}
+
+// Review (codex) of the test above: a park goes down, from crius:lead to a project's lead to its other roles, or up
+// from the role it parks. The lead that parks a worker, or hears a worker say it is parked, still wakes when idle.
+func TestAParkParksOnlyTheRoleBelowOrTheSenderReportingUp(t *testing.T) {
+	before := func(min int) string { return stamp(t0.Add(time.Duration(min-60) * time.Minute)) }
+	for _, c := range []struct {
+		line string
+		wake bool
+	}{
+		{"ANSWER quotes:lead -> quotes:p5 — thanks. Park now.", true},
+		{"INFO quotes:p5 -> quotes:lead — item 2 is READY. Parked until QA judges it.", true},
+		{"INFO crius:lead -> quotes:lead — ack p4 idle 30 min: parked (lead 20:40), no action.", true},
+		{"ORDER quotes:p5 -> quotes:lead — Park now.", true},
+		{"ANSWER quotes:lead -> quotes:p5, crius:lead — thanks. Park now.", true}, // review (codex) round 3
+		{"ORDER crius:lead -> quotes:lead — parked: no work until the DevOps ticket is done.", false},
+	} {
+		home := setup(t, map[string]string{"quotes.log": before(0) + " " + c.line + "\n"})
+		f := &fake{}
+		draw := func(at time.Time) []Screen {
+			return []Screen{screen("quotes · lead", tab("quotes · lead", "Waiting.", "", at))}
+		}
+		runAt(t, home, f, draw, 0, 11)
+		if woke := strings.Contains(strings.Join(f.sent, "\n"), "quotes:lead (tab"); woke != c.wake {
+			t.Errorf("%q: lead woke %v, want %v (sent %q)", c.line, woke, c.wake, f.sent)
+		}
+	}
+}
+
+// Review (codex): a park and an unpark that both fall between two runs left the screen's idle spell as it was, so the
+// run after the unpark woke the role at once. The spell starts afresh at the line that unparked it.
+func TestARoleUnparkedBetweenRunsGetsAFreshIdleSpell(t *testing.T) {
+	home := setup(t, map[string]string{"quotes.log": busFrom("quotes:lead", t0.Add(-time.Hour))})
+	f := &fake{}
+	draw := func(at time.Time) []Screen {
+		return []Screen{screen("quotes · p5", tab("quotes · p5", "Waiting.", "", at))}
+	}
+	runAt(t, home, f, draw, 0, 5)
+	bus := filepath.Join(home, "bus", "quotes.log")
+	b, err := os.ReadFile(bus)
+	if err != nil {
+		t.Fatal(err)
+	}
+	testutil.Write(t, bus, string(b)+stamp(t0.Add(6*time.Minute))+" ANSWER quotes:lead -> quotes:p5 — thanks. Park now.\n"+
+		stamp(t0.Add(9*time.Minute))+" ORDER quotes:lead -> quotes:p5 — unpark for the FAIL on item 3.\n")
+	runAt(t, home, f, draw, 10)
+	if len(f.sent) != 0 {
+		t.Fatal("woke 1 min after the unpark:", f.sent)
+	}
+	runAt(t, home, f, draw, 19)
+	if !strings.Contains(strings.Join(f.sent, "\n"), "quotes:p5") {
+		t.Fatal("no wake 10 min after the unpark:", f.sent)
+	}
+}
+
 // A parked list that cannot be read parks nothing, loudly: silence there would hide a stuck team.
 func TestAnUnreadableParkedListIsAnAlert(t *testing.T) {
 	home := setup(t, map[string]string{"quotes.log": busFrom("quotes:lead", t0.Add(-time.Hour))})

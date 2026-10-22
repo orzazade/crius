@@ -370,14 +370,18 @@ func toCrius(to string) bool {
 	return sentTo(to, "crius:lead") || sentTo(to, "crius")
 }
 
-// sentTo reports whether a line's recipients ("a, b" or "a b", as the bus grammar allows) name who.
+// sentTo reports whether a line's recipients ("a, b", "a b" or "a (cc b)", as the bus grammar allows) name who.
 func sentTo(to, who string) bool {
-	for _, r := range strings.FieldsFunc(to, func(c rune) bool { return c == ',' || c == ' ' }) {
+	for _, r := range recipients(to) {
 		if r == who {
 			return true
 		}
 	}
 	return false
+}
+
+func recipients(to string) []string {
+	return strings.FieldsFunc(to, func(c rune) bool { return c == ',' || c == ' ' || c == '(' || c == ')' })
 }
 
 func lineTime(s string) (time.Time, error) {
@@ -388,7 +392,8 @@ func lineTime(s string) (time.Time, error) {
 }
 
 // waiting gives [key, text] for each tab whose screen has waited on a question or dialog, unchanged, for 10 min, and
-// for each idle tab: unchanged and with no bus line of its own for 10 min, any role. A screen counts as unchanged by
+// for each idle tab: unchanged and with no bus line of its own for 10 min, any role, unless the bus parks it
+// (parkedOnBus). A screen counts as unchanged by
 // what is above its input box: the status line below it holds a clock. A tab whose read failed is an alert of its own
 // and keeps its place meanwhile (Run reports a failed read of all tabs). When a live session's crius-hook state names
 // the tab, the screen and the state each say whether it asks, works or is idle; the mode file says which one decides.
@@ -442,7 +447,7 @@ func waiting(st *state, d Deps, watch projects, park parked, screens []Screen, h
 		ask := view == "asks"
 		var who string
 		var clear bool
-		var lastLine time.Time
+		var lastLine, unparked time.Time
 		if !ask {
 			if who, _ = session(s.Text, s.Title); who == "" {
 				continue
@@ -456,6 +461,14 @@ func waiting(st *state, d Deps, watch projects, park parked, screens []Screen, h
 				continue
 			} else if !found {
 				continue // no bus for this project: not a team Crius runs
+			}
+			var p bool
+			if p, unparked, err = parkedOnBus(d.Home, who); err != nil {
+				live[s.Surface] = true
+				out = append(out, [2]string{"screen-failed:" + s.Surface, fmt.Sprintf("tab %q (%s): idle check could not read its bus: %v", s.Title, s.Surface, err)})
+				continue
+			} else if p {
+				continue // its idle spell starts afresh once a newer line unparks it
 			}
 		}
 		live[s.Surface] = true
@@ -475,6 +488,9 @@ func waiting(st *state, d Deps, watch projects, park parked, screens []Screen, h
 		from := seen.Since
 		if lastLine.After(from) {
 			from = lastLine
+		}
+		if unparked.After(from) {
+			from = unparked
 		}
 		seen.Idle = d.Now.Sub(from) >= idleAfter
 		st.Screens[s.Surface] = seen
@@ -761,7 +777,83 @@ func orderAfterDone(home, who string) (bool, error) {
 	return ordered, err
 }
 
-// busLines gives the parsed whole lines of the bus log of who's project. found is false when that log does not exist yet.
+// parkedOnBus reports whether who's newest line on its project's bus, sent by it or to it by name, parks it (Crius
+// 10-23 00:26; ORDER 10-22 01:49: cortex:lead, parked by an ORDER, drew idle wakes): a PARKED or PAUSE line, or one
+// with a sentence that is a park ("Park now, waiter armed.", "Stay parked: no demo item", "parked (quota): …"). A park
+// goes down, from crius:lead to a project's lead to its other roles, or up from the role it parks ("Parked until QA"
+// to its lead): the lead that parks a worker is not parked by it. A sentence that only mentions parking ("then park"
+// after work, "P2 is parked", "park it in refs/wip") does not count: a role told to work first still wakes when idle.
+// Lines to <project>:all neither park nor unpark: a whole project is ~/.crius/parked. unparked is the minute of the
+// line that ended the newest park, where an idle spell starts afresh (review: a park and an unpark between two runs).
+func parkedOnBus(home, who string) (parked bool, unparked time.Time, err error) {
+	lines, _, err := busLines(home, who)
+	project := strings.SplitN(who, ":", 2)[0]
+	for _, m := range lines {
+		from, to := busName(project, m[3]), recipients(m[4])
+		for i, r := range to {
+			to[i] = busName(project, r)
+		}
+		aimed := false // a park on this line would park who
+		switch {
+		case from == who: // sent up: every recipient is above who ("thanks. Park now." to P5 cc Crius parks P5 alone)
+			aimed = len(to) > 0 && !slices.ContainsFunc(to, func(r string) bool { return rank(r) <= rank(who) })
+		case slices.Contains(to, who):
+			aimed = rank(from) > rank(who)
+		default:
+			continue
+		}
+		parks := m[2] == "PARKED" || m[2] == "PAUSE" || m[2] == "PAUSED"
+		for _, s := range sentenceRe.Split(m[5], -1) {
+			s = strings.TrimSpace(s)
+			if l := labelRe.FindStringSubmatch(s); l != nil && slices.Contains(to, busName(project, l[1])) {
+				if busName(project, l[1]) != who {
+					continue // "P4: parked; P5: fix item 4." parks P4 alone
+				}
+				s = s[len(l[0]):]
+			}
+			parks = parks || parkRe.MatchString(s)
+		}
+		if parked && !(aimed && parks) {
+			if at, err := lineTime(m[1]); err == nil {
+				unparked = at
+			}
+		}
+		parked = aimed && parks
+	}
+	return parked, unparked, err
+}
+
+var (
+	sentenceRe = regexp.MustCompile(`[.!?;](?:\s+|$)`)
+	labelRe    = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9-]*):\s+`)
+	parkRe     = regexp.MustCompile(`(?i)^(?:stay\s+)?park(?:ed)?(?:\s+(?:for\s+)?now)?(?:$|\s*[,(:]|\s+(?:until|pending)\b)`)
+)
+
+// busName gives the full bus name of a role on project's bus: Quotes builders post as "P5" (quotes:p5), and "crius"
+// is crius:lead.
+func busName(project, name string) string {
+	switch {
+	case strings.Contains(name, ":"):
+		return name
+	case strings.EqualFold(name, "crius"):
+		return "crius:lead"
+	}
+	return project + ":" + strings.ToLower(name)
+}
+
+// rank orders who may park whom: crius:lead over a project's lead over its other roles.
+func rank(who string) int {
+	switch {
+	case who == "crius:lead":
+		return 2
+	case strings.HasSuffix(who, ":lead"):
+		return 1
+	}
+	return 0
+}
+
+// busLines gives the parsed whole lines of the bus log of who's project, each with its text after the header as its
+// last field. found is false when that log does not exist yet.
 func busLines(home, who string) (lines [][]string, found bool, err error) {
 	b, err := os.ReadFile(filepath.Join(home, "bus", strings.SplitN(who, ":", 2)[0]+".log"))
 	if os.IsNotExist(err) {
@@ -771,7 +863,7 @@ func busLines(home, who string) (lines [][]string, found bool, err error) {
 	}
 	for _, line := range strings.Split(string(b[:bytes.LastIndexByte(b, '\n')+1]), "\n") {
 		if m := lineRe.FindStringSubmatch(line); m != nil {
-			lines = append(lines, m)
+			lines = append(lines, append(m, line[len(m[0]):]))
 		}
 	}
 	return lines, true, nil
