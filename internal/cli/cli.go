@@ -25,6 +25,8 @@ import (
 	"github.com/orzazade/crius/internal/recall"
 	"github.com/orzazade/crius/internal/redact"
 	"github.com/orzazade/crius/internal/scorecard"
+	"github.com/orzazade/crius/internal/sessionstate"
+	"github.com/orzazade/crius/internal/statelog"
 	"github.com/orzazade/crius/internal/store"
 )
 
@@ -65,6 +67,8 @@ const usage = `usage: crius-rec init
        crius-rec drivers --from YYYY-MM-DD|RFC3339 --to YYYY-MM-DD|RFC3339 [--json | --compare REF.jsonl]
                  (M11 per persona, all days and UTC weekdays, in [from, to); --compare checks each number against
                  the reference rows within 2%: exit 1 on a miss)
+       crius-rec statelog   (the observe-mode state logs: each tab whose screen and hook state disagreed, and which side
+                 the store's requests show was right)
 `
 
 type multi []string
@@ -171,6 +175,11 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			return exitUsage
 		}
 		return driversCmd(home, *from, *to, *asJSON, *ref, stdout, stderr)
+	case "statelog":
+		if len(args) > 0 {
+			return exitUsage
+		}
+		return statelogCmd(home, stdout, stderr)
 	}
 	fmt.Fprint(stderr, usage)
 	return exitUsage
@@ -934,4 +943,52 @@ func lastSnapshot(dir string) (digest.Snapshot, time.Time, error) {
 		return nil, time.Time{}, fmt.Errorf("%s: %w", last, err)
 	}
 	return s, at, nil
+}
+
+// statelogCmd reads wakewatch's and promptwatch's state logs and judges each disagreement from the store.
+func statelogCmd(home string, stdout, stderr io.Writer) int {
+	var lines []statelog.Line
+	found := false
+	for _, log := range []string{"wakewatch", "promptwatch"} {
+		name := filepath.Join(home, "logs", log+"-state.log")
+		f, err := os.Open(name)
+		if errors.Is(err, os.ErrNotExist) {
+			fmt.Fprintf(stdout, "%s: no file (nothing logged)\n", filepath.Base(name))
+			continue
+		}
+		if err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return exitError
+		}
+		ls, err := statelog.Parse(log, f)
+		f.Close()
+		if err != nil {
+			fmt.Fprintf(stderr, "error: %s: %v\n", name, err)
+			return exitError
+		}
+		fmt.Fprintf(stdout, "%s: %d lines\n", filepath.Base(name), len(ls))
+		found = true
+		lines = append(lines, ls...)
+	}
+	if !found {
+		fmt.Fprintf(stderr, "unavailable: no state log in %s\n", filepath.Join(home, "logs"))
+		return exitUnavailable
+	}
+	ss, err := sessionstate.List(filepath.Join(home, "sessions"))
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return exitError
+	}
+	db, rc := openStore(home, stderr)
+	if db == nil {
+		return rc
+	}
+	defer db.Close()
+	fs, err := statelog.Judge(db, ss, lines)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return exitError
+	}
+	fmt.Fprint(stdout, statelog.Text(fs))
+	return 0
 }

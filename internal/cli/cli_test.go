@@ -761,3 +761,45 @@ func TestScorecardWriteDefaultsToTheEndedWeekAndRestoreTest(t *testing.T) {
 		t.Fatal(rc, out)
 	}
 }
+
+// statelog reads both state logs and the session files: a log with no file is said so, not read as an empty log.
+func TestStatelogReportsEachLogAndTheDisagreements(t *testing.T) {
+	_, home := testutil.Temp(t)
+	if rc, out := run("init"); rc != 0 {
+		t.Fatal(rc, out)
+	}
+	if rc, out := run("statelog"); rc != exitUnavailable || !strings.Contains(out, "no state log") {
+		t.Errorf("no logs: rc %d out %q", rc, out)
+	}
+	testutil.Write(t, filepath.Join(home, "logs", "wakewatch-state.log"),
+		`2026-10-22T16:23:29+04:00 tab:surface:1000020057 "quotes · p1" screen=idle state=busy decides=screen`+"\n")
+	testutil.Write(t, filepath.Join(home, "sessions", "s-p1.json"), `{"session_id":"s-p1","project":"quotes","role":"p1"}`)
+	tr := filepath.Join(t.TempDir(), "s-p1.jsonl") // a tool result at 16:23:20, the reply at 16:23:40
+	testutil.Write(t, tr, `{"type":"user","timestamp":"2026-10-22T12:23:20Z","message":{"content":[{"type":"tool_result"}]}}`+"\n"+
+		`{"type":"assistant","timestamp":"2026-10-22T12:23:40Z","requestId":"r1","message":{"stop_reason":"end_turn"}}`+"\n")
+	db, err := store.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec("insert into request (request_id, session, ts_first, ts_last, transcript_path) values"+
+		" ('r1', 's-p1', '2026-10-22T12:23:40Z', '2026-10-22T12:23:40Z', ?),"+
+		" ('r2', 's-x', '2026-10-22T13:00:00Z', '2026-10-22T13:00:00Z', '/p/s-x.jsonl')", tr)
+	db.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rc, out := run("statelog")
+	for _, want := range []string{"wakewatch-state.log: 1 lines", "promptwatch-state.log: no file (nothing logged)",
+		"quotes · p1: 1 disagreements: state right 1", "total: 1 disagreements"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("no %q in:\n%s", want, out)
+		}
+	}
+	if rc != 0 {
+		t.Errorf("rc %d", rc)
+	}
+	testutil.Write(t, filepath.Join(home, "logs", "promptwatch-state.log"), "garbage\n")
+	if rc, out := run("statelog"); rc != exitError || !strings.Contains(out, "promptwatch line 1") {
+		t.Errorf("bad line: rc %d out %q", rc, out)
+	}
+}
