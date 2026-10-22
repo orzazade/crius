@@ -1,10 +1,15 @@
 // Command crius-spawn opens a team session and starts it:
 //
 //	crius-spawn [-account max|enterprise] [-parent <leader session id>] [-item <project>#<n>] <project> <role> <first prompt…>
+//	crius-spawn -resume <project> <role>
 //
 // The tab lands in the project's workspace (made, named and coloured when missing), is named "<project> · <role>",
 // gets the folder-trust dialog answered, its model checked, and the provenance tag line typed before the first prompt.
 // It prints the workspace, the tab and the tag, and fails loudly when any step does not show on screen.
+//
+// With -resume it brings the role's current session back after a crash or a reboot (claude --resume), in its own tab
+// when that is still open with a shell in front, else in a new one. The current session is the one crius-hook last saw
+// start for the role, kept in $CRIUS_HOME/roles/<project>.<role>.json.
 package main
 
 import (
@@ -18,6 +23,8 @@ import (
 
 	"github.com/orzazade/crius/internal/ingest"
 	"github.com/orzazade/crius/internal/launch"
+	"github.com/orzazade/crius/internal/outbox"
+	"github.com/orzazade/crius/internal/sessionstate"
 	"github.com/orzazade/crius/internal/store"
 )
 
@@ -25,28 +32,63 @@ func main() {
 	account := flag.String("account", "", "max or enterprise (default: the project's first account in projects.toml)")
 	parent := flag.String("parent", "", "the leader's session id, for the provenance tag")
 	item := flag.String("item", "", "the work item, <project>#<n>, for the provenance tag")
+	again := flag.Bool("resume", false, "bring the role's current session back: <project> <role>, nothing else")
 	flag.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: crius-spawn [-account max|enterprise] [-parent id] [-item project#n] <project> <role> <first prompt…>")
+		fmt.Fprintln(os.Stderr, "       crius-spawn -resume <project> <role>")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
+	d := launch.Deps{
+		Lock:  filepath.Join(store.Home(), "launch.lock"),
+		Cmux:  runCmux,
+		Place: func(project string) (string, string, string, error) { return ingest.Place(store.Home(), project) },
+		Wait:  time.Second,
+		Front: outbox.Front,
+	}
+	if *again {
+		if flag.NArg() != 2 || *account != "" || *parent != "" || *item != "" {
+			flag.Usage()
+			os.Exit(2)
+		}
+		if err := resume(store.Home(), flag.Arg(0), flag.Arg(1), d); err != nil {
+			fmt.Fprintln(os.Stderr, "crius-spawn:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if flag.NArg() < 3 {
 		flag.Usage()
 		os.Exit(2)
 	}
 	s := launch.Spawn{Project: flag.Arg(0), Role: flag.Arg(1), Account: *account, Parent: *parent, Item: *item,
 		Prompt: strings.Join(flag.Args()[2:], " ")}
-	ws, surface, tag, err := launch.Run(s, launch.Deps{
-		Lock:  filepath.Join(store.Home(), "launch.lock"),
-		Cmux:  runCmux,
-		Place: func(project string) (string, string, string, error) { return ingest.Place(store.Home(), project) },
-		Wait:  time.Second,
-	})
+	ws, surface, tag, err := launch.Run(s, d)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "crius-spawn:", err)
 		os.Exit(1)
 	}
 	fmt.Printf("OK %s %s\n%s\n", ws, surface, tag)
+}
+
+// resume brings back the session crius-hook keeps as the role's current one, and prints where it runs.
+func resume(home, project, role string, d launch.Deps) error {
+	s, err := sessionstate.ReadRole(filepath.Join(home, "roles"), project, role)
+	if err != nil {
+		return fmt.Errorf("no session to resume for %s %s: %w", project, role, err)
+	}
+	// Two Claudes on one session write one transcript: whatever its tab is titled, a running session is left alone.
+	if pid, _, err := sessionstate.Process(s.Config, s.SessionID); err != nil {
+		return err
+	} else if pid != 0 {
+		return fmt.Errorf("%s %s: session %s still runs in process %d: nothing resumed", project, role, s.SessionID, pid)
+	}
+	ws, surface, err := launch.Resume(project, role, s.SessionID, s.Cwd, d)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("OK %s %s resumed %s\n", ws, surface, s.SessionID)
+	return nil
 }
 
 // runCmux gives cmux's stdout, or on failure its stdout and stderr: a notice on stderr must not reach a parse.

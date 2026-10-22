@@ -292,3 +292,48 @@ func TestARemoteCallIsNotASession(t *testing.T) {
 		t.Errorf("log: %v", err)
 	}
 }
+
+// A role's file names its current session, for crius-spawn -resume: the newest SessionStart, or else the first session
+// seen with that role. The hook went live at 15:33 on 10-22, after every quotes role had started: none of them had a
+// SessionStart to go by.
+func TestARoleNamesItsCurrentSession(t *testing.T) {
+	w := newWorld(t)
+	testutil.Write(t, filepath.Join(w.claude, "sessions", "2.json"),
+		fmt.Sprintf(`{"pid":%d,"sessionId":"s-2","name":"quotes · p1"}`, os.Getpid()))
+	roles := filepath.Join(w.crius, "roles")
+	for _, c := range []struct{ in, want, detail string }{
+		{`{"session_id":"s-1","hook_event_name":"Stop","cwd":"/w/crius"}`, "s-1", ""},
+		{`{"session_id":"s-2","hook_event_name":"SessionStart","source":"startup","cwd":"/w/crius"}`, "s-2", "startup"},
+		{`{"session_id":"s-1","hook_event_name":"Stop","cwd":"/w/crius"}`, "s-2", "startup"},
+		{`{"session_id":"s-1","hook_event_name":"SessionStart","source":"resume","cwd":"/w/crius"}`, "s-1", "resume"},
+		{`{"session_id":"s-1","hook_event_name":"SessionEnd","reason":"other","cwd":"/w/crius"}`, "s-1", "resume"},
+	} {
+		run(t, w.env(), c.in)
+		s, err := sessionstate.ReadRole(roles, "quotes", "p1")
+		if err != nil || s.SessionID != c.want || s.Detail != c.detail || s.Cwd != "/w/crius" || s.Name != "quotes · p1" {
+			t.Fatalf("after %s: role file %+v, %v; want %s", c.in, s, err, c.want)
+		}
+	}
+	// No role, no file: a session filed as "unknown" is no role to resume.
+	run(t, w.env(), `{"session_id":"s-3","hook_event_name":"SessionStart","source":"startup","cwd":"/w/quotes"}`)
+	if names, _ := filepath.Glob(filepath.Join(roles, "*")); len(names) != 1 {
+		t.Errorf("role files %q, want quotes.p1.json alone", names)
+	}
+}
+
+// Review 10-22 (item 5): a SessionStart the hook did not file under the role (after /clear the new id may not be in
+// Claude Code's status file yet) left the old session current for good. A role whose session no longer runs goes to
+// the next session of that role seen; the config folder is kept for that check and for crius-spawn -resume.
+func TestARoleWhoseSessionEndedGoesToTheNextOne(t *testing.T) {
+	w := newWorld(t)
+	roles := filepath.Join(w.crius, "roles")
+	run(t, w.env(), `{"session_id":"s-1","hook_event_name":"Stop","cwd":"/w/crius"}`)
+	// /clear: the same process now holds s-2
+	testutil.Write(t, filepath.Join(w.claude, "sessions", fmt.Sprintf("%d.json", os.Getpid())),
+		fmt.Sprintf(`{"pid":%d,"sessionId":"s-2","cwd":"/w/crius","name":"quotes · p1"}`, os.Getpid()))
+	run(t, w.env(), `{"session_id":"s-2","hook_event_name":"UserPromptSubmit","prompt":"go","cwd":"/w/crius"}`)
+	s, err := sessionstate.ReadRole(roles, "quotes", "p1")
+	if err != nil || s.SessionID != "s-2" || s.Config != w.claude {
+		t.Fatalf("role file %+v, %v; want s-2 with config %s", s, err, w.claude)
+	}
+}

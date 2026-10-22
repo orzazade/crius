@@ -9,11 +9,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -52,6 +54,7 @@ type State struct {
 	Role      string    `json:"role,omitempty"`
 	Workspace string    `json:"workspace,omitempty"` // cmux workspace and surface the session runs in
 	Surface   string    `json:"surface,omitempty"`
+	Config    string    `json:"config,omitempty"` // the Claude Code config folder it runs under, where its status file is
 	// PromptSHA is the first 16 hex digits of the sha256 of the last submitted prompt, trimmed: proof that a message
 	// a watcher typed was submitted as itself, not mixed with a draft. The prompt itself is never stored.
 	PromptSHA  string    `json:"prompt_sha,omitempty"`
@@ -241,4 +244,96 @@ func List(dir string) ([]State, error) {
 		out = append(out, s)
 	}
 	return out, errors.Join(errs...)
+}
+
+// RolePath is the file in dir that names a role's current session: <project>.<role>.json. A project or role that could
+// name another folder is an error.
+func RolePath(dir, project, role string) (string, error) {
+	if !roleRe.MatchString(project) || !roleRe.MatchString(role) {
+		return "", fmt.Errorf("project %q, role %q: want lowercase letters, digits and dashes", project, role)
+	}
+	return filepath.Join(dir, project+"."+role+".json"), nil
+}
+
+var roleRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+
+// WriteRole makes s its role's current session (s.Project, s.Role). With replace false it writes only when the role
+// has no file yet, in one step: two sessions racing for an empty role leave one whole file.
+func WriteRole(dir string, s State, replace bool) error {
+	p, err := RolePath(dir, s.Project, s.Role)
+	if err != nil {
+		return err
+	}
+	b, err := json.Marshal(s)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(dir, ".tmp-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	if _, err := f.Write(append(b, '\n')); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if replace {
+		return os.Rename(f.Name(), p)
+	}
+	if err := os.Link(f.Name(), p); err != nil && !errors.Is(err, fs.ErrExist) {
+		return err
+	}
+	return nil
+}
+
+// ReadRole gives the state crius-hook kept for a role's current session.
+func ReadRole(dir, project, role string) (State, error) {
+	p, err := RolePath(dir, project, role)
+	if err != nil {
+		return State{}, err
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return State{}, err
+	}
+	var s State
+	if err := json.Unmarshal(b, &s); err != nil {
+		return State{}, fmt.Errorf("%s: %w: %w", p, ErrDamaged, err)
+	}
+	return s, nil
+}
+
+// Process finds the live process that has session id open, from Claude Code's own status files,
+// <config>/sessions/<pid>.json: its pid and -n name, or pid 0 when no live process's file names the session (a crashed
+// one leaves its file behind, and after /clear the same process names the new id).
+func Process(config, id string) (pid int, name string, err error) {
+	if config == "" {
+		return 0, "", fmt.Errorf("session %s: no Claude config folder to look in", id)
+	}
+	files, err := filepath.Glob(filepath.Join(config, "sessions", "*.json"))
+	if err != nil {
+		return 0, "", err
+	}
+	for _, f := range files {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			continue // the session ended and its file went while we looked
+		}
+		var st struct {
+			PID       int    `json:"pid"`
+			SessionID string `json:"sessionId"`
+			Name      string `json:"name"`
+		}
+		if json.Unmarshal(b, &st) == nil && st.SessionID == id && st.PID > 0 &&
+			!errors.Is(syscall.Kill(st.PID, 0), syscall.ESRCH) {
+			return st.PID, st.Name, nil
+		}
+	}
+	return 0, "", nil
 }

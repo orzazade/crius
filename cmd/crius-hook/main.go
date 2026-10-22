@@ -51,7 +51,11 @@ func main() {
 func record(in sessionstate.Input) error {
 	home := store.Home()
 	dir := filepath.Join(home, "sessions")
-	name, found, err := claudeName(in.SessionID)
+	pid, name := 0, ""
+	cfg, err := claudeConfig()
+	if err == nil {
+		pid, name, err = sessionstate.Process(cfg, in.SessionID)
+	}
 	if err != nil {
 		fail(err)
 	}
@@ -67,9 +71,10 @@ func record(in sessionstate.Input) error {
 		return err
 	}
 	s := sessionstate.Apply(prev, in, time.Now())
-	if found { // a live session resumed without -n has no name now
+	if pid != 0 { // a live session resumed without -n has no name now
 		s.Name = name
 	}
+	s.Config = cfg
 	if p, r, err := ingest.Filing(home, s.Cwd, s.Name); err != nil {
 		configFailed(home, dir, err)
 	} else {
@@ -77,7 +82,23 @@ func record(in sessionstate.Input) error {
 	}
 	// the session's own env on every event: one resumed outside cmux no longer names its old surface
 	s.Workspace, s.Surface = os.Getenv("CMUX_WORKSPACE_ID"), os.Getenv("CMUX_SURFACE_ID")
-	return sessionstate.Write(dir, s)
+	if err := sessionstate.Write(dir, s); err != nil {
+		return err
+	}
+	// The role's current session, for crius-spawn -resume: a start makes this one current; any other event names it
+	// only when the role has none, as a session started before the hook went live has no start to go by, or when the
+	// role's session no longer runs.
+	if s.Project == "" || s.Role == "unknown" {
+		return nil
+	}
+	roles := filepath.Join(home, "roles")
+	replace := in.Event == "SessionStart"
+	if !replace {
+		if replace, err = takesRole(roles, s); err != nil {
+			return err
+		}
+	}
+	return sessionstate.WriteRole(roles, s, replace)
 }
 
 // lock holds the session's lock file, <id>.json.lock, until unlock is called; the kernel lets go if the hook is killed.
@@ -129,37 +150,36 @@ func configFailed(home, dir string, err error) {
 	}
 }
 
-// claudeName is the session's -n name from Claude Code's own status file, <config>/sessions/<pid>.json, found by
-// session id. found is false when no live process's file names this session (a crashed one leaves its file behind).
-func claudeName(id string) (name string, found bool, err error) {
-	cfg := os.Getenv("CLAUDE_CONFIG_DIR")
-	if cfg == "" {
-		h, err := os.UserHomeDir()
-		if err != nil {
-			return "", false, err
-		}
-		cfg = filepath.Join(h, ".claude")
+// claudeConfig is the Claude Code config folder this session runs under, where its own status file is.
+func claudeConfig() (string, error) {
+	if cfg := os.Getenv("CLAUDE_CONFIG_DIR"); cfg != "" {
+		return cfg, nil
 	}
-	files, err := filepath.Glob(filepath.Join(cfg, "sessions", "*.json"))
+	h, err := os.UserHomeDir()
 	if err != nil {
-		return "", false, err
+		return "", err
 	}
-	for _, f := range files {
-		b, err := os.ReadFile(f)
-		if err != nil {
-			continue // the session ended and its file went while we looked
-		}
-		var st struct {
-			PID       int    `json:"pid"`
-			SessionID string `json:"sessionId"`
-			Name      string `json:"name"`
-		}
-		if json.Unmarshal(b, &st) == nil && st.SessionID == id && st.PID > 0 &&
-			!errors.Is(syscall.Kill(st.PID, 0), syscall.ESRCH) {
-			return st.Name, true, nil
-		}
+	return filepath.Join(h, ".claude"), nil
+}
+
+// takesRole tells whether s, not at its start, becomes its role's current session: when the role's session is another
+// one that no longer runs (it crashed, or /clear gave its process a new id before this one's start was filed). A role
+// with no file yet is taken by WriteRole without replacing.
+func takesRole(roles string, s sessionstate.State) (bool, error) {
+	cur, err := sessionstate.ReadRole(roles, s.Project, s.Role)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return false, nil
+	case errors.Is(err, sessionstate.ErrDamaged):
+		fail(fmt.Errorf("replacing it: %w", err))
+		return true, nil
+	case err != nil:
+		return false, err
+	case cur.SessionID == s.SessionID:
+		return false, nil // kept as its start filed it: a later event's folder may be one a tool cd'd into
 	}
-	return "", false, nil
+	pid, _, err := sessionstate.Process(cur.Config, cur.SessionID)
+	return pid == 0 && err == nil, err
 }
 
 // fail logs err to ~/.crius/logs/crius-hook.log, or to stderr when the log cannot be written.

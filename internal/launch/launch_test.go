@@ -48,6 +48,8 @@ type fake struct {
 	shown   []string
 	tip     string // a line under the banner
 	exited  bool   // the dialog was answered No
+	front   string // what runs in front on a tab's tty; "" means zsh
+	noConv  bool   // claude --resume finds no conversation and exits, as with the wrong config folder
 }
 
 const statusBar = "  %s │ main │ ██░░░░░░░░ ctx 2%%\n"
@@ -100,6 +102,13 @@ func (f *fake) deps() Deps {
 			}
 			return "OK", nil
 		},
+		Front: func(tty string) (string, error) {
+			f.calls = append(f.calls, "ps "+tty)
+			if f.front == "" {
+				return "-zsh", nil
+			}
+			return f.front, nil
+		},
 		Place: func(project string) (string, string, string, error) {
 			if project == "falcon" {
 				return "", "", "", errors.New("projects.toml has no project falcon")
@@ -114,6 +123,8 @@ func (f *fake) deps() Deps {
 
 func (f *fake) screen() string {
 	switch {
+	case f.noConv && f.sent:
+		return "No conversation found with session ID: " + resumeID + "\no@mac quotes % \n"
 	case f.exited:
 		return "o@mac openrig % \n"
 	case f.dialog != nil || f.linger > 0 && f.shown != nil:
@@ -523,5 +534,106 @@ func TestARetryingAPIErrorIsNotAFailure(t *testing.T) {
 	f := &fake{trees: []string{tree}, apiErr: "⎿  API Error (529 Overloaded) · Retrying in 2 seconds… (attempt 1/10)"}
 	if _, _, _, err := Run(Spawn{Project: "quotes", Role: "lead", Prompt: "Read your brief."}, f.deps()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+const resumeID = "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b"
+
+// treeWith is tree plus a tab in the Quotes workspace.
+func treeWith(tab string) string {
+	return strings.Replace(tree, `"quotes: rig" tty=ttys000`, `"quotes: rig" tty=ttys000`+"\n│       └── surface surface:22 [terminal] \""+tab+"\" tty=ttys009", 1)
+}
+
+// Brief 10-22 item 5: after a crash the role's tab stays open with a shell in front; the role comes back there, in its
+// own folder, with its own conversation.
+func TestResumeTypesTheResumeCommandIntoACrashedTab(t *testing.T) {
+	f := &fake{trees: []string{treeWith("quotes · lead")}}
+	ws, surface, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/quotes/src", f.deps())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ws != "workspace:2" || surface != "surface:22" {
+		t.Errorf("got %s %s, want the lead's tab workspace:2 surface:22", ws, surface)
+	}
+	want := "send --workspace workspace:2 --surface surface:22 -- clear && cd '/Users/o/Projects/quotes/src' && aitch launch claude -- " +
+		`--model claude-opus-5-5 --permission-mode bypassPermissions --settings '{"autoCompactWindow":300000}' -n 'quotes · lead' --resume ` + resumeID
+	if got := f.called("send "); len(got) != 1 || got[0] != want {
+		t.Errorf("typed %q,\nwant %q", got, want)
+	}
+	if got := f.called("ps "); len(got) != 1 || got[0] != "ps ttys009" {
+		t.Errorf("front checked on %q, want the tab's tty", got)
+	}
+	if got := f.called("new-"); len(got) != 0 {
+		t.Errorf("made %q, want the old tab used", got)
+	}
+}
+
+// Brief 10-22 item 5: after a reboot the tab is gone; the role comes back in a new tab of its project's workspace,
+// named as before.
+func TestResumeOpensANewTabWhenTheTabIsGone(t *testing.T) {
+	f := &fake{trees: []string{tree}}
+	ws, surface, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/quotes", f.deps())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ws != "workspace:2" || surface != "surface:99" {
+		t.Errorf("got %s %s, want a new tab in Quotes", ws, surface)
+	}
+	if got := f.called("new-surface "); len(got) != 1 || !strings.Contains(got[0], "--working-directory /Users/o/Projects/quotes ") ||
+		!strings.HasSuffix(got[0], "-n 'quotes · lead' --resume "+resumeID) {
+		t.Errorf("new-surface %q", got)
+	}
+	if got := f.called("rename-tab "); len(got) != 1 || !strings.HasSuffix(got[0], "-- quotes · lead") {
+		t.Errorf("rename-tab %q", got)
+	}
+}
+
+// A role whose tab still runs Claude is not started twice.
+func TestResumeLeavesARunningClaudeAlone(t *testing.T) {
+	f := &fake{trees: []string{treeWith("quotes · lead")}, front: "claude"}
+	_, _, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/quotes", f.deps())
+	if err == nil || !strings.Contains(err.Error(), "runs claude") {
+		t.Fatalf("err %v, want refused", err)
+	}
+	if got := f.called("send"); len(got) != 0 {
+		t.Errorf("typed %q", got)
+	}
+}
+
+// The id and the folder are typed into a shell: anything but a session id, or a folder that could end the quotes, is
+// refused before cmux is called.
+func TestResumeRefusesWhatCouldBreakTheShellLine(t *testing.T) {
+	for name, c := range map[string][2]string{
+		"id":       {"x; rm -rf ~", "/Users/o/Projects/quotes"},
+		"quote":    {resumeID, "/Users/o/it's"},
+		"none":     {resumeID, ""},
+		"relative": {resumeID, "quotes"},
+	} {
+		f := &fake{trees: []string{treeWith("quotes · lead")}}
+		if _, _, err := Resume("quotes", "lead", c[0], c[1], f.deps()); err == nil {
+			t.Errorf("%s: no error", name)
+		}
+		if len(f.calls) != 0 {
+			t.Errorf("%s: called %q", name, f.calls)
+		}
+	}
+}
+
+// Live risk: aitch may start claude on another account folder, where the id names no conversation; claude exits, and
+// that must fail loudly with what the screen said.
+func TestResumeFailsLoudlyWhenNoConversationIsFound(t *testing.T) {
+	f := &fake{trees: []string{treeWith("quotes · lead")}, noConv: true}
+	_, _, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/quotes", f.deps())
+	if err == nil || !strings.Contains(err.Error(), "No conversation found") {
+		t.Fatalf("err %v, want the screen's words", err)
+	}
+}
+
+// Review 10-22 (item 5): a resumed session whose own screen quotes the failure (a crius session discussing this very
+// check) has its input box up: it resumed, and is not reported failed.
+func TestResumeWithTheFailureWordsOnAnUpScreenSucceeds(t *testing.T) {
+	f := &fake{trees: []string{treeWith("quotes · lead")}, tip: "  grep for: No conversation found with session ID"}
+	if _, _, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/quotes", f.deps()); err != nil {
+		t.Fatalf("err %v, want resumed", err)
 	}
 }

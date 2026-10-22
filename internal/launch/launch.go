@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"syscall"
@@ -42,6 +43,8 @@ var (
 	workspaceRe = regexp.MustCompile(`workspace (workspace:\d+) "(.*?)"`)
 	paneRe      = regexp.MustCompile(`pane (pane:\d+)`)
 	surfaceRe   = regexp.MustCompile(`surface (surface:\d+)`)
+	tabRe       = regexp.MustCompile(`surface (surface:\d+) \[terminal\] "(.*)".*? tty=(\S+)`)
+	idRe        = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`) // a Claude Code session id
 	okRe        = regexp.MustCompile(`^OK ((?:surface|workspace):\d+)`)
 	optionRe    = regexp.MustCompile(`^❯?\s*(?:\d+\.\s+)?`)
 	modelRe     = regexp.MustCompile(`\b(?:Opus|Sonnet|Haiku|Fable) \d+(?:\.\d+)?\b`)
@@ -55,6 +58,7 @@ type Deps struct {
 	Cmux  func(args ...string) (string, error)
 	Place func(project string) (cwd, account, persona string, err error) // from projects.toml
 	Wait  time.Duration                                                  // between two reads of the new tab
+	Front func(tty string) (string, error)                               // the command in front on a tty, as ps shows it
 }
 
 // Spawn is one session to open: Parent (the leader's session id) and Item ("quotes#41") go in the provenance tag when
@@ -90,31 +94,10 @@ func Run(s Spawn, d Deps) (ws, surface, tag string, err error) {
 	if account != "max" && account != "enterprise" {
 		return "", "", "", fmt.Errorf("bad account %q: want max or enterprise", account)
 	}
-	look, table := looks[s.Project]
-	if !table {
-		palette := groups[persona]
-		if palette == nil {
-			return "", "", "", fmt.Errorf("project %s has persona %q in projects.toml: want work or personal to pick its colour", s.Project, persona)
-		}
-		h := fnv.New32a()
-		h.Write([]byte(s.Project))
-		look.name, look.color = strings.ToUpper(s.Project[:1])+s.Project[1:], palette[h.Sum32()%uint32(len(palette))]
-	}
-	name := s.Project + " · " + s.Role
-	model := "claude-opus-5-5"
-	if sonnetRoles.MatchString(s.Role) {
-		model = "claude-sonnet-5-5"
-	}
-	// Through aitch, never bare claude: cmux's shell wraps claude and skips aitch's quota route (SKILL.md §5).
-	cmd := "aitch launch claude -- --model " + model +
-		` --permission-mode bypassPermissions --settings '{"autoCompactWindow":300000}' -n '` + name + `'`
-
-	ws, surface, err = open(d, look.name, look.color, table, cwd, cmd)
+	name, model, cmd := command(s.Project, s.Role)
+	ws, surface, err = tab(d, s.Project, persona, name, cwd, cmd)
 	if err != nil {
 		return "", "", "", err
-	}
-	if out, err := d.Cmux("rename-tab", "--workspace", ws, "--surface", surface, "--", name); err != nil {
-		return "", "", "", fmt.Errorf("cmux rename-tab: %v: %s", err, out)
 	}
 	tag = "[crius account=" + account + " project=" + s.Project + " role=" + s.Role
 	if s.Parent != "" {
@@ -128,6 +111,122 @@ func Run(s Spawn, d Deps) (ws, surface, tag string, err error) {
 		return "", "", "", fmt.Errorf("%s in %s %s: %v", name, ws, surface, err)
 	}
 	return ws, surface, tag, nil
+}
+
+// command gives a role's tab name, its model, and the shell line that starts Claude for it.
+func command(project, role string) (name, model, cmd string) {
+	name = project + " · " + role
+	model = "claude-opus-5-5"
+	if sonnetRoles.MatchString(role) {
+		model = "claude-sonnet-5-5"
+	}
+	// Through aitch, never bare claude: cmux's shell wraps claude and skips aitch's quota route (SKILL.md §5).
+	cmd = "aitch launch claude -- --model " + model +
+		` --permission-mode bypassPermissions --settings '{"autoCompactWindow":300000}' -n '` + name + `'`
+	return name, model, cmd
+}
+
+// tab opens a new tab running cmd in the project's workspace, coloured by its look, and names it.
+func tab(d Deps, project, persona, name, cwd, cmd string) (ws, surface string, err error) {
+	look, table := looks[project]
+	if !table {
+		palette := groups[persona]
+		if palette == nil {
+			return "", "", fmt.Errorf("project %s has persona %q in projects.toml: want work or personal to pick its colour", project, persona)
+		}
+		h := fnv.New32a()
+		h.Write([]byte(project))
+		look.name, look.color = strings.ToUpper(project[:1])+project[1:], palette[h.Sum32()%uint32(len(palette))]
+	}
+	if ws, surface, err = open(d, look.name, look.color, table, cwd, cmd); err != nil {
+		return "", "", err
+	}
+	if out, err := d.Cmux("rename-tab", "--workspace", ws, "--surface", surface, "--", name); err != nil {
+		return "", "", fmt.Errorf("cmux rename-tab: %v: %s", err, out)
+	}
+	return ws, surface, nil
+}
+
+// Resume brings a role's session back after a crash or a reboot: claude --resume <id> in the session's own folder,
+// typed into the role's tab when the tab is still there with a shell in front (a crash), else in a new tab of the
+// project's workspace named as before (a reboot). A tab with anything else in front, Claude itself, is left alone. It
+// waits for Claude's input box, so a resume that finds no conversation fails with what the screen said.
+func Resume(project, role, id, cwd string, d Deps) (ws, surface string, err error) {
+	switch {
+	case !slugRe.MatchString(project) || !slugRe.MatchString(role):
+		return "", "", fmt.Errorf("bad project %q or role %q: want lowercase letters, digits and dashes", project, role)
+	case !idRe.MatchString(id): // typed into a shell
+		return "", "", fmt.Errorf("bad session id %q", id)
+	case !filepath.IsAbs(cwd) || strings.ContainsAny(cwd, `'\`) || strings.IndexFunc(cwd, func(r rune) bool { return !unicode.IsPrint(r) }) >= 0:
+		return "", "", fmt.Errorf("bad folder %q: want an absolute path with no quote, backslash or control character", cwd)
+	}
+	name, _, cmd := command(project, role)
+	cmd += " --resume " + id
+	tree, err := d.Cmux("tree", "--all")
+	if err != nil {
+		return "", "", fmt.Errorf("cmux tree: %v", err)
+	}
+	ws, surface, tty, err := named(tree, name)
+	if err != nil {
+		return "", "", err
+	}
+	if surface != "" {
+		front, err := d.Front(tty)
+		if err != nil {
+			return "", "", err
+		}
+		if !shells[filepath.Base(strings.TrimPrefix(front, "-"))] {
+			return "", "", fmt.Errorf("%s (%s %s) runs %s in front, not a shell: left alone", name, ws, surface, front)
+		}
+		// clear first: the dead Claude's last screen may still show an input box, which the wait below would take for
+		// the new one.
+		for _, step := range [][]string{{"send", "--", "clear && cd '" + cwd + "' && " + cmd}, {"send-key", "enter"}} {
+			if out, err := d.Cmux(append([]string{step[0], "--workspace", ws, "--surface", surface}, step[1:]...)...); err != nil {
+				return "", "", fmt.Errorf("cmux %s: %v: %s", step[0], err, out)
+			}
+		}
+	} else {
+		_, _, persona, err := d.Place(project)
+		if err != nil {
+			return "", "", err
+		}
+		if ws, surface, err = tab(d, project, persona, name, cwd, cmd); err != nil {
+			return "", "", err
+		}
+	}
+	failed := false
+	err = until(d, ws, surface, "Claude's input box", func(screen string) bool {
+		_, boxed := wakewatch.Prompt(screen)
+		failed = !boxed && strings.Contains(screen, "No conversation found") // an up screen may quote the words
+		return boxed || failed
+	})
+	if err == nil && failed {
+		screen, _ := read(d, ws, surface)
+		err = fmt.Errorf("claude --resume %s: the screen ends: %s", id, tail(screen))
+	}
+	if err != nil {
+		return "", "", fmt.Errorf("%s in %s %s: %v", name, ws, surface, err)
+	}
+	return ws, surface, nil
+}
+
+// shells are what may be in front of a tab whose Claude has ended.
+var shells = map[string]bool{"zsh": true, "bash": true, "sh": true, "fish": true}
+
+// named gives the one terminal tab titled name, its workspace and its tty, or no surface when there is none.
+func named(tree, name string) (ws, surface, tty string, err error) {
+	var w string
+	for _, line := range strings.Split(tree, "\n") {
+		if m := workspaceRe.FindStringSubmatch(line); m != nil {
+			w = m[1]
+		} else if m := tabRe.FindStringSubmatch(line); m != nil && m[2] == name {
+			if surface != "" {
+				return "", "", "", fmt.Errorf("two tabs are titled %q (%s, %s): rename one", name, surface, m[1])
+			}
+			ws, surface, tty = w, m[1], m[3]
+		}
+	}
+	return ws, surface, tty, nil
 }
 
 // open finds or makes the workspace under the lock, adds the tab and colours the workspace: always for a project in
