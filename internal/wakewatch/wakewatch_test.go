@@ -455,18 +455,68 @@ func TestOnlyALineFromTheLeadItselfResetsIdle(t *testing.T) {
 	}
 }
 
-func TestOnlyLeadTabsWithABusAreCheckedForIdle(t *testing.T) {
+func TestOnlyTabsWithABusAreCheckedForIdle(t *testing.T) {
 	home := setup(t, map[string]string{"quotes.log": busFrom("quotes:lead", t0)})
 	f := &fake{}
 	runAt(t, home, f, func(at time.Time) []Screen {
 		return []Screen{
-			screen("quotes · qa", tab("quotes · qa", "checked", "", at)),
 			{Surface: "surface:8", Title: "first-order · lead", Text: tab("first-order · lead", "done", "", at)},
 			{Surface: "surface:9", Title: "zsh", Text: "~ % \n"},
 		}
 	}, 0, 16, 30)
 	if len(f.sent) != 0 {
 		t.Fatal(f.sent)
+	}
+}
+
+// Crius 10-22 12:09 ORDER: Quotes builders sat idle after a turn with nothing running (10:33: 6 of 8 since 06:36-09:56;
+// 12:09: P3 since its READY at 12:00), and only Crius's own round found them. Any tab of a watched team counts, after
+// 20 min. Builders post as "P3", not "quotes:p3", so their screen alone tells how long they have sat.
+func TestAnIdleBuilderAlertsAfter20Min(t *testing.T) {
+	for _, c := range []struct{ title, bus, reply string }{
+		{"quotes · p6", stamp(t0.Add(-4*time.Hour)) + " READY P6 -> quotes:lead — F-226 on stream/l1\n", "Waiting for another stream on main.\n\n⏳"},
+		{"quotes · p3", stamp(t0) + " READY P3 -> quotes:lead — F-141 on stream/d\n", "READY posted; QA2 checks it next.\n\n⏳"},
+		{"quotes · qa1", busFrom("quotes:lead", t0), "J1 passed on main.\n\n✅"},
+	} {
+		home := setup(t, map[string]string{"quotes.log": c.bus})
+		f := &fake{}
+		draw := func(at time.Time) []Screen { return []Screen{screen(c.title, tab(c.title, c.reply, "", at))} }
+		runAt(t, home, f, draw, 0, 10, 19)
+		if len(f.sent) != 0 {
+			t.Fatal(c.title, "alerted before 20 min:", f.sent)
+		}
+		runAt(t, home, f, draw, 21, 30)
+		who := strings.Replace(c.title, " · ", ":", 1)
+		if len(f.sent) != 1 || !strings.Contains(f.sent[0], who+" (tab") || !strings.Contains(f.sent[0], "is idle") {
+			t.Fatal(c.title, f.sent)
+		}
+	}
+}
+
+func TestABusyBuilderIsNotIdle(t *testing.T) {
+	for _, footer := range []string{
+		"  ⏵⏵ bypass permissions on · 1 shell\n",
+		"  ⏵⏵ bypass permissions on · 2 background tasks\n",
+		"  ⏵⏵ bypass permissions on · 1 agent\n",
+		"  ⏵⏵ bypass permissions on\n\n  ⏺ main\n  ◯ general-purpose  Writing docs/briefs/README.md      7m 11s\n",
+	} {
+		home := setup(t, map[string]string{"quotes.log": busFrom("quotes:lead", t0)})
+		f := &fake{}
+		runAt(t, home, f, func(at time.Time) []Screen {
+			return []Screen{screen("quotes · p3", tab("quotes · p3", "Waiting for QA2.\n\n⏳", footer, at))}
+		}, 0, 21, 40)
+		if len(f.sent) != 0 {
+			t.Fatal(footer, f.sent)
+		}
+	}
+	// The same tab with nothing under its box does alert, so the cases above are quiet for their footer alone.
+	home := setup(t, map[string]string{"quotes.log": busFrom("quotes:lead", t0)})
+	f := &fake{}
+	runAt(t, home, f, func(at time.Time) []Screen {
+		return []Screen{screen("quotes · p3", tab("quotes · p3", "Waiting for QA2.\n\n⏳", "  ⏵⏵ bypass permissions on\n", at))}
+	}, 0, 21, 40)
+	if len(f.sent) != 1 {
+		t.Fatal("positive control:", f.sent)
 	}
 }
 
