@@ -21,6 +21,7 @@ func stamp(t time.Time) string { return t.Format("2006-01-02T15:04") }
 type fake struct {
 	sent    []string
 	sendErr error
+	tried   []string // every text given to Send, sent or not
 	screens []Screen
 	scrErr  error
 	freeGB  float64 // free disk; 0 means a healthy 100
@@ -49,6 +50,7 @@ func (f *fake) deps(home string, now time.Time) Deps {
 			return f.freeGB, f.swapGB, f.resErr
 		},
 		Send: func(text string) error {
+			f.tried = append(f.tried, text)
 			if f.sendErr != nil {
 				return f.sendErr
 			}
@@ -341,7 +343,7 @@ func TestTheLastEmojiOnALineDecides(t *testing.T) {
 // A secret in an over-long alert is redacted before the cut: a cut just before "@" would leave the password bare.
 func TestALongAlertIsRedactedBeforeItIsCut(t *testing.T) {
 	head := stamp(t0) + " DONE quotes:lead -> crius:lead — "
-	pad := strings.Repeat("x", maxLine-len([]rune("quotes.log: "+head+"postgres://user:hunter2")))
+	pad := strings.Repeat("x", MaxLine-len([]rune("quotes.log: "+head+"postgres://user:hunter2")))
 	home := setup(t, map[string]string{"quotes.log": head + pad + "postgres://user:hunter2@db.internal/app tail\n"})
 	f := &fake{}
 	if err := Run(f.deps(home, t0.Add(21*time.Minute))); err != nil || len(f.sent) != 1 {
@@ -664,7 +666,7 @@ func TestEachAlertIsOneLineForCriusTab(t *testing.T) {
 		t.Fatal(f.sent)
 	}
 	for _, m := range f.sent {
-		if !strings.HasPrefix(m, "WAKEWATCH: ") || strings.ContainsAny(m, "\\\n\r\t") || len([]rune(m)) > len("WAKEWATCH: ")+maxLine+1 {
+		if !strings.HasPrefix(m, "WAKEWATCH: ") || strings.ContainsAny(m, "\\\n\r\t") || len([]rune(m)) > len("WAKEWATCH: ")+MaxLine+1 {
 			t.Errorf("%q", m)
 		}
 		for _, r := range m {
@@ -1305,5 +1307,19 @@ func TestABadModeOrAFailedStateReadIsLoud(t *testing.T) {
 		if c.want == "" && len(f.sent) != 0 || c.want != "" && (len(f.sent) != 1 || !strings.Contains(f.sent[0], c.want)) {
 			t.Errorf("%s: %q", name, f.sent)
 		}
+	}
+}
+
+// OpenRig parts item 4: Send stores each message before it types it, so every alert of a run goes to Send even after
+// one failed (a draft holds them all); each is stored and typed once the box is empty, and still goes on the bus.
+func TestEveryAlertGoesToSendAfterAFailure(t *testing.T) {
+	second := stamp(t0) + " DONE quotes:p3 -> crius:lead — F-275 · 9a1b2c3 · suite 88 OK\n"
+	home := setup(t, map[string]string{"quotes.log": done(t0) + second})
+	f := &fake{sendErr: errors.New("Crius's prompt holds a draft (\"owner\"): held")}
+	if err := Run(f.deps(home, t0.Add(21*time.Minute))); err == nil {
+		t.Fatal("no error")
+	}
+	if len(f.tried) != 2 {
+		t.Fatalf("Send got %d alerts, want both: %q", len(f.tried), f.tried)
 	}
 }

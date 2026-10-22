@@ -47,11 +47,11 @@ Goal: build the Crius record (design §9 steps 1-9) so Crius answers the owner's
 - [ ] 9 Falcon source
 - [x] O1 OpenRig lessons doc (docs/notes/OPENRIG-LESSONS.md) · 23165f5, VERIFIED bus 14:47
 - [x] O2 crius-hook writes a state file per session · 6268b49, VERIFIED bus 15:32, live (owner OK) 15:33
-- [ ] O3 wakewatch and promptwatch read session state first, screen as fallback: pushed (sha in the DONE line), waiting for Crius to verify; promptwatch change in ~/.crius/state/crius/proposals/o3-readers/; both stay observe-only until ~/.crius/wakewatch-mode says decide
-- [ ] O4 messages stored, held while the box has typed text, retried until delivered
+- [x] O3 wakewatch and promptwatch read session state first, screen as fallback · f095f7c, VERIFIED bus 16:03, installed observe-only until ~/.crius/wakewatch-mode says decide
+- [ ] O4 messages stored (~/.crius/outbox), held while the box has typed text, retried until delivered (crius-say; wakewatch alerts): pushed (sha in the DONE line), waiting for Crius to verify
 - [ ] O5 crius-spawn --resume <project> <role> by session id
-Done: 64% (9 of 14 required rows: 1-5, 4b, 3b, 6, 9, O1-O5, equal weight; 7 and 8 only if needed)
-Next: O3 verify, then O4, O5 (owner brief 10-22 14:27); crius#P7 build items and their P3 follow-ups done (64848d1, VERIFIED 04:07); step 6 P7 descriptive read on 10-23 (after the 10-22 02:00 reset); P3b open
+Done: 71% (10 of 14 required rows: 1-5, 4b, 3b, 6, 9, O1-O5, equal weight; 7 and 8 only if needed)
+Next: O4 verify, then O5 (owner brief 10-22 14:27); crius#P7 build items and their P3 follow-ups done (64848d1, VERIFIED 04:07); step 6 P7 descriptive read on 10-23 (after the 10-22 02:00 reset); P3b open
 Needs owner: OK to install hook (a) no-ai-attribution.py from ~/.crius/state/crius/proposals/p7-3/ (58/58 tests); after the observe day, ~/.crius/wakewatch-mode = decide (O3), brought by Crius
 
 ## NOW
@@ -90,6 +90,7 @@ OpenRig parts (brief ~/.crius/state/crius/BRIEF-openrig-parts-2026-10-22.md; O1-
 - [ ] OF5 crius-hook takes the session name from the first live Claude status file with its session id; a reused pid on a stale file can give an old name. Prefer the hook's parent pid.
 - [ ] OF6 wakewatch: the state log repeats an open disagreement after a run whose screen or session read failed, and writes no line when a disagreeing tab goes away; the first run after start reads all of crius-hook.log for one line; wakewatch-state.log and promptwatch-state.log are not rotated (O3 re-review 10-22).
 - [ ] OF7 sessions(): a stale ~/.claude*/sessions/<pid>.json whose pid now belongs to another process counts as live, so its last state (even "waiting") speaks for its tab. Check the process is claude and started before the file.
+- [ ] OF8 outbox (O4 reviews 10-22): a caller that resends after exit 3, or a wakewatch alert sent again, is stored twice (no dedupe); a held alert can reach Crius twice within MaxAge; the check after Enter can pass falsely on a redraw; waitBox holds the lock up to 10 min, slowing wakewatch; a failed move to dropped/ is posted again each minute; one unreadable file fails a whole Send; .tmp leftovers and no directory fsync; a failed unmark whose second write also fails leaves Entered on disk. From round 4: a Send can report an older message typed onto text as its own (exit code right, text wrong); a sent message whose text shows up inside a new owner draft is reported as "may not have gone"; flushOutbox stops posting the remaining set-aside entries when one bus post fails; Message.Tries is written but never read; at install delete the old ~/.crius/state/wakewatch-pending by hand. From round 5: a grey suggestion equal to the message hides a cmux send that exited 0 but typed nothing (counted as sent); when both the typed-onto mark and the move to dropped/ fail, the message stays stored unmarked and can be typed onto the same text again (named each run).
 
 ## Waiting on
 

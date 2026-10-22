@@ -44,7 +44,7 @@ const (
 	freshAfter  = 20 * time.Minute // a lead's DONE with no new session of that lead this long wakes Crius
 	minFreeGB   = 20               // less free disk than this wakes Crius
 	maxSwapGB   = 20               // more swap in use than this wakes Crius
-	maxLine     = 500
+	MaxLine     = 500
 
 	Prefix        = "WAKEWATCH: "
 	CriusTitle    = "crius" // the cmux title of Crius's own tab: waiting() skips it, and alerts are typed into it
@@ -168,24 +168,20 @@ func Run(d Deps) error {
 		if last, ok := st.Alerted[a[0]]; ok && d.Now.Sub(last) < resend {
 			continue
 		}
-		// Redact first: a cut could split a secret so the redactor no longer sees it, and redaction can grow the text.
-		// The line is typed: cmux send reads a backslash-n or -r as Enter, so no backslash and no line break reach it.
-		text, _ := redact.Redact(a[1])
-		// cmux reads \n as Enter, and control bytes (Ctrl-U, Esc) would edit Crius's prompt: neither may pass.
-		text = strings.Join(strings.Fields(strings.Map(printable, text)), " ")
-		if r := []rune(text); len(r) > maxLine {
-			text = string(r[:maxLine]) + "…"
-		}
-		if sendErr == nil {
-			tried = true
-			if sendErr = d.Send(Prefix + text); sendErr != nil && !st.SendFailing {
-				if err := watchdog.Post(d.Home, d.Now, "wakewatch cannot reach Crius's tab: "+sendErr.Error()); err != nil {
-					return err
-				}
+		// Send stores the line before it types it, so it gets every alert: one it holds is typed on a later run.
+		tried = true
+		text := Clean(a[1])
+		err := d.Send(Prefix + text)
+		if err != nil && sendErr == nil && !st.SendFailing {
+			if err := watchdog.Post(d.Home, d.Now, "wakewatch cannot reach Crius's tab: "+err.Error()); err != nil {
+				return err
 			}
 		}
+		if err != nil {
+			sendErr = err
+		}
 		// Crius's waiter wakes on a bus line: a wake that cannot be typed goes there, so none is lost (S2, 10-22).
-		if sendErr != nil {
+		if err != nil {
 			if err := watchdog.Post(d.Home, d.Now, text); err != nil {
 				return err
 			}
@@ -574,6 +570,19 @@ func tools(d Deps) [][2]string {
 
 func screenKey(surface, hash string) string { return "screen:" + surface + ":" + hash }
 func idleKey(surface, hash string) string   { return "idle:" + surface + ":" + hash }
+
+// Clean makes text safe to type into a Claude prompt as one line: secrets redacted, one line, at most MaxLine runes.
+func Clean(s string) string {
+	// Redact first: a cut could split a secret so the redactor no longer sees it, and redaction can grow the text.
+	// The line is typed: cmux send reads a backslash-n or -r as Enter, so no backslash and no line break reach it.
+	text, _ := redact.Redact(s)
+	// cmux reads \n as Enter, and control bytes (Ctrl-U, Esc) would edit Crius's prompt: neither may pass.
+	text = strings.Join(strings.Fields(strings.Map(printable, text)), " ")
+	if r := []rune(text); len(r) > MaxLine {
+		text = string(r[:MaxLine]) + "…"
+	}
+	return text
+}
 
 func printable(r rune) rune {
 	if r == '\\' {

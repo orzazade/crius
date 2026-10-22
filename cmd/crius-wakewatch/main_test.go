@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/orzazade/crius/internal/outbox"
 	"github.com/orzazade/crius/internal/wakewatch"
 	"os"
 	"path/filepath"
@@ -19,11 +21,13 @@ func fakeCmux(t *testing.T) (log string) {
 }
 
 // fakeTab puts a fake cmux and ps on PATH. cmux logs every call but its reads (tree, read-screen) and acts like the
-// real one: the JSON tree (dir/tree.json) shows Crius's tab, titled "crius", on ttys015; read-screen prints dir/screen if there is
-// one, else a Claude input box holding dir/draft (one read late if dir/lag exists, as Claude redraws after a key;
-// an empty box shows Claude's queued-messages hint if dir/queued exists); send refuses over a draft, else types into it (plus dir/extra, if
-// any: someone typing at the same time); send-key enter sends the draft (fails if dir/enterfail exists). ps on
-// ttys015 prints dir/front (Claude in front) and on another tty dir/front-<tty>.
+// real one: the JSON tree (dir/tree.json) shows Crius's tab, titled "crius", on ttys015; read-screen prints
+// dir/screen if there is one, else a Claude input box holding dir/draft (one read late if dir/lag exists, as Claude redraws after a key;
+// an empty box shows Claude's queued-messages hint if dir/queued exists, or grey text dir/ghost, which read-screen
+// shows plain as cmux does); rpc surface.input_state says draft or empty as dir/draft holds text or not (cmux reads
+// the style, so grey text is empty); send refuses over a draft (not over grey text), else types into it (plus
+// dir/extra, if any: someone typing at the same time); send-key enter sends the draft (fails if dir/enterfail exists).
+// ps on ttys015 prints dir/front (Claude in front) and on another tty dir/front-<tty>.
 func fakeTab(t *testing.T) (log, dir string) {
 	dir = t.TempDir()
 	log = filepath.Join(dir, "calls")
@@ -33,8 +37,11 @@ func fakeTab(t *testing.T) (log, dir string) {
 		"read-screen) if [ -f " + f("screen") + " ]; then cat " + f("screen") + "; exit 0; fi\n  src=" + f("draft") +
 		"; [ -f " + f("lag") + " ] && [ -f " + f("shown") + " ] && src=" + f("shown") + "\n" +
 		"  box=$(cat $src); [ -z \"$box\" ] && [ -f " + f("queued") + " ] && box='Press up to edit queued messages'\n" +
+		"  [ -z \"$box\" ] && [ -f " + f("ghost") + " ] && box=$(cat " + f("ghost") + ")\n" +
 		"  printf '⏺ done.\\n──────────────\\n❯ %s\\n──────────────\\n  quota: 7d 97%%\\n' \"$box\"\n" +
-		"  [ -f " + f("lag") + " ] && cp " + f("draft") + " " + f("shown") + "; exit 0 ;;\nesac\n" +
+		"  [ -f " + f("lag") + " ] && cp " + f("draft") + " " + f("shown") + "; exit 0 ;;\n" +
+		"rpc) state=empty; [ -s " + f("draft") + " ] && state=draft\n" +
+		"  printf '{\"surface_id\":\"%s\",\"state\":\"%s\"}' \"$(printf %s \"$3\" | sed 's/.*\"surface_id\":\"\\([^\"]*\\)\".*/\\1/')\" $state; exit 0 ;;\nesac\n" +
 		"for a in \"$@\"; do printf '[%s]' \"$a\" >> " + log + "; last=$a; done\necho >> " + log + "\n" +
 		"case \"$1\" in\nsend) [ -s " + f("draft") + " ] && { echo 'Error: the prompt holds a draft' >&2; exit 1; }\n" +
 		"  printf '%s' \"$last\" > " + f("draft") + "; cat " + f("extra") + " >> " + f("draft") + " 2>/dev/null ;;\n" +
@@ -64,8 +71,8 @@ func fakeTab(t *testing.T) (log, dir string) {
 func treeJSON(ws map[string][3]string) string {
 	var out []string
 	for w, s := range ws {
-		out = append(out, fmt.Sprintf(`{"ref":%q,"panes":[{"ref":"pane:1","surfaces":[{"ref":%q,"title":%q,"tty":%q,"type":"terminal"}]}]}`,
-			w, s[0], s[1], s[2]))
+		out = append(out, fmt.Sprintf(`{"ref":%q,"panes":[{"ref":"pane:1","surfaces":[{"ref":%q,"id":%q,"title":%q,"tty":%q,"type":"terminal"}]}]}`,
+			w, s[0], "ID-"+s[0], s[1], s[2]))
 	}
 	return `{"active":{},"windows":[{"ref":"window:1","workspaces":[` + strings.Join(out, ",") + `]}]}`
 }
@@ -86,9 +93,9 @@ func TestSendTypesTheLineIntoCriusTab(t *testing.T) {
 
 // One tab that cannot be read must not hide the others.
 func TestOneFailedTabReadKeepsTheOthers(t *testing.T) {
-	real := cmux
-	t.Cleanup(func() { cmux = real })
-	cmux = func(args ...string) ([]byte, error) {
+	real := outbox.Cmux
+	t.Cleanup(func() { outbox.Cmux = real })
+	outbox.Cmux = func(args ...string) ([]byte, error) {
 		switch {
 		case args[0] == "--json":
 			return []byte(treeJSON(map[string][3]string{"workspace:1": {"surface:1", "quotes · lead", "ttys001"},
@@ -153,31 +160,61 @@ func TestSendTypesOnlyWhenClaudeIsInFront(t *testing.T) {
 	}
 }
 
+// stored gives the texts in the outbox, oldest first.
+func stored(t *testing.T) []string {
+	paths, _ := filepath.Glob(filepath.Join(os.Getenv("CRIUS_HOME"), "outbox", "*.json"))
+	var out []string
+	for _, p := range paths {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var m outbox.Message
+		if err := json.Unmarshal(b, &m); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, m.Text)
+	}
+	return out
+}
+
+// hold puts a message for Crius's tab in the outbox, older than any send makes.
+func hold(t *testing.T, text string) {
+	dir := filepath.Join(os.Getenv("CRIUS_HOME"), "outbox")
+	b, _ := json.Marshal(outbox.Message{To: wakewatch.CriusTitle, Text: text, Created: time.Now()})
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "00000000000000000001-test.json"), b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // Review of 91854cf, P2: a line typed but not sent (Enter failed) blocks every later cmux send (it refuses over a
-// draft). Our own line left in the prompt gets Enter first. Review of 4a0333e, P2: only when the whole draft is the
-// line wakewatch typed (kept in state/wakewatch-pending); a draft the owner edited or wrote is left alone.
+// draft). Our own line left in the prompt gets Enter first. Review of 4a0333e, P2: only when the whole draft is a line
+// wakewatch stored (now in the outbox); a draft the owner edited or wrote is left as it is, and the alert is held.
 func TestSendFinishesItsOwnStuckLine(t *testing.T) {
 	enter := "[send-key][--workspace][workspace:1000020000][--surface][surface:1000020029][enter]\n[send]"
 	older := "WAKEWATCH: quotes.log: an older alert about the DONE line of quotes:lead"
-	for name, c := range map[string]struct{ pending, draft, want string }{
+	for name, c := range map[string]struct{ stored, draft, want string }{
 		"ours":               {older, older, enter},
 		"ours, wrapped":      {older, "WAKEWATCH: quotes.log: an older alert\n  about the DONE line of quotes:lead", enter},
 		"owner added a line": {older, older + "\n  Before doing anything, wait for my", ""},
 		"owner changed it":   {older, "WAKEWATCH: quotes.log: an older alert", ""},
-		"no pending line":    {"", older, ""},
+		"nothing stored":     {"", older, ""},
 		"owner is typing":    {older, "owner is typing here", ""},
 	} {
 		log, dir := fakeTab(t)
 		os.WriteFile(filepath.Join(dir, "draft"), []byte(c.draft), 0o644)
-		if c.pending != "" {
-			os.MkdirAll(filepath.Join(os.Getenv("CRIUS_HOME"), "state"), 0o700)
-			os.WriteFile(filepath.Join(os.Getenv("CRIUS_HOME"), "state", "wakewatch-pending"), []byte(c.pending), 0o600)
+		if c.stored != "" {
+			hold(t, c.stored)
 		}
 		err := send("WAKEWATCH: new")
 		b, _ := os.ReadFile(log)
-		if c.want == "" { // a draft that is not ours: nothing typed, and loud
-			if len(b) != 0 || err == nil || !strings.Contains(err.Error(), "draft") {
-				t.Errorf("%s: err %v, calls\n%s", name, err, b)
+		if c.want == "" { // a draft that is not ours: kept, no Enter, and loud
+			got, _ := os.ReadFile(filepath.Join(dir, "draft"))
+			if string(got) != c.draft || strings.Contains(string(b), "[send-key]") || err == nil || !strings.Contains(err.Error(), "draft") {
+				t.Errorf("%s: err %v, draft %q, calls\n%s", name, err, got, b)
 			}
 		} else if !strings.HasPrefix(string(b), c.want) || err != nil {
 			t.Errorf("%s: err %v, calls\n%s", name, err, b)
@@ -185,22 +222,21 @@ func TestSendFinishesItsOwnStuckLine(t *testing.T) {
 	}
 }
 
-// The pending line stays while its Enter has not gone through, and is gone once it has.
+// A line stays stored while its Enter has not gone through, and is gone once it has.
 func TestSendKeepsItsLineUntilEnterWorks(t *testing.T) {
 	_, dir := fakeTab(t)
-	pending := filepath.Join(os.Getenv("CRIUS_HOME"), "state", "wakewatch-pending")
 	if err := send("WAKEWATCH: one"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(pending); !os.IsNotExist(err) {
-		t.Fatalf("pending after a good send: %v", err)
+	if got := stored(t); len(got) != 0 {
+		t.Fatalf("stored after a good send: %q", got)
 	}
 	os.WriteFile(filepath.Join(dir, "enterfail"), nil, 0o644)
 	if err := send("WAKEWATCH: two"); err == nil {
 		t.Fatal("a failed Enter gave no error")
 	}
-	if got, _ := os.ReadFile(pending); string(got) != "WAKEWATCH: two" {
-		t.Fatalf("pending %q", got)
+	if got := stored(t); fmt.Sprint(got) != "[WAKEWATCH: two]" {
+		t.Fatalf("stored %q", got)
 	}
 }
 
@@ -325,19 +361,33 @@ func TestSendTypesOnlyIntoClaudeInputBox(t *testing.T) {
 }
 
 // Review of ea0867e, P2: if someone types while wakewatch types, Enter would send the mix. Enter goes only when the
-// box holds exactly the alert; otherwise it is loud and the line stays pending.
+// box holds exactly the alert; otherwise it is loud. Review 10-22: the alert is already in the box, so it is never typed
+// again onto the same words. Re-review 10-22: it is set aside by the next run, which posts it to the bus.
 func TestSendPressesEnterOnlyOnItsOwnText(t *testing.T) {
 	log, dir := fakeTab(t)
 	os.WriteFile(filepath.Join(dir, "extra"), []byte(" and the owner's words"), 0o644)
 	err := send("WAKEWATCH: x")
-	if err == nil || !strings.Contains(err.Error(), "Enter not pressed") {
+	if err == nil || !strings.Contains(err.Error(), "typed onto other text") {
 		t.Fatalf("%v", err)
 	}
 	if b, _ := os.ReadFile(log); strings.Contains(string(b), "[send-key]") {
 		t.Fatalf("Enter pressed on a mixed draft:\n%s", b)
 	}
-	if got, _ := os.ReadFile(filepath.Join(os.Getenv("CRIUS_HOME"), "state", "wakewatch-pending")); string(got) != "WAKEWATCH: x" {
-		t.Fatalf("pending %q", got)
+	home := os.Getenv("CRIUS_HOME")
+	os.MkdirAll(filepath.Join(home, "bus"), 0o700)
+	os.Remove(filepath.Join(dir, "extra"))
+	flushOutbox(home, time.Now())
+	if b, _ := os.ReadFile(log); strings.Count(string(b), "WAKEWATCH: x") != 1 {
+		t.Fatalf("the alert was typed again:\n%s", b)
+	}
+	if got := stored(t); len(got) != 0 {
+		t.Fatalf("stored %q, want it set aside", got)
+	}
+	if kept, _ := filepath.Glob(filepath.Join(home, "outbox", "dropped", "*.json")); len(kept) != 1 {
+		t.Fatalf("dropped/ holds %q", kept)
+	}
+	if bus, _ := os.ReadFile(filepath.Join(home, "bus", "crius.log")); !strings.Contains(string(bus), "WAKEWATCH: x") {
+		t.Errorf("bus:\n%s\nwant the alert typed onto other text named", bus)
 	}
 }
 
@@ -366,8 +416,7 @@ func TestSendWaitsForTheBoxToCatchUp(t *testing.T) {
 	for _, f := range []string{"draft", "shown"} { // on screen for a while: no lag left
 		os.WriteFile(filepath.Join(dir, f), []byte("WAKEWATCH: stuck"), 0o644)
 	}
-	os.MkdirAll(filepath.Join(os.Getenv("CRIUS_HOME"), "state"), 0o700)
-	os.WriteFile(filepath.Join(os.Getenv("CRIUS_HOME"), "state", "wakewatch-pending"), []byte("WAKEWATCH: stuck"), 0o600)
+	hold(t, "WAKEWATCH: stuck")
 	if err := send("WAKEWATCH: three"); err != nil {
 		t.Fatalf("after a stuck line: %v", err)
 	}
@@ -460,10 +509,10 @@ func TestSendSaysWhatTheDraftIs(t *testing.T) {
 
 // ORDER 10-22 13:36: the name and colour check reads every window's workspaces; a window it cannot read fails loudly.
 func TestWorkspacesAreReadFromEveryWindow(t *testing.T) {
-	real := cmux
-	t.Cleanup(func() { cmux = real })
+	real := outbox.Cmux
+	t.Cleanup(func() { outbox.Cmux = real })
 	fail := false
-	cmux = func(args ...string) ([]byte, error) {
+	outbox.Cmux = func(args ...string) ([]byte, error) {
 		switch strings.Join(args, " ") {
 		case "--json tree --all":
 			return []byte(`{"windows":[{"ref":"window:1","workspaces":[]},{"ref":"window:2","workspaces":[]}]}`), nil
@@ -493,9 +542,9 @@ func TestWorkspacesAreReadFromEveryWindow(t *testing.T) {
 // OpenRig parts item 3: a tab's screen carries cmux's surface id, which a session in it has as CMUX_SURFACE_ID and
 // crius-hook writes in its state file. cmux --json tree prints ids only with --id-format both.
 func TestScreensCarryTheSurfaceIDTheHookSees(t *testing.T) {
-	real := cmux
-	t.Cleanup(func() { cmux = real })
-	cmux = func(args ...string) ([]byte, error) {
+	real := outbox.Cmux
+	t.Cleanup(func() { outbox.Cmux = real })
+	outbox.Cmux = func(args ...string) ([]byte, error) {
 		switch strings.Join(args, " ") {
 		case "--json --id-format both tree --all":
 			return []byte(`{"windows":[{"ref":"window:1","workspaces":[{"ref":"workspace:1","panes":[{"surfaces":[` +
@@ -508,5 +557,74 @@ func TestScreensCarryTheSurfaceIDTheHookSees(t *testing.T) {
 	got, err := screens()
 	if err != nil || len(got) != 1 || got[0].ID != "6F1C0A2E-surface" || got[0].Surface != "surface:1" {
 		t.Fatalf("%+v %v", got, err)
+	}
+}
+
+// OpenRig parts item 4, today's real cases: grey text in Crius's box is not a draft. 11:37-12:42 the box showed a grey
+// prompt suggestion ("Quote report") and eight wakes were refused; 16:05 a fresh box showed the grey placeholder
+// 'Try "refactor <filepath>"'. cmux send (no --force) reads the text style and types over faint text, so the wake goes in.
+func TestSendTypesOverGreyText(t *testing.T) {
+	for _, ghost := range []string{"Quote report", `Try "refactor <filepath>"`} {
+		log, dir := fakeTab(t)
+		os.WriteFile(filepath.Join(dir, "ghost"), []byte(ghost), 0o644)
+		if err := send("WAKEWATCH: x"); err != nil {
+			t.Errorf("%s: %v", ghost, err)
+		}
+		if b, _ := os.ReadFile(log); !strings.Contains(string(b), "[send-key]") {
+			t.Errorf("%s: no Enter:\n%s", ghost, b)
+		}
+	}
+}
+
+// Item 4: text the owner typed is held, not typed over. The message is stored (one file per message, once) and goes in
+// on a later run once the box is empty, before the newer one.
+func TestSendHoldsAMessageUntilTheBoxIsEmpty(t *testing.T) {
+	log, dir := fakeTab(t)
+	os.WriteFile(filepath.Join(dir, "draft"), []byte("owner is typing"), 0o644)
+	for i := 0; i < 2; i++ {
+		if err := send("WAKEWATCH: first"); err == nil || !strings.Contains(err.Error(), "held") {
+			t.Fatalf("over a draft: %v", err)
+		}
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "draft")); string(b) != "owner is typing" {
+		t.Fatalf("the owner's draft became %q", b)
+	}
+	stored, _ := filepath.Glob(filepath.Join(os.Getenv("CRIUS_HOME"), "outbox", "*.json"))
+	if len(stored) != 1 {
+		t.Fatalf("stored %d messages, want 1: %v", len(stored), stored)
+	}
+	os.WriteFile(filepath.Join(dir, "draft"), nil, 0o644) // the owner sent their line
+	os.Remove(log)
+	if err := send("WAKEWATCH: second"); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(log)
+	first, second := strings.Index(string(b), "[WAKEWATCH: first]"), strings.Index(string(b), "[WAKEWATCH: second]")
+	if first < 0 || second < first {
+		t.Fatalf("want first then second typed:\n%s", b)
+	}
+	if left, _ := filepath.Glob(filepath.Join(os.Getenv("CRIUS_HOME"), "outbox", "*.json")); len(left) != 0 {
+		t.Fatalf("still stored after delivery: %v", left)
+	}
+}
+
+// Re-review 10-22: a crius-say message for a lead's tab that aged out or was damaged went only to wakewatch.log, so it
+// was lost with nobody told. What the outbox sets aside goes to Crius's bus; what it still holds does not (every run
+// would post it again).
+func TestFlushPostsWhatTheOutboxSetsAside(t *testing.T) {
+	_, dir := fakeTab(t)
+	os.WriteFile(filepath.Join(dir, "draft"), []byte("owner is typing"), 0o644)
+	home := os.Getenv("CRIUS_HOME")
+	os.MkdirAll(filepath.Join(home, "outbox"), 0o700)
+	os.MkdirAll(filepath.Join(home, "bus"), 0o700)
+	old, _ := json.Marshal(outbox.Message{To: "quotes · lead", Text: "merge it", Created: time.Now().Add(-2 * outbox.MaxAge)})
+	os.WriteFile(filepath.Join(home, "outbox", "00000000000000000001-old.json"), old, 0o600)
+	hold(t, "WAKEWATCH: held")
+	if err := flushOutbox(home, time.Now()); err == nil || !strings.Contains(err.Error(), "held") {
+		t.Errorf("flushOutbox: %v, want the held message named", err)
+	}
+	bus, _ := os.ReadFile(filepath.Join(home, "bus", "crius.log"))
+	if !strings.Contains(string(bus), "merge it") || strings.Contains(string(bus), "WAKEWATCH: held") {
+		t.Errorf("bus:\n%s\nwant the set-aside message and not the held one", bus)
 	}
 }
