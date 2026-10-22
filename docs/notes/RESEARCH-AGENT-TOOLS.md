@@ -121,10 +121,50 @@ Best parts to take:
 ### Paperclip (github.com/paperclipai/paperclip)
 
 Agents run as a company: org chart, goals, a monthly budget per agent, approvals, audit log, heartbeats that
-start agents on a schedule. Self-hosted Node server with a React UI, MIT, about 70k stars. Early: single
-user, no cloud setup yet.
+start agents on a schedule. Self-hosted Node server with a React UI, MIT.
+
+**Code read 2026-10-22** (clone of main 043f2514e; read only, nothing installed or run). Repo: 106K stars,
+about 5,500 commits since 2026-02, 244 authors (top three: about 3,150, 791, 323 commits), 6,378 open issues,
+about 3,000 test files, a promptfoo eval suite, about 29 release notes 2026-03 to 2026-09.
+
+What it is: a control plane: an API server, a React board, a CLI, a Postgres database (Drizzle schema; an
+embedded Postgres for local use) and one adapter package per agent tool (Claude Code, Codex, ...). About 170
+schema files: companies, agents, goals, issues, budgets, cost events, approvals, routines, activity log,
+completion contracts.
+
+How it runs an agent: **not** long-lived interactive sessions. Each heartbeat starts the real `claude` CLI
+headless (`--print --output-format stream-json`, `packages/adapters/claude-local/src/server/execute.ts:864`),
+with `--resume` only when the saved session id, folder and prompt bundle still match (`execute.ts:799-839`);
+the instruction file is sent only on a fresh session, to save 5-10K tokens per wake (`execute.ts:881-884`).
+Work moves as issues in the database; agents wake on a wake-request queue and on cron routines.
+
+- **Budgets with a hard stop** (strongest part): cost per run read from the CLI's own JSON (`total_cost_usd`,
+  per-model usage, `parse.ts:57-64,144-152`); at the limit it returns `hard_stop`, pauses the scope and
+  cancels queued runs (`server/src/services/budgets.ts:89,276-303`, `heartbeat/budget-cancellation.ts`).
+  Works with a subscription login (`execute.ts:174`); whether subscription runs count against a budget is
+  not confirmed.
+- **Completion contracts:** each issue can carry a risk level, a "completion authority" and a rule for unmet
+  criteria; a review step asks a bound reviewer to "review the persisted run evidence and confirm whether this
+  issue may be completed" (`server/src/services/native-runtime/automatic-completion-reviews.ts:23,37,79`).
+  That is a review of stored evidence, not a re-run on a clean checkout.
+- **Leases** on live runs, renewed on a timer, so a dead run is found (`heartbeat/recovery.ts:1692`).
+- **Defaults to watch:** the Claude adapter skips all permission prompts unless turned off
+  (`dangerouslySkipPermissions` default true, `execute.ts:445`). Telemetry is on unless
+  `PAPERCLIP_TELEMETRY_DISABLED=1`, `DO_NOT_TRACK=1`, a CI variable, or `enabled: false` in its config
+  (`packages/shared/src/telemetry/config.ts:67-80`). Neither is acceptable for Appxite code as shipped.
+- Not confirmed in code: wake intervals, hand-off between agents, the audit log, multi-user sign-in, own model
+  calls outside the agent CLI.
+
+Verdict: a different shape from Crius. It runs agents as short headless jobs inside a company model; Crius
+runs long interactive sessions and checks their claims. Running it would mean giving up the visible sessions
+and moving work into its database. Take ideas, do not run it (same as the trial plan said).
 
 Best parts to take:
+- **Cost per run from the CLI's JSON output**, a budget per lead with a hard stop that pauses and cancels.
+- **Resume only when session id, folder and prompt still match;** send the brief only to a fresh session.
+- **A done rule as data per item** (risk, who may close it, what happens to unmet criteria), next to our
+  VERIFIED rule.
+- **A lease per running lead**, so a dead lead is noticed without reading its screen.
 - **Budget per agent** with a hard stop. We watch quota by hand today.
 - **Approvals and audit log** as data, not only bus lines.
 - **Goals tied to each agent**, close to our GOAL blocks.
