@@ -20,7 +20,8 @@ import (
 var Types = map[string]bool{"DONE": true, "BLOCKED": true, "NEED-OWNER": true, "PAUSE": true, "PAUSED": true, "LIMIT": true,
 	"ITEM": true, "DECISION": true, "RESUMED": true, "ALERT": true, "INFO": true, "NEED": true, "WAIT": true,
 	"PARKED": true, "VERIFIED": true, "CORRECTED": true, "GO": true, "ACK": true,
-	"ORDER": true, "ANSWER": true, "ASK": true, "START": true, "CLEAR-READY": true, "OWNER": true}
+	"ORDER": true, "ANSWER": true, "ASK": true, "START": true, "CLEAR-READY": true, "OWNER": true,
+	"READY": true, "PASS": true, "FAIL": true, "LANDED": true, "CORRECTION": true}
 
 const MaxLen = 300
 
@@ -35,7 +36,7 @@ var Slug = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 // nameRe is a bus name: a project, or project:role.
 var nameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*(?::[a-z0-9][a-z0-9-]*)?$`)
 
-var lineRe = regexp.MustCompile(`^(?:(\d{4}-\d\d-\d\d)T)?(\d\d:\d\d)(Z?) ([A-Z][A-Z-]*) (\S+) -> (\S+(?:,? \S+)*?) — (.*)$`)
+var lineRe = regexp.MustCompile(`^(?:(\d{4}-\d\d-\d\d)T)?(\d\d:\d\d)(Z?) ([A-Z][A-Z-]*) (\S+)(?: -> (\S+(?:,? \S+)*?))? — (.*)$`)
 
 var refRes = []struct {
 	key string
@@ -55,8 +56,8 @@ type State struct{ Date, Time, Newest string }
 
 type Line struct {
 	Date, Time, Type string
-	Project          string // "" only for a lenient line whose sender has no ':'
-	Role, To, Text   string
+	Project          string // "" for a sender with no ':' (strict: a Role, as written, on the log's own bus)
+	Role, To, Text   string // To "" is a line with no "->": to all on the log's bus
 	Refs             map[string][]string
 	At               time.Time // a Z stamp's instant: its local Date and Time repeat in a DST fall-back hour
 	DatedByGuess     bool
@@ -75,7 +76,7 @@ func RefsOf(text string) map[string][]string {
 
 // ParseLine parses one line, or returns nil when it does not fit the grammar.
 // st dates undated lines and is updated in place. strict limits TYPE to the bus types and the sender to
-// <project>:<role>; team logs use strict=false.
+// <project>:<role> or a bare role; team logs use strict=false.
 func ParseLine(line string, st *State, strict bool) *Line {
 	m := lineRe.FindStringSubmatch(strings.TrimRight(line, "\n"))
 	if m == nil {
@@ -101,7 +102,11 @@ func ParseLine(line string, st *State, strict bool) *Line {
 			return nil
 		}
 	} else if strict {
-		return nil
+		// A bare sender ("QA2") is a role on the log's own bus; the ingest files it as <log project>:<lower name>,
+		// after redacting it as written (a key rule can be upper-case only).
+		if !Slug.MatchString(strings.ToLower(sender)) {
+			return nil
+		}
 	}
 	check := day
 	if check == "" {

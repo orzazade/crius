@@ -28,7 +28,8 @@ const datingVersion = "d3" // d3: a stamp ending in Z is UTC
 
 // lineVersion names what a stored log line holds besides its date. Raise it by hand when that changes: every log is
 // read again, and its stored rows take the refs the rules give now (Crius 10-17 04:23).
-const lineVersion = "l2" // l1: a VERIFIED line keeps its recipient in refs "to"; l2: several recipients ("a, b")
+// l1: a VERIFIED line keeps its recipient in refs "to"; l2: several recipients ("a, b"); l3: a bare sender and a line with no "->" (Crius 10-22)
+const lineVersion = "l3"
 
 func typesSum() string {
 	ts := make([]string, 0, len(store.Types))
@@ -165,6 +166,17 @@ func (r *runner) logFile(path, source string, strict bool, project string) error
 			if !p.At.IsZero() { // a Z stamp: its instant, which a repeated local hour loses
 				t = p.At
 			}
+			bare := p.Project == "" // a bare sender ("QA2") is a role on this log's bus, lower-cased unless it is redacted
+			if bare {
+				p.Project = project
+			}
+			writer := p.Project + ":" + p.Role
+			n := r.name(writer) // once: each call counts a redaction
+			if bare && strict && n == writer {
+				p.Role = strings.ToLower(p.Role)
+				writer = p.Project + ":" + p.Role
+				n = r.name(writer)
+			}
 			if !p.DatedByGuess {
 				if err := r.checkClock(tx, path, pathKey, p, t, &st); err != nil {
 					return err
@@ -172,23 +184,22 @@ func (r *runner) logFile(path, source string, strict bool, project string) error
 			}
 			e := event{ts: t.UTC().Format("2006-01-02T15:04:05Z"), kind: strings.ToLower(p.Type), key: key,
 				project: project, actor: p.Role, text: p.Text, hasText: true}
-			if p.Project != "" { // redacted as one name: split, password:hunter2 kept its value
-				writer := p.Project + ":" + p.Role
-				n := r.name(writer)
-				switch {
-				case n == writer:
-					e.project = p.Project
-				case strings.HasPrefix(n, p.Project+":"): // the role was redacted: the writer is no one (not qa-…)
-					e.project, e.actor = p.Project, "[redacted]"
-				default: // the project part too: the row stays under its log's project
-					e.actor = "[redacted]"
-				}
+			switch { // redacted as one name: split, password:hunter2 kept its value
+			case n == writer:
+				e.project = p.Project
+			case strings.HasPrefix(n, p.Project+":"): // the role was redacted: the writer is no one (not qa-…)
+				e.project, e.actor = p.Project, "[redacted]"
+			default: // the project part too: the row stays under its log's project
+				e.actor = "[redacted]"
 			}
 			if len(p.Refs) > 0 {
 				e.refs = p.Refs
 			}
 			if p.Type == "VERIFIED" { // the recipient: the digest counts a VERIFIED line for the lead it is to (RULES 3.4)
 				e.to = p.To
+				if e.to == "" { // no "->": to all on this bus
+					e.to = project + ":all"
+				}
 			}
 			if items := p.Refs["item"]; len(items) > 0 {
 				e.item = items[0]
@@ -227,10 +238,7 @@ func (r *runner) logFile(path, source string, strict bool, project string) error
 // one per file, writer, day and kind; the line keeps its stamp. A writer flagged ahead that day, on this read or an
 // earlier one (its alert is stored), does not move the newest stamp, so the good lines after it are not blamed.
 func (r *runner) checkClock(tx *sql.Tx, path, pathKey string, p *store.Line, t time.Time, st *store.State) error {
-	writer := p.Role
-	if p.Project != "" {
-		writer = p.Project + ":" + p.Role
-	}
+	writer := p.Project + ":" + p.Role
 	stamp := p.Date + "T" + p.Time
 	// The key names the writer by hash: a role is any word and can be a token.
 	key := func(kind string) string {

@@ -147,12 +147,12 @@ func TestImpossibleDateOrTimeIsMalformedAndKeepsState(t *testing.T) {
 }
 
 func TestUnknownTypeStrictAndLenient(t *testing.T) {
-	line := "09:20 ACK api -> leader — schema?"
+	line := "09:20 HELLO api -> leader — schema?"
 	if ParseLine(line, &State{Date: "2026-10-16", Time: "09:00"}, true) != nil {
 		t.Fatal("strict parse took an unknown type")
 	}
 	p := ParseLine(line, &State{Date: "2026-10-16", Time: "09:00"}, false)
-	if p == nil || p.Type != "ACK" || p.Project != "" || p.Role != "api" {
+	if p == nil || p.Type != "HELLO" || p.Project != "" || p.Role != "api" {
 		t.Fatalf("%+v", p)
 	}
 }
@@ -349,7 +349,6 @@ func TestSeveralRecipients(t *testing.T) {
 		t.Errorf("text %q", p.Text)
 	}
 	for _, line := range []string{
-		"2026-10-20T23:30 INFO crius:lead — no recipient",
 		"2026-10-20T23:31 VERIFIED crius:lead -> password: hunter2 — x",
 		"2026-10-20T23:32 INFO crius:lead -> crius:build (when free) — x",
 	} {
@@ -385,6 +384,41 @@ func TestCcRecipients(t *testing.T) {
 	} {
 		if ParseLine(line, nil, true) != nil {
 			t.Errorf("parsed %q", line)
+		}
+	}
+}
+
+// A team bus is read as its writers write it (Crius 10-22 19:43): their own types, a bare sender (the ingest files it
+// as <log project>:<lower name>) and no "->" (to all).
+func TestTeamWritersShapesParse(t *testing.T) {
+	for line, want := range map[string]Line{
+		"2026-10-22T10:00 READY demo:p1 -> demo:lead — x":   {Type: "READY", Project: "demo", Role: "p1", To: "demo:lead"},
+		"2026-10-22T10:01 PASS demo:qa1 -> demo:lead — x":   {Type: "PASS", Project: "demo", Role: "qa1", To: "demo:lead"},
+		"2026-10-22T10:02 FAIL demo:qa1 -> demo:lead — x":   {Type: "FAIL", Project: "demo", Role: "qa1", To: "demo:lead"},
+		"2026-10-22T10:03 LANDED demo:lead -> demo:all — x": {Type: "LANDED", Project: "demo", Role: "lead", To: "demo:all"},
+		"2026-10-22T10:04 CORRECTION demo:lead -> demo:all — x": {Type: "CORRECTION", Project: "demo", Role: "lead",
+			To: "demo:all"},
+		"2026-10-22T10:05 DONE QA2 -> demo:lead — x": {Type: "DONE", Project: "", Role: "QA2", To: "demo:lead"},
+		"2026-10-22T10:06 INFO demo:p1 — x":          {Type: "INFO", Project: "demo", Role: "p1", To: ""},
+		"2026-10-22T10:07 READY P6 — x":              {Type: "READY", Project: "", Role: "P6", To: ""},
+	} {
+		p := ParseLine(line, nil, true)
+		if p == nil {
+			t.Errorf("not parsed: %q", line)
+			continue
+		}
+		if p.Type != want.Type || p.Project != want.Project || p.Role != want.Role || p.To != want.To || p.Text != "x" {
+			t.Errorf("%q: got %s %q:%q -> %q — %q, want %s %q:%q -> %q — x", line, p.Type, p.Project, p.Role, p.To,
+				p.Text, want.Type, want.Project, want.Role, want.To)
+		}
+	}
+	for _, line := range []string{
+		"2026-10-22T10:08 DONE Q_A -> demo:lead — x",        // a bare sender is still a name
+		"2026-10-22T10:09 DONE demo:p1 -> — x",              // an arrow with no recipient
+		"2026-10-22T10:10 DONE password:hunter2 secret — x", // no arrow: the sender is one word, then the separator
+	} {
+		if p := ParseLine(line, nil, true); p != nil {
+			t.Errorf("parsed %q as %+v", line, *p)
 		}
 	}
 }

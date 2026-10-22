@@ -453,12 +453,15 @@ more than a late one.
   file order and mtime).
 - A line may go to several plain names: `-> crius:lead, quotes:b1` (comma or space between them). A list with any
   other word in it is malformed.
+- Read as a team writes it too (Crius 10-22): a bare sender (`QA2`) is `<log project>:qa2`, and a line with no
+  `-> …` goes to all on that bus. `bus-post` still writes the full form.
 - Stamps are local time. A UTC stamp ends in `Z` (`$(date -u +%FT%H:%MZ)`), dated lines only. Ingest never re-dates
   a line: a dated line more than 1 h behind the newest stamp before it in its file (a clock in UTC without `Z`), or
   more than 10 min ahead of the clock, raises an ALERT naming the writer, one per file, writer, day and kind.
 - Types (the one list; `internal/store` tests check the Go list equals it): `DONE`, `BLOCKED`, `NEED-OWNER`,
   `PAUSE`, `PAUSED`, `LIMIT`, `ITEM`, `DECISION`, `RESUMED`, `ALERT`, `INFO`, `NEED`, `WAIT`, `PARKED`, `VERIFIED`,
-  `CORRECTED`, `GO`, `ACK`, `ORDER`, `ANSWER`, `ASK`, `START`, `CLEAR-READY`, `OWNER`. Tests also check that RULES.md and the
+  `CORRECTED`, `GO`, `ACK`, `ORDER`, `ANSWER`, `ASK`, `START`, `CLEAR-READY`, `OWNER`, `READY`, `PASS`, `FAIL`,
+  `LANDED`, `CORRECTION`. Tests also check that RULES.md and the
   cmux-team skill name no other type.
 - Who writes them: OWNER only Crius, for the owner's own words it relays (the goal report lists them with the decisions); ALERT only Crius's
   own scripts (ingest, watchdog), WAIT the wait detector, PARKED the park mod

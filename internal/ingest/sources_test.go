@@ -810,3 +810,44 @@ func TestCommitsPushedFromAWorktreeBranchAreRead(t *testing.T) {
 	}
 	eq(t, x.one("select count(*) from git_commit"), "3")
 }
+
+// A team bus as its writers write it (Crius 10-22 19:43): a bare sender is <log project>:<lower name>, and a line with
+// no "->" goes to all on that bus.
+func TestBusLinesFromABareSenderOrToAll(t *testing.T) {
+	x, _, _ := busCaseWith(t, tokenService)
+	testutil.Write(t, filepath.Join(x.home, "bus", "demo.log"),
+		"2026-10-22T10:00 READY QA2 -> demo:lead — x\n"+
+			"2026-10-22T10:02 DONE qa-xox"+"b-123456789012-123456789012-abcdefghijklmnopqrstuvwxyzabcdef -> demo:lead — x\n"+
+			"2026-10-22T10:01 VERIFIED demo:lead — F-1 · x\n")
+	x.run()
+	eq(t, x.one("select count(*) from event where kind = 'malformed'"), "0")
+	if rows := x.q("select kind, project, actor, refs from event where source_key like 'bus:%' order by ts"); len(rows) != 3 ||
+		!slices.Equal(rows[0][:3], []string{"ready", "demo", "qa2"}) || !slices.Equal(rows[1][:3], []string{"verified", "demo", "lead"}) ||
+		rows[1][3] != `{"to":["demo:all"]}` ||
+		!slices.Equal(rows[2][:3], []string{"done", "demo", "[redacted]"}) {
+		t.Fatal(rows)
+	}
+}
+
+// Review 10-22: a bare sender is redacted as written, before it is lower-cased (an upper-case key rule must still see
+// it), and a clock alert names it as <log project>:<lower name>.
+func TestABareSenderIsRedactedAsWrittenAndNamedWithItsProject(t *testing.T) {
+	x, _, _ := busCase(t)
+	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.Local)
+	clock = func() time.Time { return now }
+	t.Cleanup(func() { clock = time.Now })
+	testutil.Write(t, filepath.Join(x.home, "bus", "demo.log"),
+		"2026-10-22T10:00 READY AKIA"+"Q2W3E4R5T6Y7U8I9 -> demo:lead — x\n"+
+			"2026-10-22T08:30 PASS QA2 -> demo:lead — 90 min behind\n")
+	if st := x.run(); st.Redactions != 1 { // counted once, not again for the lower-cased name (review round 10)
+		t.Fatal(st.Redactions)
+	}
+	if rows := x.q("select actor from event where source_key like 'bus:%' order by ts desc"); len(rows) != 2 ||
+		rows[0][0] != "[redacted]" || rows[1][0] != "qa2" {
+		t.Fatal(rows)
+	}
+	if rows := x.q("select text from alert where key like 'bus-clock:%'"); len(rows) != 1 ||
+		!strings.HasPrefix(rows[0][0], "bus clock: demo:qa2 line 2026-10-22T08:30") {
+		t.Fatal(rows)
+	}
+}
