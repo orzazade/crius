@@ -870,10 +870,18 @@ func TestATabReadFailureOfAnUnlistedProjectStaysQuiet(t *testing.T) {
 	home := setup(t, map[string]string{"quotes.log": ""})
 	testutil.Write(t, filepath.Join(home, "wakewatch-projects"), "quotes crius\n")
 	f := &fake{screens: []Screen{{Surface: "surface:1", Title: "quotes: qa", Err: "surface gone"},
-		{Surface: "surface:2", Title: "axi: lead", Err: "surface gone"}, {Surface: "surface:3", Err: "surface gone"}}}
-	Run(f.deps(home, t0))
+		{Surface: "surface:2", Title: "axi: lead", Err: "surface gone"}, {Surface: "surface:3", Err: "surface gone"},
+		{Surface: "surface:4", Title: "✳ Quotes: lead", Err: "surface gone"}, {Surface: "surface:5", Title: "❓", Err: "surface gone"}}}
+	if err := Run(f.deps(home, t0)); err != nil {
+		t.Fatal(err)
+	}
 	got := strings.Join(f.sent, "\n")
-	if !strings.Contains(got, "surface:1") || strings.Contains(got, "surface:2") || !strings.Contains(got, "surface:3") {
+	for _, want := range []string{"surface:1", "surface:3", "surface:4", "surface:5"} {
+		if !strings.Contains(got, want) {
+			t.Fatal(want, f.sent)
+		}
+	}
+	if strings.Contains(got, "surface:2") {
 		t.Fatal(f.sent)
 	}
 }
@@ -886,7 +894,9 @@ func TestAnUnlistedSenderOnAListedBusStaysQuiet(t *testing.T) {
 	home := setup(t, map[string]string{"quotes.log": qaDone, "crius.log": axiDone})
 	testutil.Write(t, filepath.Join(home, "wakewatch-projects"), "quotes crius\n")
 	f := &fake{}
-	Run(f.deps(home, t0.Add(21*time.Minute)))
+	if err := Run(f.deps(home, t0.Add(21*time.Minute))); err != nil {
+		t.Fatal(err)
+	}
 	got := strings.Join(f.sent, "\n")
 	if !strings.Contains(got, "quotes.log: ") || !strings.Contains(got, "QA2") || strings.Contains(got, "axi") {
 		t.Fatal(f.sent)

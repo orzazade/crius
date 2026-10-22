@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/orzazade/crius/internal/redact"
 	"github.com/orzazade/crius/internal/watchdog"
@@ -323,12 +324,18 @@ func waiting(st *state, d Deps, watch projects) [][2]string {
 	live := map[string]bool{}
 	for _, s := range screens {
 		// A tab of a team not watched stays quiet. A dialog hides the named input box, and a tab that cannot be read
-		// shows nothing: then the title's first word names the project (a lead tab is titled "quotes"). A tab that
-		// cannot be read and has no title still alerts: nothing says whose it is.
+		// shows nothing: then the title's first word that starts with a letter or digit names the project (a lead tab
+		// is titled "quotes"; a mark like "✳" may come first). A tab that cannot be read and has no such word still
+		// alerts: nothing says whose it is.
 		name, _ := session(s.Text, s.Title)
 		team := project(name)
-		if title := strings.Fields(strings.NewReplacer(":", " ", "·", " ").Replace(s.Title)); name == "" && len(title) > 0 {
-			team = title[0]
+		if name == "" {
+			for _, w := range strings.Fields(strings.NewReplacer(":", " ", "·", " ").Replace(s.Title)) {
+				if r, _ := utf8.DecodeRuneInString(w); unicode.IsLetter(r) || unicode.IsDigit(r) {
+					team = w
+					break
+				}
+			}
 		}
 		if watch != nil && !watch.has(team) && (s.Err == "" || team != "") {
 			continue
