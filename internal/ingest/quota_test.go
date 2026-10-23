@@ -1248,3 +1248,51 @@ func TestQuotaGuardPausesAgainAtARaisedLimit(t *testing.T) {
 		t.Fatalf("want a second NEED to Crius, got %q", n)
 	}
 }
+
+// Several Max accounts (owner 10-23): an account at pause_at pauses only the tabs on it, each by its role; Crius gets one
+// NEED naming the account, the roles, the tabs with no role and the accounts with room. When every account is at the
+// limit the whole team pauses.
+func TestQuotaGuardPausesOnlyTheTabsOnAFullAccount(t *testing.T) {
+	clock = func() time.Time { return qNow }
+	t.Cleanup(func() { clock = time.Now })
+	x := newIC(t, cfg{extra: strings.Replace(guardedProject, "pause_at = 70", "pause_at = 90", 1)})
+	d1, d2 := filepath.Join(x.home, "cfg1"), filepath.Join(x.home, "cfg2")
+	l1, l2 := x.signIn(d1, "u-1"), x.signIn(d2, "u-2")
+	testutil.Write(t, filepath.Join(x.home, "accounts.toml"), "[[account]]\nname = \"max1\"\nplan = \"max\"\ndirs = [\""+
+		d1+"\"]\n[[account]]\nname = \"max2\"\nplan = \"max\"\ndirs = [\""+d2+"\"]\n")
+	r1, r2 := qNow.Add(4*24*time.Hour), qNow.Add(24*time.Hour)
+	s1, s2, s3 := "aaaaaaaa-0000-0000-0000-000000000001", "aaaaaaaa-0000-0000-0000-000000000002", "aaaaaaaa-0000-0000-0000-000000000003"
+	x.session("work", s1, "/work/quotes", "[crius account=max project=quotes role=p1]", qNow.Add(-20*time.Minute))
+	x.session("work", s2, "/work/quotes", "[crius account=max project=quotes role=p2]", qNow.Add(-20*time.Minute))
+	x.session("work", s3, "/work/quotes", "", qNow.Add(-20*time.Minute))
+	on := func(l quota.Line, login, dir string) quota.Line {
+		l.Login, l.Dir, l.Persona = login, dir, "work"
+		return l
+	}
+	x.spool(on(sampleAt(s1, qNow.Add(-10*time.Minute), 91, r1), l1, d1),
+		on(sampleAt(s3, qNow.Add(-9*time.Minute), 91, r1), l1, d1),
+		on(sampleAt(s2, qNow.Add(-8*time.Minute), 40, r2), l2, d2))
+	x.run()
+	x.run()
+	p := grepAlerts(x.bus("quotes"), " PAUSE ")
+	if len(p) != 1 || !strings.Contains(p[0], " -> quotes:p1 — ") || !strings.Contains(p[0], "max1") || !strings.Contains(p[0], "91%") {
+		t.Fatalf("want one PAUSE to quotes:p1 naming max1 and 91%%, got %q", x.bus("quotes"))
+	}
+	n := grepAlerts(x.alerts(), " NEED crius:ingest -> crius:lead — ")
+	if len(n) != 1 {
+		t.Fatalf("want one NEED to Crius, got %q", x.alerts())
+	}
+	for _, want := range []string{"max1", "91%", "p1", "1 tab with no role", "max2 40%"} {
+		if !strings.Contains(n[0], want) {
+			t.Fatalf("the NEED has no %q: %q", want, n[0])
+		}
+	}
+	// max2 reaches the limit too: its tab pauses, and with every account full the whole team does.
+	x.spool(on(sampleAt(s2, qNow.Add(-5*time.Minute), 92, r2), l2, d2))
+	x.run()
+	x.run()
+	p = grepAlerts(x.bus("quotes"), " PAUSE ")
+	if len(p) != 3 || !strings.Contains(p[1]+p[2], " -> quotes:p2 — ") || !strings.Contains(p[1]+p[2], " -> quotes:all — ") {
+		t.Fatalf("want PAUSEs to quotes:p2 and quotes:all, got %q", p)
+	}
+}
