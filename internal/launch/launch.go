@@ -68,8 +68,15 @@ type Deps struct {
 }
 
 // Spawn is one session to open: Parent (the leader's session id) and Item ("quotes#41") go in the provenance tag when
-// known, and Prompt is typed on the line after the tag.
-type Spawn struct{ Project, Role, Account, Parent, Item, Prompt string }
+// known, and Prompt is typed on the line after the tag. Move, when set, moves the role off the account it was on.
+type Spawn struct {
+	Project, Role, Account, Parent, Item, Prompt string
+	Move                                         *Moved
+}
+
+// Moved is the role's old session: its folder (the worktree and branch the new session starts in) and the Max account
+// it ran on ("" for none in accounts.toml).
+type Moved struct{ Cwd, From string }
 
 // Run opens the tab, starts its first prompt, and gives its workspace and surface and the provenance tag line typed.
 func Run(s Spawn, d Deps) (ws, surface, tag string, err error) {
@@ -115,6 +122,11 @@ func Run(s Spawn, d Deps) (ws, surface, tag string, err error) {
 		return "", "", "", fmt.Errorf("bad folder %q for account %s: want an absolute path with no quote, backslash or control character", dir, acct)
 	}
 	name, model, cmd := command(s.Project, s.Role, acct, dir)
+	if s.Move != nil {
+		if cwd, err = move(d, s, acct, name); err != nil {
+			return "", "", "", err
+		}
+	}
 	ws, surface, err = tab(d, s.Project, persona, name, cwd, cmd)
 	if err != nil {
 		return "", "", "", err
@@ -131,6 +143,38 @@ func Run(s Spawn, d Deps) (ws, surface, tag string, err error) {
 		return "", "", "", fmt.Errorf("%s in %s %s: %v", name, ws, surface, err)
 	}
 	return ws, surface, tag, nil
+}
+
+// move checks a move to acct and closes the role's old tab, a shell once its Claude has stopped, so the role has one
+// tab; it gives the folder the new session starts in, the old one's. Anything wrong is refused before a tab is touched.
+func move(d Deps, s Spawn, acct, name string) (cwd string, err error) {
+	switch {
+	case !safeDir(s.Move.Cwd):
+		return "", fmt.Errorf("bad folder %q: want an absolute path with no quote, backslash or control character", s.Move.Cwd)
+	case acct == "":
+		return "", fmt.Errorf("%s %s: no Max account in accounts.toml with room to move to", s.Project, s.Role)
+	case acct == s.Move.From:
+		return "", fmt.Errorf("%s %s is on %s already: not moved", s.Project, s.Role, acct)
+	}
+	tree, err := d.Cmux("tree", "--all")
+	if err != nil {
+		return "", fmt.Errorf("cmux tree: %v", err)
+	}
+	ws, surface, tty, err := named(tree, s.Project+" · "+s.Role)
+	if err != nil || surface == "" {
+		return s.Move.Cwd, err
+	}
+	front, err := d.Front(tty)
+	if err != nil {
+		return "", err
+	}
+	if !shells[filepath.Base(strings.TrimPrefix(front, "-"))] {
+		return "", fmt.Errorf("%s %s (%s %s) runs %s in front, not a shell: left alone, not moved to %s", s.Project, s.Role, ws, surface, front, name)
+	}
+	if out, err := d.Cmux("close-surface", "--workspace", ws, "--surface", surface); err != nil {
+		return "", fmt.Errorf("cmux close-surface: %v: %s", err, out)
+	}
+	return s.Move.Cwd, nil
 }
 
 // command gives a role's tab name, its model, and the shell line that starts Claude for it. With an account (acct, its

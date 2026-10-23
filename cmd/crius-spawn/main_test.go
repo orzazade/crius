@@ -132,3 +132,27 @@ func TestResumeKeepsTheSessionsMaxAccount(t *testing.T) {
 		t.Error("a broken accounts.toml gave no error")
 	}
 }
+
+// Owner 10-23: -move relaunches the role from the session crius-hook keeps as its current one: in its folder, off the
+// Max account it ran on. A session still running is refused (two Claudes on one worktree), and so is a role with none.
+func TestAMoveReadsTheRolesSessionAndItsAccount(t *testing.T) {
+	home, d := t.TempDir(), t.TempDir()
+	m1 := filepath.Join(d, ".claude-work-max")
+	testutil.Write(t, filepath.Join(m1, ".claude.json"), `{"oauthAccount":{"accountUuid":"acct-1"}}`)
+	testutil.Write(t, filepath.Join(home, "accounts.toml"), "[[account]]\nname = \"max1\"\nplan = \"max\"\ndirs = [\""+m1+"\"]\n")
+	s := sessionstate.State{SessionID: "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b", Cwd: "/Users/o/Projects/quotes/.worktrees/lead", Project: "quotes", Role: "lead", Config: m1}
+	if err := sessionstate.WriteRole(filepath.Join(home, "roles"), s, true); err != nil {
+		t.Fatal(err)
+	}
+	if m, err := moved(home, "quotes", "lead"); err != nil || m == nil || *m != (launch.Moved{Cwd: s.Cwd, From: "max1"}) {
+		t.Errorf("%+v %v", m, err)
+	}
+	if _, err := moved(home, "quotes", "rig"); err == nil || !strings.Contains(err.Error(), "no session to move for quotes rig") {
+		t.Errorf("no role: %v", err)
+	}
+	status := fmt.Sprintf(`{"pid":%d,"sessionId":%q,"name":"quotes · lead","procStart":%q}`, os.Getpid(), s.SessionID, testutil.ProcStart(t, os.Getpid()))
+	testutil.Write(t, filepath.Join(m1, "sessions", "1.json"), status)
+	if _, err := moved(home, "quotes", "lead"); err == nil || !strings.Contains(err.Error(), fmt.Sprintf("still runs in process %d", os.Getpid())) {
+		t.Errorf("running: %v", err)
+	}
+}

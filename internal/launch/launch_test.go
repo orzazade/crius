@@ -989,3 +989,50 @@ func TestResumeStartsInTheSessionsAccountFolder(t *testing.T) {
 		}
 	}
 }
+
+// Owner 10-23: a role on an account at its limit moves to one with room: a fresh session with the brief it is given, in
+// the old session's folder (its worktree and branch), on the picked account. Its old tab, a shell once its Claude has
+// stopped, is closed so the role has one tab.
+func TestAMoveStartsTheRoleInItsFolderOnAnotherAccountAndClosesTheOldTab(t *testing.T) {
+	to := func(string, string) (string, string, error) { return "max2", "/Users/o/.claude-max2", nil }
+	f := &fake{trees: []string{treeWith("quotes · lead · max1")}, picked: to}
+	s := Spawn{Project: "quotes", Role: "lead", Prompt: "Read your brief.", Move: &Moved{Cwd: "/Users/o/Projects/quotes/.worktrees/lead", From: "max1"}}
+	if _, _, tag, err := Run(s, f.deps()); err != nil || tag != "[crius account=max project=quotes role=lead]" {
+		t.Fatalf("%q %v", tag, err)
+	}
+	closed, opened := slices.Index(f.calls, "close-surface --workspace workspace:2 --surface surface:22"), -1
+	for i, c := range f.calls {
+		if strings.HasPrefix(c, "new-surface ") {
+			opened = i
+			if !strings.Contains(c, "--working-directory /Users/o/Projects/quotes/.worktrees/lead ") ||
+				!strings.Contains(c, "--primary '/Users/o/.claude-max2' ") || !strings.HasSuffix(c, "-n 'quotes · lead · max2'") {
+				t.Errorf("new-surface %q", c)
+			}
+		}
+	}
+	if closed < 0 || opened < closed {
+		t.Errorf("calls %q: want the old tab closed, then the new one opened", f.calls)
+	}
+	// With no old tab open, the move just opens the new one.
+	f = &fake{trees: []string{tree}, picked: to}
+	if _, _, _, err := Run(s, f.deps()); err != nil || len(f.called("close-surface")) != 0 || len(f.called("new-surface")) != 1 {
+		t.Errorf("%v, calls %q", err, f.calls)
+	}
+	// Refused before any tab is touched: no account to move to, the same account, a folder unfit for a shell line, and
+	// an old tab with anything but a shell in front.
+	for _, c := range []struct {
+		f    *fake
+		s    Spawn
+		want string
+	}{
+		{&fake{trees: []string{tree}, picked: func(string, string) (string, string, error) { return "", "", nil }}, s, "no Max account"},
+		{&fake{trees: []string{tree}, picked: func(string, string) (string, string, error) { return "max1", "/Users/o/.claude-work-max", nil }}, s, "on max1 already"},
+		{&fake{trees: []string{tree}, picked: to}, Spawn{Project: "quotes", Role: "lead", Prompt: "go", Move: &Moved{Cwd: "rel/dir", From: "max1"}}, "bad folder"},
+		{&fake{trees: []string{treeWith("quotes · lead · max1")}, picked: to, front: "claude"}, s, "left alone"},
+	} {
+		_, _, _, err := Run(c.s, c.f.deps())
+		if err == nil || !strings.Contains(err.Error(), c.want) || len(c.f.called("close-surface")) != 0 || len(c.f.called("new-")) != 0 {
+			t.Errorf("%q: err %v, calls %q", c.want, err, c.f.calls)
+		}
+	}
+}
