@@ -1309,3 +1309,55 @@ func TestABadAccountsFileSaysTheGuardIsOff(t *testing.T) {
 		t.Fatalf("want one NEED saying the quota guard is off and naming accounts.toml, got %q", n)
 	}
 }
+
+// Review 10-23 (chunk 2): a login seen in an earlier week that no row lists (a folder signed into another account
+// since) counted as room for ever, so the whole team never paused; a listed account whose week ended is room. And a
+// role with one tab on the full account and one on an account with room got a PAUSE, which stops both: it is named
+// in the NEED instead, for its full tab to be stopped by hand.
+func TestQuotaGuardRoomIsAListedAccountAndASplitRoleIsNotPaused(t *testing.T) {
+	clock = func() time.Time { return qNow }
+	t.Cleanup(func() { clock = time.Now })
+	x := newIC(t, cfg{extra: strings.Replace(guardedProject, "pause_at = 70", "pause_at = 90", 1)})
+	d1, d2, d3, d4 := filepath.Join(x.home, "cfg1"), filepath.Join(x.home, "cfg2"), filepath.Join(x.home, "cfg3"), filepath.Join(x.home, "cfg4")
+	l1, l2, l3, l4 := x.signIn(d1, "u-1"), x.signIn(d2, "u-2"), x.signIn(d3, "u-3"), x.signIn(d4, "u-4")
+	rows := "[[account]]\nname = \"max1\"\nplan = \"max\"\ndirs = [\"" + d1 + "\"]\n[[account]]\nname = \"max2\"\nplan = \"max\"\ndirs = [\"" + d2 + "\"]\n"
+	testutil.Write(t, filepath.Join(x.home, "accounts.toml"), rows)
+	r1, gone := qNow.Add(4*24*time.Hour), qNow.Add(-2*24*time.Hour)
+	s1, s2, s3 := "aaaaaaaa-0000-0000-0000-000000000001", "aaaaaaaa-0000-0000-0000-000000000002", "aaaaaaaa-0000-0000-0000-000000000003"
+	x.session("work", s1, "/work/quotes", "[crius account=max project=quotes role=p1]", qNow.Add(-20*time.Minute))
+	x.session("work", s2, "/work/quotes", "[crius account=max project=quotes role=p2]", qNow.Add(-20*time.Minute))
+	x.session("work", s3, "/work/quotes", "[crius account=max project=quotes role=p2]", qNow.Add(-20*time.Minute))
+	on := func(l quota.Line, login, dir string) quota.Line {
+		l.Login, l.Dir, l.Persona = login, dir, "work"
+		return l
+	}
+	old := on(sampleAt("old", qNow.Add(-5*24*time.Hour), 30, gone), l3, d3)
+	x.spool(old, on(sampleAt(s1, qNow.Add(-10*time.Minute), 91, r1), l1, d1),
+		on(sampleAt(s2, qNow.Add(-9*time.Minute), 92, r1), l2, d2))
+	x.run()
+	if p := grepAlerts(x.bus("quotes"), " -> quotes:all — "); len(p) != 1 {
+		t.Fatalf("every listed account full, an old unlisted login aside: want a PAUSE to quotes:all, got %q", x.bus("quotes"))
+	}
+	n := grepAlerts(x.alerts(), "every Max account reached")
+	if len(n) != 1 {
+		t.Fatalf("want one NEED for the whole team, got %q", x.alerts())
+	}
+
+	// A third listed account, its week ended: room. p2's second tab runs on it, p2 has a second tab on max1, at 40%, so p2 is not paused on max2.
+	y := newIC(t, cfg{extra: strings.Replace(guardedProject, "pause_at = 70", "pause_at = 90", 1)})
+	l1, l2, l4 = y.signIn(d1, "u-1"), y.signIn(d2, "u-2"), y.signIn(d4, "u-4")
+	testutil.Write(t, filepath.Join(y.home, "accounts.toml"), rows+"[[account]]\nname = \"max4\"\nplan = \"max\"\ndirs = [\""+d4+"\"]\n")
+	y.session("work", s2, "/work/quotes", "[crius account=max project=quotes role=p2]", qNow.Add(-20*time.Minute))
+	y.session("work", s3, "/work/quotes", "[crius account=max project=quotes role=p2]", qNow.Add(-20*time.Minute))
+	y.spool(on(sampleAt("old4", qNow.Add(-5*24*time.Hour), 95, gone), l4, d4),
+		on(sampleAt(s2, qNow.Add(-9*time.Minute), 92, r1), l2, d2),
+		on(sampleAt(s3, qNow.Add(-8*time.Minute), 40, r1), l1, d1))
+	y.run()
+	if p := grepAlerts(y.bus("quotes"), " PAUSE "); len(p) != 0 {
+		t.Fatalf("p2 also runs on max1, which has room: want no PAUSE, got %q", p)
+	}
+	n = grepAlerts(y.alerts(), "account max2 at 92%")
+	if len(n) != 1 || !strings.Contains(n[0], "p2 also runs on max1") || !strings.Contains(n[0], "max4 new window") {
+		t.Fatalf("want a NEED naming p2 on max1 and max4's new window, got %q", y.alerts())
+	}
+}

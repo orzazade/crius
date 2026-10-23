@@ -255,16 +255,29 @@ func (r *runner) pauseAccounts(tx *sql.Tx, rep *quota.Report, as *quota.Accounts
 	}
 	var full []quota.AcctUse
 	var room []string
-	seen := map[string]bool{}
+	seen, isFull := map[string]bool{}, map[string]bool{}
 	for _, a := range rep.Accounts {
 		seen[a.Login] = true
 		switch {
 		case !a.Ended.IsZero():
-			room = append(room, a.Name+" new window")
+			// A week ended starts a new one on a listed account; a login no row lists is one nobody can start on.
+			if r := as.Of(a.Login); r != nil && r.Plan == "max" {
+				room = append(room, a.Name+" new window")
+			}
 		case a.Reset.IsZero() || !a.Reset.After(rep.Now) || a.SevenPct < float64(p.pauseAt):
 			room = append(room, fmt.Sprintf("%s %g%%", a.Name, a.SevenPct))
 		default:
 			full = append(full, a)
+			isFull[a.Login] = true
+		}
+	}
+	// A role with a tab on an account not at the limit: a PAUSE to the role would stop that tab too.
+	elsewhere := map[string]string{}
+	for login, roles := range tabs {
+		for _, role := range roles {
+			if !isFull[login] && role != "unknown" {
+				elsewhere[role] = as.Name(login)
+			}
 		}
 	}
 	if as != nil {
@@ -284,7 +297,7 @@ func (r *runner) pauseAccounts(tx *sql.Tx, rep *quota.Report, as *quota.Accounts
 			return err
 		}
 		at, resets := a.SevenAt.Local().Format("15:04"), a.Reset.Local().Format("Mon 15:04")
-		var roles []string
+		var roles, split []string
 		noRole := 0
 		for _, role := range tabs[a.Login] {
 			if role == "unknown" {
@@ -293,6 +306,12 @@ func (r *runner) pauseAccounts(tx *sql.Tx, rep *quota.Report, as *quota.Accounts
 			}
 			if n := len(roles); n > 0 && roles[n-1] == role {
 				continue // two tabs of one role: one PAUSE reaches both
+			}
+			if other, ok := elsewhere[role]; ok {
+				if n := len(split); n == 0 || !strings.HasPrefix(split[n-1], role+" ") {
+					split = append(split, role+" also runs on "+other)
+				}
+				continue
 			}
 			roles = append(roles, role)
 			if err := r.queueLine(tx, key+":"+role, "PAUSE", p.slug, p.slug+":"+role, fmt.Sprintf(
@@ -305,6 +324,12 @@ func (r *runner) pauseAccounts(tx *sql.Tx, rep *quota.Report, as *quota.Accounts
 		paused := "no tab of " + p.slug + " has a role on it"
 		if len(roles) > 0 {
 			paused = "PAUSE posted to " + p.slug + ":" + strings.Join(roles, ", "+p.slug+":")
+		} else if len(split) > 0 {
+			paused = "no PAUSE posted"
+		}
+		if len(split) > 0 {
+			paused += "; not paused, as a PAUSE would stop its tab with room too (stop its tab here by hand): " +
+				strings.Join(split, ", ")
 		}
 		tabWord := "tabs"
 		if noRole == 1 {
