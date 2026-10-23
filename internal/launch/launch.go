@@ -1,6 +1,7 @@
 // Package launch opens a team session the one way cmux-team SKILL.md §5 asks: a tab inside the project's workspace
-// (a workspace is made only when the project has none), named "<project> · <role>", the workspace coloured by its
-// group, and Claude started through aitch with the role's model and the same name (-n, which is what /rename sets).
+// (a workspace is made only when the project has none), named "<project> · <role>" (and " · <account>" on a picked
+// Max account), the workspace coloured by its group, and Claude started through aitch with the role's model and the
+// same name (-n, which is what /rename sets).
 // It then answers the folder-trust dialog, checks the status bar model, types the provenance tag line and the first
 // prompt, and proves the tab started work.
 package launch
@@ -61,6 +62,9 @@ type Deps struct {
 	Wait    time.Duration                                                  // between two reads of the new tab
 	Front   func(tty string) (string, error)                               // the command in front on a tty, as ps shows it
 	Typed   func(surface string) (bool, error)                             // whether a tab's box holds typed text, not grey text (cmux input state)
+	// Pick is the Max account a session starts on, "max" for the one with the most room or a row's name, and its
+	// config folder (quota.Pick); no name launches as before, through aitch's own route. Nil: no accounts.
+	Pick func(project, want string) (name, dir string, err error)
 }
 
 // Spawn is one session to open: Parent (the leader's session id) and Item ("quotes#41") go in the provenance tag when
@@ -93,10 +97,24 @@ func Run(s Spawn, d Deps) (ws, surface, tag string, err error) {
 	if s.Account != "" {
 		account = s.Account
 	}
-	if account != "max" && account != "enterprise" {
+	var acct, dir string
+	switch {
+	case account == "enterprise":
+	case d.Pick != nil && slugRe.MatchString(account):
+		if acct, dir, err = d.Pick(s.Project, account); err != nil {
+			return "", "", "", err
+		}
+		account = "max"
+	case account != "max":
 		return "", "", "", fmt.Errorf("bad account %q: want max or enterprise", account)
 	}
-	name, model, cmd := command(s.Project, s.Role)
+	switch {
+	case acct != "" && !slugRe.MatchString(acct): // typed into a shell and a title
+		return "", "", "", fmt.Errorf("bad account name %q: want lowercase letters, digits and dashes", acct)
+	case acct != "" && !safeDir(dir):
+		return "", "", "", fmt.Errorf("bad folder %q for account %s: want an absolute path with no quote, backslash or control character", dir, acct)
+	}
+	name, model, cmd := command(s.Project, s.Role, acct, dir)
 	ws, surface, err = tab(d, s.Project, persona, name, cwd, cmd)
 	if err != nil {
 		return "", "", "", err
@@ -115,15 +133,21 @@ func Run(s Spawn, d Deps) (ws, surface, tag string, err error) {
 	return ws, surface, tag, nil
 }
 
-// command gives a role's tab name, its model, and the shell line that starts Claude for it.
-func command(project, role string) (name, model, cmd string) {
+// command gives a role's tab name, its model, and the shell line that starts Claude for it. With an account (acct, its
+// config folder dir) the name ends in it and aitch starts Claude in that folder.
+func command(project, role, acct, dir string) (name, model, cmd string) {
 	name = project + " · " + role
 	model = "claude-opus-5-5"
 	if sonnetRoles.MatchString(role) {
 		model = "claude-sonnet-5-5"
 	}
 	// Through aitch, never bare claude: cmux's shell wraps claude and skips aitch's quota route (SKILL.md §5).
-	cmd = "aitch launch claude -- --model " + model +
+	cmd = "aitch launch claude -- --model "
+	if acct != "" {
+		name += " · " + acct
+		cmd = "aitch launch claude --primary '" + dir + "' -- --model "
+	}
+	cmd += model +
 		` --permission-mode bypassPermissions --settings '{"autoCompactWindow":300000}' -n '` + name + `'`
 	return name, model, cmd
 }
@@ -159,7 +183,7 @@ func Resume(project, role, id, cwd string, d Deps) (ws, surface string, err erro
 		return "", "", fmt.Errorf("bad project %q or role %q: want lowercase letters, digits and dashes", project, role)
 	case !idRe.MatchString(id): // typed into a shell
 		return "", "", fmt.Errorf("bad session id %q", id)
-	case !filepath.IsAbs(cwd) || strings.ContainsAny(cwd, `'\`) || strings.IndexFunc(cwd, func(r rune) bool { return !unicode.IsPrint(r) }) >= 0:
+	case !safeDir(cwd):
 		return "", "", fmt.Errorf("bad folder %q: want an absolute path with no quote, backslash or control character", cwd)
 	}
 	if d.Lock == "" {
@@ -172,7 +196,7 @@ func Resume(project, role, id, cwd string, d Deps) (ws, surface string, err erro
 		return "", "", err
 	}
 	defer lf.Close()
-	name, _, cmd := command(project, role)
+	name, _, cmd := command(project, role, "", "")
 	cmd += " --resume " + id
 	tree, err := d.Cmux("tree", "--all")
 	if err != nil {
@@ -231,6 +255,12 @@ func Resume(project, role, id, cwd string, d Deps) (ws, surface string, err erro
 	return ws, surface, nil
 }
 
+// safeDir is a folder that can go in single quotes on a shell line: absolute, with no quote, backslash or control
+// character.
+func safeDir(dir string) bool {
+	return filepath.IsAbs(dir) && !strings.ContainsAny(dir, `'\`) && strings.IndexFunc(dir, func(r rune) bool { return !unicode.IsPrint(r) }) < 0
+}
+
 // hold opens the lock file and waits for its lock; closing the file releases it.
 func hold(path string) (*os.File, error) {
 	lf, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
@@ -247,13 +277,14 @@ func hold(path string) (*os.File, error) {
 // shells are what may be in front of a tab whose Claude has ended.
 var shells = map[string]bool{"zsh": true, "bash": true, "sh": true, "fish": true}
 
-// named gives the one terminal tab titled name, its workspace and its tty, or no surface when there is none.
+// named gives the one terminal tab titled name, or name and " · <account>" (a tab on a picked account), its workspace
+// and its tty, or no surface when there is none.
 func named(tree, name string) (ws, surface, tty string, err error) {
 	var w string
 	for _, line := range strings.Split(tree, "\n") {
 		if m := workspaceRe.FindStringSubmatch(line); m != nil {
 			w = m[1]
-		} else if m := tabRe.FindStringSubmatch(line); m != nil && m[2] == name {
+		} else if m := tabRe.FindStringSubmatch(line); m != nil && (m[2] == name || strings.HasPrefix(m[2], name+" · ")) {
 			if surface != "" {
 				return "", "", "", fmt.Errorf("two tabs are titled %q (%s, %s): rename one", name, surface, m[1])
 			}

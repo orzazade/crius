@@ -88,3 +88,38 @@ launch = "%[1]s/d"
 		t.Errorf("dot (cwd ./d): %q %v, want %s/d", cwd, err, w)
 	}
 }
+
+// Owner 10-23: crius-spawn picks the Max account with room for a project, so it needs the project's transcript folder
+// (an account's config folder counts only when its projects/ is that folder) and its pause_at.
+func TestForSpawnGivesThePersonaTranscriptsAndPauseAt(t *testing.T) {
+	home := t.TempDir()
+	testutil.Write(t, filepath.Join(home, "projects.toml"), `
+[transcripts]
+work = "/w/projects"
+personal = "/p/projects"
+[projects.quotes]
+persona = "work"
+accounts = ["max"]
+pause_at = 90
+[projects.crius]
+persona = "personal"
+accounts = ["max"]
+[projects.loose]
+accounts = ["max"]
+`)
+	for _, c := range []struct {
+		slug, root string
+		pauseAt    int
+		err        string
+	}{
+		{"quotes", "/w/projects", 90, ""},
+		{"crius", "/p/projects", 0, ""},
+		{"loose", "", 0, ""},
+		{"gone", "", 0, "projects.toml has no project gone"},
+	} {
+		root, pauseAt, err := ForSpawn(home, c.slug)
+		if root != c.root || pauseAt != c.pauseAt || (err == nil) != (c.err == "") || err != nil && !strings.Contains(err.Error(), c.err) {
+			t.Errorf("%s: %q %d %v", c.slug, root, pauseAt, err)
+		}
+	}
+}

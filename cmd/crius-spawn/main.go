@@ -1,11 +1,13 @@
 // Command crius-spawn opens a team session and starts it:
 //
-//	crius-spawn [-account max|enterprise] [-parent <leader session id>] [-item <project>#<n>] <project> <role> <first prompt…>
+//	crius-spawn [-account max|<name>|enterprise] [-parent <leader session id>] [-item <project>#<n>] <project> <role> <first prompt…>
 //	crius-spawn -resume <project> <role>
 //
 // The tab lands in the project's workspace (made, named and coloured when missing), is named "<project> · <role>",
 // gets the folder-trust dialog answered, its model checked, and the provenance tag line typed before the first prompt.
 // It prints the workspace, the tab and the tag, and fails loudly when any step does not show on screen.
+// On a Max account it starts in the folder of the accounts.toml row with the most room (or the row -account names)
+// and its tab says which: "<project> · <role> · <account>"; with no such row aitch's own route picks, as before.
 //
 // With -resume it brings the role's current session back after a crash or a reboot (claude --resume), in its own tab
 // when that is still open with a shell in front, else in a new one. The current session is the one crius-hook last saw
@@ -24,17 +26,18 @@ import (
 	"github.com/orzazade/crius/internal/ingest"
 	"github.com/orzazade/crius/internal/launch"
 	"github.com/orzazade/crius/internal/outbox"
+	"github.com/orzazade/crius/internal/quota"
 	"github.com/orzazade/crius/internal/sessionstate"
 	"github.com/orzazade/crius/internal/store"
 )
 
 func main() {
-	account := flag.String("account", "", "max or enterprise (default: the project's first account in projects.toml)")
+	account := flag.String("account", "", "max (the Max account with the most room), an accounts.toml Max row name, or enterprise (default: the project's first account in projects.toml)")
 	parent := flag.String("parent", "", "the leader's session id, for the provenance tag")
 	item := flag.String("item", "", "the work item, <project>#<n>, for the provenance tag")
 	again := flag.Bool("resume", false, "bring the role's current session back: <project> <role>, nothing else")
 	flag.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: crius-spawn [-account max|enterprise] [-parent id] [-item project#n] <project> <role> <first prompt…>")
+		fmt.Fprintln(os.Stderr, "usage: crius-spawn [-account max|<name>|enterprise] [-parent id] [-item project#n] <project> <role> <first prompt…>")
 		fmt.Fprintln(os.Stderr, "       crius-spawn -resume <project> <role>")
 		flag.PrintDefaults()
 	}
@@ -44,6 +47,7 @@ func main() {
 		Cmux:    runCmux,
 		Place:   func(project string) (string, string, string, error) { return ingest.Place(store.Home(), project) },
 		Persona: func(project string) (string, error) { return ingest.Persona(store.Home(), project) },
+		Pick:    func(project, want string) (string, string, error) { return pick(store.Home(), project, want) },
 		Wait:    time.Second,
 		Front:   outbox.Front,
 		Typed:   outbox.Typed,
@@ -103,4 +107,27 @@ func runCmux(args ...string) (string, error) {
 		return string(out) + stderr.String(), err
 	}
 	return string(out), nil
+}
+
+// pick is the Max account a session of project starts on and its folder (quota.Pick): want is "max" for the one with
+// the most room, or a row's name. The figures are the record store's, as crius-rec quota reads them.
+func pick(home, project, want string) (name, dir string, err error) {
+	root, pauseAt, err := ingest.ForSpawn(home, project)
+	if err != nil {
+		return "", "", err
+	}
+	projects, err := ingest.QuotaProjects(home)
+	if err != nil {
+		return "", "", err
+	}
+	db, err := store.Open(home)
+	if err != nil {
+		return "", "", err
+	}
+	defer db.Close()
+	r, err := quota.Build(db, projects, time.Now())
+	if err != nil {
+		return "", "", err
+	}
+	return quota.Pick(r, projects.Accounts, root, want, pauseAt)
 }

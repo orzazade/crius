@@ -59,8 +59,9 @@ var (
 	// A Claude Code permission or choice dialog: a numbered option under the cursor.
 	dialogRe = regexp.MustCompile(`(?m)^\s*❯\s*1\.\s`)
 	// The input box's top border carries the session name: "──── quotes: lead ─".
-	borderRe  = regexp.MustCompile(`^─+(?: (.+?) ─+)?$`)
-	sessionRe = regexp.MustCompile(`^([A-Za-z0-9][\w.-]*)\s*[:·]\s*([\w.-]+)$`)
+	borderRe = regexp.MustCompile(`^─+(?: (.+?) ─+)?$`)
+	// A session name: "quotes: lead", "quotes · p6", or "quotes · p6 · max2" on a picked Max account.
+	sessionRe = regexp.MustCompile(`^([A-Za-z0-9][\w.-]*)\s*[:·]\s*([\w.-]+)(?:\s*·\s*[\w.-]+)?$`)
 	// Under the input box: background shells, monitors, tasks or agents still running.
 	jobsRe = regexp.MustCompile(`\b\d+ (?:shells?|monitors?|background tasks?|agents?)\b|(?m)^\s*◯ `)
 	leadRe = regexp.MustCompile(`^lead(?:er)?$`)

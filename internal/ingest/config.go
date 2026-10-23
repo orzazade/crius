@@ -219,7 +219,11 @@ func (c *config) filing(cwd, title string, recorded *store.Worktree) (project, r
 			}
 		}
 	}
-	if r := m[2]; store.Slug.MatchString(r) {
+	r := m[2]
+	if before, account, ok := strings.Cut(r, " · "); ok && store.Slug.MatchString(account) {
+		r = before // "<project> · <role> · <account>" on a picked Max account
+	}
+	if store.Slug.MatchString(r) {
 		role, byTitle = r, true
 	}
 	return project, role, byTitle
@@ -363,4 +367,25 @@ func Persona(home, slug string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("projects.toml has no project %s", slug)
+}
+
+// ForSpawn gives what crius-spawn needs to pick a Max account for a project: its persona's transcript folder ("" when
+// the project names no persona with one) and its pause_at (0: none).
+func ForSpawn(home, slug string) (root string, pauseAt int, err error) {
+	c, err := loadConfig(home)
+	if err != nil {
+		return "", 0, err
+	}
+	for _, p := range c.projects {
+		if p.slug != slug {
+			continue
+		}
+		for _, r := range c.roots {
+			if r.persona == p.persona {
+				root = r.path
+			}
+		}
+		return root, p.pauseAt, nil
+	}
+	return "", 0, fmt.Errorf("projects.toml has no project %s", slug)
 }

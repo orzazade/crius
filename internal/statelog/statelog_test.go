@@ -378,3 +378,17 @@ func TestTheTextCountsEachTab(t *testing.T) {
 		}
 	}
 }
+
+// Owner 10-23: a tab on a picked Max account is titled "<project> · <role> · <account>"; it is still the role's tab.
+func TestATabThatNamesItsAccountIsTheRolesTab(t *testing.T) {
+	db, ss, _ := fixture(t)
+	w, _ := Parse("wakewatch", strings.NewReader(`2026-10-22T16:23:29+04:00 tab:surface:1000020056 "quotes · p6 · max2" screen=idle state=busy decides=screen
+`))
+	fs, err := Judge(db, ss, w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fs) != 1 || fs[0].Right != "screen" {
+		t.Errorf("got %+v, want p6's line judged: its turn had ended", fs)
+	}
+}

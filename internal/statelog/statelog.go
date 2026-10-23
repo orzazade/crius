@@ -145,6 +145,7 @@ type transcriptRead struct {
 
 func judge(db *sql.DB, ss []sessionstate.State, l Line, read map[string]transcriptRead) (right, why string, err error) {
 	project, role, ok := strings.Cut(l.Tab, " · ")
+	role, _, _ = strings.Cut(role, " · ") // "<project> · <role> · <account>" on a picked Max account
 	if !ok {
 		return "unknown", "not a project · role tab", nil
 	}

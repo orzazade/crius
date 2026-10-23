@@ -55,13 +55,14 @@ type fake struct {
 	sentErr  error  // what it fails with once the prompt is sent
 	sentErrs int    // how many input-state reads after Enter fail with sentErr; 0: all
 	failed   int
-	noLaunch bool   // projects.toml gives the project several cwd and no launch folder
-	stale    int    // reads after Enter that still show the typed prompt, as a read taken just before Claude takes it
-	dead     int    // a crashed tab: reads after Enter that still show the dead Claude's box with the shell line under it; -1: always
-	echo     int    // reads after a send that do not show the typed line yet
-	ran      string // the shell line Enter ran in a crashed tab
-	clip     int    // a crashed tab's shell shows a line longer than this as ">...." and its last runes, as zsh does
-	quote    bool   // the resumed Claude shows the shell line it was started with above its box (a restored message)
+	noLaunch bool                                                     // projects.toml gives the project several cwd and no launch folder
+	stale    int                                                      // reads after Enter that still show the typed prompt, as a read taken just before Claude takes it
+	dead     int                                                      // a crashed tab: reads after Enter that still show the dead Claude's box with the shell line under it; -1: always
+	echo     int                                                      // reads after a send that do not show the typed line yet
+	ran      string                                                   // the shell line Enter ran in a crashed tab
+	clip     int                                                      // a crashed tab's shell shows a line longer than this as ">...." and its last runes, as zsh does
+	quote    bool                                                     // the resumed Claude shows the shell line it was started with above its box (a restored message)
+	picked   func(project, want string) (name, dir string, err error) // the Max account picker; nil: none
 }
 
 const statusBar = "  %s │ main │ ██░░░░░░░░ ctx 2%%\n"
@@ -69,6 +70,7 @@ const statusBar = "  %s │ main │ ██░░░░░░░░ ctx 2%%\n"
 func (f *fake) deps() Deps {
 	return Deps{
 		Lock: filepath.Join(os.TempDir(), "crius-launch-test.lock"),
+		Pick: f.picked,
 		Cmux: func(args ...string) (string, error) {
 			f.calls = append(f.calls, strings.Join(args, " "))
 			switch args[0] {
@@ -861,5 +863,101 @@ func TestTwoResumesOfOneRoleAtOnceTypeOnce(t *testing.T) {
 	defer mu.Unlock()
 	if got := f.called("send "); len(got) != 1 || left != 1 {
 		t.Errorf("typed %d times, %d left alone; want 1 and 1", len(got), left)
+	}
+}
+
+// Owner 10-23: a new session starts on the Max account with the most room, through aitch's --primary for its folder,
+// and the tab title names the account. The tag still says account=max: the row is a Max account.
+func TestAPickedAccountStartsInItsFolderAndIsInTheTitle(t *testing.T) {
+	var asked []string
+	f := &fake{trees: []string{tree}, picked: func(project, want string) (string, string, error) {
+		asked = append(asked, project+" "+want)
+		return "max2", "/Users/o/.claude-max2", nil
+	}}
+	_, _, tag, err := Run(Spawn{Project: "quotes", Role: "lead", Prompt: "Read your brief."}, f.deps())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(asked) != 1 || asked[0] != "quotes max" {
+		t.Errorf("picker asked %q, want once for quotes on max", asked)
+	}
+	want := "--command aitch launch claude --primary '/Users/o/.claude-max2' -- --model claude-opus-5-5" +
+		` --permission-mode bypassPermissions --settings '{"autoCompactWindow":300000}' -n 'quotes · lead · max2'`
+	if ns := f.called("new-surface")[0]; !strings.HasSuffix(ns, want) {
+		t.Errorf("new-surface\n got %s\nwant suffix %s", ns, want)
+	}
+	if got := f.called("rename-tab "); len(got) != 1 || !strings.HasSuffix(got[0], "-- quotes · lead · max2") {
+		t.Errorf("rename-tab %q", got)
+	}
+	if !strings.HasPrefix(tag, "[crius account=max project=quotes role=lead") {
+		t.Errorf("tag %q", tag)
+	}
+
+	// A named row is asked for by name; enterprise is never picked; no pick launches as before.
+	for _, c := range []struct{ account, asked, suffix string }{
+		{"max3", "quotes max3", "-n 'quotes · lead · max2'"},
+		{"enterprise", "", "-n 'quotes · lead'"},
+	} {
+		asked = nil
+		f := &fake{trees: []string{tree}, picked: f.picked}
+		if _, _, _, err := Run(Spawn{Project: "quotes", Role: "lead", Account: c.account, Prompt: "go"}, f.deps()); err != nil {
+			t.Fatal(c.account, err)
+		}
+		if strings.Join(asked, ",") != c.asked || !strings.HasSuffix(f.called("new-surface")[0], c.suffix) {
+			t.Errorf("%s: asked %q, new-surface %s", c.account, asked, f.called("new-surface")[0])
+		}
+	}
+	f = &fake{trees: []string{tree}, picked: func(string, string) (string, string, error) { return "", "", nil }}
+	if _, _, _, err := Run(Spawn{Project: "quotes", Role: "lead", Prompt: "go"}, f.deps()); err != nil {
+		t.Fatal(err)
+	}
+	if ns := f.called("new-surface")[0]; !strings.Contains(ns, "aitch launch claude -- --model") || !strings.HasSuffix(ns, "-n 'quotes · lead'") {
+		t.Errorf("no pick: %s", ns)
+	}
+}
+
+// A picker that says no, or gives a folder that could break the shell line, stops the launch before cmux is touched.
+func TestAFailedPickIsRefusedBeforeCmuxIsTouched(t *testing.T) {
+	for _, c := range []struct {
+		name, dir, err, want string
+	}{
+		{"", "", "every Max account is at its limit: max1 7d 92%", "every Max account is at its limit"},
+		{"max2", "/Users/o/.claude-max2'; rm x", "", "bad folder"},
+		{"max2", ".claude-max2", "", "bad folder"},
+		{"Max 2", "/Users/o/.claude-max2", "", "bad account name"},
+	} {
+		f := &fake{trees: []string{tree}, picked: func(string, string) (string, string, error) {
+			if c.err != "" {
+				return "", "", errors.New(c.err)
+			}
+			return c.name, c.dir, nil
+		}}
+		_, _, _, err := Run(Spawn{Project: "quotes", Role: "lead", Prompt: "go"}, f.deps())
+		if err == nil || !strings.Contains(err.Error(), c.want) || len(f.calls) != 0 {
+			t.Errorf("%v: err %v, calls %q", c, err, f.calls)
+		}
+	}
+	// With no picker, an account other than max or enterprise is refused as before.
+	f := &fake{trees: []string{tree}}
+	if _, _, _, err := Run(Spawn{Project: "quotes", Role: "lead", Account: "max2", Prompt: "go"}, f.deps()); err == nil ||
+		!strings.Contains(err.Error(), "bad account") {
+		t.Errorf("no picker, max2: %v", err)
+	}
+}
+
+// A tab opened on a picked account is titled "<project> · <role> · <account>": a resume still finds it as the role's.
+func TestResumeFindsTheRoleTabThatNamesItsAccount(t *testing.T) {
+	f := &fake{trees: []string{treeWith("quotes · lead · max2")}}
+	ws, surface, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/quotes/src", f.deps())
+	if err != nil || ws != "workspace:2" || surface != "surface:22" {
+		t.Fatalf("got %s %s %v, want the lead's tab", ws, surface, err)
+	}
+	if got := f.called("new-"); len(got) != 0 {
+		t.Errorf("made %q, want the old tab used", got)
+	}
+	// "quotes · leader" is another role's tab, not the lead's.
+	f = &fake{trees: []string{treeWith("quotes · leader")}}
+	if _, surface, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/quotes", f.deps()); err != nil || surface != "surface:99" {
+		t.Errorf("leader's tab: %s %v, want a new tab", surface, err)
 	}
 }

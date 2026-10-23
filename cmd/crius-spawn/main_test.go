@@ -78,3 +78,37 @@ func TestAResumeOfARunningSessionIsRefused(t *testing.T) {
 		t.Errorf("err %v, cmux calls %q: want a refusal naming the process and no cmux call", err, got)
 	}
 }
+
+// Owner 10-23: with no -account, or -account max, crius-spawn starts the session on the Max account with the most room,
+// in that account's folder linked to the project's persona. The figures come from the record store, the folders from
+// accounts.toml and the persona and pause_at from projects.toml.
+func TestPickReadsTheAccountsTheStoreAndTheProject(t *testing.T) {
+	home, d := t.TempDir(), t.TempDir()
+	transcripts := filepath.Join(d, ".claude-work", "projects")
+	m2 := filepath.Join(d, ".claude-max2")
+	if err := os.MkdirAll(transcripts, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(m2, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, "state"), 0o700); err != nil { // crius-rec init
+		t.Fatal(err)
+	}
+	if err := os.Symlink(transcripts, filepath.Join(m2, "projects")); err != nil {
+		t.Fatal(err)
+	}
+	testutil.Write(t, filepath.Join(m2, ".claude.json"), `{"oauthAccount":{"accountUuid":"acct-2"}}`)
+	testutil.Write(t, filepath.Join(home, "projects.toml"), "[transcripts]\nwork = \""+transcripts+
+		"\"\n[projects.quotes]\npersona = \"work\"\naccounts = [\"max\"]\npause_at = 90\n")
+	testutil.Write(t, filepath.Join(home, "accounts.toml"), "[[account]]\nname = \"max2\"\nplan = \"max\"\ndirs = [\""+m2+"\"]\n")
+	if name, dir, err := pick(home, "quotes", "max"); err != nil || name != "max2" || dir != m2 {
+		t.Errorf("max: %q %q %v, want max2 in %s", name, dir, err, m2)
+	}
+	if _, _, err := pick(home, "quotes", "max9"); err == nil || !strings.Contains(err.Error(), "no Max account max9") {
+		t.Errorf("max9: %v, want no such account", err)
+	}
+	if _, _, err := pick(home, "gone", "max"); err == nil || !strings.Contains(err.Error(), "no project gone") {
+		t.Errorf("gone: %v, want no such project", err)
+	}
+}
