@@ -272,9 +272,10 @@ func TestToolsSaysWhichToolFailsOrHangs(t *testing.T) {
 	} {
 		os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"+body+"\n"), 0o755)
 	}
-	real := toolWait
-	t.Cleanup(func() { toolWait = real })
+	real, retry := toolWait, toolRetry
+	t.Cleanup(func() { toolWait, toolRetry = real, retry })
 	toolWait = 2 * time.Second // the quick fakes answer well inside it even on a loaded machine
+	toolRetry = 100 * time.Millisecond
 	start := time.Now()
 	res := tools()
 	if len(res) != 5 || res["cmux"] != nil || res["az"] != nil || res["docker"] != nil {
@@ -288,6 +289,35 @@ func TestToolsSaysWhichToolFailsOrHangs(t *testing.T) {
 	}
 	if d := time.Since(start); d > 20*time.Second { // far below the hung tool's 60 s: it was stopped, not waited for
 		t.Errorf("a hung tool held the check for %v", d)
+	}
+}
+
+// Crius 10-23 22:36: az and gh missed the 10 s once under load 100-180 on 14 cores (22:20, 22:35) and answered in a
+// second on a recheck. A tool that misses is asked again after toolRetry; only a second miss is a failure, and it names
+// both misses and the 1-minute load.
+func TestToolsFailOnlyOnASecondMissAndSayTheLoad(t *testing.T) {
+	_, dir := fakeTab(t)
+	once := filepath.Join(dir, "gh-missed")
+	for name, body := range map[string]string{
+		"gh":  "[ -f " + once + " ] && exit 0; : > " + once + "; echo 'connection reset' >&2; exit 1",
+		"az":  "echo 'Please run az login' >&2; exit 1",
+		"bun": "echo 1.3.0", "docker": "echo 29.1.0",
+	} {
+		os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"+body+"\n"), 0o755)
+	}
+	wait, retry := toolWait, toolRetry
+	t.Cleanup(func() { toolWait, toolRetry = wait, retry })
+	toolWait, toolRetry = 5*time.Second, 300*time.Millisecond
+	res := tools()
+	if res["gh"] != nil {
+		t.Errorf("gh missed once and answered on the recheck: want no failure, got %v", res["gh"])
+	}
+	if _, err := os.Stat(once); err != nil {
+		t.Errorf("gh was not asked a first time: %v", err)
+	}
+	az := fmt.Sprint(res["az"])
+	if res["az"] == nil || strings.Count(az, "Please run az login") != 2 || !strings.Contains(az, "1-min load ") {
+		t.Errorf("az missed twice: want both misses and the 1-minute load, got %v", res["az"])
 	}
 }
 

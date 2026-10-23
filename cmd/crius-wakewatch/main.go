@@ -176,12 +176,48 @@ var toolChecks = map[string][]string{
 
 var toolWait = 10 * time.Second
 
-// tools runs the checks at once and gives each tool's failure, or nil.
+// toolRetry: a tool that missed is asked again this much later (Crius 10-23 22:36: az and gh missed the 10 s once under
+// load 100-180 on 14 cores and answered in a second on the recheck).
+var toolRetry = 30 * time.Second
+
+// tools runs the checks at once and gives each tool's failure, or nil. A tool fails only when it misses twice, toolRetry
+// apart; its failure names both misses and the 1-minute load.
 func tools() map[string]error {
+	res := ask(toolChecks)
+	again := map[string][]string{}
+	for name, err := range res {
+		if err != nil {
+			again[name] = toolChecks[name]
+		}
+	}
+	if len(again) == 0 {
+		return res
+	}
+	time.Sleep(toolRetry)
+	for name, err := range ask(again) {
+		if err != nil {
+			err = fmt.Errorf("%v; again %v later: %v (1-min load %s)", res[name], toolRetry, err, load())
+		}
+		res[name] = err
+	}
+	return res
+}
+
+// load is the 1-minute load average, or why it is not known.
+func load() string {
+	out, err := exec.Command("/usr/sbin/sysctl", "-n", "vm.loadavg").Output() // "{ 1.62 1.80 1.94 }"
+	if f := strings.Fields(string(out)); err == nil && len(f) > 1 {
+		return f[1]
+	}
+	return fmt.Sprintf("unknown (%v)", err)
+}
+
+// ask runs the checks at once and gives each tool's failure, or nil.
+func ask(checks map[string][]string) map[string]error {
 	res := map[string]error{}
 	var mu sync.Mutex
 	var wg sync.WaitGroup
-	for name, c := range toolChecks {
+	for name, c := range checks {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
