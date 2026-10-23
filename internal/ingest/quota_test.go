@@ -1296,3 +1296,16 @@ func TestQuotaGuardPausesOnlyTheTabsOnAFullAccount(t *testing.T) {
 		t.Fatalf("want PAUSEs to quotes:p2 and quotes:all, got %q", p)
 	}
 }
+
+// Review 10-23: a bad accounts.toml (a row with no folder, a folder signed into another login) turned every quota check
+// off, the pause included, with only a warning in the run status. The guard being off wakes Crius, once a day.
+func TestABadAccountsFileSaysTheGuardIsOff(t *testing.T) {
+	x := quotaCase(t)
+	testutil.Write(t, filepath.Join(x.home, "accounts.toml"), "[[account]]\nname = \"max1\"\nplan = \"max\"\n")
+	x.run()
+	x.run()
+	if n := grepAlerts(x.alerts(), "quota guard is off"); len(n) != 1 || !strings.Contains(n[0], " NEED ") ||
+		!strings.Contains(n[0], "accounts.toml") {
+		t.Fatalf("want one NEED saying the quota guard is off and naming accounts.toml, got %q", n)
+	}
+}

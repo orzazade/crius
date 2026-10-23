@@ -111,7 +111,10 @@ func (r *runner) newAlert(tx *sql.Tx, key string, holds bool) (bool, error) {
 func (r *runner) quotaChecks(tx *sql.Tx) error {
 	p, err := r.cfg.quotaProjects(r.home)
 	if err != nil {
-		return err
+		// Without the accounts no check runs, the pause included: that wakes Crius, once a day.
+		r.warn(true, "quota checks: %v", err)
+		return r.queueLine(tx, "quota:off:"+clock().UTC().Format("2006-01-02"), "NEED", "crius", "crius:lead",
+			fmt.Sprintf("quota guard is off, no pause or quota alert runs: %v", err))
 	}
 	rep, err := quota.Build(tx, p, clock())
 	if err != nil {
@@ -196,8 +199,9 @@ func window(tx *sql.Tx, prefix string, reset time.Time) (string, error) {
 }
 
 // pauseChecks is the quota guard (Crius 10-22 20:38; owner: Quotes pauses at 70% of the weekly quota): a project with
-// pause_at gets one PAUSE to <project>:all on its own bus when the Max 7d share reaches it in the current window, and
-// Crius one NEED, which wakes it (an ALERT does not). A stale sample while sessions are open means the guard cannot
+// pause_at gets a PAUSE on its own bus when a Max account's 7d share reaches it, once per account, limit and window:
+// to each role on that account, or to <project>:all when every Max account is at the limit; and Crius one NEED, which
+// wakes it (an ALERT does not). A stale sample while sessions are open means the guard cannot
 // see the share: that is a NEED too, once per gap, as the stopgap script exits 1.
 func (r *runner) pauseChecks(tx *sql.Tx, rep *quota.Report, as *quota.Accounts) error {
 	for _, p := range r.cfg.projects {
