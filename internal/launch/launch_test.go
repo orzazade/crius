@@ -1,6 +1,7 @@
 package launch
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -63,6 +65,7 @@ type fake struct {
 	clip     int                                                      // a crashed tab's shell shows a line longer than this as ">...." and its last runes, as zsh does
 	quote    bool                                                     // the resumed Claude shows the shell line it was started with above its box (a restored message)
 	picked   func(project, want string) (name, dir string, err error) // the Max account picker; nil: none
+	account  string                                                   // the project's account in projects.toml; "" means max
 }
 
 const statusBar = "  %s │ main │ ██░░░░░░░░ ctx 2%%\n"
@@ -147,9 +150,9 @@ func (f *fake) deps() Deps {
 				return "", "", "", errors.New("projects.toml: project " + project + " has 3 cwd folders; set launch to the folder its sessions start in")
 			}
 			if f.persona == "" {
-				return "/Users/o/Projects/" + project, "max", "work", nil
+				return "/Users/o/Projects/" + project, cmp.Or(f.account, "max"), "work", nil
 			}
-			return "/Users/o/Projects/" + project, "max", f.persona, nil
+			return "/Users/o/Projects/" + project, cmp.Or(f.account, "max"), f.persona, nil
 		},
 	}
 }
@@ -1010,8 +1013,8 @@ func TestAMoveStartsTheRoleInItsFolderOnAnotherAccountAndClosesTheOldTab(t *test
 			}
 		}
 	}
-	if closed < 0 || opened < closed {
-		t.Errorf("calls %q: want the old tab closed, then the new one opened", f.calls)
+	if closed < 0 || opened < 0 || closed < opened {
+		t.Errorf("calls %q: want the new tab opened, then the old one closed", f.calls)
 	}
 	// With no old tab open, the move just opens the new one.
 	f = &fake{trees: []string{tree}, picked: to}
@@ -1034,5 +1037,42 @@ func TestAMoveStartsTheRoleInItsFolderOnAnotherAccountAndClosesTheOldTab(t *test
 		if err == nil || !strings.Contains(err.Error(), c.want) || len(c.f.called("close-surface")) != 0 || len(c.f.called("new-")) != 0 {
 			t.Errorf("%q: err %v, calls %q", c.want, err, c.f.calls)
 		}
+	}
+}
+
+// Review 10-23 (-move): the old tab was closed before the new one opened, so a failure after (a new tab cmux refused, a
+// session that never came up) left the role with no tab; and no lock held the role, so a resume or a second move at the
+// same time could each open a Claude on one worktree. The role's lock, the one Resume takes, is held from the look at
+// its tabs until the new box is up, and the old tab closes only then.
+func TestAMoveHoldsTheRolesLockAndClosesTheOldTabLast(t *testing.T) {
+	to := func(string, string) (string, string, error) { return "max2", "/Users/o/.claude-max2", nil }
+	s := Spawn{Project: "quotes", Role: "lead", Prompt: "Read your brief.", Move: &Moved{Cwd: "/Users/o/Projects/quotes/.worktrees/lead", From: "max1"}}
+	f := &fake{trees: []string{treeWith("quotes · lead · max1")}, picked: to}
+	d := f.deps()
+	d.Lock = filepath.Join(t.TempDir(), "launch.lock")
+	cmux, held := d.Cmux, false
+	d.Cmux = func(args ...string) (string, error) {
+		if args[0] == "tree" {
+			lf, err := os.OpenFile(d.Lock+".quotes.lead", os.O_CREATE|os.O_RDWR, 0o600)
+			if err != nil {
+				t.Fatal(err)
+			}
+			held = syscall.Flock(int(lf.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) != nil
+			lf.Close()
+		}
+		return cmux(args...)
+	}
+	if _, _, _, err := Run(s, d); err != nil || !held {
+		t.Errorf("err %v, role lock held while looking at its tabs: %v", err, held)
+	}
+	// A session that never comes up leaves the old tab open.
+	f = &fake{trees: []string{treeWith("quotes · lead · max1")}, picked: to, noWork: true}
+	if _, _, _, err := Run(s, f.deps()); err == nil || len(f.called("close-surface")) != 0 {
+		t.Errorf("err %v, calls %q: want an error and the old tab left open", err, f.calls)
+	}
+	// A move from a project that starts on enterprise goes to the Max account with the most room.
+	f = &fake{trees: []string{tree}, picked: to, account: "enterprise"}
+	if _, _, tag, err := Run(s, f.deps()); err != nil || !strings.HasPrefix(tag, "[crius account=max ") {
+		t.Errorf("enterprise project: %q %v", tag, err)
 	}
 }

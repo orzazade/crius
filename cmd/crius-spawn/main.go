@@ -111,17 +111,30 @@ func resume(home, project, role string, d launch.Deps) error {
 	return nil
 }
 
-// moved is the role's current session as a move needs it: its folder and the Max account it ran on.
+// moved is the role's current session as a move needs it: its folder and the account it ran on, the row that lists its
+// config folder, else the row of the login that folder is signed into ("" when neither).
 func moved(home, project, role string) (*launch.Moved, error) {
 	s, err := stopped(home, project, role, "move")
 	if err != nil {
 		return nil, err
 	}
-	from, _, err := sessionAccount(home, s.Config)
+	as, err := quota.LoadAccounts(home)
 	if err != nil {
 		return nil, err
 	}
-	return &launch.Moved{Cwd: s.Cwd, From: from}, nil
+	a := as.Dir(s.Config)
+	if a == nil {
+		login, err := quota.LoginOf(s.Config)
+		if err != nil {
+			return nil, fmt.Errorf("%s %s: which account its session ran on: %w", project, role, err)
+		}
+		a = as.Of(login)
+	}
+	m := &launch.Moved{Cwd: s.Cwd}
+	if a != nil {
+		m.From = a.Name
+	}
+	return m, nil
 }
 
 // stopped is the session crius-hook keeps as the role's current one, refused while its Claude still runs.

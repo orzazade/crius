@@ -103,6 +103,8 @@ func Run(s Spawn, d Deps) (ws, surface, tag string, err error) {
 	}
 	if s.Account != "" {
 		account = s.Account
+	} else if s.Move != nil {
+		account = "max" // a move goes to the Max account with the most room, whatever the project starts on
 	}
 	var acct, dir string
 	switch {
@@ -122,8 +124,18 @@ func Run(s Spawn, d Deps) (ws, surface, tag string, err error) {
 		return "", "", "", fmt.Errorf("bad folder %q for account %s: want an absolute path with no quote, backslash or control character", dir, acct)
 	}
 	name, model, cmd := command(s.Project, s.Role, acct, dir)
+	var oldWs, oldSurface string
 	if s.Move != nil {
-		if cwd, err = move(d, s, acct, name); err != nil {
+		if d.Lock == "" {
+			return "", "", "", fmt.Errorf("no launch lock file named: a resume of the role at the same time could start a second Claude")
+		}
+		// The role's lock, as Resume takes it, held until the new box is up.
+		lf, err := hold(d.Lock + "." + s.Project + "." + s.Role)
+		if err != nil {
+			return "", "", "", err
+		}
+		defer lf.Close()
+		if cwd, oldWs, oldSurface, err = move(d, s, acct, name); err != nil {
 			return "", "", "", err
 		}
 	}
@@ -142,39 +154,43 @@ func Run(s Spawn, d Deps) (ws, surface, tag string, err error) {
 	if err := start(d, ws, surface, display(model), tag, s.Prompt); err != nil {
 		return "", "", "", fmt.Errorf("%s in %s %s: %v", name, ws, surface, err)
 	}
+	// The old tab, a shell, closes only once the new session is up, so a failure above leaves the role its tab.
+	if oldSurface != "" {
+		if out, err := d.Cmux("close-surface", "--workspace", oldWs, "--surface", oldSurface); err != nil {
+			return "", "", "", fmt.Errorf("%s is up in %s %s, but its old tab %s %s did not close: %v: %s", name, ws, surface, oldWs, oldSurface, err, out)
+		}
+	}
 	return ws, surface, tag, nil
 }
 
-// move checks a move to acct and closes the role's old tab, a shell once its Claude has stopped, so the role has one
-// tab; it gives the folder the new session starts in, the old one's. Anything wrong is refused before a tab is touched.
-func move(d Deps, s Spawn, acct, name string) (cwd string, err error) {
+// move checks a move to acct and finds the role's old tab, a shell once its Claude has stopped, for Run to close once
+// the new session is up, so the role has one tab; it gives the folder the new session starts in, the old one's, and the
+// old tab ("" when there is none). Anything wrong is refused before a tab is touched.
+func move(d Deps, s Spawn, acct, name string) (cwd, ws, surface string, err error) {
 	switch {
 	case !safeDir(s.Move.Cwd):
-		return "", fmt.Errorf("bad folder %q: want an absolute path with no quote, backslash or control character", s.Move.Cwd)
+		return "", "", "", fmt.Errorf("bad folder %q: want an absolute path with no quote, backslash or control character", s.Move.Cwd)
 	case acct == "":
-		return "", fmt.Errorf("%s %s: no Max account in accounts.toml with room to move to", s.Project, s.Role)
+		return "", "", "", fmt.Errorf("%s %s: no Max account in accounts.toml with room to move to", s.Project, s.Role)
 	case acct == s.Move.From:
-		return "", fmt.Errorf("%s %s is on %s already: not moved", s.Project, s.Role, acct)
+		return "", "", "", fmt.Errorf("%s %s is on %s already: not moved", s.Project, s.Role, acct)
 	}
 	tree, err := d.Cmux("tree", "--all")
 	if err != nil {
-		return "", fmt.Errorf("cmux tree: %v", err)
+		return "", "", "", fmt.Errorf("cmux tree: %v", err)
 	}
 	ws, surface, tty, err := named(tree, s.Project+" · "+s.Role)
 	if err != nil || surface == "" {
-		return s.Move.Cwd, err
+		return s.Move.Cwd, "", "", err
 	}
 	front, err := d.Front(tty)
 	if err != nil {
-		return "", err
+		return "", "", "", err
 	}
 	if !shells[filepath.Base(strings.TrimPrefix(front, "-"))] {
-		return "", fmt.Errorf("%s %s (%s %s) runs %s in front, not a shell: left alone, not moved to %s", s.Project, s.Role, ws, surface, front, name)
+		return "", "", "", fmt.Errorf("%s %s (%s %s) runs %s in front, not a shell: left alone, not moved to %s", s.Project, s.Role, ws, surface, front, name)
 	}
-	if out, err := d.Cmux("close-surface", "--workspace", ws, "--surface", surface); err != nil {
-		return "", fmt.Errorf("cmux close-surface: %v: %s", err, out)
-	}
-	return s.Move.Cwd, nil
+	return s.Move.Cwd, ws, surface, nil
 }
 
 // command gives a role's tab name, its model, and the shell line that starts Claude for it. With an account (acct, its

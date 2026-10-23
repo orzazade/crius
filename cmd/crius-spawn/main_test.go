@@ -147,6 +147,16 @@ func TestAMoveReadsTheRolesSessionAndItsAccount(t *testing.T) {
 	if m, err := moved(home, "quotes", "lead"); err != nil || m == nil || *m != (launch.Moved{Cwd: s.Cwd, From: "max1"}) {
 		t.Errorf("%+v %v", m, err)
 	}
+	// Review 10-23: a folder no row lists, signed in to max1's login, is on max1 too, so a move to max1 is refused.
+	m2 := filepath.Join(d, ".claude-other")
+	testutil.Write(t, filepath.Join(m2, ".claude.json"), `{"oauthAccount":{"accountUuid":"acct-1"}}`)
+	s2 := sessionstate.State{SessionID: "7a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d", Cwd: "/Users/o/Projects/quotes/.worktrees/dev", Project: "quotes", Role: "dev", Config: m2}
+	if err := sessionstate.WriteRole(filepath.Join(home, "roles"), s2, true); err != nil {
+		t.Fatal(err)
+	}
+	if m, err := moved(home, "quotes", "dev"); err != nil || m == nil || m.From != "max1" {
+		t.Errorf("unlisted folder on max1's login: %+v %v", m, err)
+	}
 	if _, err := moved(home, "quotes", "rig"); err == nil || !strings.Contains(err.Error(), "no session to move for quotes rig") {
 		t.Errorf("no role: %v", err)
 	}
