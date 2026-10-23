@@ -67,6 +67,8 @@ var (
 	leadRe = regexp.MustCompile(`^lead(?:er)?$`)
 	// The status line's context use: "██░░░░░░░░ ctx 21%".
 	ctxRe = regexp.MustCompile(`\bctx (\d{1,3})%`)
+	// The quota guard's pause NEED: its project and, for a pause per account, the roles it paused.
+	pauseRe = regexp.MustCompile(`reached (\S+)'s pause at \d+%; (?:PAUSE posted to ([^;.]+))?`)
 )
 
 // Screen is one tab. Err is set when its read failed; Text is then empty. ID is cmux's surface id (a UUID), which a
@@ -139,7 +141,7 @@ func Run(d Deps) error {
 	watch, alerts := watched(d.Home)
 	park, pa := readParked(d.Home)
 	alerts = append(alerts, pa...)
-	m, err := missed(d.Home, d.Now, watch)
+	m, err := missed(d.Home, d.Now, watch, park)
 	if err != nil {
 		return err
 	}
@@ -316,8 +318,33 @@ func project(who string) string {
 	return p
 }
 
-// missed gives [key, text] for each wake line to Crius, 20 min to 12 h old, with no reply line after it in its file.
-func missed(home string, now time.Time, watch projects) ([][2]string, error) {
+// answered says whether a wake line needs no reply on the bus (Crius 10-23 09:45): the digest's DONE is a report, and
+// the quota guard's pause NEED is answered once Crius parked its project, or every role it paused.
+func answered(typ, from, line string, park parked) bool {
+	if from == "crius:digest" && typ == "DONE" {
+		return true
+	}
+	m := pauseRe.FindStringSubmatch(line)
+	if from != "crius:ingest" || m == nil {
+		return false
+	}
+	if park[strings.ToLower(m[1])] {
+		return true
+	}
+	if m[2] == "" {
+		return false
+	}
+	for _, role := range strings.Split(m[2], ",") {
+		if !park.has(strings.TrimSpace(role), "") {
+			return false
+		}
+	}
+	return true
+}
+
+// missed gives [key, text] for each wake line to Crius, 20 min to 12 h old, with no reply line after it in its file
+// and not answered otherwise.
+func missed(home string, now time.Time, watch projects, park parked) ([][2]string, error) {
 	logs, err := filepath.Glob(filepath.Join(home, "bus", "*.log"))
 	if err != nil {
 		return nil, err
@@ -345,7 +372,7 @@ func missed(home string, now time.Time, watch projects) ([][2]string, error) {
 				open = nil
 				continue
 			}
-			if !wakeTypes[typ] || !toCrius(to) {
+			if !wakeTypes[typ] || !toCrius(to) || answered(typ, from, line, park) {
 				continue
 			}
 			// A team's line on another team's bus ("aitch:build" on crius.log) goes by the sender's team.

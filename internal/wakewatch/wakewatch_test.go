@@ -111,6 +111,38 @@ func TestALaterCriusLeadLineAnswersIt(t *testing.T) {
 	}
 }
 
+// Crius 10-23 09:45: wakewatch re-woke Crius for a digest DONE (a report, it needs no reply) and for the quota guard's
+// NEED at 06:36 after Crius had parked quotes. A pause NEED is answered once its project, or every role it paused, is
+// in ~/.crius/parked; a NEED with roles still unparked, or about something else, still wakes.
+func TestADigestDoneAndAParkedPauseNeedNoReply(t *testing.T) {
+	pause := func(text string) string {
+		return stamp(t0) + " NEED crius:ingest -> crius:lead — quota guard: " + text + "\n"
+	}
+	bus := stamp(t0) + " DONE crius:digest -> crius:lead — goal report ~/.crius/state/digest/2026-10-23-0900.md\n" +
+		pause("Max 7d at 75% (06:34) reached quotes's pause at 75%; PAUSE posted on quotes.log. Park quotes in ~/.crius/parked and stop its tabs") +
+		pause("account max1 at 91% (13:00) reached tamada's pause at 90%; PAUSE posted to tamada:p1, tamada:p2; 0 tabs with no role on it") +
+		pause("account max2 at 92% (13:00) reached falcon's pause at 90%; PAUSE posted to falcon:p1, falcon:p2; 0 tabs with no role on it") +
+		pause("account max2 at 92% (13:00) reached axi's pause at 90%; no tab of axi has a role on it; 1 tab with no role on it") +
+		stamp(t0) + " NEED crius:ingest -> crius:lead — quota guard is off, no pause or quota alert runs: bad file\n"
+	home := setup(t, map[string]string{"crius.log": bus})
+	testutil.Write(t, filepath.Join(home, "parked"), "quotes\ntamada:p1\ntamada:p2\nfalcon:p1\n")
+	f := &fake{}
+	if err := Run(f.deps(home, t0.Add(25*time.Minute))); err != nil {
+		t.Fatal(err)
+	}
+	all := strings.Join(f.sent, "\n")
+	for _, not := range []string{"goal report", "quotes's pause", "tamada's pause"} {
+		if strings.Contains(all, not) {
+			t.Error("woke for", not)
+		}
+	}
+	for _, want := range []string{"falcon's pause", "axi's pause", "quota guard is off"} {
+		if !strings.Contains(all, want) {
+			t.Error("no wake for", want, all)
+		}
+	}
+}
+
 func TestAnAnswerOnAnotherBusDoesNotCount(t *testing.T) {
 	home := setup(t, map[string]string{"quotes.log": done(t0),
 		"crius.log": stamp(t0.Add(5*time.Minute)) + " ORDER crius:lead -> crius:build — x\n"})
