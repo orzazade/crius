@@ -1417,4 +1417,38 @@ func TestQuotaGuardSplitRoleUsesTheRoomTestAndALaterPauseTellsCrius(t *testing.T
 	if n := grepAlerts(y.alerts(), "PAUSE posted to quotes:p2"); len(n) != 1 {
 		t.Fatalf("want a NEED telling Crius p2 was paused, got %q", y.alerts())
 	}
+
+	// Review 10-23: a paused role's tab going quiet is no news, so no second NEED.
+	now = qNow
+	z := newIC(t, cfg{extra: strings.Replace(guardedProject, "pause_at = 70", "pause_at = 90", 1)})
+	l1 = z.signIn(d1, "u-1")
+	testutil.Write(t, filepath.Join(z.home, "accounts.toml"), "[[account]]\nname = \"max1\"\nplan = \"max\"\ndirs = [\""+d1+"\"]\n")
+	z.session("work", s1, "/work/quotes", "[crius account=max project=quotes role=p1]", qNow.Add(-20*time.Minute))
+	z.spool(on(sampleAt(s1, qNow.Add(-10*time.Minute), 92, r1), l1, d1))
+	z.run()
+	now = qNow.Add(50 * time.Minute)
+	z.run()
+	if n := grepAlerts(z.alerts(), "account max1 at 92%"); len(n) != 1 {
+		t.Fatalf("want one NEED for max1, got %q", n)
+	}
+
+	// Review 10-23: a listed account not measured yet is room in the NEED, so a role with a tab there is not paused.
+	now = qNow
+	w := newIC(t, cfg{extra: strings.Replace(guardedProject, "pause_at = 70", "pause_at = 90", 1)})
+	l1, l2 = w.signIn(d1, "u-1"), w.signIn(d2, "u-2")
+	testutil.Write(t, filepath.Join(w.home, "accounts.toml"), "[[account]]\nname = \"max1\"\nplan = \"max\"\ndirs = [\""+
+		d1+"\"]\n[[account]]\nname = \"max2\"\nplan = \"max\"\ndirs = [\""+d2+"\"]\n")
+	w.session("work", s2, "/work/quotes", "[crius account=max project=quotes role=p2]", qNow.Add(-20*time.Minute))
+	w.session("work", s3, "/work/quotes", "[crius account=max project=quotes role=p2]", qNow.Add(-20*time.Minute))
+	fresh := on(sampleAt(s3, qNow.Add(-8*time.Minute), 0, r1), l2, d2)
+	fresh.RL, fresh.FivePct, fresh.FiveReset, fresh.SevenPct, fresh.SevenReset = false, nil, nil, nil, nil // no rate_limits before its first reply
+	w.spool(on(sampleAt(s2, qNow.Add(-9*time.Minute), 92, r1), l1, d1), fresh)
+	w.run()
+	n := grepAlerts(w.alerts(), "account max1 at 92%")
+	if len(n) != 1 || !strings.Contains(n[0], "max2 not measured") {
+		t.Fatalf("want a NEED naming max2 not measured as room, got %q", w.alerts())
+	}
+	if p := grepAlerts(w.bus("quotes"), " -> quotes:p2 — "); len(p) != 0 || !strings.Contains(n[0], "p2 also runs on max2") {
+		t.Fatalf("p2 also runs on max2, room: want no PAUSE and p2 named, got %q and %q", p, n)
+	}
 }

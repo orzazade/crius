@@ -245,8 +245,8 @@ func (r *runner) pauseChecks(tx *sql.Tx, rep *quota.Report, as *quota.Accounts) 
 
 // pauseAccounts is the guard with several Max accounts (owner 10-23): each login has its own window, and one at the
 // project's pause_at pauses only the project's tabs on it, each by its role (a tab runs on the login of its newest
-// statusline line within quota.Gap). Crius gets one NEED per account and window naming the roles, the tabs with no role
-// (no bus line reaches them) and the accounts with room. Every account at the limit pauses the whole team. Resuming
+// statusline line within quota.Gap). Crius gets one NEED per account and window, and one more when a later run pauses a
+// new role, naming the roles, the tabs with no role (no bus line reaches them) and the accounts with room. Every account at the limit pauses the whole team. Resuming
 // stays Crius's word, per account.
 func (r *runner) pauseAccounts(tx *sql.Tx, rep *quota.Report, as *quota.Accounts, p project) error {
 	tabs, err := tabsByLogin(tx, p.slug, rep.Now)
@@ -272,19 +272,20 @@ func (r *runner) pauseAccounts(tx *sql.Tx, rep *quota.Report, as *quota.Accounts
 			full = append(full, a)
 		}
 	}
+	if as != nil {
+		for _, a := range as.Rows {
+			if a.Plan == "max" && a.Login != "" && !seen[a.Login] {
+				room = append(room, a.Name+" not measured")
+				hasRoom[a.Login] = true
+			}
+		}
+	}
 	// A role with a tab on an account with room, as the room list counts it: a PAUSE to the role would stop that tab too.
 	elsewhere := map[string]string{}
 	for login, roles := range tabs {
 		for _, role := range roles {
 			if hasRoom[login] && role != "unknown" {
 				elsewhere[role] = as.Name(login)
-			}
-		}
-	}
-	if as != nil {
-		for _, a := range as.Rows {
-			if a.Plan == "max" && a.Login != "" && !seen[a.Login] {
-				room = append(room, a.Name+" not measured")
 			}
 		}
 	}
@@ -299,7 +300,7 @@ func (r *runner) pauseAccounts(tx *sql.Tx, rep *quota.Report, as *quota.Accounts
 		}
 		at, resets := a.SevenAt.Local().Format("15:04"), a.Reset.Local().Format("Mon 15:04")
 		var roles, split []string
-		noRole := 0
+		noRole, news := 0, false
 		for _, role := range tabs[a.Login] {
 			if role == "unknown" {
 				noRole++
@@ -315,12 +316,14 @@ func (r *runner) pauseAccounts(tx *sql.Tx, rep *quota.Report, as *quota.Accounts
 				continue
 			}
 			roles = append(roles, role)
-			if err := r.queueLine(tx, key+":"+role, "PAUSE", p.slug, p.slug+":"+role, fmt.Sprintf(
+			added, err := r.queueNew(tx, key+":"+role, "PAUSE", p.slug, p.slug+":"+role, fmt.Sprintf(
 				"quota: account %s at %g%% of its 7d (%s) reached %s's pause at %d%%: you run on it, stop now; Crius "+
 					"says when to resume or moves you to an account with room (it resets %s)", a.Name, a.SevenPct, at,
-				p.slug, p.pauseAt, resets)); err != nil {
+				p.slug, p.pauseAt, resets))
+			if err != nil {
 				return err
 			}
+			news = news || added
 		}
 		paused := "no tab of " + p.slug + " has a role on it"
 		if len(roles) > 0 {
@@ -336,12 +339,19 @@ func (r *runner) pauseAccounts(tx *sql.Tx, rep *quota.Report, as *quota.Accounts
 		if noRole == 1 {
 			tabWord = "tab"
 		}
-		// Keyed on the roles paused too: a role paused in a later run of the window, its tab with room gone quiet, is news.
-		if err := r.queueLine(tx, key+":crius:"+strings.Join(roles, ","), "NEED", "crius", "crius:lead", fmt.Sprintf(
-			"quota guard: account %s at %g%% (%s) reached %s's pause at %d%%; %s; %d %s with no role on it (stop by "+
-				"hand). Room: %s. Move its tabs there or park them", a.Name, a.SevenPct, at, p.slug, p.pauseAt, paused,
-			noRole, tabWord, rooms)); err != nil {
+		need := fmt.Sprintf("quota guard: account %s at %g%% (%s) reached %s's pause at %d%%; %s; %d %s with no role on "+
+			"it (stop by hand). Room: %s. Move its tabs there or park them", a.Name, a.SevenPct, at, p.slug, p.pauseAt,
+			paused, noRole, tabWord, rooms)
+		added, err := r.queueNew(tx, key+":crius", "NEED", "crius", "crius:lead", need)
+		if err != nil {
 			return err
+		}
+		// After the window's first NEED, only a new PAUSE is news (a role paused once its tab with room went quiet); its
+		// key names the roles paused, among them the new one, so it is new too.
+		if !added && news {
+			if err := r.queueLine(tx, key+":crius:"+strings.Join(roles, ","), "NEED", "crius", "crius:lead", need); err != nil {
+				return err
+			}
 		}
 	}
 	if len(full) == 0 || len(room) > 0 {

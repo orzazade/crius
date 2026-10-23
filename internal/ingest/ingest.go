@@ -189,9 +189,19 @@ func (r *runner) queueAlert(tx *sql.Tx, key, text string) error {
 
 // queueLine is queueAlert for a line of type typ on log's bus, sent to to.
 func (r *runner) queueLine(tx *sql.Tx, key, typ, log, to, text string) error {
-	_, err := tx.Exec("insert or ignore into alert (key, ts, text, line_type, log, recipient) values (?,?,?,?,?,?)",
-		key, utcNow(), r.text(text), typ, log, to)
+	_, err := r.queueNew(tx, key, typ, log, to, text)
 	return err
+}
+
+// queueNew is queueLine, saying whether the line is new: false when its key was queued before.
+func (r *runner) queueNew(tx *sql.Tx, key, typ, log, to, text string) (bool, error) {
+	res, err := tx.Exec("insert or ignore into alert (key, ts, text, line_type, log, recipient) values (?,?,?,?,?,?)",
+		key, utcNow(), r.text(text), typ, log, to)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
 }
 
 func (r *runner) flushAlerts() {
