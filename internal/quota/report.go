@@ -72,8 +72,9 @@ type Projects struct {
 }
 
 type obs struct {
-	ts time.Time
-	rl bool
+	ts    time.Time
+	rl    bool
+	login string // "" on a line from before the field or from a folder with no login
 }
 
 // orgLine is a transcript line naming the session's organization, with the account learned for it ("" when none).
@@ -137,14 +138,7 @@ func (s *sess) org(t time.Time) *orgLine {
 // earlier requests take it too), else the account learned for its organization (measured, so it outranks a tag),
 // else the launch tag active then, else unknown.
 func (s *sess) account(t time.Time) string {
-	if len(s.obs) > 0 {
-		o := s.obs[0]
-		for _, x := range s.obs {
-			if x.ts.Add(-Grace).After(t) {
-				break
-			}
-			o = x
-		}
+	if o := s.line(t); o != nil {
 		if o.rl {
 			return "max"
 		}
@@ -157,6 +151,29 @@ func (s *sess) account(t time.Time) string {
 		return a.account
 	}
 	return "unknown"
+}
+
+// line is the session's statusline line at t: the newest by then, else its first; nil when it has none.
+func (s *sess) line(t time.Time) *obs {
+	if len(s.obs) == 0 {
+		return nil
+	}
+	o := &s.obs[0]
+	for i := range s.obs {
+		if s.obs[i].ts.Add(-Grace).After(t) {
+			break
+		}
+		o = &s.obs[i]
+	}
+	return o
+}
+
+// login at t: the login its statusline line then names, "" when none does.
+func (s *sess) login(t time.Time) string {
+	if o := s.line(t); o != nil {
+		return o.login
+	}
+	return ""
 }
 
 // guard lists the session's violations: every stretch billed to the enterprise account (by a statusline line
@@ -282,10 +299,10 @@ func sessions(db Querier, p Projects) (out map[string]*sess, lastLine map[string
 			s.persona, s.cwdProject = persona, p.ForCwd(cwd, recorded)
 			return nil
 		}},
-		{"select session, coalesce(persona, ''), ts, rl from account_seen order by ts", func(r *sql.Rows) error {
-			var id, persona, ts string
+		{"select session, coalesce(persona, ''), ts, rl, coalesce(login, '') from account_seen order by ts", func(r *sql.Rows) error {
+			var id, persona, ts, login string
 			var rl bool
-			if err := r.Scan(&id, &persona, &ts, &rl); err != nil {
+			if err := r.Scan(&id, &persona, &ts, &rl, &login); err != nil {
 				return err
 			}
 			t, err := parseTS(ts)
@@ -299,7 +316,7 @@ func sessions(db Querier, p Projects) (out map[string]*sess, lastLine map[string
 			if t.After(lastLine[persona]) {
 				lastLine[persona] = t
 			}
-			s.obs = append(s.obs, obs{t, rl})
+			s.obs = append(s.obs, obs{t, rl, login})
 			return nil
 		}},
 		{"select session, min(coalesce(ts_first, ts_last)), max(coalesce(ts_last, ts_first)) from request" +
@@ -538,8 +555,12 @@ func Build(db Querier, p Projects, now time.Time) (*Report, error) {
 			byLogin[s.login] = append(byLogin[s.login], s)
 		}
 	}
+	newest := map[string]time.Time{} // per login: its newest sample of its own current window
 	for login, ls := range byLogin {
-		_, u := reduce(ls, now)
+		cur, u := reduce(ls, now)
+		if n := len(cur); n > 0 {
+			newest[login] = cur[n-1].ts
+		}
 		u.Login, u.Name = login, p.Accounts.Name(login)
 		rep.Accounts = append(rep.Accounts, u)
 	}
@@ -578,7 +599,7 @@ func Build(db Querier, p Projects, now time.Time) (*Report, error) {
 	}
 	shares, entWeek, entDay := map[string]float64{}, map[string]float64{}, map[string]float64{}
 	newestOpen := map[string]time.Time{} // per persona: newest request of a session the sampler should cover
-	var newestMax time.Time
+	newestMax := map[string]time.Time{}  // per login ("" when its line names none): newest Max request
 	unknown := map[string]bool{}
 	for rows.Next() {
 		var sid, ts string
@@ -631,8 +652,8 @@ func Build(db Querier, p Projects, now time.Time) (*Report, error) {
 		if account != "enterprise" && t.After(newestOpen[s.persona]) {
 			newestOpen[s.persona] = t
 		}
-		if account == "max" && t.After(newestMax) {
-			newestMax = t
+		if l := s.login(t); account == "max" && t.After(newestMax[l]) {
+			newestMax[l] = t
 		}
 	}
 	rows.Close()
@@ -654,13 +675,37 @@ func Build(db Querier, p Projects, now time.Time) (*Report, error) {
 	}
 	sort.Strings(rep.Stale)
 	// Lines can keep coming while none measures the current epoch (an idle session repeating an old window), so
-	// open Max sessions also need a current-epoch sample.
-	if len(rep.Stale) == 0 && !newestMax.IsZero() && now.Sub(newestMax) <= Gap && now.Sub(rep.LastSample) > Gap {
-		last := "none"
-		if !rep.LastSample.IsZero() {
-			last = when(rep.LastSample)
+	// open Max sessions also need a current-epoch sample: of their own login's window, as each login has its own
+	// (live 10-23: max1's later reset hid max2's samples). A session whose line names no login takes any sample.
+	if len(rep.Stale) == 0 {
+		var logins []string
+		for l, t := range newestMax {
+			if now.Sub(t) <= Gap {
+				logins = append(logins, l)
+			}
 		}
-		rep.Stale = append(rep.Stale, "max account: newest current-epoch sample "+last)
+		sort.Strings(logins)
+		for _, l := range logins {
+			name, last := "max account", newest[l]
+			if l != "" {
+				name += " " + p.Accounts.Name(l)
+			} else {
+				last = rep.LastSample
+				for _, t := range newest {
+					if t.After(last) {
+						last = t
+					}
+				}
+			}
+			if now.Sub(last) <= Gap {
+				continue
+			}
+			at := "none"
+			if !last.IsZero() {
+				at = when(last)
+			}
+			rep.Stale = append(rep.Stale, name+": newest current-epoch sample "+at)
+		}
 	}
 	if rep.LastSample.IsZero() {
 		rep.Reasons = append(rep.Reasons, "no quota sample yet")

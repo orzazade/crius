@@ -1215,6 +1215,39 @@ func TestQuotaReportsEachAccount(t *testing.T) {
 	}
 }
 
+// Live store 10-23 22:22: quotes ran on max2 (sampled every few minutes) while max1, whose window resets later, had
+// its last line at 21:30; the report took max1's window as the only current one and called the guard blind. Each
+// login's open sessions need a current sample of that login's own window, and the stale entry names the account.
+func TestQuotaEachLoginIsFreshByItsOwnWindow(t *testing.T) {
+	x := quotaCase(t)
+	d1, d2 := filepath.Join(x.home, "cfg1"), filepath.Join(x.home, "cfg2")
+	l1, l2 := x.signIn(d1, "u-1"), x.signIn(d2, "u-2")
+	testutil.Write(t, filepath.Join(x.home, "accounts.toml"), "[[account]]\nname = \"max1\"\nplan = \"max\"\ndirs = [\""+
+		d1+"\"]\n[[account]]\nname = \"max2\"\nplan = \"max\"\ndirs = [\""+d2+"\"]\n")
+	r1, r2 := qNow.Add(6*24*time.Hour), qNow.Add(2*24*time.Hour)
+	s1, s2 := "aaaaaaaa-0000-0000-0000-000000000001", "aaaaaaaa-0000-0000-0000-000000000002"
+	on := func(l quota.Line, login, dir string) quota.Line {
+		l.Login, l.Dir, l.Persona = login, dir, "work"
+		return l
+	}
+	x.session("work", s1, "/work/quotes", "", qNow.Add(-80*time.Minute))
+	x.session("work", s2, "/work/quotes", "", qNow.Add(-3*time.Minute))
+	x.spool(on(sampleAt(s1, qNow.Add(-80*time.Minute), 91, r1), l1, d1),
+		on(sampleAt(s2, qNow.Add(-5*time.Minute), 10, r2), l2, d2))
+	x.run()
+	if rep := x.report(); len(rep.Stale) != 0 {
+		t.Fatalf("max2's open session has a sample 5 min old: want no stale entry, got %q", rep.Stale)
+	}
+	// max1's session works again while its statusline repeats an older window: max1 has no current sample.
+	x.session("work", s1, "/work/quotes", "", qNow.Add(-80*time.Minute), qNow.Add(-2*time.Minute))
+	x.spool(on(sampleAt(s1, qNow.Add(-2*time.Minute), 50, r2), l1, d1))
+	x.run()
+	rep := x.report()
+	if len(rep.Stale) != 1 || !strings.Contains(rep.Stale[0], "max1") || strings.Contains(rep.Stale[0], "max2") {
+		t.Fatalf("want one stale entry naming max1, got %q", rep.Stale)
+	}
+}
+
 // Crius 10-23 10:22: the pause key names the limit too. Raising pause_at within a window (75 -> 85) and reaching the new
 // limit posts one new PAUSE; the old limit's PAUSE is not posted again.
 func TestQuotaGuardPausesAgainAtARaisedLimit(t *testing.T) {
