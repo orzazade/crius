@@ -870,8 +870,9 @@ func TestTwoResumesOfOneRoleAtOnceTypeOnce(t *testing.T) {
 }
 
 // Owner 10-23: a new session starts on the Max account with the most room, through aitch's --primary for its folder,
-// and the tab title names the account. The tag still says account=max: the row is a Max account.
-func TestAPickedAccountStartsInItsFolderAndIsInTheTitle(t *testing.T) {
+// and the tab title is "<project> · <role>" without the account (owner 10-23: too much text). The tag still says
+// account=max: the row is a Max account.
+func TestAPickedAccountStartsInItsFolderAndIsNotInTheTitle(t *testing.T) {
 	var asked []string
 	f := &fake{trees: []string{tree}, picked: func(project, want string) (string, string, error) {
 		asked = append(asked, project+" "+want)
@@ -885,11 +886,11 @@ func TestAPickedAccountStartsInItsFolderAndIsInTheTitle(t *testing.T) {
 		t.Errorf("picker asked %q, want once for quotes on max", asked)
 	}
 	want := "--command aitch launch claude --primary '/Users/o/.claude-max2' -- --model claude-opus-5-5" +
-		` --permission-mode bypassPermissions --settings '{"autoCompactWindow":300000}' -n 'quotes · lead · max2'`
+		` --permission-mode bypassPermissions --settings '{"autoCompactWindow":300000}' -n 'quotes · lead'`
 	if ns := f.called("new-surface")[0]; !strings.HasSuffix(ns, want) {
 		t.Errorf("new-surface\n got %s\nwant suffix %s", ns, want)
 	}
-	if got := f.called("rename-tab "); len(got) != 1 || !strings.HasSuffix(got[0], "-- quotes · lead · max2") {
+	if got := f.called("rename-tab "); len(got) != 1 || !strings.HasSuffix(got[0], "-- quotes · lead") {
 		t.Errorf("rename-tab %q", got)
 	}
 	if !strings.HasPrefix(tag, "[crius account=max project=quotes role=lead") {
@@ -898,7 +899,7 @@ func TestAPickedAccountStartsInItsFolderAndIsInTheTitle(t *testing.T) {
 
 	// A named row is asked for by name; enterprise is never picked; no pick launches as before.
 	for _, c := range []struct{ account, asked, suffix string }{
-		{"max3", "quotes max3", "-n 'quotes · lead · max2'"},
+		{"max3", "quotes max3", "-n 'quotes · lead'"},
 		{"enterprise", "", "-n 'quotes · lead'"},
 	} {
 		asked = nil
@@ -948,7 +949,7 @@ func TestAFailedPickIsRefusedBeforeCmuxIsTouched(t *testing.T) {
 	}
 }
 
-// A tab opened on a picked account is titled "<project> · <role> · <account>": a resume still finds it as the role's.
+// A tab opened before 10-23 19:55 on a picked account is titled "<project> · <role> · <account>": a resume still finds it.
 func TestResumeFindsTheRoleTabThatNamesItsAccount(t *testing.T) {
 	f := &fake{trees: []string{treeWith("quotes · lead · max2")}}
 	ws, surface, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/quotes/src", "", "", f.deps())
@@ -966,14 +967,14 @@ func TestResumeFindsTheRoleTabThatNamesItsAccount(t *testing.T) {
 }
 
 // Owner 10-23: a session that ran on a picked Max account comes back on it, in the same folder (its transcript is
-// there), titled with the account as before.
+// there), titled "<project> · <role>" without the account.
 func TestResumeStartsInTheSessionsAccountFolder(t *testing.T) {
 	f := &fake{trees: []string{treeWith("quotes · lead · max2")}}
 	if _, _, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/quotes/src", "max2", "/Users/o/.claude-max2", f.deps()); err != nil {
 		t.Fatal(err)
 	}
 	want := "send --workspace workspace:2 --surface surface:22 -- clear && cd '/Users/o/Projects/quotes/src' && aitch launch claude --primary '/Users/o/.claude-max2' -- " +
-		`--model claude-opus-5-5 --permission-mode bypassPermissions --settings '{"autoCompactWindow":300000}' -n 'quotes · lead · max2' --resume ` + resumeID
+		`--model claude-opus-5-5 --permission-mode bypassPermissions --settings '{"autoCompactWindow":300000}' -n 'quotes · lead' --resume ` + resumeID
 	if got := f.called("send "); len(got) != 1 || got[0] != want {
 		t.Errorf("typed %q,\nwant %q", got, want)
 	}
@@ -982,7 +983,7 @@ func TestResumeStartsInTheSessionsAccountFolder(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := f.called("new-surface "); len(got) != 1 || !strings.Contains(got[0], "--primary '/Users/o/.claude-max2' ") ||
-		!strings.HasSuffix(got[0], "-n 'quotes · lead · max2' --resume "+resumeID) {
+		!strings.HasSuffix(got[0], "-n 'quotes · lead' --resume "+resumeID) {
 		t.Errorf("new-surface %q", got)
 	}
 	for _, c := range [][2]string{{"Max 2", "/Users/o/.claude-max2"}, {"max2", "/Users/o/.claude-max2'; rm x"}, {"max2", ""}} {
@@ -1008,7 +1009,7 @@ func TestAMoveStartsTheRoleInItsFolderOnAnotherAccountAndClosesTheOldTab(t *test
 		if strings.HasPrefix(c, "new-surface ") {
 			opened = i
 			if !strings.Contains(c, "--working-directory /Users/o/Projects/quotes/.worktrees/lead ") ||
-				!strings.Contains(c, "--primary '/Users/o/.claude-max2' ") || !strings.HasSuffix(c, "-n 'quotes · lead · max2'") {
+				!strings.Contains(c, "--primary '/Users/o/.claude-max2' ") || !strings.HasSuffix(c, "-n 'quotes · lead'") {
 				t.Errorf("new-surface %q", c)
 			}
 		}

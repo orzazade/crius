@@ -8,7 +8,7 @@
 // gets the folder-trust dialog answered, its model checked, and the provenance tag line typed before the first prompt.
 // It prints the workspace, the tab and the tag, and fails loudly when any step does not show on screen.
 // On a Max account it starts in the folder of the accounts.toml row with the most room (or the row -account names)
-// and its tab says which: "<project> · <role> · <account>"; with no such row aitch's own route picks, as before.
+// (its tab is "<project> · <role>", the account shows in its quota line); with no such row aitch's own route picks.
 //
 // With -resume it brings the role's current session back after a crash or a reboot (claude --resume), in its own tab
 // when that is still open with a shell in front, else in a new one. The current session is the one crius-hook last saw

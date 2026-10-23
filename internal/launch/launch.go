@@ -1,6 +1,6 @@
 // Package launch opens a team session the one way cmux-team SKILL.md §5 asks: a tab inside the project's workspace
-// (a workspace is made only when the project has none), named "<project> · <role>" (and " · <account>" on a picked
-// Max account), the workspace coloured by its group, and Claude started through aitch with the role's model and the
+// (a workspace is made only when the project has none), named "<project> · <role>" (also on a picked Max account),
+// the workspace coloured by its group, and Claude started through aitch with the role's model and the
 // same name (-n, which is what /rename sets).
 // It then answers the folder-trust dialog, checks the status bar model, types the provenance tag line and the first
 // prompt, and proves the tab started work.
@@ -200,7 +200,7 @@ func move(d Deps, s Spawn, acct, name string) (cwd, ws, surface, tty string, err
 }
 
 // command gives a role's tab name, its model, and the shell line that starts Claude for it. With an account (acct, its
-// config folder dir) the name ends in it and aitch starts Claude in that folder.
+// config folder dir) aitch starts Claude in that folder; the name leaves the account out (owner 10-23: too much text).
 func command(project, role, acct, dir string) (name, model, cmd string) {
 	name = project + " · " + role
 	model = "claude-opus-5-5"
@@ -210,7 +210,6 @@ func command(project, role, acct, dir string) (name, model, cmd string) {
 	// Through aitch, never bare claude: cmux's shell wraps claude and skips aitch's quota route (SKILL.md §5).
 	cmd = "aitch launch claude -- --model "
 	if acct != "" {
-		name += " · " + acct
 		cmd = "aitch launch claude --primary '" + dir + "' -- --model "
 	}
 	cmd += model +
@@ -243,8 +242,7 @@ func tab(d Deps, project, persona, name, cwd, cmd string) (ws, surface string, e
 // typed into the role's tab when the tab is still there with a shell in front (a crash), else in a new tab of the
 // project's workspace named as before (a reboot). A tab with anything else in front, Claude itself, is left alone. It
 // waits for Claude's input box, so a resume that finds no conversation fails with what the screen said. A session that
-// ran on a Max account of accounts.toml (acct, its config folder dir) comes back in that folder, titled with the
-// account; acct "" goes through aitch's own route as before.
+// ran on a Max account of accounts.toml (acct, its config folder dir) comes back in that folder; acct "" goes through aitch's own route as before.
 func Resume(project, role, id, cwd, acct, dir string, d Deps) (ws, surface string, err error) {
 	switch {
 	case acct != "" && !slugRe.MatchString(acct): // typed into a shell and a title
@@ -349,7 +347,8 @@ func hold(path string) (*os.File, error) {
 // shells are what may be in front of a tab whose Claude has ended.
 var shells = map[string]bool{"zsh": true, "bash": true, "sh": true, "fish": true}
 
-// named gives the one terminal tab titled name, or name and " · <account>" (a tab on a picked account), its workspace
+// named gives the one terminal tab titled name, or name and " · <account>" (a tab opened on a picked account before
+// 10-23 19:55), its workspace
 // and its tty, or no surface when there is none.
 func named(tree, name string) (ws, surface, tty string, err error) {
 	var w string
