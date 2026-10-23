@@ -1075,4 +1075,17 @@ func TestAMoveHoldsTheRolesLockAndClosesTheOldTabLast(t *testing.T) {
 	if _, _, tag, err := Run(s, f.deps()); err != nil || !strings.HasPrefix(tag, "[crius account=max ") {
 		t.Errorf("enterprise project: %q %v", tag, err)
 	}
+	// Review 10-23: a Claude started in the old tab while the new one came up keeps its tab.
+	f = &fake{trees: []string{treeWith("quotes · lead · max1")}, picked: to}
+	d = f.deps()
+	front, looks := d.Front, 0
+	d.Front = func(tty string) (string, error) {
+		if looks++; looks > 1 {
+			return "claude", nil
+		}
+		return front(tty)
+	}
+	if _, _, _, err := Run(s, d); err == nil || !strings.Contains(err.Error(), "runs claude in front") || len(f.called("close-surface")) != 0 {
+		t.Errorf("err %v, calls %q: want the old tab left open, its Claude named", err, f.calls)
+	}
 }

@@ -1361,3 +1361,60 @@ func TestQuotaGuardRoomIsAListedAccountAndASplitRoleIsNotPaused(t *testing.T) {
 		t.Fatalf("want a NEED naming p2 on max1 and max4's new window, got %q", y.alerts())
 	}
 }
+
+// Review 10-23 (multi-max): a role's other tab counted as room on any account not full, an unlisted login whose week
+// ended included, which the room list does not count: p2 was named "not paused" and then paused with the whole team.
+// And the NEED was keyed once per account and window, so a role paused in a later run, once its tab with room went
+// quiet, got its PAUSE with no word to Crius.
+func TestQuotaGuardSplitRoleUsesTheRoomTestAndALaterPauseTellsCrius(t *testing.T) {
+	now := qNow
+	clock = func() time.Time { return now }
+	t.Cleanup(func() { clock = time.Now })
+	x := newIC(t, cfg{extra: strings.Replace(guardedProject, "pause_at = 70", "pause_at = 90", 1)})
+	d1, d2, d3 := filepath.Join(x.home, "cfg1"), filepath.Join(x.home, "cfg2"), filepath.Join(x.home, "cfg3")
+	l1, l2, l3 := x.signIn(d1, "u-1"), x.signIn(d2, "u-2"), x.signIn(d3, "u-3")
+	testutil.Write(t, filepath.Join(x.home, "accounts.toml"), "[[account]]\nname = \"max1\"\nplan = \"max\"\ndirs = [\""+
+		d1+"\"]\n[[account]]\nname = \"max2\"\nplan = \"max\"\ndirs = [\""+d2+"\"]\n")
+	r1, gone := qNow.Add(4*24*time.Hour), qNow.Add(-2*24*time.Hour)
+	s1, s2, s3 := "aaaaaaaa-0000-0000-0000-000000000001", "aaaaaaaa-0000-0000-0000-000000000002", "aaaaaaaa-0000-0000-0000-000000000003"
+	x.session("work", s1, "/work/quotes", "[crius account=max project=quotes role=p1]", qNow.Add(-20*time.Minute))
+	x.session("work", s2, "/work/quotes", "[crius account=max project=quotes role=p2]", qNow.Add(-20*time.Minute))
+	x.session("work", s3, "/work/quotes", "[crius account=max project=quotes role=p2]", qNow.Add(-20*time.Minute))
+	on := func(l quota.Line, login, dir string) quota.Line {
+		l.Login, l.Dir, l.Persona = login, dir, "work"
+		return l
+	}
+	x.spool(on(sampleAt(s1, qNow.Add(-10*time.Minute), 91, r1), l1, d1),
+		on(sampleAt(s2, qNow.Add(-9*time.Minute), 92, r1), l2, d2),
+		on(sampleAt(s3, qNow.Add(-8*time.Minute), 30, gone), l3, d3))
+	x.run()
+	if p := grepAlerts(x.bus("quotes"), " -> quotes:p2 — "); len(p) != 1 {
+		t.Fatalf("p2's other tab is on an unlisted login, no room: want a PAUSE to quotes:p2, got %q", x.bus("quotes"))
+	}
+	if n := grepAlerts(x.alerts(), "also runs on"); len(n) != 0 {
+		t.Fatalf("want no role named as running elsewhere, got %q", n)
+	}
+
+	// p2 on max2 at 92% and on max1 at 40%, a listed account with room: not paused. Then its tab on max1 goes quiet.
+	y := newIC(t, cfg{extra: strings.Replace(guardedProject, "pause_at = 70", "pause_at = 90", 1)})
+	l1, l2 = y.signIn(d1, "u-1"), y.signIn(d2, "u-2")
+	testutil.Write(t, filepath.Join(y.home, "accounts.toml"), "[[account]]\nname = \"max1\"\nplan = \"max\"\ndirs = [\""+
+		d1+"\"]\n[[account]]\nname = \"max2\"\nplan = \"max\"\ndirs = [\""+d2+"\"]\n")
+	y.session("work", s2, "/work/quotes", "[crius account=max project=quotes role=p2]", qNow.Add(-20*time.Minute))
+	y.session("work", s3, "/work/quotes", "[crius account=max project=quotes role=p2]", qNow.Add(-20*time.Minute))
+	y.spool(on(sampleAt(s2, qNow.Add(-9*time.Minute), 92, r1), l2, d2),
+		on(sampleAt(s3, qNow.Add(-8*time.Minute), 40, r1), l1, d1))
+	y.run()
+	if n := grepAlerts(y.alerts(), "account max2 at 92%"); len(n) != 1 || !strings.Contains(n[0], "no PAUSE posted") {
+		t.Fatalf("want one NEED saying no PAUSE posted, got %q", y.alerts())
+	}
+	now = qNow.Add(50 * time.Minute)
+	y.spool(on(sampleAt(s2, now.Add(-5*time.Minute), 93, r1), l2, d2))
+	y.run()
+	if p := grepAlerts(y.bus("quotes"), " -> quotes:p2 — "); len(p) != 1 {
+		t.Fatalf("p2 now runs on max2 only: want a PAUSE to quotes:p2, got %q", y.bus("quotes"))
+	}
+	if n := grepAlerts(y.alerts(), "PAUSE posted to quotes:p2"); len(n) != 1 {
+		t.Fatalf("want a NEED telling Crius p2 was paused, got %q", y.alerts())
+	}
+}

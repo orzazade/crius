@@ -255,7 +255,7 @@ func (r *runner) pauseAccounts(tx *sql.Tx, rep *quota.Report, as *quota.Accounts
 	}
 	var full []quota.AcctUse
 	var room []string
-	seen, isFull := map[string]bool{}, map[string]bool{}
+	seen, hasRoom := map[string]bool{}, map[string]bool{}
 	for _, a := range rep.Accounts {
 		seen[a.Login] = true
 		switch {
@@ -263,19 +263,20 @@ func (r *runner) pauseAccounts(tx *sql.Tx, rep *quota.Report, as *quota.Accounts
 			// A week ended starts a new one on a listed account; a login no row lists is one nobody can start on.
 			if r := as.Of(a.Login); r != nil && r.Plan == "max" {
 				room = append(room, a.Name+" new window")
+				hasRoom[a.Login] = true
 			}
 		case a.Reset.IsZero() || !a.Reset.After(rep.Now) || a.SevenPct < float64(p.pauseAt):
 			room = append(room, fmt.Sprintf("%s %g%%", a.Name, a.SevenPct))
+			hasRoom[a.Login] = true
 		default:
 			full = append(full, a)
-			isFull[a.Login] = true
 		}
 	}
-	// A role with a tab on an account not at the limit: a PAUSE to the role would stop that tab too.
+	// A role with a tab on an account with room, as the room list counts it: a PAUSE to the role would stop that tab too.
 	elsewhere := map[string]string{}
 	for login, roles := range tabs {
 		for _, role := range roles {
-			if !isFull[login] && role != "unknown" {
+			if hasRoom[login] && role != "unknown" {
 				elsewhere[role] = as.Name(login)
 			}
 		}
@@ -335,7 +336,8 @@ func (r *runner) pauseAccounts(tx *sql.Tx, rep *quota.Report, as *quota.Accounts
 		if noRole == 1 {
 			tabWord = "tab"
 		}
-		if err := r.queueLine(tx, key+":crius", "NEED", "crius", "crius:lead", fmt.Sprintf(
+		// Keyed on the roles paused too: a role paused in a later run of the window, its tab with room gone quiet, is news.
+		if err := r.queueLine(tx, key+":crius:"+strings.Join(roles, ","), "NEED", "crius", "crius:lead", fmt.Sprintf(
 			"quota guard: account %s at %g%% (%s) reached %s's pause at %d%%; %s; %d %s with no role on it (stop by "+
 				"hand). Room: %s. Move its tabs there or park them", a.Name, a.SevenPct, at, p.slug, p.pauseAt, paused,
 			noRole, tabWord, rooms)); err != nil {
