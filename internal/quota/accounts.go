@@ -38,9 +38,13 @@ type Accounts struct {
 var acctName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 
 // LoginOf is the login the config folder dir is signed into: the first 12 hex digits of the sha256 of its account id,
-// never the id, a token or an email. "" when the folder has no .claude.json or no login in it.
+// never the id, a token or an email. "" when the folder has no .claude.json or no login in it. The default folder
+// ~/.claude, Claude Code's with no CLAUDE_CONFIG_DIR, keeps it beside itself in ~/.claude.json.
 func LoginOf(dir string) (string, error) {
 	b, err := os.ReadFile(filepath.Join(dir, ".claude.json"))
+	if h, _ := os.UserHomeDir(); errors.Is(err, os.ErrNotExist) && h != "" && samePath(dir) == samePath(filepath.Join(h, ".claude")) {
+		b, err = os.ReadFile(filepath.Join(h, ".claude.json"))
+	}
 	if errors.Is(err, os.ErrNotExist) {
 		return "", nil
 	} else if err != nil {
@@ -106,7 +110,9 @@ func LoadAccounts(home string) (*Accounts, error) {
 		a := Acct{Name: r.Name, Plan: r.Plan}
 		for _, d := range r.Dirs {
 			d = expandHome(d)
-			if o, ok := dirs[samePath(d)]; ok {
+			if o, ok := dirs[samePath(d)]; ok && o == r.Name {
+				continue // a link to a folder of this row: the same folder
+			} else if ok {
 				return nil, fmt.Errorf("%s: folder %s is in accounts %s and %s", path, d, o, r.Name)
 			}
 			dirs[samePath(d)] = r.Name

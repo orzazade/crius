@@ -125,3 +125,42 @@ func TestAccountsFileRefusesMistakes(t *testing.T) {
 		t.Fatalf("no accounts file: %+v, %v; want no rows, no error", as, err)
 	}
 }
+
+// Review 10-23: a folder and a link to it in one row (~/.claude-work-max and the folder it points to) were refused as
+// "in accounts max1 and max1". In one row they are one folder; either spelling finds the row.
+func TestALinkAndItsFolderInOneRowLoad(t *testing.T) {
+	d, home := t.TempDir(), t.TempDir()
+	dir, link := filepath.Join(d, "max1"), filepath.Join(d, "link")
+	signIn(t, dir, "u1")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Fatal(err)
+	}
+	writeAccounts(t, home, "[[account]]\nname = \"max1\"\nplan = \"max\"\ndirs = [\""+dir+"\", \""+link+"\"]\n")
+	as, err := LoadAccounts(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{dir, link} {
+		if a := as.Dir(p); a == nil || a.Name != "max1" {
+			t.Errorf("%s: %+v, want max1", p, a)
+		}
+	}
+}
+
+// Review 10-23: Claude Code with no CLAUDE_CONFIG_DIR keeps its login in ~/.claude.json, beside ~/.claude, not in it.
+// A row naming ~/.claude reads that file when the folder has none of its own.
+func TestTheDefaultFolderReadsTheLoginBesideIt(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	signIn(t, home, "u1")
+	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	want, _ := LoginOf(home)
+	if l, err := LoginOf(filepath.Join(home, ".claude")); err != nil || l == "" || l != want {
+		t.Fatalf("LoginOf(~/.claude) = %q, %v; want %q from ~/.claude.json", l, err, want)
+	}
+	if l, err := LoginOf(filepath.Join(home, ".claude-max2")); l != "" || err != nil {
+		t.Fatalf("another folder with no .claude.json: %q, %v; want no login", l, err)
+	}
+}
