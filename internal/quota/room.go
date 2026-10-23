@@ -58,3 +58,17 @@ func ago(d time.Duration) string {
 	}
 	return fmt.Sprintf("%d h", int(d.Hours()))
 }
+
+// Account is the report as one login sees it: that login's figures in place of the mix of every login's. Nil when no
+// line measured the login.
+func (r *Report) Account(login string) *Report {
+	for _, a := range r.Accounts {
+		if a.Login == login {
+			v := *r
+			v.SevenPct, v.FivePct, v.SevenAt, v.FiveAt = a.SevenPct, a.FivePct, a.SevenAt, a.FiveAt
+			v.Reset, v.FiveReset, v.Ended, v.FiveKnown = a.Reset, a.FiveReset, a.Ended, a.FiveKnown
+			return &v
+		}
+	}
+	return nil
+}

@@ -424,8 +424,8 @@ func quotaCmd(home string, now time.Time, asJSON, room bool, stdout, stderr io.W
 		rep.Reasons = append(rep.Reasons, "enterprise fallback: cannot read ("+ent.Reason+")")
 	}
 	if room {
-		v, reason := quota.Room(rep)
-		roomLine(stdout, v, reason, rep, ent)
+		view, v, reason := roomFor(rep, projects.Accounts, os.Getenv("AITCH_PRIMARY"))
+		roomLine(stdout, v, reason, view, ent)
 		switch v {
 		case "room":
 			return 0
@@ -449,6 +449,32 @@ func quotaCmd(home string, now time.Time, asJSON, room bool, stdout, stderr io.W
 		return exitPartial
 	}
 	return 0
+}
+
+// roomFor is the --room verdict for the config folder dir that aitch asks about (AITCH_PRIMARY, owner 10-23: several
+// Max accounts), from that folder's login alone: a login no line measured has room when a max row lists it (a session
+// on it is what measures it), else it is unknown. With no dir, or while no line names its login (a statusline from
+// before the field), the verdict is every login's together, as before. The report is nil when it has no numbers.
+func roomFor(rep *quota.Report, as *quota.Accounts, dir string) (*quota.Report, string, string) {
+	if dir == "" || len(rep.Accounts) == 0 {
+		v, reason := quota.Room(rep)
+		return rep, v, reason
+	}
+	login, err := quota.LoginOf(dir)
+	switch {
+	case err != nil:
+		return nil, "unknown", "cannot read the login: " + err.Error()
+	case login == "":
+		return nil, "unknown", "no login in " + dir
+	}
+	if view := rep.Account(login); view != nil {
+		v, reason := quota.Room(view)
+		return view, v, as.Name(login) + ": " + reason
+	}
+	if a := as.Of(login); a != nil && a.Plan == "max" {
+		return nil, "room", a.Name + " not measured yet"
+	}
+	return nil, "unknown", "login " + login + " of " + dir + ": no line measured it and no max row in accounts.toml lists it"
 }
 
 // roomLine is the --room answer: one JSON line. Launchers read verdict and reason; the numbers are null when there
