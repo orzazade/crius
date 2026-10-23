@@ -131,6 +131,26 @@ func TestAVerifiedWithItsRunLogIsPosted(t *testing.T) {
 	}
 }
 
+// Crius 10-24 00:11, twice: 'log <path>. Next' was refused as naming no run log. The path kept the sentence's '.' and
+// was dropped without a word. Punctuation that ends a sentence is not part of the path, and a named path that does not
+// exist is said.
+func TestARunLogPathAtTheEndOfASentenceCounts(t *testing.T) {
+	home, log := setup(t)
+	runLog := filepath.Join(home, "runs", "crius-94598c5-2301.log")
+	testutil.Write(t, runLog, "sha: 94598c5\npass: 767\n")
+	for _, end := range []string{". Next: install.", ", then install", "; next", ")", ":"} {
+		text := "94598c5 · clean clone 767 pass (log " + runLog + end
+		if rc, errs := post(t, at("2026-10-24T00:11"), log, "VERIFIED", "crius:lead", "crius:build", text); rc != 0 {
+			t.Errorf("%q: rc %d: %s", text, rc, errs)
+		}
+	}
+	missing := filepath.Join(home, "runs", "crius-94598c5-2350.log")
+	rc, errs := post(t, at("2026-10-24T00:11"), log, "VERIFIED", "crius:lead", "crius:build", "94598c5 · log "+missing+".")
+	if rc != 2 || !strings.Contains(errs, missing+" does not exist") {
+		t.Errorf("a missing run log: want it named, got rc %d: %s", rc, errs)
+	}
+}
+
 // A typo in the log path would start a bus nobody reads: silent success.
 func TestAMissingLogIsRefused(t *testing.T) {
 	home, _ := setup(t)

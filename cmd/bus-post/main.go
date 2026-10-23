@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -150,7 +151,15 @@ func checkRunLog(text string) error {
 			p = filepath.Join(home, p[2:])
 		}
 		real, err := filepath.EvalSymlinks(p)
-		if err != nil {
+		if t := strings.TrimRightFunc(p, unicode.IsPunct); err != nil && t != p { // "log <path>. Next" (Crius 10-24)
+			p = t
+			real, err = filepath.EvalSymlinks(p)
+		}
+		if errors.Is(err, fs.ErrNotExist) {
+			problems = append(problems, p+" does not exist")
+			continue
+		} else if err != nil {
+			problems = append(problems, err.Error())
 			continue
 		}
 		if !strings.HasPrefix(real, runs+string(filepath.Separator)) {
