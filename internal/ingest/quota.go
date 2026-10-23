@@ -214,7 +214,7 @@ func (r *runner) pauseChecks(tx *sql.Tx, rep *quota.Report) error {
 		if rep.Reset.IsZero() || !rep.Reset.After(rep.Now) || rep.SevenPct < float64(p.pauseAt) {
 			continue
 		}
-		key, err := window(tx, "quota:pause:"+p.slug+":", rep.Reset)
+		key, err := window(tx, fmt.Sprintf("quota:pause:%s:%d:", p.slug, p.pauseAt), rep.Reset) // a raised limit pauses again
 		if err != nil {
 			return err
 		}

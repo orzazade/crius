@@ -1214,3 +1214,37 @@ func TestQuotaReportsEachAccount(t *testing.T) {
 		t.Fatalf("crius-rec quota text has no %q:\n%s", want, rep.Text())
 	}
 }
+
+// Crius 10-23 10:22: the pause key names the limit too. Raising pause_at within a window (75 -> 85) and reaching the new
+// limit posts one new PAUSE; the old limit's PAUSE is not posted again.
+func TestQuotaGuardPausesAgainAtARaisedLimit(t *testing.T) {
+	clock = func() time.Time { return qNow }
+	t.Cleanup(func() { clock = time.Now })
+	at := func(n int) string {
+		return strings.Replace(guardedProject, "pause_at = 70", fmt.Sprintf("pause_at = %d", n), 1)
+	}
+	x := newIC(t, cfg{extra: at(75)})
+	reset := qNow.Add(4 * 24 * time.Hour)
+	x.session("personal", x.sid, "/work/demo", "", qNow.Add(-20*time.Minute))
+	x.spool(sampleAt(x.sid, qNow.Add(-15*time.Minute), 76, reset))
+	x.run()
+	if p := grepAlerts(x.bus("quotes"), " PAUSE "); len(p) != 1 {
+		t.Fatalf("want one PAUSE at 75%%, got %q", x.bus("quotes"))
+	}
+	writeConfig(t, x.home, x.personal, x.work, cfg{extra: at(85)})
+	x.spool(sampleAt(x.sid, qNow.Add(-10*time.Minute), 80, reset))
+	x.run()
+	if p := grepAlerts(x.bus("quotes"), " PAUSE "); len(p) != 1 {
+		t.Fatalf("80%% is under the raised 85%%: %q", p)
+	}
+	x.spool(sampleAt(x.sid, qNow.Add(-5*time.Minute), 86, reset))
+	x.run()
+	x.run()
+	p := grepAlerts(x.bus("quotes"), " PAUSE ")
+	if len(p) != 2 || !strings.Contains(p[1], "86%") || !strings.Contains(p[1], "85%") {
+		t.Fatalf("want a second PAUSE naming 86%% and 85%%, got %q", p)
+	}
+	if n := grepAlerts(x.alerts(), " NEED crius:ingest -> crius:lead — quota guard:"); len(n) != 2 {
+		t.Fatalf("want a second NEED to Crius, got %q", n)
+	}
+}
