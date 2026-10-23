@@ -1248,6 +1248,30 @@ func TestQuotaEachLoginIsFreshByItsOwnWindow(t *testing.T) {
 	}
 }
 
+// Review of a481996: a login's window that has already ended is no current window. max2's only recent line repeats an
+// ended window while its session works: max2 has no current sample, though max1's window is still open.
+func TestQuotaAnEndedWindowIsNoCurrentSampleOfItsLogin(t *testing.T) {
+	x := quotaCase(t)
+	d1, d2 := filepath.Join(x.home, "cfg1"), filepath.Join(x.home, "cfg2")
+	l1, l2 := x.signIn(d1, "u-1"), x.signIn(d2, "u-2")
+	testutil.Write(t, filepath.Join(x.home, "accounts.toml"), "[[account]]\nname = \"max1\"\nplan = \"max\"\ndirs = [\""+
+		d1+"\"]\n[[account]]\nname = \"max2\"\nplan = \"max\"\ndirs = [\""+d2+"\"]\n")
+	s1, s2 := "aaaaaaaa-0000-0000-0000-000000000001", "aaaaaaaa-0000-0000-0000-000000000002"
+	on := func(l quota.Line, login, dir string) quota.Line {
+		l.Login, l.Dir, l.Persona = login, dir, "work"
+		return l
+	}
+	x.session("work", s1, "/work/quotes", "", qNow.Add(-80*time.Minute))
+	x.session("work", s2, "/work/quotes", "", qNow.Add(-3*time.Minute))
+	x.spool(on(sampleAt(s1, qNow.Add(-80*time.Minute), 91, qNow.Add(6*24*time.Hour)), l1, d1),
+		on(sampleAt(s2, qNow.Add(-5*time.Minute), 10, qNow.Add(-time.Hour)), l2, d2))
+	x.run()
+	rep := x.report()
+	if len(rep.Stale) != 1 || !strings.Contains(rep.Stale[0], "max2") {
+		t.Fatalf("want one stale entry naming max2, got %q", rep.Stale)
+	}
+}
+
 // Crius 10-23 10:22: the pause key names the limit too. Raising pause_at within a window (75 -> 85) and reaching the new
 // limit posts one new PAUSE; the old limit's PAUSE is not posted again.
 func TestQuotaGuardPausesAgainAtARaisedLimit(t *testing.T) {

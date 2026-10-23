@@ -555,10 +555,10 @@ func Build(db Querier, p Projects, now time.Time) (*Report, error) {
 			byLogin[s.login] = append(byLogin[s.login], s)
 		}
 	}
-	newest := map[string]time.Time{} // per login: its newest sample of its own current window
+	newest := map[string]time.Time{} // per login: its newest sample of its own current window, if not ended yet
 	for login, ls := range byLogin {
 		cur, u := reduce(ls, now)
-		if n := len(cur); n > 0 {
+		if n := len(cur); n > 0 && u.Ended.IsZero() {
 			newest[login] = cur[n-1].ts
 		}
 		u.Login, u.Name = login, p.Accounts.Name(login)
@@ -690,7 +690,10 @@ func Build(db Querier, p Projects, now time.Time) (*Report, error) {
 			if l != "" {
 				name += " " + p.Accounts.Name(l)
 			} else {
-				last = rep.LastSample
+				last = time.Time{}
+				if rep.Ended.IsZero() {
+					last = rep.LastSample
+				}
 				for _, t := range newest {
 					if t.After(last) {
 						last = t
