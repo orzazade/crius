@@ -467,11 +467,16 @@ func roomFor(rep *quota.Report, as *quota.Accounts, dir string) (*quota.Report, 
 	case login == "":
 		return nil, "unknown", "no login in " + dir
 	}
+	a := as.Of(login)
 	if view := rep.Account(login); view != nil {
+		// A listed account whose week ended starts a new one: room, as one never measured (a session measures it).
+		if !view.Ended.IsZero() && a != nil && a.Plan == "max" {
+			return view, "room", a.Name + " new window since " + view.Ended.Local().Format("02 Jan 15:04") + ", not measured since"
+		}
 		v, reason := quota.Room(view)
 		return view, v, as.Name(login) + ": " + reason
 	}
-	if a := as.Of(login); a != nil && a.Plan == "max" {
+	if a != nil && a.Plan == "max" {
 		return nil, "room", a.Name + " not measured yet"
 	}
 	return nil, "unknown", "login " + login + " of " + dir + ": no line measured it and no max row in accounts.toml lists it"
