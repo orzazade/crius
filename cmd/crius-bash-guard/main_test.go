@@ -704,6 +704,8 @@ func TestACmuxSendWithoutALiteralTargetIsRefused(t *testing.T) {
 		`echo cmux send 3 hi`, `grep -n "cmux send" notes.md`,
 		`cmux --socket /tmp/cmux.sock send --workspace w --surface s hi`, `cmux --id-format refs notify --title send`,
 		`cmux notify --title send --body x`,
+		// review of 84c4a2e: a global option that takes no value ends no scan early
+		`cmux --json rename-workspace send`, `cmux --json notify --title send --body x`,
 	} {
 		if why := check(cmd); why != "" {
 			t.Errorf("%q refused: %s", cmd, why)

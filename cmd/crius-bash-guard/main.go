@@ -924,12 +924,15 @@ const (
 		"without them the text goes to this session's own tab, and zsh does not split $S into several words."
 )
 
-// cmuxValued: cmux's global options that take a value (cmux --help).
-var cmuxValued = map[string]bool{"--socket": true, "--password": true, "--id-format": true}
+// cmuxValued and cmuxFlags: cmux's global options that take a value, and those that take none (cmux --help).
+var (
+	cmuxValued = map[string]bool{"--socket": true, "--password": true, "--id-format": true}
+	cmuxFlags  = map[string]bool{"--json": true, "--skill": true, "--help": true, "-h": true, "--version": true}
+)
 
 // targeted says whether cmux's arguments name both a workspace and a surface for send and send-key: the flags as literal
 // words, each followed by a value, before any --. Other subcommands, and one only the run shows, pass. A word after a
-// global option cmuxValued does not list may be its value, so the words after it are read too (review of a648553:
+// global option neither list names may be its value, so the words after it are read too (review of a648553:
 // cmux --socket /path send-key enter).
 func targeted(args []*syntax.Word) bool {
 	maybeValue := false
@@ -939,7 +942,7 @@ func targeted(args []*syntax.Word) bool {
 			return true
 		}
 		if strings.HasPrefix(sub, "-") {
-			if maybeValue = !strings.Contains(sub, "="); cmuxValued[sub] {
+			if maybeValue = !strings.Contains(sub, "=") && !cmuxFlags[sub]; cmuxValued[sub] {
 				i++
 				maybeValue = false
 			}
