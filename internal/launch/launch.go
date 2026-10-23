@@ -176,9 +176,15 @@ func tab(d Deps, project, persona, name, cwd, cmd string) (ws, surface string, e
 // Resume brings a role's session back after a crash or a reboot: claude --resume <id> in the session's own folder,
 // typed into the role's tab when the tab is still there with a shell in front (a crash), else in a new tab of the
 // project's workspace named as before (a reboot). A tab with anything else in front, Claude itself, is left alone. It
-// waits for Claude's input box, so a resume that finds no conversation fails with what the screen said.
-func Resume(project, role, id, cwd string, d Deps) (ws, surface string, err error) {
+// waits for Claude's input box, so a resume that finds no conversation fails with what the screen said. A session that
+// ran on a Max account of accounts.toml (acct, its config folder dir) comes back in that folder, titled with the
+// account; acct "" goes through aitch's own route as before.
+func Resume(project, role, id, cwd, acct, dir string, d Deps) (ws, surface string, err error) {
 	switch {
+	case acct != "" && !slugRe.MatchString(acct): // typed into a shell and a title
+		return "", "", fmt.Errorf("bad account name %q: want lowercase letters, digits and dashes", acct)
+	case acct != "" && !safeDir(dir):
+		return "", "", fmt.Errorf("bad folder %q for account %s: want an absolute path with no quote, backslash or control character", dir, acct)
 	case !slugRe.MatchString(project) || !slugRe.MatchString(role):
 		return "", "", fmt.Errorf("bad project %q or role %q: want lowercase letters, digits and dashes", project, role)
 	case !idRe.MatchString(id): // typed into a shell
@@ -196,13 +202,13 @@ func Resume(project, role, id, cwd string, d Deps) (ws, surface string, err erro
 		return "", "", err
 	}
 	defer lf.Close()
-	name, _, cmd := command(project, role, "", "")
+	name, _, cmd := command(project, role, acct, dir)
 	cmd += " --resume " + id
 	tree, err := d.Cmux("tree", "--all")
 	if err != nil {
 		return "", "", fmt.Errorf("cmux tree: %v", err)
 	}
-	ws, surface, tty, err := named(tree, name)
+	ws, surface, tty, err := named(tree, project+" · "+role) // titled with an account or not
 	if err != nil {
 		return "", "", err
 	}

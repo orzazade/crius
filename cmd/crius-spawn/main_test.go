@@ -112,3 +112,23 @@ func TestPickReadsTheAccountsTheStoreAndTheProject(t *testing.T) {
 		t.Errorf("gone: %v, want no such project", err)
 	}
 }
+
+// Owner 10-23: a session that ran in a Max row's folder of accounts.toml resumes there, titled with the row; one that
+// ran elsewhere (or on an enterprise row) resumes through aitch's route as before.
+func TestResumeKeepsTheSessionsMaxAccount(t *testing.T) {
+	home, d := t.TempDir(), t.TempDir()
+	m2, ent, other := filepath.Join(d, ".claude-max2"), filepath.Join(d, ".claude-work"), filepath.Join(d, ".claude")
+	testutil.Write(t, filepath.Join(m2, ".claude.json"), `{"oauthAccount":{"accountUuid":"acct-2"}}`)
+	testutil.Write(t, filepath.Join(ent, ".claude.json"), `{"oauthAccount":{"accountUuid":"acct-ent"}}`)
+	testutil.Write(t, filepath.Join(home, "accounts.toml"), "[[account]]\nname = \"max2\"\nplan = \"max\"\ndirs = [\""+m2+
+		"\"]\n[[account]]\nname = \"ent\"\nplan = \"enterprise\"\ndirs = [\""+ent+"\"]\n")
+	for config, want := range map[string][2]string{m2: {"max2", m2}, ent: {}, other: {}} {
+		if acct, dir, err := sessionAccount(home, config); err != nil || acct != want[0] || dir != want[1] {
+			t.Errorf("%s: %q %q %v, want %q", config, acct, dir, err, want)
+		}
+	}
+	testutil.Write(t, filepath.Join(home, "accounts.toml"), "[[account]]\nname = \"max2\"\n")
+	if _, _, err := sessionAccount(home, m2); err == nil {
+		t.Error("a broken accounts.toml gave no error")
+	}
+}

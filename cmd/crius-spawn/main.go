@@ -11,7 +11,8 @@
 //
 // With -resume it brings the role's current session back after a crash or a reboot (claude --resume), in its own tab
 // when that is still open with a shell in front, else in a new one. The current session is the one crius-hook last saw
-// start for the role, kept in $CRIUS_HOME/roles/<project>.<role>.json.
+// start for the role, kept in $CRIUS_HOME/roles/<project>.<role>.json. A session that ran in a Max row's
+// folder of accounts.toml comes back in that folder, on that account.
 package main
 
 import (
@@ -89,7 +90,11 @@ func resume(home, project, role string, d launch.Deps) error {
 	} else if pid != 0 {
 		return fmt.Errorf("%s %s: session %s still runs in process %d: nothing resumed", project, role, s.SessionID, pid)
 	}
-	ws, surface, err := launch.Resume(project, role, s.SessionID, s.Cwd, d)
+	acct, dir, err := sessionAccount(home, s.Config)
+	if err != nil {
+		return err
+	}
+	ws, surface, err := launch.Resume(project, role, s.SessionID, s.Cwd, acct, dir, d)
 	if err != nil {
 		return err
 	}
@@ -130,4 +135,17 @@ func pick(home, project, want string) (name, dir string, err error) {
 		return "", "", err
 	}
 	return quota.Pick(r, projects.Accounts, root, want, pauseAt)
+}
+
+// sessionAccount is the Max row of accounts.toml that lists config, the folder a session ran in, and that folder; ""
+// when no Max row lists it.
+func sessionAccount(home, config string) (acct, dir string, err error) {
+	as, err := quota.LoadAccounts(home)
+	if err != nil {
+		return "", "", err
+	}
+	if a := as.Dir(config); a != nil && a.Plan == "max" {
+		return a.Name, config, nil
+	}
+	return "", "", nil
 }

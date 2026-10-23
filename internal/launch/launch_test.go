@@ -624,7 +624,7 @@ func treeWith(tab string) string {
 // own folder, with its own conversation.
 func TestResumeTypesTheResumeCommandIntoACrashedTab(t *testing.T) {
 	f := &fake{trees: []string{treeWith("quotes · lead")}}
-	ws, surface, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/quotes/src", f.deps())
+	ws, surface, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/quotes/src", "", "", f.deps())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -648,7 +648,7 @@ func TestResumeTypesTheResumeCommandIntoACrashedTab(t *testing.T) {
 // named as before.
 func TestResumeOpensANewTabWhenTheTabIsGone(t *testing.T) {
 	f := &fake{trees: []string{tree}}
-	ws, surface, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/quotes", f.deps())
+	ws, surface, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/quotes", "", "", f.deps())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -667,7 +667,7 @@ func TestResumeOpensANewTabWhenTheTabIsGone(t *testing.T) {
 // A role whose tab still runs Claude is not started twice.
 func TestResumeLeavesARunningClaudeAlone(t *testing.T) {
 	f := &fake{trees: []string{treeWith("quotes · lead")}, front: "claude"}
-	_, _, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/quotes", f.deps())
+	_, _, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/quotes", "", "", f.deps())
 	if err == nil || !strings.Contains(err.Error(), "runs claude") {
 		t.Fatalf("err %v, want refused", err)
 	}
@@ -686,7 +686,7 @@ func TestResumeRefusesWhatCouldBreakTheShellLine(t *testing.T) {
 		"relative": {resumeID, "quotes"},
 	} {
 		f := &fake{trees: []string{treeWith("quotes · lead")}}
-		if _, _, err := Resume("quotes", "lead", c[0], c[1], f.deps()); err == nil {
+		if _, _, err := Resume("quotes", "lead", c[0], c[1], "", "", f.deps()); err == nil {
 			t.Errorf("%s: no error", name)
 		}
 		if len(f.calls) != 0 {
@@ -699,7 +699,7 @@ func TestResumeRefusesWhatCouldBreakTheShellLine(t *testing.T) {
 // that must fail loudly with what the screen said.
 func TestResumeFailsLoudlyWhenNoConversationIsFound(t *testing.T) {
 	f := &fake{trees: []string{treeWith("quotes · lead")}, noConv: true}
-	_, _, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/quotes", f.deps())
+	_, _, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/quotes", "", "", f.deps())
 	if err == nil || !strings.Contains(err.Error(), "No conversation found") {
 		t.Fatalf("err %v, want the screen's words", err)
 	}
@@ -709,7 +709,7 @@ func TestResumeFailsLoudlyWhenNoConversationIsFound(t *testing.T) {
 // check) has its input box up: it resumed, and is not reported failed.
 func TestResumeWithTheFailureWordsOnAnUpScreenSucceeds(t *testing.T) {
 	f := &fake{trees: []string{treeWith("quotes · lead")}, tip: "  grep for: No conversation found with session ID"}
-	if _, _, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/quotes", f.deps()); err != nil {
+	if _, _, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/quotes", "", "", f.deps()); err != nil {
 		t.Fatalf("err %v, want resumed", err)
 	}
 }
@@ -746,7 +746,7 @@ func TestAnUnreadableInputStateFailsTheLaunchLoudly(t *testing.T) {
 // launch folder (trading, quotes before its launch line) still comes back after a reboot.
 func TestResumeDoesNotNeedALaunchFolder(t *testing.T) {
 	f := &fake{trees: []string{tree}, noLaunch: true}
-	if _, _, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/axon", f.deps()); err != nil {
+	if _, _, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/axon", "", "", f.deps()); err != nil {
 		t.Fatal(err)
 	}
 	if got := f.called("new-surface "); len(got) != 1 || !strings.Contains(got[0], "--working-directory /Users/o/Projects/axon ") {
@@ -774,7 +774,7 @@ func TestAnInputStateFailureAfterEnterSaysThePromptWasSent(t *testing.T) {
 // wipes that box) must fail, not pass as resumed.
 func TestAResumeIntoACrashedTabTakesNoDeadBoxForANewOne(t *testing.T) {
 	f := &fake{trees: []string{treeWith("quotes · lead")}, dead: -1}
-	_, _, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/quotes/src", f.deps())
+	_, _, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/quotes/src", "", "", f.deps())
 	if err == nil || !strings.Contains(err.Error(), "no Claude's input box after 120 reads") {
 		t.Fatalf("err %v, want no box seen", err)
 	}
@@ -784,7 +784,7 @@ func TestAResumeIntoACrashedTabTakesNoDeadBoxForANewOne(t *testing.T) {
 // only after clear wiped the line.
 func TestAResumeIntoACrashedTabWaitsForTheLineThenForClear(t *testing.T) {
 	f := &fake{trees: []string{treeWith("quotes · lead")}, dead: 3, echo: 2}
-	if _, _, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/quotes/src", f.deps()); err != nil {
+	if _, _, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/quotes/src", "", "", f.deps()); err != nil {
 		t.Fatal(err)
 	}
 	enter := slices.IndexFunc(f.calls, func(c string) bool { return strings.HasPrefix(c, "send-key") })
@@ -806,7 +806,7 @@ func TestAResumeIntoACrashedTabWaitsForTheLineThenForClear(t *testing.T) {
 // Enter goes once the line's end (--resume <id>) shows on the shell's line.
 func TestAResumeIntoACrashedTabPressesEnterOnAClippedLine(t *testing.T) {
 	f := &fake{trees: []string{treeWith("quotes · lead")}, dead: 2, clip: 70}
-	if _, _, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/quotes/src", f.deps()); err != nil || f.ran == "" {
+	if _, _, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/quotes/src", "", "", f.deps()); err != nil || f.ran == "" {
 		t.Fatalf("err %v, ran %q: want the line run and the box seen", err, f.ran)
 	}
 }
@@ -815,7 +815,7 @@ func TestAResumeIntoACrashedTabPressesEnterOnAClippedLine(t *testing.T) {
 // message); only the line under the last box is the shell's.
 func TestAResumedClaudeQuotingItsCommandIsUp(t *testing.T) {
 	f := &fake{trees: []string{treeWith("quotes · lead")}, dead: 1, quote: true}
-	if _, _, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/quotes/src", f.deps()); err != nil {
+	if _, _, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/quotes/src", "", "", f.deps()); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -847,7 +847,7 @@ func TestTwoResumesOfOneRoleAtOnceTypeOnce(t *testing.T) {
 	errs := make(chan error, 2)
 	for range 2 {
 		go func() {
-			_, _, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/quotes/src", d)
+			_, _, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/quotes/src", "", "", d)
 			errs <- err
 		}()
 	}
@@ -948,7 +948,7 @@ func TestAFailedPickIsRefusedBeforeCmuxIsTouched(t *testing.T) {
 // A tab opened on a picked account is titled "<project> · <role> · <account>": a resume still finds it as the role's.
 func TestResumeFindsTheRoleTabThatNamesItsAccount(t *testing.T) {
 	f := &fake{trees: []string{treeWith("quotes · lead · max2")}}
-	ws, surface, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/quotes/src", f.deps())
+	ws, surface, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/quotes/src", "", "", f.deps())
 	if err != nil || ws != "workspace:2" || surface != "surface:22" {
 		t.Fatalf("got %s %s %v, want the lead's tab", ws, surface, err)
 	}
@@ -957,7 +957,35 @@ func TestResumeFindsTheRoleTabThatNamesItsAccount(t *testing.T) {
 	}
 	// "quotes · leader" is another role's tab, not the lead's.
 	f = &fake{trees: []string{treeWith("quotes · leader")}}
-	if _, surface, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/quotes", f.deps()); err != nil || surface != "surface:99" {
+	if _, surface, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/quotes", "", "", f.deps()); err != nil || surface != "surface:99" {
 		t.Errorf("leader's tab: %s %v, want a new tab", surface, err)
+	}
+}
+
+// Owner 10-23: a session that ran on a picked Max account comes back on it, in the same folder (its transcript is
+// there), titled with the account as before.
+func TestResumeStartsInTheSessionsAccountFolder(t *testing.T) {
+	f := &fake{trees: []string{treeWith("quotes · lead · max2")}}
+	if _, _, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/quotes/src", "max2", "/Users/o/.claude-max2", f.deps()); err != nil {
+		t.Fatal(err)
+	}
+	want := "send --workspace workspace:2 --surface surface:22 -- clear && cd '/Users/o/Projects/quotes/src' && aitch launch claude --primary '/Users/o/.claude-max2' -- " +
+		`--model claude-opus-5-5 --permission-mode bypassPermissions --settings '{"autoCompactWindow":300000}' -n 'quotes · lead · max2' --resume ` + resumeID
+	if got := f.called("send "); len(got) != 1 || got[0] != want {
+		t.Errorf("typed %q,\nwant %q", got, want)
+	}
+	f = &fake{trees: []string{tree}}
+	if _, _, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/quotes", "max2", "/Users/o/.claude-max2", f.deps()); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.called("new-surface "); len(got) != 1 || !strings.Contains(got[0], "--primary '/Users/o/.claude-max2' ") ||
+		!strings.HasSuffix(got[0], "-n 'quotes · lead · max2' --resume "+resumeID) {
+		t.Errorf("new-surface %q", got)
+	}
+	for _, c := range [][2]string{{"Max 2", "/Users/o/.claude-max2"}, {"max2", "/Users/o/.claude-max2'; rm x"}, {"max2", ""}} {
+		f := &fake{trees: []string{tree}}
+		if _, _, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/quotes", c[0], c[1], f.deps()); err == nil || len(f.calls) != 0 {
+			t.Errorf("%q: err %v, calls %q: want refused before cmux", c, err, f.calls)
+		}
 	}
 }
