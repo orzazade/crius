@@ -35,8 +35,8 @@ func writeCache(t *testing.T, h string, u EntUsage, at time.Time) {
 func work(t *testing.T, h string, now time.Time, refresh func() error) string {
 	t.Helper()
 	branch := func(dir string) string { return "feat/x@" + dir }
-	Work(h, workRender("e", 0.1, false), now.Add(-time.Minute), "ENT", branch, refresh)
-	return Work(h, workRender("e", 1.25, false), now, "ENT", branch, refresh)
+	Work(h, "", workRender("e", 0.1, false), now.Add(-time.Minute), "ENT", branch, refresh)
+	return Work(h, "", workRender("e", 1.25, false), now, "ENT", branch, refresh)
 }
 
 // The red check of ORDER 15:25: an API-billed work session shows model + account, branch, cost, context % and the
@@ -63,7 +63,7 @@ func TestWorkLineShowsPartsAndFallback(t *testing.T) {
 // A Max work session keeps its Max quota after the same parts.
 func TestWorkLineMaxSession(t *testing.T) {
 	h := home(t)
-	out := Work(h, workRender("m", 1, true), time.Date(2026, 10, 19, 15, 0, 0, 0, time.UTC), "MAX", func(string) string { return "main" },
+	out := Work(h, "", workRender("m", 1, true), time.Date(2026, 10, 19, 15, 0, 0, 0, time.UTC), "MAX", func(string) string { return "main" },
 		func() error { t.Error("a Max session refreshed the fallback"); return nil })
 	if !strings.HasPrefix(out, "Opus 5.5 MAX │ main │ $1.00 │ ") || !strings.Contains(out, "7d 40%") {
 		t.Errorf("line %q", out)

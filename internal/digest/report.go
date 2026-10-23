@@ -421,6 +421,9 @@ func storeSections(db *sql.DB, in Input, now time.Time, maxItems int) ([]string,
 			out[len(out)-1] += " · top " + q.Burners(1)
 		}
 	}
+	if len(q.Accounts) > 0 {
+		out = append(out, "Quota by account: "+q.AccountsText())
+	}
 	if q.Status != "complete" {
 		more := ""
 		if n := len(q.Reasons) - 1; n > 0 {

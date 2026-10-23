@@ -28,10 +28,11 @@ type entCache struct {
 
 func entCachePath(home string) string { return filepath.Join(home, "spool", "ent-usage.json") }
 
-// Work is the work persona's statusline. account is the login's badge (Account), branch names dir's git branch ("" for
-// none), refresh starts a refresh of the fallback cache without waiting for it.
-func Work(home string, in []byte, now time.Time, account string, branch func(dir string) string, refresh func() error) string {
-	q, err := Sample(home, "work", in, now)
+// Work is the work persona's statusline. dir is the session's config folder (its login names the quota line),
+// account is the login's badge (Account), branch names a folder's git branch ("" for none), refresh starts a refresh of
+// the fallback cache without waiting for it.
+func Work(home, dir string, in []byte, now time.Time, account string, branch func(dir string) string, refresh func() error) string {
+	q, err := Sample(home, "work", dir, in, now)
 	if err != nil {
 		q = fmt.Sprintf("crius quota sample FAILED: %v", err)
 	} else if q == NoPlanLimits {

@@ -61,12 +61,19 @@ func (r *runner) quotaFile(tx *sql.Tx, path string) error {
 		l.TS = t.UTC().Format(time.RFC3339) // stored in one form, so ordering by text is ordering by time
 		rl := 0
 		key := fmt.Sprintf("quota:%d:%s", pos, sha1Hex(raw)[:12])
+		var login, dir any // null when the line names none
+		if l.Login != "" {
+			login = r.text(l.Login)
+		}
+		if l.Dir != "" {
+			dir = r.text(l.Dir)
+		}
 		if l.RL {
 			rl = 1
 			if _, err := tx.Exec("insert or ignore into quota (source_key, ts, account, session, persona, epoch,"+
-				" five_hour_pct, five_reset, seven_day_pct, sample_kind) values (?,?,'max',?,?,?,?,?,?,?)", key, l.TS,
-				r.text(l.Session), r.text(l.Persona), l.SevenReset, l.FivePct, l.FiveReset, l.SevenPct,
-				r.text(l.Kind)); err != nil {
+				" five_hour_pct, five_reset, seven_day_pct, sample_kind, login) values (?,?,'max',?,?,?,?,?,?,?,?)", key,
+				l.TS, r.text(l.Session), r.text(l.Persona), l.SevenReset, l.FivePct, l.FiveReset, l.SevenPct,
+				r.text(l.Kind), login); err != nil {
 				return err
 			}
 			if l.Responded != nil {
@@ -76,8 +83,8 @@ func (r *runner) quotaFile(tx *sql.Tx, path string) error {
 				}
 			}
 		}
-		_, err = tx.Exec("insert or ignore into account_seen (source_key, session, persona, ts, rl) values (?,?,?,?,?)",
-			key, r.text(l.Session), r.text(l.Persona), l.TS, rl)
+		_, err = tx.Exec("insert or ignore into account_seen (source_key, session, persona, ts, rl, login, config_dir)"+
+			" values (?,?,?,?,?,?,?)", key, r.text(l.Session), r.text(l.Persona), l.TS, rl, login, dir)
 		return err
 	})
 	if err != nil {
@@ -102,7 +109,11 @@ func (r *runner) newAlert(tx *sql.Tx, key string, holds bool) (bool, error) {
 }
 
 func (r *runner) quotaChecks(tx *sql.Tx) error {
-	rep, err := quota.Build(tx, r.cfg.quotaProjects(), clock())
+	p, err := r.cfg.quotaProjects(r.home)
+	if err != nil {
+		return err
+	}
+	rep, err := quota.Build(tx, p, clock())
 	if err != nil {
 		return err
 	}

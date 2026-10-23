@@ -626,3 +626,21 @@ func TestStaleUsesTheLaterReadingOfARepeatedHour(t *testing.T) {
 		}
 	}
 }
+
+// Several Max accounts (owner 10-23): the digest shows each account's seven-day share and reset under the quota line.
+func TestBuildQuotaShowsEachAccount(t *testing.T) {
+	db := open(t)
+	r1, r2 := now.Add(4*24*time.Hour), now.Add(24*time.Hour)
+	q := &quota.Report{Status: "complete", Now: now, Reset: r1, SevenPct: 80, Day: 3, Passed: 2.0 / 7,
+		Accounts: []quota.AcctUse{{Name: "max1", SevenPct: 40, Reset: r1}, {Name: "max2", SevenPct: 80, Reset: r2}}}
+	r, err := Build(db, Input{Quota: q, Health: &recall.Health{Status: "complete"}}, now)
+	want := " at this pace\nQuota by account: max1 7d 40% (resets " + r1.Format("Mon 01-02 15:04") + ") · max2 7d 80% (resets " +
+		r2.Format("Mon 01-02 15:04") + ")\n"
+	if err != nil || !strings.Contains(r.Text, want) {
+		t.Fatalf("%v: want %q in\n%s", err, want, r.Text)
+	}
+	q.Accounts = nil
+	if r, err = Build(db, Input{Quota: q, Health: &recall.Health{Status: "complete"}}, now); err != nil || strings.Contains(r.Text, "by account") {
+		t.Fatal(err, r.Text)
+	}
+}

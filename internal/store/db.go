@@ -128,6 +128,14 @@ func Open(home string) (*sql.DB, error) {
 			return nil, err
 		}
 	}
+	// The login a quota line was measured on and its config folder (several Max accounts, owner 10-23); null on lines
+	// from before the field or from a folder with no login.
+	for _, c := range [][2]string{{"quota", "login"}, {"account_seen", "login"}, {"account_seen", "config_dir"}} {
+		if err := addColumn(db, c[0], c[1], "text"); err != nil {
+			db.Close()
+			return nil, err
+		}
+	}
 	if err := ensureViews(db); err != nil {
 		db.Close()
 		return nil, err

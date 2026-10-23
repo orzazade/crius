@@ -39,12 +39,12 @@ func main() {
 	}
 	in, err := io.ReadAll(os.Stdin)
 	if err == nil && *persona == "work" {
-		fmt.Println(quota.Work(store.Home(), in, time.Now(), quota.Account(configDir()), branch, refresh))
+		fmt.Println(quota.Work(store.Home(), configDir(), in, time.Now(), quota.Account(configDir()), branch, refresh))
 		return
 	}
 	if err == nil {
 		var out string
-		out, err = quota.Sample(store.Home(), *persona, in, time.Now())
+		out, err = quota.Sample(store.Home(), *persona, configDir(), in, time.Now())
 		if err == nil {
 			fmt.Println(out)
 			return

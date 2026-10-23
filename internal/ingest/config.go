@@ -158,17 +158,23 @@ func (c *config) enterpriseOK() map[string]bool {
 	return ok
 }
 
-func (c *config) quotaProjects() quota.Projects {
-	return quota.Projects{EnterpriseOK: c.enterpriseOK(), ForCwd: c.projectForCwd}
+// quotaProjects also reads accounts.toml in home: the report names each login by its row.
+func (c *config) quotaProjects(home string) (quota.Projects, error) {
+	as, err := quota.LoadAccounts(home)
+	if err != nil {
+		return quota.Projects{}, err
+	}
+	return quota.Projects{EnterpriseOK: c.enterpriseOK(), ForCwd: c.projectForCwd, Accounts: as}, nil
 }
 
-// QuotaProjects reads projects.toml in home: which projects may use the enterprise account, and folder -> project.
+// QuotaProjects reads projects.toml in home: which projects may use the enterprise account, and folder -> project; and
+// accounts.toml: the name of each login.
 func QuotaProjects(home string) (quota.Projects, error) {
 	c, err := loadConfig(home)
 	if err != nil {
 		return quota.Projects{}, err
 	}
-	return c.quotaProjects(), nil
+	return c.quotaProjects(home)
 }
 
 // Lead is a lead as it signs bus lines (<project>:<role>) and the status file holding its GOAL block (RULES 3.1).

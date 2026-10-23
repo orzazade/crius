@@ -56,6 +56,7 @@ type Report struct {
 	EntWeekUSD, EntDay float64
 	Violations         []Violation
 	EntUsage           *EntUsage // set by the `quota` command (a live read), not by Build
+	Accounts           []AcctUse // each login measured, listed rows by name first, then unlisted logins by hash
 }
 
 // Querier is a *sql.DB or a *sql.Tx.
@@ -67,6 +68,7 @@ type Querier interface {
 type Projects struct {
 	EnterpriseOK map[string]bool                                   // projects that may run on the enterprise account
 	ForCwd       func(cwd string, recorded *store.Worktree) string // the project of a folder, "" when none
+	Accounts     *Accounts                                         // names each login; nil: logins go by hash
 }
 
 type obs struct {
@@ -399,6 +401,7 @@ func sessions(db Querier, p Projects) (out map[string]*sess, lastLine map[string
 
 type sample struct {
 	ts               time.Time
+	login            string // "" on a line from before the field or from a folder with no login
 	kind             string
 	responded        sql.NullBool // null: a line from before the field
 	seven, five      sql.NullFloat64
@@ -406,6 +409,72 @@ type sample struct {
 }
 
 func parseTS(s string) (time.Time, error) { return time.Parse(time.RFC3339, s) }
+
+// AcctUse is one login's window as its own lines show it (the fields mean what Report's fields of the same name mean).
+type AcctUse struct {
+	Login, Name             string // Name: its accounts.toml row, or "login <hash>" when unlisted
+	SevenPct, FivePct       float64
+	SevenAt, FiveAt         time.Time
+	Reset, FiveReset, Ended time.Time
+	FiveKnown               bool
+}
+
+// reduce keeps the samples of the current epoch and reads its figures from them. Resets only move forward, and an
+// idle session's statusline can repeat an older window (older reset, lower share), so the epoch is the latest reset
+// sampled and the share is the highest sampled for it, never the newest line's. Only samples of that epoch count as
+// samples: an idle session's old-epoch heartbeat measures nothing now.
+func reduce(samples []sample, now time.Time) ([]sample, AcctUse) {
+	var u AcctUse
+	var reset int64
+	for _, s := range samples {
+		reset = max(reset, s.reset.Int64)
+	}
+	var cur []sample
+	for _, s := range samples {
+		if math.Abs(float64(s.reset.Int64-reset)) < 3600 {
+			cur = append(cur, s)
+		}
+	}
+	if len(cur) == 0 {
+		return cur, u
+	}
+	var fiveReset int64
+	for _, s := range cur {
+		if s.five.Valid {
+			fiveReset = max(fiveReset, s.fiveReset.Int64)
+		}
+	}
+	for _, s := range cur {
+		u.SevenPct = math.Max(u.SevenPct, s.seven.Float64)
+		if s.five.Valid && math.Abs(float64(s.fiveReset.Int64-fiveReset)) < 600 {
+			u.FivePct = math.Max(u.FivePct, s.five.Float64)
+		}
+	}
+	for _, s := range cur {
+		// A measurement is a line that came with a response; a line from before the field, one that is not a
+		// heartbeat (Crius 23:11).
+		if s.responded.Valid && !s.responded.Bool || !s.responded.Valid && s.kind == "heartbeat" {
+			continue
+		}
+		if s.seven.Float64 == u.SevenPct {
+			u.SevenAt = s.ts
+		}
+		if s.five.Valid && math.Abs(float64(s.fiveReset.Int64-fiveReset)) < 600 && s.five.Float64 == u.FivePct {
+			u.FiveAt = s.ts
+		}
+	}
+	u.Reset = time.Unix(reset, 0)
+	if !u.Reset.After(now) {
+		u.Ended, u.Reset, u.SevenPct = u.Reset, time.Time{}, 0
+	}
+	u.FiveKnown = fiveReset > 0
+	if r := time.Unix(fiveReset, 0); fiveReset > 0 && r.After(now) {
+		u.FiveReset = r
+	} else {
+		u.FivePct = 0
+	}
+	return cur, u
+}
 
 // Build makes the report as of now.
 func Build(db Querier, p Projects, now time.Time) (*Report, error) {
@@ -434,7 +503,7 @@ func Build(db Querier, p Projects, now time.Time) (*Report, error) {
 
 	// A line without a seven-day share and reset measured nothing: it neither covers a request nor counts as a
 	// sample (it would read as 0%).
-	rows, err := db.Query("select ts, sample_kind, responded, seven_day_pct, epoch, five_hour_pct, five_reset" +
+	rows, err := db.Query("select ts, sample_kind, responded, seven_day_pct, epoch, five_hour_pct, five_reset, coalesce(login, '')" +
 		" from quota left join quota_response using (source_key)" +
 		" where account = 'max' and seven_day_pct is not null and epoch is not null order by ts")
 	if err != nil {
@@ -444,7 +513,7 @@ func Build(db Querier, p Projects, now time.Time) (*Report, error) {
 	for rows.Next() {
 		var s sample
 		var ts string
-		if err := rows.Scan(&ts, &s.kind, &s.responded, &s.seven, &s.reset, &s.five, &s.fiveReset); err != nil {
+		if err := rows.Scan(&ts, &s.kind, &s.responded, &s.seven, &s.reset, &s.five, &s.fiveReset, &s.login); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -459,64 +528,38 @@ func Build(db Querier, p Projects, now time.Time) (*Report, error) {
 		return nil, err
 	}
 
-	// Resets only move forward, and an idle session's statusline can repeat an older window (older reset, lower
-	// share), so the epoch is the latest reset sampled and the share is the highest sampled for it, never the
-	// newest line's.
-	// Only samples of that epoch count as samples: an idle session's old-epoch heartbeat measures nothing now.
 	rep.AvgPerDay = avgPerDay(samples, now)
 	start := now.Add(-week)
-	var reset int64
+	// Each login has its own window: its figures come from its own lines alone. The figures above them mix every
+	// login (lines from before the field name none).
+	byLogin := map[string][]sample{}
 	for _, s := range samples {
-		reset = max(reset, s.reset.Int64)
-	}
-	cur := samples[:0]
-	for _, s := range samples {
-		if math.Abs(float64(s.reset.Int64-reset)) < 3600 {
-			cur = append(cur, s)
+		if s.login != "" {
+			byLogin[s.login] = append(byLogin[s.login], s)
 		}
 	}
-	samples = cur
+	for login, ls := range byLogin {
+		_, u := reduce(ls, now)
+		u.Login, u.Name = login, p.Accounts.Name(login)
+		rep.Accounts = append(rep.Accounts, u)
+	}
+	sort.Slice(rep.Accounts, func(i, j int) bool {
+		a, b := rep.Accounts[i], rep.Accounts[j]
+		if ua, ub := p.Accounts.Of(a.Login) == nil, p.Accounts.Of(b.Login) == nil; ua != ub {
+			return ub // listed accounts first
+		}
+		return a.Name < b.Name
+	})
+	samples, u := reduce(samples, now)
 	if n := len(samples); n > 0 {
 		last := samples[n-1]
 		rep.LastSample, rep.LastKind = last.ts, last.kind
-		var fiveReset int64
-		for _, s := range samples {
-			if s.five.Valid {
-				fiveReset = max(fiveReset, s.fiveReset.Int64)
-			}
-		}
-		for _, s := range samples {
-			rep.SevenPct = math.Max(rep.SevenPct, s.seven.Float64)
-			if s.five.Valid && math.Abs(float64(s.fiveReset.Int64-fiveReset)) < 600 {
-				rep.FivePct = math.Max(rep.FivePct, s.five.Float64)
-			}
-		}
-		for _, s := range samples {
-			// A measurement is a line that came with a response; a line from before the field, one that is not a
-			// heartbeat (Crius 23:11).
-			if s.responded.Valid && !s.responded.Bool || !s.responded.Valid && s.kind == "heartbeat" {
-				continue
-			}
-			if s.seven.Float64 == rep.SevenPct {
-				rep.SevenAt = s.ts
-			}
-			if s.five.Valid && math.Abs(float64(s.fiveReset.Int64-fiveReset)) < 600 && s.five.Float64 == rep.FivePct {
-				rep.FiveAt = s.ts
-			}
-		}
-		rep.Reset = time.Unix(reset, 0)
-		if !rep.Reset.After(now) {
-			rep.Ended, rep.Reset, rep.SevenPct = rep.Reset, time.Time{}, 0
-		} else {
+		rep.SevenPct, rep.FivePct, rep.SevenAt, rep.FiveAt = u.SevenPct, u.FivePct, u.SevenAt, u.FiveAt
+		rep.Reset, rep.FiveReset, rep.Ended, rep.FiveKnown = u.Reset, u.FiveReset, u.Ended, u.FiveKnown
+		if !rep.Reset.IsZero() {
 			start = rep.Reset.Add(-week)
 			rep.Passed = math.Min(1, math.Max(0, float64(now.Sub(start))/float64(week)))
 			rep.Day = int(now.Sub(start)/(24*time.Hour)) + 1
-		}
-		rep.FiveKnown = fiveReset > 0
-		if r := time.Unix(fiveReset, 0); fiveReset > 0 && r.After(now) {
-			rep.FiveReset = r
-		} else {
-			rep.FivePct = 0
 		}
 	}
 
@@ -760,6 +803,20 @@ func list(ss []Share, total float64, n int) string {
 
 func when(t time.Time) string { return t.Local().Format("Mon 01-02 15:04") }
 
+// AccountsText is each login's seven-day share and reset: "max1 7d 40% (resets Fri 10-23 19:57) · max2 …".
+func (r *Report) AccountsText() string {
+	var parts []string
+	for _, a := range r.Accounts {
+		switch {
+		case !a.Reset.IsZero():
+			parts = append(parts, fmt.Sprintf("%s 7d %.0f%% (resets %s)", a.Name, a.SevenPct, when(a.Reset)))
+		case !a.Ended.IsZero():
+			parts = append(parts, fmt.Sprintf("%s epoch ended %s", a.Name, when(a.Ended)))
+		}
+	}
+	return strings.Join(parts, " · ")
+}
+
 // Text is the `quota` command's answer (design §4: two blocks, ~200 tokens).
 func (r *Report) Text() string {
 	var b strings.Builder
@@ -797,6 +854,9 @@ func (r *Report) Text() string {
 			fmt.Fprintf(&b, " · 5h %.0f%% (resets %s)", r.FivePct, r.FiveReset.Local().Format("15:04"))
 		}
 		b.WriteString("\n")
+	}
+	if len(r.Accounts) > 0 {
+		b.WriteString("  by account: " + r.AccountsText() + "\n")
 	}
 	pct := 0.0
 	if r.MaxUSD > 0 {

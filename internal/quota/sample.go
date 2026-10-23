@@ -43,6 +43,8 @@ type Line struct {
 	Kind       string   `json:"kind"`
 	Session    string   `json:"session"`
 	Persona    string   `json:"persona"`
+	Dir        string   `json:"dir,omitempty"`
+	Login      string   `json:"login,omitempty"`
 	RL         bool     `json:"rl"`
 	FivePct    *float64 `json:"five_pct,omitempty"`
 	FiveReset  *int64   `json:"five_reset,omitempty"`
@@ -69,9 +71,10 @@ type seen struct {
 const RenderGap = 10 * time.Minute
 
 type state struct {
-	Last     map[string]string `json:"last"`  // per persona: its newest line with rate_limits of the current epoch
-	Alive    map[string]string `json:"alive"` // per persona: its newest line of any kind
-	Reset    int64             `json:"reset"` // the newest seven-day resets_at seen: the current epoch
+	Last     map[string]string `json:"last"`   // per persona (and login): its newest line with rate_limits of the current epoch
+	Alive    map[string]string `json:"alive"`  // per persona: its newest line of any kind
+	Reset    int64             `json:"reset"`  // the newest seven-day resets_at seen: the current epoch
+	Resets   map[string]int64  `json:"resets"` // the same per login, for lines that name one: each login has its own window
 	Sessions map[string]seen   `json:"sessions"`
 }
 
@@ -79,7 +82,7 @@ const tsFormat = "2006-01-02T15:04:05Z"
 
 // Sample records what one statusline update shows and returns the text to display. It writes a line only when
 // something is new (see Line), so the spool grows with changes, not with renders.
-func Sample(home, persona string, in []byte, now time.Time) (string, error) {
+func Sample(home, persona, dir string, in []byte, now time.Time) (string, error) {
 	var d input
 	if err := json.Unmarshal(in, &d); err != nil {
 		return "", fmt.Errorf("statusline input: %w", err)
@@ -88,7 +91,14 @@ func Sample(home, persona string, in []byte, now time.Time) (string, error) {
 		return "", errors.New("statusline input has no session_id")
 	}
 	rl := d.RateLimits != nil
-	l := Line{TS: now.UTC().Format(tsFormat), Session: d.SessionID, Persona: persona, RL: rl}
+	l := Line{TS: now.UTC().Format(tsFormat), Session: d.SessionID, Persona: persona, RL: rl, Dir: dir}
+	if dir != "" {
+		login, err := LoginOf(dir)
+		if err != nil {
+			return "", err
+		}
+		l.Login = login
+	}
 	if rl {
 		if w := d.RateLimits.Five; w != nil {
 			l.FivePct, l.FiveReset = w.Pct, w.Reset
@@ -131,8 +141,17 @@ func Sample(home, persona string, in []byte, now time.Time) (string, error) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return "", err
 	}
+	if st.Resets == nil {
+		st.Resets = map[string]int64{}
+	}
+	// A line that names its login heartbeats and keeps its epoch with that login: another account's window says
+	// nothing about it.
+	lastKey, epoch := persona, st.Reset
+	if l.Login != "" {
+		lastKey, epoch = persona+" "+l.Login, st.Resets[l.Login]
+	}
 	s, known := st.Sessions[d.SessionID]
-	last, _ := time.Parse(tsFormat, st.Last[persona])
+	last, _ := time.Parse(tsFormat, st.Last[lastKey])
 	alive, _ := time.Parse(tsFormat, st.Alive[persona])
 	// rate_limits come with a response, so their absence means an API-billed session only when a response arrived
 	// since the last render: a new session shows none before its first response, a resumed one shows its old cost.
@@ -148,7 +167,7 @@ func Sample(home, persona string, in []byte, now time.Time) (string, error) {
 	gap := now.Sub(rendered)
 	responded := known && (d.Cost.USD > s.USD || d.Cost.APIms > s.APIms) && gap >= 0 && gap <= RenderGap
 	// An idle session can repeat a past epoch's window: it never heartbeats, so it cannot stand in for a live one.
-	current := rl && *l.SevenReset > st.Reset-3600
+	current := rl && *l.SevenReset > epoch-3600
 	// A session whose response came without rate_limits is API-billed: it measures no quota, but its render shows
 	// the persona's statusline is alive. A session not known yet (resumed, no response) may be Max: no line.
 	enterprise := !rl && s.Lined && !s.RL
@@ -189,8 +208,12 @@ func Sample(home, persona string, in []byte, now time.Time) (string, error) {
 			return "", err
 		}
 		if current {
-			st.Last[persona] = l.TS
-			st.Reset = max(st.Reset, *l.SevenReset)
+			st.Last[lastKey] = l.TS
+			if l.Login != "" {
+				st.Resets[l.Login] = max(epoch, *l.SevenReset)
+			} else {
+				st.Reset = max(st.Reset, *l.SevenReset)
+			}
 		}
 		st.Alive[persona] = l.TS
 	}
@@ -213,10 +236,31 @@ func Sample(home, persona string, in []byte, now time.Time) (string, error) {
 			return "", err
 		}
 	}
-	if !rl && !(n.Lined && !n.RL) {
-		return "quota: no response yet", nil
+	// The text names the account when the folder is signed in: with several Max accounts each tab shows whose limit it
+	// spends. A damaged accounts file is an error, not a nameless line.
+	name := ""
+	if l.Login != "" {
+		as, err := LoadAccounts(home)
+		if err != nil {
+			return "", err
+		}
+		name = as.Name(l.Login)
 	}
-	return display(l), nil
+	if !rl && !(n.Lined && !n.RL) {
+		return named("quota: no response yet", name), nil
+	}
+	if !rl {
+		return NoPlanLimits, nil // the work line swaps this exact text for its fallback
+	}
+	return named(display(l), name), nil
+}
+
+// named puts the account name after "quota" in a quota text: "quota max2: 5h 1% · …".
+func named(text, name string) string {
+	if name == "" {
+		return text
+	}
+	return "quota " + name + text[len("quota"):]
 }
 
 func deref[T any](p *T) any {

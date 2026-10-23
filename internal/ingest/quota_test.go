@@ -706,7 +706,7 @@ func TestQuotaEnterprisePersonaIsNotStale(t *testing.T) {
 	x.session("work", u, "/work/axi", "", qNow.Add(-20*time.Minute))
 	render := func(usd float64, at time.Time) {
 		in := fmt.Sprintf(`{"session_id":%q,"cost":{"total_cost_usd":%v,"total_api_duration_ms":%v}}`, e, usd, usd*1000)
-		if _, err := quota.Sample(x.home, "work", []byte(in), at); err != nil {
+		if _, err := quota.Sample(x.home, "work", "", []byte(in), at); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -741,7 +741,7 @@ func TestQuotaRoomCountsMeasurementsNotHeartbeats(t *testing.T) {
 		limits := fmt.Sprintf(c.limits, qNow.Add(time.Hour).Unix(), qNow.Add(72*time.Hour).Unix())
 		in := []byte(fmt.Sprintf(`{"session_id":%q,"cost":{"total_cost_usd":1,"total_api_duration_ms":900},"rate_limits":{%s}}`, m, limits))
 		for at := qNow.Add(-c.since); !at.After(qNow.Add(-time.Minute)); at = at.Add(5 * time.Minute) {
-			if _, err := quota.Sample(x.home, "personal", in, at); err != nil {
+			if _, err := quota.Sample(x.home, "personal", "", in, at); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -777,7 +777,7 @@ func TestQuotaRoomAgesEachShareByItsOwnMeasurement(t *testing.T) {
 			at          time.Time
 		}{{a, c.old, qNow.Add(-2 * time.Hour)}, {b, c.recent, qNow.Add(-5 * time.Minute)}} {
 			in := fmt.Sprintf(`{"session_id":%q,"cost":{"total_cost_usd":1,"total_api_duration_ms":900},"rate_limits":{%s}}`, r.sid, r.limits)
-			if _, err := quota.Sample(x.home, "personal", []byte(in), r.at); err != nil {
+			if _, err := quota.Sample(x.home, "personal", "", []byte(in), r.at); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -833,7 +833,7 @@ func TestQuotaRoomCountsResponsesOnly(t *testing.T) {
 			if r.usd > 0 {
 				in += `,"rate_limits":` + limits
 			}
-			if _, err := quota.Sample(x.home, "personal", []byte(in+"}"), qNow.Add(r.at)); err != nil {
+			if _, err := quota.Sample(x.home, "personal", "", []byte(in+"}"), qNow.Add(r.at)); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -1170,5 +1170,47 @@ func TestABrokenBusHoldsBackOnlyItsOwnLines(t *testing.T) {
 	x.run()
 	if p, n := grepAlerts(x.bus("quotes"), " PAUSE "), grepAlerts(x.alerts(), "PAUSE posted"); len(p) != 1 || len(n) != 1 {
 		t.Fatalf("after the fix want one PAUSE and one NEED, got %q and %q", p, n)
+	}
+}
+
+// signIn makes dir a config folder signed into the account id uuid and returns its login.
+func (x *ic) signIn(dir, uuid string) string {
+	x.t.Helper()
+	testutil.Write(x.t, filepath.Join(dir, ".claude.json"), `{"oauthAccount":{"accountUuid":"`+uuid+`"}}`)
+	l, err := quota.LoginOf(dir)
+	if err != nil || l == "" {
+		x.t.Fatalf("login of %s: %q, %v", dir, l, err)
+	}
+	return l
+}
+
+// Several Max accounts (owner 10-23): each spool line's login and folder are stored, and the report gives each login
+// its own share and reset, named by its row in accounts.toml. A login no row lists is named by its hash.
+func TestQuotaReportsEachAccount(t *testing.T) {
+	x := quotaCase(t)
+	d1, d2, d3 := filepath.Join(x.home, "cfg1"), filepath.Join(x.home, "cfg2"), filepath.Join(x.home, "cfg3")
+	l1, l2, l3 := x.signIn(d1, "u-1"), x.signIn(d2, "u-2"), x.signIn(d3, "u-3")
+	testutil.Write(t, filepath.Join(x.home, "accounts.toml"), "[[account]]\nname = \"max1\"\nplan = \"max\"\ndirs = [\""+
+		d1+"\"]\n[[account]]\nname = \"max2\"\nplan = \"max\"\ndirs = [\""+d2+"\"]\n")
+	r1, r2 := qNow.Add(4*24*time.Hour), qNow.Add(24*time.Hour)
+	on := func(l quota.Line, login, dir string) quota.Line { l.Login, l.Dir = login, dir; return l }
+	x.spool(on(sampleAt("s1", qNow.Add(-20*time.Minute), 35, r1), l1, d1),
+		on(sampleAt("s1", qNow.Add(-10*time.Minute), 40, r1), l1, d1),
+		on(sampleAt("s2", qNow.Add(-5*time.Minute), 80, r2), l2, d2),
+		on(sampleAt("s3", qNow.Add(-4*time.Minute), 10, r1), l3, d3))
+	x.run()
+	eq(t, x.q("select login, config_dir from account_seen order by ts"),
+		[][]string{{l1, d1}, {l1, d1}, {l2, d2}, {l3, d3}})
+	eq(t, x.q("select distinct login from quota order by ts"), [][]string{{l1}, {l2}, {l3}})
+	rep := x.report()
+	var got []string
+	for _, a := range rep.Accounts {
+		got = append(got, fmt.Sprintf("%s %s %.0f %d", a.Name, a.Login, a.SevenPct, a.Reset.Unix()))
+	}
+	eq(t, strings.Join(got, " · "), fmt.Sprintf("max1 %s 40 %d · max2 %s 80 %d · login %s %s 10 %d", l1, r1.Unix(), l2,
+		r2.Unix(), l3, l3, r1.Unix()))
+	when := func(t time.Time) string { return t.Local().Format("Mon 01-02 15:04") }
+	if want := "  by account: max1 7d 40% (resets " + when(r1) + ") · max2 7d 80% (resets " + when(r2) + ") · login " + l3 + " 7d 10% (resets " + when(r1) + ")\n"; !strings.Contains(rep.Text(), want) {
+		t.Fatalf("crius-rec quota text has no %q:\n%s", want, rep.Text())
 	}
 }

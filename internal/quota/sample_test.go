@@ -60,7 +60,7 @@ func home(t *testing.T) string {
 
 func must(t *testing.T, h string, in []byte, now time.Time) string {
 	t.Helper()
-	out, err := Sample(h, "personal", in, now)
+	out, err := Sample(h, "personal", "", in, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,16 +112,16 @@ func TestSampleRecordsRateLimitsPresence(t *testing.T) {
 
 func TestSampleFailsLoudly(t *testing.T) {
 	h := home(t)
-	if _, err := Sample(h, "personal", []byte(`{}`), time.Now()); err == nil {
+	if _, err := Sample(h, "personal", "", []byte(`{}`), time.Now()); err == nil {
 		t.Fatal("no session_id must fail")
 	}
 	if err := os.WriteFile(filepath.Join(h, "spool", "quota.state.json"), []byte("{bad"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Sample(h, "personal", render("a", 1, 1, true), time.Now()); err == nil {
+	if _, err := Sample(h, "personal", "", render("a", 1, 1, true), time.Now()); err == nil {
 		t.Fatal("a corrupt state file must fail")
 	}
-	if _, err := Sample(filepath.Join(h, "missing"), "personal", render("a", 1, 1, true), time.Now()); err == nil {
+	if _, err := Sample(filepath.Join(h, "missing"), "personal", "", render("a", 1, 1, true), time.Now()); err == nil {
 		t.Fatal("a missing spool folder must fail")
 	}
 }
@@ -149,7 +149,7 @@ func TestSampleRateLimitsWithoutSevenDayFail(t *testing.T) {
 	for _, rl := range []string{`{}`, `{"five_hour":{"used_percentage":5,"resets_at":1760630400}}`,
 		`{"seven_day":{"resets_at":1761206400}}`, `{"seven_day":{"used_percentage":6}}`} {
 		in := []byte(`{"session_id":"x","cost":{"total_cost_usd":0.5,"total_api_duration_ms":900},"rate_limits":` + rl + `}`)
-		if out, err := Sample(h, "personal", in, time.Now()); err == nil {
+		if out, err := Sample(h, "personal", "", in, time.Now()); err == nil {
 			t.Fatalf("rate_limits %s: want an error, got %q", rl, out)
 		}
 	}
@@ -168,7 +168,7 @@ func TestSampleHeartbeatIsPerPersona(t *testing.T) {
 		at           time.Duration
 	}{{"personal", "a", 0}, {"work", "w", time.Minute}, {"personal", "a", 31 * time.Minute},
 		{"work", "w", 32 * time.Minute}} {
-		if _, err := Sample(h, r.persona, render(r.sid, 10, 40, true), t0.Add(r.at)); err != nil {
+		if _, err := Sample(h, r.persona, "", render(r.sid, 10, 40, true), t0.Add(r.at)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -188,7 +188,7 @@ func TestSampleOldEpochDoesNotHeartbeat(t *testing.T) {
 		in []byte
 		at time.Duration
 	}{{render("a", 10, 40, true), 0}, {old, time.Minute}, {old, 31 * time.Minute}, {render("a", 10, 40, true), 32 * time.Minute}} {
-		if _, err := Sample(h, "personal", r.in, t0.Add(r.at)); err != nil {
+		if _, err := Sample(h, "personal", "", r.in, t0.Add(r.at)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -206,7 +206,7 @@ func TestSampleEnterprisePersonaStaysAlive(t *testing.T) {
 	t0 := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
 	work := func(in []byte, at time.Duration) {
 		t.Helper()
-		if _, err := Sample(h, "work", in, t0.Add(at)); err != nil {
+		if _, err := Sample(h, "work", "", in, t0.Add(at)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -323,5 +323,78 @@ func TestSampleRenderClockAndLegacy(t *testing.T) {
 	must(t, h, in(3, 42), t0.Add(5*time.Minute)) // last line 4 min ago: a render, so the response is recent
 	if l := last(h); l.Kind != "change" || !*l.Responded {
 		t.Errorf("legacy state: %s responded %v", l.Kind, *l.Responded)
+	}
+}
+
+func renderAt(sid string, seven float64, reset int64) []byte {
+	b, _ := json.Marshal(map[string]any{"session_id": sid,
+		"cost": map[string]any{"total_cost_usd": 0.5, "total_api_duration_ms": 900},
+		"rate_limits": map[string]any{
+			"five_hour": map[string]any{"used_percentage": 1, "resets_at": reset - 6*86400},
+			"seven_day": map[string]any{"used_percentage": seven, "resets_at": reset}}})
+	return b
+}
+
+// Several Max accounts (owner 10-23): each line names the folder and the login it was measured on, the statusline
+// names the account, and each login heartbeats in its own window: two accounts reset at different times, and the one
+// that resets first is not an old epoch.
+func TestSampleNamesItsAccount(t *testing.T) {
+	h, d := home(t), t.TempDir()
+	d1, d2 := filepath.Join(d, "claude-work-max"), filepath.Join(d, "claude-max2")
+	signIn(t, d1, "u-1")
+	signIn(t, d2, "u-2")
+	writeAccounts(t, h, "[[account]]\nname = \"max1\"\nplan = \"max\"\ndirs = [\""+d1+"\"]\n"+
+		"[[account]]\nname = \"max2\"\nplan = \"max\"\ndirs = [\""+d2+"\"]\n")
+	l1, _ := LoginOf(d1)
+	l2, _ := LoginOf(d2)
+	t0 := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+	r1, r2 := t0.Add(5*24*time.Hour).Unix(), t0.Add(2*24*time.Hour).Unix()
+	for _, at := range []time.Duration{0, 31 * time.Minute} {
+		out, err := Sample(h, "work", d1, renderAt("a", 40, r1), t0.Add(at))
+		if err != nil || !strings.HasPrefix(out, "quota max1: ") {
+			t.Fatalf("on max1: %q, %v", out, err)
+		}
+		out, err = Sample(h, "work", d2, renderAt("b", 70, r2), t0.Add(at+time.Second))
+		if err != nil || !strings.HasPrefix(out, "quota max2: ") {
+			t.Fatalf("on max2: %q, %v", out, err)
+		}
+	}
+	ls := spoolLines(t, h)
+	if got, want := kinds(ls), "a:session:true b:session:true a:heartbeat:true b:heartbeat:true"; got != want {
+		t.Fatalf("got %s want %s", got, want)
+	}
+	for _, l := range ls {
+		if l.Session == "a" && (l.Login != l1 || l.Dir != d1) || l.Session == "b" && (l.Login != l2 || l.Dir != d2) {
+			t.Fatalf("line %+v: want its folder and login", l)
+		}
+	}
+	// A folder with no login: the line says so, the statusline names no account.
+	if out, err := Sample(h, "work", filepath.Join(d, "none"), renderAt("c", 5, r1), t0); err != nil ||
+		!strings.HasPrefix(out, "quota: ") {
+		t.Fatalf("no login: %q, %v", out, err)
+	}
+	// A login no row lists is named by its hash, so it is never filed under another account.
+	d3 := filepath.Join(d, "claude-new")
+	signIn(t, d3, "u-3")
+	l3, _ := LoginOf(d3)
+	if out, _ := Sample(h, "work", d3, renderAt("e", 5, r1), t0); !strings.HasPrefix(out, "quota login "+l3+": ") {
+		t.Fatalf("unlisted login: %q", out)
+	}
+	// An API-billed login keeps the exact text the work line swaps for its fallback.
+	must := func(in string, at time.Duration) string {
+		out, err := Sample(h, "work", d3, []byte(in), t0.Add(at))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	must(`{"session_id":"ent","cost":{"total_cost_usd":0,"total_api_duration_ms":0}}`, 0)
+	if out := must(`{"session_id":"ent","cost":{"total_cost_usd":1,"total_api_duration_ms":9}}`, time.Minute); out != NoPlanLimits {
+		t.Fatalf("API-billed: %q, want %q", out, NoPlanLimits)
+	}
+	// A broken accounts file is shown, not skipped.
+	writeAccounts(t, h, "[[account]\n")
+	if _, err := Sample(h, "work", d1, renderAt("a", 41, r1), t0.Add(time.Hour)); err == nil {
+		t.Fatal("a damaged accounts.toml was not reported")
 	}
 }
