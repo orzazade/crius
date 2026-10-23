@@ -152,6 +152,9 @@ func checkRunLog(text string) error {
 		}
 		real, err := filepath.EvalSymlinks(p)
 		if t := strings.TrimRightFunc(p, unicode.IsPunct); err != nil && t != p { // "log <path>. Next" (Crius 10-24)
+			if t == "" { // "/...": no path
+				continue
+			}
 			p = t
 			real, err = filepath.EvalSymlinks(p)
 		}
@@ -188,8 +191,9 @@ func checkRunLog(text string) error {
 	if len(unproven) == 0 {
 		return nil
 	}
-	if len(ran) == 0 && len(problems) == 0 {
-		return errors.New("a VERIFIED line names its run log (a file under ~/.crius/runs with `sha:` and `pass:` in its header)")
+	if len(ran) == 0 {
+		return errors.New(strings.Join(append([]string{"a VERIFIED line names its run log (a file under ~/.crius/runs " +
+			"with `sha:` and `pass:` in its header)"}, problems...), "; "))
 	}
 	problems = append(problems, fmt.Sprintf("no passing run log named here ran %s (they ran: %s)",
 		strings.Join(unproven, ", "), strings.Join(ran, ", ")))

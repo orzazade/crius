@@ -149,6 +149,14 @@ func TestARunLogPathAtTheEndOfASentenceCounts(t *testing.T) {
 	if rc != 2 || !strings.Contains(errs, missing+" does not exist") {
 		t.Errorf("a missing run log: want it named, got rc %d: %s", rc, errs)
 	}
+	// review of 1bd129c: a line with no run log still says what a run log is, beside other paths it names, and a word
+	// of only slashes and dots is no path
+	for _, text := range []string{"94598c5 · /mcp works now", "94598c5 · tried it /... no log"} {
+		rc, errs := post(t, at("2026-10-24T00:11"), log, "VERIFIED", "crius:lead", "crius:build", text)
+		if rc != 2 || !strings.Contains(errs, "names its run log") || strings.Contains(errs, " is not under ") {
+			t.Errorf("%q: want the run log hint, got rc %d: %s", text, rc, errs)
+		}
+	}
 }
 
 // A typo in the log path would start a bus nobody reads: silent success.
