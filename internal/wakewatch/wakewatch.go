@@ -67,8 +67,9 @@ var (
 	leadRe = regexp.MustCompile(`^lead(?:er)?$`)
 	// The status line's context use: "██░░░░░░░░ ctx 21%".
 	ctxRe = regexp.MustCompile(`\bctx (\d{1,3})%`)
-	// The quota guard's pause NEED: its project and, for a pause per account, the roles it paused.
-	pauseRe = regexp.MustCompile(`reached (\S+)'s pause at \d+%; (?:PAUSE posted to ([^;.]+))?`)
+	// The quota guard's pause NEED: its project and, for a pause per account, the roles it paused. The whole-team one
+	// puts the accounts' shares, "(max1 91%, max2 92%)", before the ";".
+	pauseRe = regexp.MustCompile(`reached (\S+)'s pause at \d+%(?: \([^)]*\))?; (?:PAUSE posted to ([^;.]+))?`)
 )
 
 // Screen is one tab. Err is set when its read failed; Text is then empty. ID is cmux's surface id (a UUID), which a
@@ -319,7 +320,8 @@ func project(who string) string {
 }
 
 // answered says whether a wake line needs no reply on the bus (Crius 10-23 09:45): the digest's DONE is a report, and
-// the quota guard's pause NEED is answered once Crius parked its project, or every role it paused.
+// the quota guard's pause NEED is answered once Crius parked its project, or every role it paused when it names no tab
+// left to stop by hand (a role it did not pause, or a tab with no role).
 func answered(typ, from, line string, park parked) bool {
 	if from == "crius:digest" && typ == "DONE" {
 		return true
@@ -331,7 +333,7 @@ func answered(typ, from, line string, park parked) bool {
 	if park[strings.ToLower(m[1])] {
 		return true
 	}
-	if m[2] == "" {
+	if m[2] == "" || strings.Contains(line, "; not paused, ") || !strings.Contains(line, "; 0 tabs with no role on it") {
 		return false
 	}
 	for _, role := range strings.Split(m[2], ",") {

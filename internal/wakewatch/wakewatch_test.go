@@ -123,20 +123,23 @@ func TestADigestDoneAndAParkedPauseNeedNoReply(t *testing.T) {
 		pause("account max1 at 91% (13:00) reached tamada's pause at 90%; PAUSE posted to tamada:p1, tamada:p2; 0 tabs with no role on it") +
 		pause("account max2 at 92% (13:00) reached falcon's pause at 90%; PAUSE posted to falcon:p1, falcon:p2; 0 tabs with no role on it") +
 		pause("account max2 at 92% (13:00) reached axi's pause at 90%; no tab of axi has a role on it; 1 tab with no role on it") +
+		pause("every Max account reached kappa's pause at 90% (max1 91%, max2 92%); PAUSE posted to kappa:all. Park kappa in ~/.crius/parked") +
+		pause("account max1 at 91% (13:00) reached zeta's pause at 90%; PAUSE posted to zeta:p1; not paused, as a PAUSE would stop its tab with room too (stop its tab here by hand): p2 also runs on max2; 0 tabs with no role on it") +
+		pause("account max1 at 91% (13:00) reached omega's pause at 90%; PAUSE posted to omega:p1; 1 tab with no role on it") +
 		stamp(t0) + " NEED crius:ingest -> crius:lead — quota guard is off, no pause or quota alert runs: bad file\n"
 	home := setup(t, map[string]string{"crius.log": bus})
-	testutil.Write(t, filepath.Join(home, "parked"), "quotes\ntamada:p1\ntamada:p2\nfalcon:p1\n")
+	testutil.Write(t, filepath.Join(home, "parked"), "quotes\ntamada:p1\ntamada:p2\nfalcon:p1\nkappa\nzeta:p1\nomega:p1\n")
 	f := &fake{}
 	if err := Run(f.deps(home, t0.Add(25*time.Minute))); err != nil {
 		t.Fatal(err)
 	}
 	all := strings.Join(f.sent, "\n")
-	for _, not := range []string{"goal report", "quotes's pause", "tamada's pause"} {
+	for _, not := range []string{"goal report", "quotes's pause", "tamada's pause", "kappa's pause"} {
 		if strings.Contains(all, not) {
 			t.Error("woke for", not)
 		}
 	}
-	for _, want := range []string{"falcon's pause", "axi's pause", "quota guard is off"} {
+	for _, want := range []string{"falcon's pause", "axi's pause", "quota guard is off", "zeta's pause", "omega's pause"} {
 		if !strings.Contains(all, want) {
 			t.Error("no wake for", want, all)
 		}
