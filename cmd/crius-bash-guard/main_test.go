@@ -669,3 +669,39 @@ func TestReviewOfTheVariableRuleCatchesZshAndEnvFlags(t *testing.T) {
 		}
 	}
 }
+
+// Crius 10-23: a cmux send with no target types into the caller's own tab. Twice: a bare number taken for the tab
+// (cmux send 3 "..."), and zsh, which does not split $S, gave "--workspace w --surface s" as one word, so an ORDER
+// landed in Crius's own tab. send and send-key need --workspace and --surface as literal words, each with a value.
+func TestACmuxSendWithoutALiteralTargetIsRefused(t *testing.T) {
+	for _, cmd := range []string{
+		`cmux send 3 "ORDER: do it"`,
+		`cmux send-key enter`,
+		`S="--workspace workspace:2 --surface surface:5"; cmux send $S "ORDER: do it"`,
+		`cmux send "$S" "ORDER: do it"`,
+		`cmux send ${=S} "ORDER: do it"`,
+		`cmux send --workspace workspace:2 "text"`,
+		`cmux send --surface surface:5 "text"`,
+		`cmux send-key --workspace workspace:2 --surface`,
+		`cmux send --workspace=workspace:2 --surface=surface:5 "text"`,
+		`cmux send -- --workspace w --surface s`,
+		`/opt/homebrew/bin/cmux send 3 hi`, `env X=1 cmux send hi`, `bash -c 'cmux send-key enter'`,
+		`sleep 1 && cmux send hi`, `for w in 1 2; do cmux send $w hi; done`,
+	} {
+		if why := check(cmd); !strings.Contains(why, "--workspace") || !strings.Contains(why, "own tab") {
+			t.Errorf("%q: %q", cmd, why)
+		}
+	}
+	for _, cmd := range []string{
+		`cmux send --workspace workspace:2 --surface surface:5 "ORDER: do it"`,
+		`cmux send --workspace "$W" --surface "$S" "text"`,
+		`cmux send --surface $S --workspace $W --paste -- "text"`,
+		`cmux send-key --workspace workspace:2 --surface surface:5 enter`,
+		`cmux read-screen --surface surface:5`, `cmux list-panels`, `cmux send-panel --panel 3 hi`,
+		`echo cmux send 3 hi`, `grep -n "cmux send" notes.md`,
+	} {
+		if why := check(cmd); why != "" {
+			t.Errorf("%q refused: %s", cmd, why)
+		}
+	}
+}

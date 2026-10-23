@@ -1,9 +1,10 @@
-// Command crius-bash-guard is a Claude Code PreToolUse hook for Bash. It refuses three commands that broke the team:
+// Command crius-bash-guard is a Claude Code PreToolUse hook for Bash. It refuses four commands that broke the team:
 // team-wait.sh run detached with `&` (a detached waiter cannot wake the session; 10-21 22:44), and a line written
 // straight onto a bus log instead of through bus-post (10-20 and 10-21: UTC time slip, VERIFIED before the run; 10-22:
 // 332 quotes.log lines ingest cannot read), and a command that prints every variable with its value (env, set,
-// printenv, export -p, declare -p or a bare local: 10-22 a bare zsh local put a token into a transcript). Exit 2
-// refuses, with the reason on stderr; anything else passes.
+// printenv, export -p, declare -p or a bare local: 10-22 a bare zsh local put a token into a transcript), and a cmux
+// send or send-key without --workspace and --surface as literal words (it types into the caller's own tab; 10-23
+// twice). Exit 2 refuses, with the reason on stderr; anything else passes.
 //
 // It catches habits, not intent: fifteen review rounds showed a list of shell forms is never complete, and the full
 // check is the digest's count of lines it cannot read. Known gaps: function bodies run later, source and ., a script
@@ -342,6 +343,10 @@ func (w *walker) call(c *syntax.CallExpr, redirs []*syntax.Redirect) {
 			} else {
 				w.setAny()
 			}
+		}
+	case "cmux":
+		if !targeted(args[1:]) {
+			w.why = untargeted
 		}
 	case "tee":
 		for _, a := range rest {
@@ -792,8 +797,10 @@ func checkText(text string, err error) string {
 	}
 	// A command that prints every variable is refused in zsh text too, read as bash: quoted text and a heredoc stay text
 	// (second review of the rule). Text still unreadable gets no such check (a known gap).
-	if b := zshRe.ReplaceAllStringFunc(text, bashForm); b != text && check(b) == dump {
-		return dump
+	if b := zshRe.ReplaceAllStringFunc(text, bashForm); b != text {
+		if why := check(b); why == dump || why == untargeted {
+			return why
+		}
 	}
 	if !namesBus(text) {
 		return ""
@@ -913,7 +920,43 @@ const (
 	dump = "this command prints every variable with its value (env, printenv, set, export, declare, typeset, local or " +
 		"readonly with no name): a token in the environment would go into the transcript and so to the API. Print names " +
 		"only (zsh: print -l ${(k)parameters}; bash: compgen -v) and test one value with [ -n \"$X\" ]."
+	untargeted = "cmux send and send-key need --workspace <ref> and --surface <ref> written as separate literal words: " +
+		"without them the text goes to this session's own tab, and zsh does not split $S into several words."
 )
+
+// targeted says whether cmux's arguments name both a workspace and a surface for send and send-key: the flags as literal
+// words, each followed by a value, before any --. Other subcommands, and one only the run shows, pass.
+func targeted(args []*syntax.Word) bool {
+	for i, a := range args {
+		sub, ok := literal(a)
+		if !ok {
+			return true
+		}
+		if strings.HasPrefix(sub, "-") {
+			continue
+		}
+		if sub != "send" && sub != "send-key" {
+			return true
+		}
+		has := map[string]bool{}
+		rest := args[i+1:]
+		for j := 0; j < len(rest); j++ {
+			f, _ := literal(rest[j])
+			if f == "--" {
+				break
+			}
+			if f != "--workspace" && f != "--surface" || j+1 == len(rest) {
+				continue
+			}
+			if v, ok := literal(rest[j+1]); !ok || !strings.HasPrefix(v, "-") {
+				has[f] = true
+				j++
+			}
+		}
+		return has["--workspace"] && has["--surface"]
+	}
+	return true
+}
 
 // lists reports whether a command with these words after its name prints every variable with its value: printenv or
 // set with no name, or a declaration builtin with options only (declare -f and -F list functions, not values). A lone
