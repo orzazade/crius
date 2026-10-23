@@ -687,6 +687,9 @@ func TestACmuxSendWithoutALiteralTargetIsRefused(t *testing.T) {
 		`cmux send -- --workspace w --surface s`,
 		`/opt/homebrew/bin/cmux send 3 hi`, `env X=1 cmux send hi`, `bash -c 'cmux send-key enter'`,
 		`sleep 1 && cmux send hi`, `for w in 1 2; do cmux send $w hi; done`,
+		// review of a648553: a global option's value was taken for the subcommand
+		`cmux --socket /tmp/cmux.sock send-key enter`, `cmux --password p --id-format both send hi`,
+		`cmux --json send hi`, `cmux --new-global x send hi`,
 	} {
 		if why := check(cmd); !strings.Contains(why, "--workspace") || !strings.Contains(why, "own tab") {
 			t.Errorf("%q: %q", cmd, why)
@@ -699,6 +702,8 @@ func TestACmuxSendWithoutALiteralTargetIsRefused(t *testing.T) {
 		`cmux send-key --workspace workspace:2 --surface surface:5 enter`,
 		`cmux read-screen --surface surface:5`, `cmux list-panels`, `cmux send-panel --panel 3 hi`,
 		`echo cmux send 3 hi`, `grep -n "cmux send" notes.md`,
+		`cmux --socket /tmp/cmux.sock send --workspace w --surface s hi`, `cmux --id-format refs notify --title send`,
+		`cmux notify --title send --body x`,
 	} {
 		if why := check(cmd); why != "" {
 			t.Errorf("%q refused: %s", cmd, why)
