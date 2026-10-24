@@ -9,7 +9,13 @@
 // `sha: <sha>` for a sha the line names and `pass: <N>` with N >= 1. Twice a VERIFIED went out before its run
 // (10-21 12:08 and 14:54).
 //
-// Exit codes: 0 posted, 2 refused (nothing written), 1 the write failed.
+// A recipient name with a project part is lower case: a line to quotes:P5 went unread for 2 h (quotes:lead 04:58).
+//
+// A project's table in ~/.crius/bus.toml adds the guards in guards.go: hex words must be commits, and one live run at a
+// time (the check and the write hold a lock on the bus log).
+//
+// Exit codes: 0 posted, 2 refused (nothing written), 3 refused: a hex word is no commit, 4 refused: a START while a live
+// run is open, 1 the write failed. 3 and 4 are the codes the Quotes say.sh wrappers gave.
 package main
 
 import (
@@ -24,6 +30,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 	"unicode"
 
@@ -68,6 +75,9 @@ func run(args []string, now time.Time, stderr io.Writer) int {
 	if !ok {
 		return refuse(stderr, "from %q is not project:role", from)
 	}
+	if n := upperName(to); n != "" {
+		return refuse(stderr, "names after -> are lower case (quotes:p5), not %q", n)
+	}
 	line, err := store.FormatLine(typ, project, role, text, to, stamp)
 	if err != nil {
 		return refuse(stderr, "%v", err)
@@ -77,16 +87,61 @@ func run(args []string, now time.Time, stderr io.Writer) int {
 			return refuse(stderr, "%v", err)
 		}
 	}
+	all, err := loadGuards(store.Home())
+	if err != nil {
+		return refuse(stderr, "%v", err)
+	}
+	// The bus's own guards, and for the sha check also the sender's: a sha may be in the repos of either.
+	bus := all[logProject(log)]
+	repos, idDirs := bus.ShaRepos, bus.IDDirs
+	if p := project; p != logProject(log) {
+		repos, idDirs = append(slices.Clip(repos), all[p].ShaRepos...), append(slices.Clip(idDirs), all[p].IDDirs...)
+	}
+	if len(repos) > 0 {
+		bad, err := checkShas(text, repos, idDirs)
+		if err != nil {
+			return refuse(stderr, "%v", err)
+		}
+		if len(bad) > 0 {
+			fmt.Fprintf(stderr, "bus-post: refused: %s is not a commit in %s (an id that is no commit: SAY_NOT_SHA=%s)\n",
+				strings.Join(bad, ", "), strings.Join(repos, ", "), strings.Join(bad, ","))
+			return rcNotCommit
+		}
+	}
 	// No O_CREATE: a typo in the path would start a bus nobody reads.
 	f, err := os.OpenFile(log, os.O_RDWR|os.O_APPEND, 0)
 	if errors.Is(err, os.ErrNotExist) {
 		return refuse(stderr, "no bus log at %s", log)
 	}
 	if err == nil {
+		// One writer at a time: the open-run check and the write hold this lock, so two STARTs at once cannot both
+		// pass (Quotes 10-25 01:44, 02:20). It is released when f is closed.
+		err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX)
+	}
+	if err == nil {
 		// A last line without its newline would swallow this one.
 		if last, ok := lastByte(f); ok && last != '\n' {
 			f.Close()
 			return refuse(stderr, "%s ends in the middle of a line", log)
+		}
+		if typ == "START" && bus.LiveWindowMin > 0 {
+			st, serr := f.Stat()
+			if serr != nil {
+				f.Close()
+				return refuse(stderr, "could not read %s for open runs: %v", log, serr)
+			}
+			open, rerr := openRuns(f, st.Size(), stamp, time.Duration(bus.LiveWindowMin)*time.Minute)
+			if rerr != nil {
+				f.Close()
+				return refuse(stderr, "could not read %s for open runs: %v", log, rerr)
+			}
+			if len(open) > 0 {
+				f.Close()
+				fmt.Fprintf(stderr, "bus-post: refused: a live run is open (a START of the last %d min with no later DONE "+
+					"or CORRECTION from its sender); wait for its DONE, or close your own with DONE or CORRECTION:\n%s\n",
+					bus.LiveWindowMin, strings.Join(open, "\n"))
+				return rcLiveOpen
+			}
 		}
 		_, err = f.WriteString(line + "\n")
 		if cerr := f.Close(); err == nil {
