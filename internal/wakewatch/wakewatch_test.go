@@ -714,12 +714,12 @@ func TestEachAlertIsOneLineForCriusTab(t *testing.T) {
 	}
 }
 
-// Brief P7 item 4: below 20 GB free disk or above 20 GB swap wakes Crius, by the same tab line and 20 min rhythm.
+// Brief P7 item 4: below 20 GB free disk or above 26 GB swap (owner 2026-10-25: 20 GB was noise at a steady 23 GB) wakes Crius, by the same tab line and 20 min rhythm.
 func TestLowDiskOrHighSwapWakesCrius(t *testing.T) {
 	for _, c := range []struct {
 		free, swap float64
 		want       string
-	}{{19.5, 1, "disk"}, {200, 20.5, "swap"}, {20, 20, ""}, {25, 3, ""}} {
+	}{{19.5, 1, "disk"}, {200, 26.5, "swap"}, {200, 23.3, ""}, {20, 26, ""}, {25, 3, ""}} {
 		home := setup(t, nil)
 		f := &fake{freeGB: c.free, swapGB: c.swap}
 		for _, m := range []time.Duration{0, 5, 21} {
@@ -733,7 +733,7 @@ func TestLowDiskOrHighSwapWakesCrius(t *testing.T) {
 			}
 			continue
 		}
-		if len(f.sent) != 2 || !strings.Contains(f.sent[0], c.want) || !strings.Contains(f.sent[0], "20 GB") {
+		if len(f.sent) != 2 || !strings.Contains(f.sent[0], c.want) || !strings.Contains(f.sent[0], map[string]string{"disk": "20 GB", "swap": "26 GB"}[c.want]) {
 			t.Fatal(c, f.sent)
 		}
 	}

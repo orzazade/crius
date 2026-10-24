@@ -43,7 +43,7 @@ const (
 	resend      = 20 * time.Minute // an item still open wakes Crius again, never more often
 	freshAfter  = 20 * time.Minute // a lead's DONE with no new session of that lead this long wakes Crius
 	minFreeGB   = 20               // less free disk than this wakes Crius
-	maxSwapGB   = 20               // more swap in use than this wakes Crius
+	maxSwapGB   = 26               // more swap in use than this wakes Crius
 	MaxLine     = 500
 
 	Prefix        = "WAKEWATCH: "
@@ -543,7 +543,7 @@ func waiting(st *state, d Deps, watch projects, park parked, screens []Screen, h
 	return out
 }
 
-// resources gives an alert when free disk is below 20 GB or swap in use above 20 GB, or when they could not be read.
+// resources gives an alert when free disk is below 20 GB or swap in use above 26 GB, or when they could not be read.
 func resources(d Deps) [][2]string {
 	free, swap, err := d.Resources()
 	if err != nil {
