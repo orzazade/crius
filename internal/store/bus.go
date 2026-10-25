@@ -203,6 +203,8 @@ func FormatLine(typ, project, role, text, to string, now time.Time) (string, err
 // typedTimeRe is a text that starts with a time: bare ("17:50"), or after a name ("Crius 17:50", "Lead to P5 13:28"). A
 // name starts with no digit, so "17:50 00:42 elapsed" is a bare 17:50; spaces and tabs between count alike (review of
 // 5a581e3).
+var ownTimeRe = regexp.MustCompile(`^(to[ \t]+\S+[ \t]+)?([01]?[0-9]|2[0-3]):([0-5][0-9])(?:[^0-9]|$)`)
+
 var typedTimeRe = regexp.MustCompile(`^(?:([^\s0-9]\S*)[ \t]+(to[ \t]+\S+[ \t]+)?)?([01]?[0-9]|2[0-3]):([0-5][0-9])(?:[^0-9]|$)`)
 
 // CheckTypedTime refuses a time typed at the start of text as the time of writing that is more than 2 min off now, the
@@ -214,14 +216,22 @@ var typedTimeRe = regexp.MustCompile(`^(?:([^\s0-9]\S*)[ \t]+(to[ \t]+\S+[ \t]+)
 //
 // A time after another name ("QA3 19:37 FAIL") cites that line and is left alone.
 func CheckTypedTime(project, role, text string, now time.Time) error {
-	m := typedTimeRe.FindStringSubmatch(text)
+	// The sender's own name is looked for first, as it is: one may start with a digit (review of 6ee9fcd).
+	var m []string
+	for _, n := range []string{role, project} {
+		if len(text) > len(n) && strings.EqualFold(text[:len(n)], n) && (text[len(n)] == ' ' || text[len(n)] == '\t') {
+			if m = ownTimeRe.FindStringSubmatch(strings.TrimLeft(text[len(n):], " \t")); m != nil {
+				m = []string{m[0], n, m[1], m[2], m[3]}
+				break
+			}
+		}
+	}
 	if m == nil {
-		return nil
+		if m = typedTimeRe.FindStringSubmatch(text); m == nil || m[1] != "" && !strings.EqualFold(m[1], role) && !strings.EqualFold(m[1], project) {
+			return nil
+		}
 	}
-	own := strings.EqualFold(m[1], role) || strings.EqualFold(m[1], project)
-	if m[1] != "" && !own {
-		return nil
-	}
+	own := m[1] != ""
 	h, _ := strconv.Atoi(m[3])
 	mm, _ := strconv.Atoi(m[4])
 	// Minutes ahead of the clock, across midnight the short way: -720 < d <= 720.

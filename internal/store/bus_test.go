@@ -441,6 +441,8 @@ func TestATypedTimeOffTheStampIsRefused(t *testing.T) {
 		{"crius", "lead", "12:48", "Crius 08:48: the UTC time"}, // a stamp of one's own behind the clock too
 		{"crius", "lead", "01:55", "01:58 J1-J6 green on main"}, // a bare time ahead
 		{"crius", "lead", "23:59", "00:05 next day"},            // ahead across midnight
+		{"demo", "1lead", "17:43", "1lead 17:50: PASS"},         // review of 6ee9fcd: an own name that starts with a digit
+		{"3d", "lead", "17:43", "3d to qa 17:50: PASS"},
 	} {
 		_, err := FormatLine("INFO", c.project, c.role, c.text, "quotes:lead", day(c.now))
 		if !IsRefused(err) || !strings.Contains(err.Error(), "typed time") {
