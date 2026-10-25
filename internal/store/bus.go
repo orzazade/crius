@@ -190,7 +190,7 @@ func FormatLine(typ, project, role, text, to string, now time.Time) (string, err
 	if n := utf8.RuneCountInString(text); n > MaxLen {
 		return "", refused("text is %d chars; the limit is %d", n, MaxLen)
 	}
-	if err := checkTypedTime(project, role, text, now); err != nil {
+	if err := CheckTypedTime(project, role, text, now); err != nil {
 		return "", err
 	}
 	line := now.Format("2006-01-02T15:04") + " " + typ + " " + project + ":" + role + " -> " + to + " — " + text
@@ -203,7 +203,7 @@ func FormatLine(typ, project, role, text, to string, now time.Time) (string, err
 // typedTimeRe is a text that starts with a time: bare ("17:50"), or after a name ("Crius 17:50", "Lead to P5 13:28").
 var typedTimeRe = regexp.MustCompile(`^(?:(\S+) (to \S+ )?)?([01]?[0-9]|2[0-3]):([0-5][0-9])(?:[^0-9]|$)`)
 
-// checkTypedTime refuses a time typed at the start of text as the time of writing that is more than 2 min off now, the
+// CheckTypedTime refuses a time typed at the start of text as the time of writing that is more than 2 min off now, the
 // line's own stamp (crius:lead 10-25 17:43 wrote "Crius 17:50"; quotes:lead 13:15 "Lead to P5 13:28").
 //   - Right after the sender's own name (its role or project: "Lead", "P2", "Crius"): off either way is refused.
 //   - Bare, or "<own name> to <name>": only ahead, by up to an hour. Behind, it cites an earlier line ("14:59 I
@@ -211,7 +211,7 @@ var typedTimeRe = regexp.MustCompile(`^(?:(\S+) (to \S+ )?)?([01]?[0-9]|2[0-3]):
 //     is last night's.
 //
 // A time after another name ("QA3 19:37 FAIL") cites that line and is left alone.
-func checkTypedTime(project, role, text string, now time.Time) error {
+func CheckTypedTime(project, role, text string, now time.Time) error {
 	m := typedTimeRe.FindStringSubmatch(text)
 	if m == nil {
 		return nil

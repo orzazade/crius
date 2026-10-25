@@ -238,3 +238,67 @@ func TestNoLiveWindowNoStartRule(t *testing.T) {
 		t.Fatal(rc, errs)
 	}
 }
+
+// readyBus is quotesBus with a RethinkBack repo next to channels and a pre-ready record folder (10-25, quotes:lead 18:12:
+// a READY needs pre-ready's PASS record; a RethinkBack fix has no pre-ready). It returns the RethinkBack head too.
+func readyBus(t *testing.T) (log, records, head, rbHead string) {
+	home, log, repo, head := quotesBus(t)
+	rb := testutil.GitRepo(t, filepath.Join(home, "..", "RethinkBack"))
+	testutil.Write(t, filepath.Join(rb, "b.txt"), "b")
+	testutil.CommitAll(t, rb)
+	out, err := exec.Command("git", "-C", rb, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	records = filepath.Join(home, "state", "quotes", "preready")
+	testutil.Write(t, filepath.Join(records, ".keep"), "")
+	testutil.Write(t, filepath.Join(home, "bus.toml"), fmt.Sprintf("[projects.quotes]\nsha_repos = [%q, %q]\n"+
+		"preready_dir = %q\npreready_skip_repos = [%q]\n", repo, rb, records, rb))
+	return log, records, head, strings.TrimSpace(string(out))
+}
+
+func record(t *testing.T, records, head, line string) {
+	testutil.Write(t, filepath.Join(records, head), fmt.Sprintf(`{"head":%q,"base":"x","rows":["G-1"],"line":%q,"at":"2026-10-25T13:54:06.747Z"}`,
+		head, line))
+}
+
+func TestAReadyWithNoPreReadyRecordIsRefused(t *testing.T) {
+	log, records, head, _ := readyBus(t)
+	text := "READY G-DET-14 " + head[:8] + " · in next"
+	rc, errs := post(t, at("2026-10-25T17:49"), log, "READY", "quotes:p2", "quotes:qa1", text)
+	if rc != 7 || !strings.Contains(errs, "no pre-ready PASS record") || busText(t, log) != "" {
+		t.Fatalf("no record: rc %d %s", rc, errs)
+	}
+	record(t, records, head, "pre-ready FAIL "+head[:8]+" on base x")
+	if rc, errs := post(t, at("2026-10-25T17:49"), log, "READY", "quotes:p2", "quotes:qa1", text); rc != 7 {
+		t.Fatalf("a FAIL record: rc %d %s", rc, errs)
+	}
+	if rc, errs := post(t, at("2026-10-25T17:49"), log, "READY", "quotes:p2", "quotes:qa1", "READY G-DET-14, no sha"); rc != 7 {
+		t.Fatalf("no sha: rc %d %s", rc, errs)
+	}
+	// Only a READY needs it.
+	if rc, errs := post(t, at("2026-10-25T17:49"), log, "INFO", "quotes:p2", "quotes:qa1", text); rc != 0 {
+		t.Fatalf("INFO: rc %d %s", rc, errs)
+	}
+}
+
+func TestAReadyWithAPassRecordOrARethinkBackShaIsPosted(t *testing.T) {
+	log, records, head, rbHead := readyBus(t)
+	record(t, records, head, "pre-ready PASS "+head[:8]+" on base x (G-1) · clean")
+	for _, text := range []string{"READY G-1 " + head[:8] + " · in next", "READY full " + head,
+		"READY RB-147 fx rate read " + rbHead[:10]} {
+		if rc, errs := post(t, at("2026-10-25T17:49"), log, "READY", "quotes:p2", "quotes:qa1", text); rc != 0 {
+			t.Errorf("%q: rc %d %s", text, rc, errs)
+		}
+	}
+}
+
+// Failed to look is not found nothing: a record that does not read refuses the line and says why.
+func TestAnUnreadablePreReadyRecordIsSaid(t *testing.T) {
+	log, records, head, _ := readyBus(t)
+	testutil.Write(t, filepath.Join(records, head), `{"head":`)
+	rc, errs := post(t, at("2026-10-25T17:49"), log, "READY", "quotes:p2", "quotes:qa1", "READY "+head[:8])
+	if rc != 2 || !strings.Contains(errs, head) || busText(t, log) != "" {
+		t.Fatalf("rc %d %s", rc, errs)
+	}
+}

@@ -8,6 +8,8 @@ package main
 //	sha_repos = ["~/Projects/Appxite/svc_quote/channels"] # a word of 8-40 hex, not all digits, must be a commit in one
 //	id_dirs = ["~/…/scripts"]                             # a hex word that starts a UUID in a file here is an id
 //	live_window_min = 60                                  # one live run at a time on this bus (START rule)
+//	preready_dir = "~/.crius/state/quotes/preready"       # a READY needs pre-ready's PASS record for a sha it names
+//	preready_skip_repos = ["~/…/RethinkBack"]             # a commit only here needs no record
 //
 // The table lives outside projects.toml because every other Crius binary reads that file strictly and refuses a key it
 // does not know.
@@ -15,6 +17,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -34,12 +37,17 @@ const (
 	rcNotCommit = 3 // the wrappers' code for a hex word that is no commit
 	rcLiveOpen  = 4 // the wrappers' code for a START while a live run is open
 	rcNoSession = 5 // posted, but an ORDER or ASK names someone with no live session (or the check failed)
+	rcOffClock  = 6 // the wrappers' code for a typed time off the clock
+	rcNoRecord  = 7 // a READY names no sha with a pre-ready PASS record (6 is the wrappers' off-clock time)
 )
 
 type guards struct {
 	ShaRepos      []string `toml:"sha_repos"`
 	IDDirs        []string `toml:"id_dirs"`
 	LiveWindowMin int      `toml:"live_window_min"`
+	// A READY needs pre-ready's PASS record for a sha it names (readyProven), exit 7.
+	PrereadyDir       string   `toml:"preready_dir"`
+	PrereadySkipRepos []string `toml:"preready_skip_repos"`
 }
 
 // loadGuards reads <home>/bus.toml. No file: no project has guards. Unknown keys are an error, so a typo cannot quietly
@@ -110,34 +118,11 @@ func checkShas(text string, repos, idDirs []string) ([]string, error) {
 		if len(words) == 0 {
 			return nil, nil
 		}
-		var in bytes.Buffer
-		for _, w := range words {
-			in.WriteString(w + "^{commit}\n")
-		}
-		cmd := exec.Command("git", "-C", expand(repo), "cat-file", "--batch-check")
-		cmd.Stdin = &in
-		// A GIT_DIR (or another repo variable) inherited from the caller would win over -C: check the wrong repo.
-		cmd.Env = slices.DeleteFunc(os.Environ(), func(kv string) bool {
-			return slices.ContainsFunc([]string{"GIT_DIR=", "GIT_WORK_TREE=", "GIT_COMMON_DIR=", "GIT_OBJECT_DIRECTORY=",
-				"GIT_ALTERNATE_OBJECT_DIRECTORIES="}, func(p string) bool { return strings.HasPrefix(kv, p) })
-		})
-		var errb bytes.Buffer
-		cmd.Stderr = &errb
-		out, err := cmd.Output()
+		in, err := commits(repo, words)
 		if err != nil {
-			return nil, fmt.Errorf("could not check shas in %s: %v %s", repo, err, strings.TrimSpace(errb.String()))
+			return nil, err
 		}
-		lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
-		if len(lines) != len(words) {
-			return nil, fmt.Errorf("could not check shas in %s: %d answers for %d words", repo, len(lines), len(words))
-		}
-		var left []string
-		for i, w := range words {
-			if f := strings.Fields(lines[i]); len(f) < 2 || f[1] != "commit" {
-				left = append(left, w)
-			}
-		}
-		words = left
+		words = slices.DeleteFunc(words, func(w string) bool { return in[w] })
 	}
 	if len(words) == 0 || len(idDirs) == 0 {
 		return words, nil
@@ -174,6 +159,93 @@ func checkShas(text string, repos, idDirs []string) ([]string, error) {
 		}
 	}
 	return left, nil
+}
+
+// commits gives which of words are a commit in repo.
+func commits(repo string, words []string) (map[string]bool, error) {
+	var in bytes.Buffer
+	for _, w := range words {
+		in.WriteString(w + "^{commit}\n")
+	}
+	cmd := exec.Command("git", "-C", expand(repo), "cat-file", "--batch-check")
+	cmd.Stdin = &in
+	// A GIT_DIR (or another repo variable) inherited from the caller would win over -C: check the wrong repo.
+	cmd.Env = slices.DeleteFunc(os.Environ(), func(kv string) bool {
+		return slices.ContainsFunc([]string{"GIT_DIR=", "GIT_WORK_TREE=", "GIT_COMMON_DIR=", "GIT_OBJECT_DIRECTORY=",
+			"GIT_ALTERNATE_OBJECT_DIRECTORIES="}, func(p string) bool { return strings.HasPrefix(kv, p) })
+	})
+	var errb bytes.Buffer
+	cmd.Stderr = &errb
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("could not check shas in %s: %v %s", repo, err, strings.TrimSpace(errb.String()))
+	}
+	lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
+	if len(lines) != len(words) {
+		return nil, fmt.Errorf("could not check shas in %s: %d answers for %d words", repo, len(lines), len(words))
+	}
+	is := map[string]bool{}
+	for i, w := range words {
+		if f := strings.Fields(lines[i]); len(f) >= 2 && f[1] == "commit" {
+			is[w] = true
+		}
+	}
+	return is, nil
+}
+
+// readyProven tells whether a READY's text names a sha that pre-ready passed: a record in g.PrereadyDir named by the
+// full sha, whose "head" is that sha and whose "line" starts "pre-ready PASS" (Quotes pre-ready.ts writes it), or a
+// commit of a preready_skip_repos repo that is a commit in no other sha_repos repo (a RethinkBack fix has no pre-ready;
+// quotes:lead 10-25 18:12). A record that does not read is an error: failed to look is not found nothing.
+func readyProven(text string, g guards) (bool, error) {
+	words := hexWords(text)
+	if len(words) == 0 {
+		return false, nil
+	}
+	dir := expand(g.PrereadyDir)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false, fmt.Errorf("could not read pre-ready records: %v", err)
+	}
+	for _, w := range words {
+		for _, e := range entries {
+			if !strings.HasPrefix(e.Name(), w) || !hexWordRe.MatchString(e.Name()) {
+				continue
+			}
+			b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+			if err != nil {
+				return false, fmt.Errorf("could not read pre-ready record: %v", err)
+			}
+			var rec struct{ Head, Line string }
+			if err := json.Unmarshal(b, &rec); err != nil {
+				return false, fmt.Errorf("could not read pre-ready record %s: %v", filepath.Join(dir, e.Name()), err)
+			}
+			if rec.Head == e.Name() && strings.HasPrefix(rec.Line, "pre-ready PASS") {
+				return true, nil
+			}
+		}
+	}
+	for _, skip := range g.PrereadySkipRepos {
+		in, err := commits(skip, words)
+		if err != nil {
+			return false, err
+		}
+		left := slices.DeleteFunc(slices.Clone(words), func(w string) bool { return !in[w] })
+		for _, repo := range g.ShaRepos {
+			if len(left) == 0 || slices.Contains(g.PrereadySkipRepos, repo) {
+				continue
+			}
+			other, err := commits(repo, left)
+			if err != nil {
+				return false, err
+			}
+			left = slices.DeleteFunc(left, func(w string) bool { return other[w] })
+		}
+		if len(left) > 0 {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // openRuns reads the bus from f: each sender whose newest START at or after now-window has no later DONE or

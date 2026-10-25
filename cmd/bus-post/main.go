@@ -19,8 +19,9 @@
 // 13:18 to crius:build went nowhere for hours. Posted, so a caller must not send it again.
 //
 // Exit codes: 0 posted, 2 refused (nothing written), 3 refused: a hex word is no commit, 4 refused: a START while a live
-// run is open, 5 posted, but a recipient has no live session (or the check failed), 1 the write failed. 3 and 4 are the
-// codes the Quotes say.sh wrappers gave.
+// run is open, 5 posted, but a recipient has no live session (or the check failed), 6 refused: a time typed at the start
+// of the text is off the clock, 7 refused: a READY with no pre-ready PASS record, 1 the write failed. 3, 4 and 6 are the
+// codes the Quotes say.sh wrappers gave; 7 was agreed with quotes:lead.
 package main
 
 import (
@@ -84,6 +85,10 @@ func run(args []string, now time.Time, stderr io.Writer) int {
 	if n := upperName(to); n != "" {
 		return refuse(stderr, "names after -> are lower case (quotes:p5), not %q", n)
 	}
+	if err := store.CheckTypedTime(project, role, text, stamp); err != nil {
+		fmt.Fprintf(stderr, "bus-post: refused: %v\n", err)
+		return rcOffClock
+	}
 	line, err := store.FormatLine(typ, project, role, text, to, stamp)
 	if err != nil {
 		return refuse(stderr, "%v", err)
@@ -112,6 +117,22 @@ func run(args []string, now time.Time, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "bus-post: refused: %s is not a commit in %s (an id that is no commit: SAY_NOT_SHA=%s)\n",
 				strings.Join(bad, ", "), strings.Join(repos, ", "), strings.Join(bad, ","))
 			return rcNotCommit
+		}
+	}
+	if g := bus; typ == "READY" {
+		if g.PrereadyDir == "" {
+			g = all[project]
+		}
+		if g.PrereadyDir != "" {
+			ok, err := readyProven(text, g)
+			if err != nil {
+				return refuse(stderr, "%v", err)
+			}
+			if !ok {
+				fmt.Fprintf(stderr, "bus-post: refused: a READY names the sha pre-ready passed: no pre-ready PASS record "+
+					"in %s for a sha it names (run pre-ready on it first)\n", g.PrereadyDir)
+				return rcNoRecord
+			}
 		}
 	}
 	// No O_CREATE: a typo in the path would start a bus nobody reads.
