@@ -289,12 +289,14 @@ func laterReading(stamp time.Time) time.Time {
 }
 
 var (
-	// A "Needs owner" field of numbered items: "(1) …; (2) …".
-	itemMarkRe = regexp.MustCompile(`\((\d+)\)\s`)
+	// A "Needs owner" field of numbered items: "(1) …; (2) …". Only a number at the start or after ';' starts an item:
+	// "option (1) keep ours or (2) copy" is one question with choices (review of 0853631).
+	itemSepRe  = regexp.MustCompile(`(?:^|;)\s*(\(\d+\)\s)`)
+	itemMarkRe = regexp.MustCompile(`^\((\d+)\)\s`)
 	// What names an item on the bus: a sha, an id (F-118, G-SUB-503), a quoted phrase ('Vendor cost').
 	needShaRe   = regexp.MustCompile(`\b[0-9a-f]{7,40}\b`)
 	needIDRe    = regexp.MustCompile(`\b[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*-[0-9]+\b`)
-	needQuoteRe = regexp.MustCompile(`(?:^|[^\w])['"]([^'"]{3,60})['"]`)
+	needQuoteRe = regexp.MustCompile(`(?:^|[^\w])(?:'([^']{3,60})'|"([^"]{3,60})")`) // a pair of one mark: "owner's choice"
 	ownerWordRe = regexp.MustCompile(`(?i)\bowner\b`)
 )
 
@@ -305,7 +307,7 @@ var (
 func ownerAnswers(db *sql.DB, g *Goal) (open []string, note string, err error) {
 	text := strings.TrimSpace(g.NeedsOwner)
 	var items []string
-	if marks := itemMarkRe.FindAllStringIndex(text, -1); len(marks) >= 2 {
+	if marks := itemSepRe.FindAllStringSubmatchIndex(text, -1); len(marks) >= 2 {
 		if pre := strings.TrimSpace(text[:marks[0][0]]); pre != "" {
 			items = append(items, strings.TrimRight(pre, "; "))
 		}
@@ -314,7 +316,7 @@ func ownerAnswers(db *sql.DB, g *Goal) (open []string, note string, err error) {
 			if i+1 < len(marks) {
 				end = marks[i+1][0]
 			}
-			items = append(items, strings.TrimRight(strings.TrimSpace(text[m[0]:end]), ";"))
+			items = append(items, strings.TrimRight(strings.TrimSpace(text[m[2]:end]), ";"))
 		}
 	} else {
 		items = []string{text}
@@ -336,10 +338,10 @@ func ownerAnswers(db *sql.DB, g *Goal) (open []string, note string, err error) {
 		if !ownerWordRe.MatchString(line.String) {
 			continue
 		}
-		low := strings.ToLower(line.String)
 		for i, item := range items {
+			// A whole token: G-SUB-503 is not in "G-SUB-5030" (review of 0853631).
 			if by[i] != "" || !slices.ContainsFunc(itemRefs(item), func(r string) bool {
-				return strings.Contains(low, strings.ToLower(r))
+				return regexp.MustCompile(`(?i)(?:^|[^\w-])` + regexp.QuoteMeta(r) + `(?:[^\w-]|$)`).MatchString(line.String)
 			}) {
 				continue
 			}
@@ -381,7 +383,7 @@ func itemRefs(item string) []string {
 	}
 	refs = append(refs, needIDRe.FindAllString(item, -1)...)
 	for _, m := range needQuoteRe.FindAllStringSubmatch(item, -1) {
-		refs = append(refs, m[1])
+		refs = append(refs, m[1]+m[2])
 	}
 	return refs
 }

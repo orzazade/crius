@@ -700,3 +700,37 @@ func TestBuildLeavesOutAnOwnerQuestionAnsweredOnTheBus(t *testing.T) {
 		}
 	}
 }
+
+// Review of 0853631 (P2s): a quote is a pair of the same mark, an id matches only as a whole token, and only a number
+// at the start or after ';' starts an item, so an answer to another thing never hides a question, and a question with
+// numbered choices leaves as one.
+func TestAnOwnerAnswerMatchesWholeRefsAndItems(t *testing.T) {
+	at := func(s string) time.Time {
+		v, _ := time.ParseInLocation("2006-01-02 15:04", s, time.Local)
+		return v
+	}
+	for _, c := range []struct {
+		needs, answer string
+		left          bool
+	}{
+		{`Approve "owner's choice" wording for the hint?`, "Owner approved F-118", false},
+		{"Approve G-SUB-503?", "Owner approved G-SUB-5030", false},
+		{"Choose G-SUB-503 option (1) keep ours or (2) copy the mockup", "Owner chose option 1 for G-SUB-503", true},
+	} {
+		db := open(t)
+		busText(t, db, at("2026-10-25 02:00"), "crius:lead", "answer", c.answer)
+		leads := []ingest.Lead{{Name: "quotes:lead", StatusFile: statusFile(t, t.TempDir(), "q.md",
+			block("2026-10-24 18:03", c.needs, "- [ ] one"))}}
+		r, err := Build(db, input(leads, nil), at("2026-10-25 09:00"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		owner, rest, _ := strings.Cut(r.Text, "## Leads")
+		if gone := !strings.Contains(owner, "quotes:lead"); gone != c.left {
+			t.Errorf("%q after %q: left the owner list %v, want %v:\n%s", c.needs, c.answer, gone, c.left, owner)
+		}
+		if c.left && !strings.Contains(rest, "the question by crius:lead ANSWER") {
+			t.Errorf("%q: lead entry lacks the note:\n%s", c.needs, rest)
+		}
+	}
+}
