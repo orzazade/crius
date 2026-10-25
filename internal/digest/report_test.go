@@ -734,3 +734,34 @@ func TestAnOwnerAnswerMatchesWholeRefsAndItems(t *testing.T) {
 		}
 	}
 }
+
+// crius:lead 10-25 21:22 (brief fixes-1025 item 4): a GOAL row left [~] that a VERIFIED line names is done, and the
+// report says so; Crius told the owner the Insights bug was open from such a row though crius:lead VERIFIED it 10-24
+// 12:43. That line typed its own header again and named the row by its words without the quote marks. Four words of a
+// ref, all in a row's text in the same case, name it loosely; a loose name is not enough when two rows have it.
+func TestAnOpenRowThatAVerifiedLineNamesIsDone(t *testing.T) {
+	db := open(t)
+	at := time.Date(2026, 10, 24, 12, 43, 0, 0, time.Local)
+	verified(t, db, at, "crius:lead", "quotes:lead", "VERIFIED crius:lead -> quotes:lead — Owner bug: Quote Insights All says "+
+		"Failed to fetch · main a31fd406 clean clone ~/.crius/runs/quotes-a31fd406-1236.log; 7090 All 0.7 s (lead 12:27)")
+	verified(t, db, at, "crius:lead", "quotes:lead", "Sweep J1-J4 green on · two rows carry these words")
+	dir := t.TempDir()
+	leads := []ingest.Lead{{Name: "quotes:lead", StatusFile: statusFile(t, dir, "q.md", block("2026-10-24 18:03", "nothing",
+		"- [x] Demo plan · 4d421a4",
+		`- [~] Owner bug: Quote Insights "All quotes" says "Failed to fetch" · cause bus 07:58: All takes 36.5 s on 7090 because F-284`,
+		"- [ ] Sweep J1-J4 green on the combined rig build",
+		"- [ ] Sweep J1-J4 green on main again"))}}
+	r, err := Build(db, input(leads, nil), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"quotes:lead: 50% claimed · verified 1 of 2 done (4 milestones)",
+		`done by VERIFIED, still [~] or [ ] in the status file: Owner bug: Quote Insights "All quotes" says "Failed to fetch" (VERIFIED 2026-10-24 12:43)`,
+		"VERIFIED lines not counted: 1",
+	} {
+		if !strings.Contains(r.Text, want) {
+			t.Errorf("lacks %q:\n%s", want, r.Text)
+		}
+	}
+}

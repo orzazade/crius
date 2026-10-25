@@ -75,10 +75,11 @@ func TestVerifiedNeedsAVerifiedLineToTheLead(t *testing.T) {
 		t.Fatal(err)
 	}
 	verified(t, db, at.Add(time.Hour), "crius:lead", "crius:build", "b3a87cb · checked again: the first check stays")
-	// Not counted: a run id, no match, a milestone not done, other case, no evidence, two milestones.
+	// A milestone not marked done is done by its VERIFIED line (crius:lead 10-25 21:22; it was not counted before).
+	notDone := verified(t, db, at, "crius:lead", "crius:build", "c5c5c5c · a milestone not done")
+	// Not counted: a run id, no match, other case, no evidence, two milestones.
 	verified(t, db, at, "crius:lead", "crius:build", "9999999 · digits only: a run id, not a sha")
 	verified(t, db, at, "crius:lead", "crius:build", "zzz · matches nothing")
-	verified(t, db, at, "crius:lead", "crius:build", "c5c5c5c · a milestone not done")
 	verified(t, db, at, "crius:lead", "crius:build", "f-126 · the ref in another case")
 	verified(t, db, at, "crius:lead", "crius:build", "sources flow · mail · the text in another case")
 	verified(t, db, at, "crius:lead", "crius:build", "ccc9039")
@@ -99,8 +100,8 @@ func TestVerifiedNeedsAVerifiedLineToTheLead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []int64{sha, tick, byText, 0, 0, 0, 0, 0}; !reflect.DeepEqual(got, want) || notCounted != 9 {
-		t.Fatalf("got %v, %d not counted; want %v, 9", got, notCounted, want)
+	if want := []int64{sha, tick, byText, 0, 0, notDone, 0, 0}; !reflect.DeepEqual(got, want) || notCounted != 8 {
+		t.Fatalf("got %v, %d not counted; want %v, 8", got, notCounted, want)
 	}
 }
 
@@ -159,12 +160,12 @@ func TestVerifiedPrefersAnExactMatch(t *testing.T) {
 }
 
 // Review of 178deae: the strongest match is looked for over all milestones, done or not; a line counts only when that
-// match points at one done milestone. A check of a milestone not yet done is not credited to a done one that only
-// mentions its ref. In rows mode a "row <id>" line counts for its row and still for the milestone it matches.
+// match points at one milestone. A check of a milestone not yet done is not credited to a done one that only
+// mentions its ref; it makes that milestone done (crius:lead 10-25 21:22). In rows mode a "row <id>" line counts for its row and still for the milestone it matches.
 func TestVerifiedLooksAtEveryMilestoneAndRowsKeepMilestones(t *testing.T) {
 	db := open(t)
 	at := time.Date(2026, 10, 17, 5, 0, 0, 0, time.Local)
-	verified(t, db, at, "crius:lead", "quotes:lead", "RB-90 · deploy checked")
+	deploy := verified(t, db, at, "crius:lead", "quotes:lead", "RB-90 · deploy checked") // M2 not marked done: done by it
 	tick := verified(t, db, at, "crius:lead", "quotes:lead", "row F-126 · ticks seen")
 	verified(t, db, at, "crius:lead", "quotes:lead", "row F-127 · a row only")
 	g := &Goal{DoneHow: "rows: 33 of 130 in M1-BUILD.md", Milestones: []Milestone{
@@ -176,7 +177,7 @@ func TestVerifiedLooksAtEveryMilestoneAndRowsKeepMilestones(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []int64{0, 0, tick}; !reflect.DeepEqual(got, want) || rows != 2 || notCounted != 1 {
-		t.Fatalf("got %v, %d rows, %d not counted; want %v, 2, 1", got, rows, notCounted, want)
+	if want := []int64{0, deploy, tick}; !reflect.DeepEqual(got, want) || rows != 2 || notCounted != 0 {
+		t.Fatalf("got %v, %d rows, %d not counted; want %v, 2, 0", got, rows, notCounted, want)
 	}
 }

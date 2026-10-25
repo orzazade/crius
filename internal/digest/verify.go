@@ -15,6 +15,8 @@ var (
 	tokenRe  = regexp.MustCompile(`[0-9A-Za-z]+(?:-[0-9A-Za-z]+)*`)
 	digitRe  = regexp.MustCompile(`[0-9]`)
 	alphaRe  = regexp.MustCompile(`[A-Za-z]`)
+	// The line's own header typed again at the start of its text (crius:lead 10-24 12:43).
+	headerRe = regexp.MustCompile(`^VERIFIED\s+\S+\s+->\s+[^—]+—\s*`)
 )
 
 // isID: a token with a letter and a digit (F-126, RB-89, c84d78c), so a plain word or number is no id.
@@ -58,6 +60,7 @@ func Verified(db *sql.DB, lead string, g *Goal) (checked []int64, rows, notCount
 		if !slices.Contains(r["to"], lead) {
 			continue
 		}
+		text = headerRe.ReplaceAllString(text, "")
 		row := false
 		if ref, evidence, _ := strings.Cut(text, " · "); countsRows && strings.TrimSpace(evidence) != "" {
 			if id, ok := strings.CutPrefix(strings.TrimSpace(ref), "row "); ok && isID(id) {
@@ -65,14 +68,16 @@ func Verified(db *sql.DB, lead string, g *Goal) (checked []int64, rows, notCount
 				text = id + " · " + evidence
 			}
 		}
-		// The strongest match over all milestones decides; the line counts when it points at one done milestone.
+		// The strongest match over all milestones decides; the line counts when it points at one milestone. One not
+		// marked done is done by it (crius:lead 10-25 21:22), and the report says the status file is behind; a row line
+		// checks one row, never a whole open milestone.
 		best, hits := none, []int(nil)
 		for i, m := range g.Milestones {
 			s := match(text, m)
 			if s > best {
 				best, hits = s, nil
 			}
-			if s == best && s != none && m.State == Done {
+			if s == best && s != none && (m.State == Done || !row) {
 				hits = append(hits, i)
 			}
 		}
@@ -121,6 +126,14 @@ func match(text string, m Milestone) strength {
 	line := m.Text + " " + m.Refs
 	if isID(ref) && slices.Contains(tokenRe.FindAllString(line, -1), ref) || shaIn(ref, line) {
 		return mentioned
+	}
+	// The milestone named by its words, without its quote marks or a word of it: 4 or more words of the ref, each
+	// in the text in the same case.
+	if words := tokenRe.FindAllString(ref, -1); len(words) >= 4 {
+		in := tokenRe.FindAllString(m.Text, -1)
+		if !slices.ContainsFunc(words, func(w string) bool { return !slices.Contains(in, w) }) {
+			return mentioned
+		}
 	}
 	return none
 }

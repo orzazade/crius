@@ -110,12 +110,24 @@ func Build(db *sql.DB, in Input, now time.Time) (*Report, error) {
 			return nil, err
 		}
 		done, verified := 0, 0
+		var behind []string // rows done by a VERIFIED line but not marked done in the status file
 		for i, m := range g.Milestones {
-			if m.State == Done {
+			if m.State == Done || checked[i] != 0 {
 				done++
-				if checked[i] != 0 {
-					verified++
+			}
+			if checked[i] != 0 {
+				verified++
+			}
+			if m.State != Done && checked[i] != 0 {
+				var ts string
+				if err := db.QueryRow("select ts from event where id = ?", checked[i]).Scan(&ts); err != nil {
+					return nil, err
 				}
+				at, err := time.Parse(time.RFC3339, ts)
+				if err != nil {
+					return nil, fmt.Errorf("event %d ts %q: %w", checked[i], ts, err)
+				}
+				behind = append(behind, fmt.Sprintf("%s (VERIFIED %s)", m.Text, at.In(now.Location()).Format("2006-01-02 15:04")))
 			}
 		}
 		counted := fmt.Sprintf("verified %d of %d done (%d milestones)", verified, done, len(g.Milestones))
@@ -134,8 +146,11 @@ func Build(db *sql.DB, in Input, now time.Time) (*Report, error) {
 		snap := LeadSnap{Done: g.Done, Verified: verified, Rows: countsRows}
 		r.Snap[l.Name] = snap
 		lost := ""
+		if len(behind) > 0 {
+			lost = " · done by VERIFIED, still [~] or [ ] in the status file: " + strings.Join(behind, "; ")
+		}
 		if notCounted > 0 {
-			lost = fmt.Sprintf(" · VERIFIED lines not counted: %d", notCounted)
+			lost += fmt.Sprintf(" · VERIFIED lines not counted: %d", notCounted)
 		}
 		stale, err := staleness(db, l.Name, g)
 		if err != nil {
