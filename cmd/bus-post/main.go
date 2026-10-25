@@ -3,7 +3,8 @@
 //	bus-post [--at <YYYY-MM-DDTHH:MM>] <log> <TYPE> <project:role> <to> <text>
 //
 // It stamps the local clock itself. A time given with --at that is more than 2 min off the clock is refused: twice a
-// line went out stamped in UTC or with a hand-typed time (10-20 23:45, 10-21 12:48).
+// line went out stamped in UTC or with a hand-typed time (10-20 23:45, 10-21 12:48). A time typed at the start of the
+// text ("Crius 17:50", "Lead to P5 13:28") is held to the same 2 min (store.FormatLine; 31 such lines 10-23 to 10-25).
 //
 // A VERIFIED line must name a run log of Crius's own: a file under ~/.crius/runs whose header (first 20 lines) holds
 // `sha: <sha>` for a sha the line names and `pass: <N>` with N >= 1. Twice a VERIFIED went out before its run

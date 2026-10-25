@@ -422,3 +422,45 @@ func TestTeamWritersShapesParse(t *testing.T) {
 		}
 	}
 }
+
+// A time typed at the start of the text as the time of writing must match the line's own stamp (crius:lead 10-25 17:43
+// wrote "Crius 17:50"; quotes:lead 13:15 "Lead to P5 13:28"; P1, P2, P4 and the rig the same 10-23 to 10-25).
+func TestATypedTimeOffTheStampIsRefused(t *testing.T) {
+	day := func(hhmm string) time.Time {
+		at, _ := time.ParseInLocation("2006-01-02 15:04", "2026-10-25 "+hhmm, time.Local)
+		return at
+	}
+	for _, c := range []struct{ project, role, now, text string }{
+		{"crius", "lead", "17:43", "Crius 17:50: yes, bus-post is the right place"}, // project word, 7 min ahead
+		{"quotes", "lead", "13:15", "Lead to P5 13:28: thanks for checking"},        // "<self> to <role> HH:MM"
+		{"quotes", "p2", "13:13", "P2 13:20: owner bug a few min past 13:25"},       // role word
+		{"quotes", "rig", "12:08", "Rig 12:12 RethinkP3 read only"},
+		{"crius", "lead", "12:48", "Crius 08:48: the UTC time"}, // a stamp of one's own behind the clock too
+		{"crius", "lead", "01:55", "01:58 J1-J6 green on main"}, // a bare time ahead
+		{"crius", "lead", "23:59", "00:05 next day"},            // ahead across midnight
+	} {
+		_, err := FormatLine("INFO", c.project, c.role, c.text, "quotes:lead", day(c.now))
+		if !IsRefused(err) || !strings.Contains(err.Error(), "typed time") {
+			t.Errorf("%s:%s at %s %q: err %v", c.project, c.role, c.now, c.text, err)
+		}
+	}
+	for _, c := range []struct{ project, role, now, text string }{
+		{"crius", "lead", "17:43", "Crius 17:45: within 2 min"},
+		{"crius", "lead", "00:01", "Crius 23:59 across midnight"},
+		{"crius", "lead", "15:54", "14:59 I called the lead fresh-start alert a builder-only rule"}, // a bare time behind cites a line
+		{"crius", "build", "22:51", "22:46 quota: red->green"},
+		{"quotes", "rig", "02:48", "Rig to lead 02:40: live.ts reads no bus START"}, // answers the lead's 02:40 line
+		{"quotes", "lead", "16:24", "01:21 order parked P1"},                        // a bare time 9 h ahead is last night's
+		{"quotes", "p6", "19:40", "QA3 19:37 FAIL read"},                            // another role's time cites its line
+		{"quotes", "lead", "13:50", "Out at 14:10 unless PASSed"},                   // a deadline is not at the start
+		{"crius", "lead", "17:30", "your 17:24: not idle"},                          //
+		{"quotes", "lead", "13:15", "Lead to P5: thanks 13:28"},                     // not at the start
+		{"crius", "lead", "13:40", "Crius 13:4x waiter restarted"},                  // no time
+		{"quotes", "lead", "13:15", "Lead 1315 tests 13:28 behind"},                 // no colon: no time
+		{"quotes", "p1", "02:09", "P1 HEAVY-SLOTS-LIVE fc7bf97f 02:12"},             // not right after the name
+	} {
+		if _, err := FormatLine("INFO", c.project, c.role, c.text, "quotes:lead", day(c.now)); err != nil {
+			t.Errorf("%s:%s at %s %q: %v", c.project, c.role, c.now, c.text, err)
+		}
+	}
+}

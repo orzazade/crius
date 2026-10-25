@@ -268,3 +268,12 @@ func TestAnOwnerLineIsPosted(t *testing.T) {
 		t.Fatal(rc, errs, busText(t, log))
 	}
 }
+
+// 10-25 17:43: crius:lead wrote "Crius 17:50" at the start of the text, 7 min ahead of the clock.
+func TestATypedTimeAheadInTheTextIsRefused(t *testing.T) {
+	_, log := setup(t)
+	rc, errs := post(t, at("2026-10-25T17:43"), log, "ANSWER", "crius:lead", "quotes:lead", "Crius 17:50: yes")
+	if rc != 2 || !strings.Contains(errs, "typed time 17:50") || busText(t, log) != "" {
+		t.Fatal(rc, errs, busText(t, log))
+	}
+}

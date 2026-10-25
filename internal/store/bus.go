@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -189,11 +190,50 @@ func FormatLine(typ, project, role, text, to string, now time.Time) (string, err
 	if n := utf8.RuneCountInString(text); n > MaxLen {
 		return "", refused("text is %d chars; the limit is %d", n, MaxLen)
 	}
+	if err := checkTypedTime(project, role, text, now); err != nil {
+		return "", err
+	}
 	line := now.Format("2006-01-02T15:04") + " " + typ + " " + project + ":" + role + " -> " + to + " — " + text
 	if ParseLine(line, nil, true) == nil {
 		return "", refused("line does not parse back")
 	}
 	return line, nil
+}
+
+// typedTimeRe is a text that starts with a time: bare ("17:50"), or after a name ("Crius 17:50", "Lead to P5 13:28").
+var typedTimeRe = regexp.MustCompile(`^(?:(\S+) (to \S+ )?)?([01]?[0-9]|2[0-3]):([0-5][0-9])(?:[^0-9]|$)`)
+
+// checkTypedTime refuses a time typed at the start of text as the time of writing that is more than 2 min off now, the
+// line's own stamp (crius:lead 10-25 17:43 wrote "Crius 17:50"; quotes:lead 13:15 "Lead to P5 13:28").
+//   - Right after the sender's own name (its role or project: "Lead", "P2", "Crius"): off either way is refused.
+//   - Bare, or "<own name> to <name>": only ahead, by up to an hour. Behind, it cites an earlier line ("14:59 I
+//     called…", "Rig to lead 02:40" answering the lead's 02:40; 26 bare ones in a week), and more than an hour ahead
+//     is last night's.
+//
+// A time after another name ("QA3 19:37 FAIL") cites that line and is left alone.
+func checkTypedTime(project, role, text string, now time.Time) error {
+	m := typedTimeRe.FindStringSubmatch(text)
+	if m == nil {
+		return nil
+	}
+	own := strings.EqualFold(m[1], role) || strings.EqualFold(m[1], project)
+	if m[1] != "" && !own {
+		return nil
+	}
+	h, _ := strconv.Atoi(m[3])
+	mm, _ := strconv.Atoi(m[4])
+	// Minutes ahead of the clock, across midnight the short way: -720 < d <= 720.
+	d := (h*60 + mm - (now.Hour()*60 + now.Minute()) + 1440) % 1440
+	if d > 720 {
+		d -= 1440
+	}
+	stamp := own && m[2] == ""
+	if stamp && (d > 2 || d < -2) || !stamp && d > 2 && d <= 60 {
+		return refused("typed time %s:%s at the start is %d min off the clock (%s); bus-post stamps the line, so leave "+
+			"it out (to cite an earlier line: 'your %s:%s', 'Re %s:%s')", m[3], m[4], d, now.Format("15:04"), m[3], m[4],
+			m[3], m[4])
+	}
+	return nil
 }
 
 func AppendLine(home, project, line string) error {
