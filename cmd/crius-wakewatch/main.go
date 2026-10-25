@@ -1,5 +1,6 @@
 // Command crius-wakewatch runs one missed-wake check (internal/wakewatch) and exits 1 when it could not finish or not
-// reach Crius's tab. launchd starts it every 5 min.
+// reach Crius's tab. launchd starts it every 5 min. "crius-wakewatch after-boot" checks the helpers in
+// ~/.crius/helpers.toml instead and names the dead ones to Crius (wakewatch.AfterBoot); launchd starts it once per login.
 package main
 
 import (
@@ -23,12 +24,26 @@ import (
 	"github.com/orzazade/crius/internal/store"
 	"github.com/orzazade/crius/internal/wakewatch"
 	"github.com/orzazade/crius/internal/watchdog"
+	"golang.org/x/sys/unix"
 )
 
 var swapRe = regexp.MustCompile(`used = ([\d.]+)([MG])`)
 
 func main() {
 	os.Setenv("PATH", toolPath())
+	if len(os.Args) == 2 && os.Args[1] == "after-boot" {
+		err := wakewatch.AfterBoot(wakewatch.BootDeps{Home: store.Home(), Now: time.Now(), Process: process,
+			Launchd: launchd, Send: send})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, time.Now().Format(time.RFC3339), "crius-wakewatch after-boot:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) > 1 {
+		fmt.Fprintln(os.Stderr, "usage: crius-wakewatch [after-boot]")
+		os.Exit(2)
+	}
 	// Messages held on an earlier run go first, so a new alert never jumps ahead of an older one.
 	if err := flushOutbox(store.Home(), time.Now()); err != nil {
 		fmt.Fprintln(os.Stderr, time.Now().Format(time.RFC3339), "crius-wakewatch: outbox:", err)
@@ -120,6 +135,34 @@ func screens() ([]wakewatch.Screen, error) {
 		return nil, fmt.Errorf("cmux tree lists no terminal tab")
 	}
 	return out, nil
+}
+
+// process gives the start time of pid, or false when no process has it.
+func process(pid int) (time.Time, bool, error) {
+	if errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) {
+		return time.Time{}, false, nil
+	}
+	k, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
+	if err != nil {
+		if errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) { // it ended while we looked
+			return time.Time{}, false, nil
+		}
+		return time.Time{}, false, fmt.Errorf("pid %d: %w", pid, err)
+	}
+	return time.Unix(k.Proc.P_starttime.Sec, 0), true, nil
+}
+
+// launchd tells whether a launchd job is loaded in the user's session; launchctl print exits 113 for one that is not.
+func launchd(label string) (bool, error) {
+	out, err := exec.Command("launchctl", "print", fmt.Sprintf("gui/%d/%s", os.Getuid(), label)).CombinedOutput()
+	var ee *exec.ExitError
+	if errors.As(err, &ee) && ee.ExitCode() == 113 {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("launchctl print %s: %v %s", label, err, strings.TrimSpace(string(out)))
+	}
+	return true, nil
 }
 
 // send stores text for Crius's own tab and types it there (internal/outbox). The tab is the one terminal in cmux

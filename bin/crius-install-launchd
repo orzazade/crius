@@ -1,7 +1,7 @@
 #!/bin/bash
-# Install (or reinstall) the five Crius launchd jobs: the ingest every 10 min, the watchdog and the missed-wake watch
-# (wakewatch) every 5 min, the goal report at 09:00 and 18:00, and the weekly job (scorecards and the restore test,
-# Thursday 04:00). Builds every command under cmd/ from this checkout into ~/.crius/bin with the run scripts, then
+# Install (or reinstall) the six Crius launchd jobs: the ingest every 10 min, the watchdog and the missed-wake watch
+# (wakewatch) every 5 min, the helper check once per login (after-boot, ~/.crius/helpers.toml), the goal report at 09:00
+# and 18:00, and the weekly job (scorecards and the restore test, Thursday 04:00). Builds every command under cmd/ from this checkout into ~/.crius/bin with the run scripts, then
 # prints each installed plist and the job state, so the owner sees exactly what was installed.
 set -euo pipefail
 repo="$(cd "$(dirname "$(realpath "$0")")/.." && pwd -P)"
@@ -36,7 +36,7 @@ install -m 755 "$repo/bin/crius-digest-run" "$bin/crius-digest-run"
 install -m 755 "$repo/bin/crius-weekly-run" "$bin/crius-weekly-run"
 dest="$HOME/Library/LaunchAgents"
 mkdir -p "$dest"
-for job in ingest watchdog wakewatch digest weekly; do
+for job in ingest watchdog wakewatch after-boot digest weekly; do
   label="space.scifilab.crius.$job"
   plist="$dest/$label.plist"
   sed -e "s#@REPO@#$repo#g" -e "s#@HOME@#$HOME#g" "$repo/launchd/$label.plist.in" > "$plist.tmp"
