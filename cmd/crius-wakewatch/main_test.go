@@ -341,7 +341,7 @@ func TestSessionsReadsLiveSessionsWithTheirStart(t *testing.T) {
 	if err := os.Symlink(filepath.Join(home, ".claude"), filepath.Join(home, ".claude-personal")); err != nil {
 		t.Fatal(err)
 	}
-	ss, err := sessions(home)
+	ss, err := wakewatch.LiveSessions(home)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -362,11 +362,11 @@ func TestSessionsReadsLiveSessionsWithTheirStart(t *testing.T) {
 	// read (a session ending) are not live sessions, and not a failure to look.
 	write(filepath.Join(home, ".claude", "sessions", "0.json"), `{"pid":0,"sessionId":"zero","name":"axi: lead"}`)
 	os.Symlink(filepath.Join(home, "gone.json"), filepath.Join(home, ".claude", "sessions", "2.json"))
-	if ss, err := sessions(home); err != nil || len(ss) != 2 {
+	if ss, err := wakewatch.LiveSessions(home); err != nil || len(ss) != 2 {
 		t.Errorf("pid 0 or a vanished file: %v %+v", err, ss)
 	}
 	write(filepath.Join(home, ".claude", "sessions", "1.json"), `{"pid":`)
-	if _, err := sessions(home); err == nil || !strings.Contains(err.Error(), "1.json") {
+	if _, err := wakewatch.LiveSessions(home); err == nil || !strings.Contains(err.Error(), "1.json") {
 		t.Errorf("a broken session file: %v", err)
 	}
 }
@@ -700,7 +700,7 @@ func TestSessionsSkipsAStatusFileWhosePidWasReused(t *testing.T) {
 		fmt.Sprintf(`{"pid":%d,"sessionId":"old","name":"quotes · p1","procStart":"Thu Jan  1 00:00:00 2026"}`, me))
 	testutil.Write(t, filepath.Join(home, ".claude-work", "sessions", "2.json"),
 		fmt.Sprintf(`{"pid":%d,"sessionId":"now","name":"quotes · p2","procStart":%q}`, me, testutil.ProcStart(t, me)))
-	ss, err := sessions(home)
+	ss, err := wakewatch.LiveSessions(home)
 	if err != nil || len(ss) != 1 || ss[0].ID != "now" {
 		t.Errorf("%v %+v", err, ss)
 	}

@@ -33,6 +33,7 @@ import (
 const (
 	rcNotCommit = 3 // the wrappers' code for a hex word that is no commit
 	rcLiveOpen  = 4 // the wrappers' code for a START while a live run is open
+	rcNoSession = 5 // posted, but an ORDER or ASK names someone with no live session (or the check failed)
 )
 
 type guards struct {

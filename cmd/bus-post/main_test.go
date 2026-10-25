@@ -1,7 +1,9 @@
 package main
 
 import (
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -274,6 +276,68 @@ func TestATypedTimeAheadInTheTextIsRefused(t *testing.T) {
 	_, log := setup(t)
 	rc, errs := post(t, at("2026-10-25T17:43"), log, "ANSWER", "crius:lead", "quotes:lead", "Crius 17:50: yes")
 	if rc != 2 || !strings.Contains(errs, "typed time 17:50") || busText(t, log) != "" {
+		t.Fatal(rc, errs, busText(t, log))
+	}
+}
+
+// liveHome gives a user home whose ~/.claude/sessions lists one live session per name, each a sleep process of its own
+// (a session list counts a pid once).
+func liveHome(t *testing.T, names ...string) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	for i, n := range names {
+		cmd := exec.Command("sleep", "60")
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { cmd.Process.Kill(); cmd.Wait() })
+		pid := cmd.Process.Pid
+		testutil.Write(t, filepath.Join(home, ".claude", "sessions", fmt.Sprintf("%d.json", i)),
+			fmt.Sprintf(`{"pid":%d,"sessionId":"s%d","name":%q,"procStart":%q}`, pid, i, n, testutil.ProcStart(t, pid)))
+	}
+	// A session that ended: its file stays, its pid is gone.
+	testutil.Write(t, filepath.Join(home, ".claude", "sessions", "99999999.json"),
+		`{"pid":99999999,"sessionId":"dead","name":"crius · build"}`)
+}
+
+// 10-25 13:18: crius:lead's ORDERs to crius:build went nowhere: no crius:build session was running.
+func TestAnOrderToADeadSessionIsPostedAndWarned(t *testing.T) {
+	_, log := setup(t)
+	liveHome(t, "crius", "quotes · p2 · max3")
+	rc, errs := post(t, at("2026-10-25T13:18"), log, "ORDER", "crius:lead", "crius:build", "add the typed-time guard")
+	if rc != 5 || !strings.Contains(errs, "crius:build has no live session") ||
+		!strings.Contains(busText(t, log), "ORDER crius:lead -> crius:build") {
+		t.Fatal(rc, errs, busText(t, log))
+	}
+	// One live and one dead recipient: the dead one is named.
+	rc, errs = post(t, at("2026-10-25T13:19"), log, "ASK", "crius:lead", "quotes:p2, quotes:qa1", "x")
+	if rc != 5 || !strings.Contains(errs, "quotes:qa1 has no live session") || strings.Contains(errs, "quotes:p2 has") {
+		t.Fatal(rc, errs)
+	}
+}
+
+func TestAnOrderToALiveSessionIsQuiet(t *testing.T) {
+	_, log := setup(t)
+	liveHome(t, "crius", "crius · build", "quotes · p2 · max3", "quotes: lead")
+	for _, to := range []string{"crius:build", "crius", "quotes:p2 cc quotes:lead", "quotes:all", "crius:lead"} {
+		if rc, errs := post(t, at("2026-10-25T13:18"), log, "ORDER", "crius:lead", to, "x"); rc != 0 || errs != "" {
+			t.Errorf("%s: %d %s", to, rc, errs)
+		}
+	}
+	// Only an ORDER or an ASK waits on its recipient.
+	if rc, errs := post(t, at("2026-10-25T13:18"), log, "INFO", "crius:lead", "quotes:p9", "x"); rc != 0 || errs != "" {
+		t.Error(rc, errs)
+	}
+}
+
+// Failed to look is not found nothing: a session file that does not read is said, and the line is still posted.
+func TestAnUnreadableSessionListIsSaid(t *testing.T) {
+	_, log := setup(t)
+	liveHome(t, "crius")
+	testutil.Write(t, filepath.Join(os.Getenv("HOME"), ".claude", "sessions", "1.json"), `{"pid":`)
+	rc, errs := post(t, at("2026-10-25T13:18"), log, "ORDER", "crius:lead", "crius:build", "x")
+	if rc != 5 || !strings.Contains(errs, "could not check") || !strings.Contains(busText(t, log), "ORDER") {
 		t.Fatal(rc, errs, busText(t, log))
 	}
 }

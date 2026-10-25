@@ -15,8 +15,12 @@
 // A project's table in ~/.crius/bus.toml adds the guards in guards.go: hex words must be commits, and one live run at a
 // time (the check and the write hold a lock on the bus log).
 //
+// An ORDER or ASK to someone with no live Claude Code session is posted and said, exit 5: crius:lead's ORDERs of 10-25
+// 13:18 to crius:build went nowhere for hours. Posted, so a caller must not send it again.
+//
 // Exit codes: 0 posted, 2 refused (nothing written), 3 refused: a hex word is no commit, 4 refused: a START while a live
-// run is open, 1 the write failed. 3 and 4 are the codes the Quotes say.sh wrappers gave.
+// run is open, 5 posted, but a recipient has no live session (or the check failed), 1 the write failed. 3 and 4 are the
+// codes the Quotes say.sh wrappers gave.
 package main
 
 import (
@@ -36,6 +40,7 @@ import (
 	"unicode"
 
 	"github.com/orzazade/crius/internal/store"
+	"github.com/orzazade/crius/internal/wakewatch"
 )
 
 const (
@@ -153,7 +158,50 @@ func run(args []string, now time.Time, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "bus-post: write failed:", err)
 		return 1
 	}
+	if typ == "ORDER" || typ == "ASK" {
+		if dead, err := deadRecipients(to, logProject(log)); err != nil {
+			fmt.Fprintf(stderr, "bus-post: posted, but could not check who has a live session: %v\n", err)
+			return rcNoSession
+		} else if len(dead) > 0 {
+			fmt.Fprintf(stderr, "bus-post: posted, but %s has no live session: nobody reads it until one starts "+
+				"(start it, or send it to someone running)\n", strings.Join(dead, ", "))
+			return rcNoSession
+		}
+	}
 	return 0
+}
+
+// deadRecipients gives each recipient of to with no live Claude Code session. A bare name is a role on the bus's own
+// project ("lead"), "crius" is crius:lead, and a whole team ("quotes:all") or "cc" is no one.
+func deadRecipients(to, project string) ([]string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+	ss, err := wakewatch.LiveSessions(home)
+	if err != nil {
+		return nil, err
+	}
+	live := map[string]bool{}
+	for _, s := range ss {
+		live[wakewatch.BusName(s.Name)] = true
+	}
+	var dead []string
+	for _, n := range strings.FieldsFunc(to, func(r rune) bool { return r == ',' || r == ' ' }) {
+		n = strings.ToLower(n)
+		switch {
+		case n == "cc" || n == "all" || strings.HasSuffix(n, ":all"):
+			continue
+		case n == "crius":
+			n = "crius:lead"
+		case !strings.Contains(n, ":"):
+			n = project + ":" + n
+		}
+		if !live[n] && !slices.Contains(dead, n) {
+			dead = append(dead, n)
+		}
+	}
+	return dead, nil
 }
 
 func refuse(stderr io.Writer, format string, args ...any) int {
