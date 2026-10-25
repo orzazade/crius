@@ -343,3 +343,22 @@ func TestAnUnreadableSessionListIsSaid(t *testing.T) {
 		t.Fatal(rc, errs, busText(t, log))
 	}
 }
+
+// Brief fixes-1025 item 7 (E6): a refused line leaves no trace on the bus, so bus-post logs each refusal; the daily
+// scorecard counts repeats of a known mistake from it.
+func TestARefusalIsLogged(t *testing.T) {
+	home, log := setup(t)
+	refused := filepath.Join(home, "logs", "bus-post-refused.log")
+	if rc, _ := post(t, at("2026-10-25T17:43"), log, "INFO", "crius:lead", "crius:build", "x"); rc != 0 {
+		t.Fatal(rc)
+	}
+	if _, err := os.Stat(refused); !os.IsNotExist(err) {
+		t.Fatalf("a posted line was logged as refused: %v", err)
+	}
+	rc, _ := post(t, at("2026-10-25T17:43"), log, "ASK", "crius:lead", "crius:build", "Crius 17:50: yes")
+	b, err := os.ReadFile(refused)
+	if rc != 6 || err != nil || !strings.Contains(string(b), "2026-10-25T17:43:00") ||
+		!strings.Contains(string(b), "rc=6 crius:lead ASK crius.log — bus-post: refused: typed time 17:50") {
+		t.Fatalf("rc %d, log %v: %q", rc, err, b)
+	}
+}

@@ -26,6 +26,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -40,6 +41,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/orzazade/crius/internal/redact"
 	"github.com/orzazade/crius/internal/store"
 	"github.com/orzazade/crius/internal/wakewatch"
 )
@@ -58,7 +60,47 @@ var (
 
 func main() { os.Exit(run(os.Args[1:], time.Now(), os.Stderr)) }
 
+// run posts the line, and logs a refusal to ~/.crius/logs/bus-post-refused.log: a refused line leaves no trace on the
+// bus, and the daily scorecard counts repeats of a known mistake from this log (brief fixes-1025 item 7, E6).
 func run(args []string, now time.Time, stderr io.Writer) int {
+	var said bytes.Buffer
+	rc := postLine(args, now, io.MultiWriter(stderr, &said))
+	if rc != 2 && rc != rcNotCommit && rc != rcLiveOpen && rc != rcOffClock && rc != rcNoRecord {
+		return rc
+	}
+	a := args
+	if len(a) > 1 && a[0] == "--at" {
+		a = a[2:]
+	}
+	who := "?"
+	if len(a) >= 3 {
+		who = a[2] + " " + a[1] + " " + filepath.Base(a[0])
+	}
+	reason, _, _ := strings.Cut(strings.TrimSpace(said.String()), "\n")
+	line, _ := redact.Redact(fmt.Sprintf("%s rc=%d %s — %s", now.Format(time.RFC3339), rc, who, reason))
+	if err := appendRefusal(line); err != nil {
+		fmt.Fprintf(stderr, "bus-post: could not log the refusal: %v\n", err)
+	}
+	return rc
+}
+
+func appendRefusal(line string) error {
+	dir := filepath.Join(store.Home(), "logs")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(filepath.Join(dir, "bus-post-refused.log"), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.WriteString(strings.ReplaceAll(line, "\n", " ") + "\n"); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+func postLine(args []string, now time.Time, stderr io.Writer) int {
 	stamp := now
 	if len(args) > 0 && args[0] == "--at" {
 		if len(args) < 2 {
