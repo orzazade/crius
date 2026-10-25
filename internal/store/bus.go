@@ -200,8 +200,10 @@ func FormatLine(typ, project, role, text, to string, now time.Time) (string, err
 	return line, nil
 }
 
-// typedTimeRe is a text that starts with a time: bare ("17:50"), or after a name ("Crius 17:50", "Lead to P5 13:28").
-var typedTimeRe = regexp.MustCompile(`^(?:(\S+) (to \S+ )?)?([01]?[0-9]|2[0-3]):([0-5][0-9])(?:[^0-9]|$)`)
+// typedTimeRe is a text that starts with a time: bare ("17:50"), or after a name ("Crius 17:50", "Lead to P5 13:28"). A
+// name starts with no digit, so "17:50 00:42 elapsed" is a bare 17:50; spaces and tabs between count alike (review of
+// 5a581e3).
+var typedTimeRe = regexp.MustCompile(`^(?:([^\s0-9]\S*)[ \t]+(to[ \t]+\S+[ \t]+)?)?([01]?[0-9]|2[0-3]):([0-5][0-9])(?:[^0-9]|$)`)
 
 // CheckTypedTime refuses a time typed at the start of text as the time of writing that is more than 2 min off now, the
 // line's own stamp (crius:lead 10-25 17:43 wrote "Crius 17:50"; quotes:lead 13:15 "Lead to P5 13:28").

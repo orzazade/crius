@@ -432,6 +432,9 @@ func TestATypedTimeOffTheStampIsRefused(t *testing.T) {
 	}
 	for _, c := range []struct{ project, role, now, text string }{
 		{"crius", "lead", "17:43", "Crius 17:50: yes, bus-post is the right place"}, // project word, 7 min ahead
+		{"crius", "lead", "17:43", "17:50 00:42 elapsed; PASS"},                     // review of 5a581e3: a second time hid the first
+		{"crius", "lead", "17:43", "Crius  17:50: PASS"},                            // two spaces
+		{"crius", "lead", "17:43", "Crius\t17:50: PASS"},                            // a tab
 		{"quotes", "lead", "13:15", "Lead to P5 13:28: thanks for checking"},        // "<self> to <role> HH:MM"
 		{"quotes", "p2", "13:13", "P2 13:20: owner bug a few min past 13:25"},       // role word
 		{"quotes", "rig", "12:08", "Rig 12:12 RethinkP3 read only"},
