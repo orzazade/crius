@@ -716,6 +716,8 @@ func TestAnOwnerAnswerMatchesWholeRefsAndItems(t *testing.T) {
 		{`Approve "owner's choice" wording for the hint?`, "Owner approved F-118", false},
 		{"Approve G-SUB-503?", "Owner approved G-SUB-5030", false},
 		{"Choose G-SUB-503 option (1) keep ours or (2) copy the mockup", "Owner chose option 1 for G-SUB-503", true},
+		// Review of 0d5f348 (P2): a sha cited longer in the answer is the same commit.
+		{"Approve 0d5f348?", "Owner approved 0d5f3489bdac1eda7b64db103767be1d7c741742", true},
 	} {
 		db := open(t)
 		busText(t, db, at("2026-10-25 02:00"), "crius:lead", "answer", c.answer)
@@ -763,5 +765,29 @@ func TestAnOpenRowThatAVerifiedLineNamesIsDone(t *testing.T) {
 		if !strings.Contains(r.Text, want) {
 			t.Errorf("lacks %q:\n%s", want, r.Text)
 		}
+	}
+}
+
+// Review of 0d5f348 (P1): a label before the numbered questions ("Questions: (1) …; (2) …") still splits them, so an
+// answer to one never takes the others off the owner list; the label itself is no question.
+func TestALabelBeforeNumberedQuestionsKeepsThemApart(t *testing.T) {
+	at := func(s string) time.Time {
+		v, _ := time.ParseInLocation("2006-01-02 15:04", s, time.Local)
+		return v
+	}
+	db := open(t)
+	busText(t, db, at("2026-10-25 02:00"), "crius:lead", "answer", "Owner approved F-118")
+	leads := []ingest.Lead{{Name: "quotes:lead", StatusFile: statusFile(t, t.TempDir(), "q.md",
+		block("2026-10-24 18:03", "Questions: (1) Approve F-118?; (2) Approve F-119?", "- [ ] one"))}}
+	r, err := Build(db, input(leads, nil), at("2026-10-25 09:00"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, rest, _ := strings.Cut(r.Text, "## Leads")
+	if !strings.Contains(owner, "quotes:lead: (2) Approve F-119?") || strings.Contains(owner, "F-118") || strings.Contains(owner, "Questions:") {
+		t.Errorf("owner list:\n%s", owner)
+	}
+	if !strings.Contains(rest, "(1) by crius:lead ANSWER") {
+		t.Errorf("lead entry lacks the note:\n%s", rest)
 	}
 }
