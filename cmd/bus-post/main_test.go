@@ -320,7 +320,9 @@ func TestAnOrderToADeadSessionIsPostedAndWarned(t *testing.T) {
 func TestAnOrderToALiveSessionIsQuiet(t *testing.T) {
 	_, log := setup(t)
 	liveHome(t, "crius", "crius · build", "quotes · p2 · max3", "quotes: lead")
-	for _, to := range []string{"crius:build", "crius", "quotes:p2 cc quotes:lead", "quotes:all", "crius:lead"} {
+	// "(cc …)" is the bus parser's form (review of ab528b9: it named "quotes:(cc" and "quotes:lead)" as dead).
+	for _, to := range []string{"crius:build", "crius", "quotes:p2 cc quotes:lead", "quotes:p2 (cc quotes:lead)", "quotes:all",
+		"crius:lead"} {
 		if rc, errs := post(t, at("2026-10-25T13:18"), log, "ORDER", "crius:lead", to, "x"); rc != 0 || errs != "" {
 			t.Errorf("%s: %d %s", to, rc, errs)
 		}

@@ -208,7 +208,7 @@ func deadRecipients(to, project string) ([]string, error) {
 		live[wakewatch.BusName(s.Name)] = true
 	}
 	var dead []string
-	for _, n := range strings.FieldsFunc(to, func(r rune) bool { return r == ',' || r == ' ' }) {
+	for _, n := range (&store.Line{To: to}).Recipients() { // the bus parser's names, "(cc …)" included
 		n = strings.ToLower(n)
 		switch {
 		case n == "cc" || n == "all" || strings.HasSuffix(n, ":all"):
