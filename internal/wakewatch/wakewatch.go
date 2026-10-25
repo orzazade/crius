@@ -43,6 +43,8 @@ const (
 	resend      = 20 * time.Minute // an item still open wakes Crius again, never more often
 	freshAfter  = 20 * time.Minute // a lead's DONE with no new session of that lead this long wakes Crius
 	minFreeGB   = 20               // less free disk than this wakes Crius
+	diskDropGB  = 2                // a disk alarm wakes Crius again after this much more is gone (owner GO 10-25)
+	diskResend  = 2 * time.Hour    // or after this long; it clears once disk is diskDropGB over the line
 	maxSwapGB   = 26               // more swap in use than this wakes Crius
 	MaxLine     = 500
 
@@ -113,6 +115,13 @@ type state struct {
 	SendFailing bool
 	Views       map[string][2]string // check -> what the screen and crius-hook's state said on the last run
 	HookLog     int64                // how much of crius-hook.log was already reported
+	Disk        diskAlarm            // the last disk alarm sent; zero once disk is back over the line
+}
+
+// diskAlarm is when the last disk alarm went out and how much disk was free then.
+type diskAlarm struct {
+	At     time.Time
+	FreeGB float64
 }
 
 // Run checks every bus log and every tab once and sends each alert that is new, or still open 20 min after it was
@@ -157,7 +166,7 @@ func Run(d Deps) error {
 	} else {
 		alerts = append(alerts, waiting(&st, d, watch, park, screens, hv)...)
 	}
-	alerts = append(alerts, resources(d)...)
+	alerts = append(alerts, resources(d, &st)...)
 	alerts = append(alerts, tools(d)...)
 	alerts = append(alerts, fresh(d, watch, park, screens, ss, sesErr, hv)...)
 	alerts = append(alerts, unnamed(d, screens)...)
@@ -544,13 +553,21 @@ func waiting(st *state, d Deps, watch projects, park parked, screens []Screen, h
 }
 
 // resources gives an alert when free disk is below 20 GB or swap in use above 26 GB, or when they could not be read.
-func resources(d Deps) [][2]string {
+func resources(d Deps, st *state) [][2]string {
 	free, swap, err := d.Resources()
 	if err != nil {
 		return [][2]string{{"resources-failed", "the disk and swap check failed to look: " + err.Error()}}
 	}
 	var out [][2]string
-	if free < minFreeGB {
+	// The disk alarm wakes Crius on crossing the line, then only after a further 2 GB drop or 2 h (10-25 morning: the
+	// same alarm every few minutes, from the 20 min resend and from disk hovering at the line). Raised only when due,
+	// so the alert loop sends it at once and forgets it between.
+	if free >= minFreeGB+diskDropGB {
+		st.Disk = diskAlarm{}
+	}
+	if free < minFreeGB && (st.Disk.At.IsZero() || d.Now.Sub(st.Disk.At) >= diskResend ||
+		free <= st.Disk.FreeGB-diskDropGB) {
+		st.Disk = diskAlarm{At: d.Now, FreeGB: free}
 		out = append(out, [2]string{"disk", fmt.Sprintf("disk: %.1f GB free, below %d GB", free, minFreeGB)})
 	}
 	if swap > maxSwapGB {

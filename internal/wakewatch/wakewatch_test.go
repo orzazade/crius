@@ -714,7 +714,8 @@ func TestEachAlertIsOneLineForCriusTab(t *testing.T) {
 	}
 }
 
-// Brief P7 item 4: below 20 GB free disk or above 26 GB swap (owner 2026-10-25: 20 GB was noise at a steady 23 GB) wakes Crius, by the same tab line and 20 min rhythm.
+// Brief P7 item 4: below 20 GB free disk or above 26 GB swap (owner 2026-10-25: 20 GB was noise at a steady 23 GB) wakes Crius,
+// by the same tab line; swap again every 20 min, disk only after a further 2 GB drop or 2 h (owner GO 2026-10-25).
 func TestLowDiskOrHighSwapWakesCrius(t *testing.T) {
 	for _, c := range []struct {
 		free, swap float64
@@ -733,7 +734,7 @@ func TestLowDiskOrHighSwapWakesCrius(t *testing.T) {
 			}
 			continue
 		}
-		if len(f.sent) != 2 || !strings.Contains(f.sent[0], c.want) || !strings.Contains(f.sent[0], map[string]string{"disk": "20 GB", "swap": "26 GB"}[c.want]) {
+		if len(f.sent) != map[string]int{"disk": 1, "swap": 2}[c.want] || !strings.Contains(f.sent[0], c.want) || !strings.Contains(f.sent[0], map[string]string{"disk": "20 GB", "swap": "26 GB"}[c.want]) {
 			t.Fatal(c, f.sent)
 		}
 	}
@@ -1773,5 +1774,47 @@ func TestTheStateLogRotates(t *testing.T) {
 	}
 	if fi, err := os.Stat(p + ".1"); err != nil || fi.Size() != int64(stateLogMax+1) {
 		t.Errorf("%s.1: %v, want the old log", p, err)
+	}
+}
+
+// 10-25 morning: the same disk alarm woke Crius every few minutes. It wakes on crossing the line, then again only after
+// a further 2 GB drop or 2 h; disk back over the line by less than 2 GB is no new crossing.
+func TestTheDiskAlarmWakesOnCrossingThenOnA2GBDropOrAfter2h(t *testing.T) {
+	home := setup(t, nil)
+	f := &fake{}
+	runAt := func(min int, free float64) int {
+		t.Helper()
+		f.freeGB, f.sent = free, nil
+		if err := Run(f.deps(home, t0.Add(time.Duration(min)*time.Minute))); err != nil {
+			t.Fatal(err)
+		}
+		n := 0
+		for _, s := range f.sent {
+			if strings.Contains(s, "disk:") {
+				n++
+			}
+		}
+		return n
+	}
+	for _, c := range []struct {
+		min  int
+		free float64
+		want int
+		why  string
+	}{
+		{0, 19.4, 1, "crossing"},
+		{5, 19.0, 0, "0.4 GB lower"},
+		{25, 18.0, 0, "20 min on, 1.4 GB lower: the old 20 min resend"},
+		{30, 20.5, 0, "back over by 0.5 GB"},
+		{35, 19.7, 0, "under again: no new crossing"},
+		{40, 17.3, 1, "2.1 GB below the last alarm"},
+		{100, 16.0, 0, "1.3 GB lower"},
+		{160, 16.0, 1, "2 h after the last alarm"},
+		{165, 23.0, 0, "back over by 3 GB"},
+		{170, 19.9, 1, "a new crossing"},
+	} {
+		if got := runAt(c.min, c.free); got != c.want {
+			t.Errorf("min %d, %.1f GB (%s): %d disk alarms, want %d", c.min, c.free, c.why, got, c.want)
+		}
 	}
 }
