@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -139,13 +141,21 @@ func Build(db *sql.DB, in Input, now time.Time) (*Report, error) {
 		if err != nil {
 			return nil, err
 		}
+		var open []string
+		var answered string
+		if n := strings.Trim(strings.TrimSpace(g.NeedsOwner), `".`); !strings.EqualFold(n, "nothing") {
+			if open, answered, err = ownerAnswers(db, g); err != nil {
+				return nil, err
+			}
+		}
 		entries = append(entries, entry{
-			line: fmt.Sprintf("%s: %s%d%% claimed · %s · %s%s", l.Name, stale, g.Done, counted, change(prev, l.Name, snap), lost),
+			line: fmt.Sprintf("%s: %s%d%% claimed · %s · %s%s%s", l.Name, stale, g.Done, counted, change(prev, l.Name, snap),
+				lost, answered),
 			goal: "  Goal: " + g.Goal,
 			next: "  Next: " + g.Next,
 		})
-		if n := strings.Trim(strings.TrimSpace(g.NeedsOwner), `".`); !strings.EqualFold(n, "nothing") {
-			needs = append(needs, fmt.Sprintf("%s: %s", l.Name, g.NeedsOwner))
+		if len(open) > 0 {
+			needs = append(needs, fmt.Sprintf("%s: %s", l.Name, strings.Join(open, "; ")))
 		}
 	}
 	if cannotRead > 0 {
@@ -248,12 +258,7 @@ func readGoal(l ingest.Lead) (*Goal, error) {
 // never count. A stamp in a repeated hour (DST fall-back) is taken at its later reading. "" when it is not stale.
 func staleness(db *sql.DB, lead string, g *Goal) (string, error) {
 	project, role, _ := strings.Cut(lead, ":")
-	latest, wall := g.Updated, g.Updated.Format("2006-01-02 15:04")
-	for d := 15 * time.Minute; d <= 2*time.Hour; d += 15 * time.Minute {
-		if t := g.Updated.Add(d); t.Format("2006-01-02 15:04") == wall {
-			latest = t
-		}
-	}
+	latest := laterReading(g.Updated)
 	var ts, kind string
 	err := db.QueryRow("select ts, kind from event where project = ? and actor = ? and kind in ('done', 'clear-ready')"+
 		" and source_key like 'bus:%' and ts > ? order by ts desc, id desc limit 1",
@@ -270,6 +275,115 @@ func staleness(db *sql.DB, lead string, g *Goal) (string, error) {
 	}
 	return fmt.Sprintf("STALE: GOAL (%s) is older than its %s %s on the bus · ", g.Updated.Format("2006-01-02 15:04"),
 		strings.ToUpper(kind), at.Local().Format("2006-01-02 15:04")), nil
+}
+
+// laterReading gives the later reading of a GOAL stamp in a repeated hour (DST fall-back), else the stamp.
+func laterReading(stamp time.Time) time.Time {
+	latest, wall := stamp, stamp.Format("2006-01-02 15:04")
+	for d := 15 * time.Minute; d <= 2*time.Hour; d += 15 * time.Minute {
+		if t := stamp.Add(d); t.Format("2006-01-02 15:04") == wall {
+			latest = t
+		}
+	}
+	return latest
+}
+
+var (
+	// A "Needs owner" field of numbered items: "(1) …; (2) …".
+	itemMarkRe = regexp.MustCompile(`\((\d+)\)\s`)
+	// What names an item on the bus: a sha, an id (F-118, G-SUB-503), a quoted phrase ('Vendor cost').
+	needShaRe   = regexp.MustCompile(`\b[0-9a-f]{7,40}\b`)
+	needIDRe    = regexp.MustCompile(`\b[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*-[0-9]+\b`)
+	needQuoteRe = regexp.MustCompile(`(?:^|[^\w])['"]([^'"]{3,60})['"]`)
+	ownerWordRe = regexp.MustCompile(`(?i)\bowner\b`)
+)
+
+// ownerAnswers splits a GOAL's "Needs owner" into its numbered items (one item when it has no numbers) and leaves out
+// each item a crius:lead ANSWER, ORDER or CORRECTED on the bus after the stamp answers: one that speaks for the owner
+// and names the item by a sha, id or quoted phrase of it (10-25 09:00: the digest re-sent 4 settled Quotes questions).
+// It gives the open items and, when some were answered, a note for the lead's line saying which line answered which.
+func ownerAnswers(db *sql.DB, g *Goal) (open []string, note string, err error) {
+	text := strings.TrimSpace(g.NeedsOwner)
+	var items []string
+	if marks := itemMarkRe.FindAllStringIndex(text, -1); len(marks) >= 2 {
+		if pre := strings.TrimSpace(text[:marks[0][0]]); pre != "" {
+			items = append(items, strings.TrimRight(pre, "; "))
+		}
+		for i, m := range marks {
+			end := len(text)
+			if i+1 < len(marks) {
+				end = marks[i+1][0]
+			}
+			items = append(items, strings.TrimRight(strings.TrimSpace(text[m[0]:end]), ";"))
+		}
+	} else {
+		items = []string{text}
+	}
+	rows, err := db.Query("select ts, kind, text from event where project = 'crius' and actor = 'lead' and kind in"+
+		" ('answer', 'order', 'corrected') and source_key like 'bus:%' and ts > ? order by ts, id",
+		laterReading(g.Updated).UTC().Format("2006-01-02T15:04:05Z"))
+	if err != nil {
+		return nil, "", err
+	}
+	defer rows.Close()
+	by := make([]string, len(items))
+	for rows.Next() {
+		var ts, kind string
+		var line sql.NullString
+		if err := rows.Scan(&ts, &kind, &line); err != nil {
+			return nil, "", err
+		}
+		if !ownerWordRe.MatchString(line.String) {
+			continue
+		}
+		low := strings.ToLower(line.String)
+		for i, item := range items {
+			if by[i] != "" || !slices.ContainsFunc(itemRefs(item), func(r string) bool {
+				return strings.Contains(low, strings.ToLower(r))
+			}) {
+				continue
+			}
+			at, err := time.Parse(time.RFC3339, ts)
+			if err != nil {
+				return nil, "", fmt.Errorf("event crius:lead %s: ts %q: %w", kind, ts, err)
+			}
+			by[i] = fmt.Sprintf("by crius:lead %s %s", strings.ToUpper(kind), at.Local().Format("2006-01-02 15:04"))
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+	var done []string
+	for i, item := range items {
+		if by[i] == "" {
+			open = append(open, item)
+			continue
+		}
+		label := "the question"
+		if m := itemMarkRe.FindStringSubmatch(item); m != nil && strings.HasPrefix(item, m[0]) {
+			label = "(" + m[1] + ")"
+		}
+		done = append(done, label+" "+by[i])
+	}
+	if len(done) > 0 {
+		note = " · answered on the bus, left out of Needs the owner: " + strings.Join(done, ", ")
+	}
+	return open, note, nil
+}
+
+// itemRefs gives the shas (with a letter), ids and quoted phrases of an owner question.
+func itemRefs(item string) []string {
+	var refs []string
+	for _, s := range needShaRe.FindAllString(item, -1) {
+		if strings.ContainsAny(s, "abcdef") {
+			refs = append(refs, s)
+		}
+	}
+	refs = append(refs, needIDRe.FindAllString(item, -1)...)
+	for _, m := range needQuoteRe.FindAllStringSubmatch(item, -1) {
+		refs = append(refs, m[1])
+	}
+	return refs
 }
 
 // change says how a lead's claimed % and verified milestones moved since the last report.

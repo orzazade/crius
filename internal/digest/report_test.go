@@ -644,3 +644,59 @@ func TestBuildQuotaShowsEachAccount(t *testing.T) {
 		t.Fatal(err, r.Text)
 	}
 }
+
+// busText stores a bus line with its text, as the ingest does (source key bus:...).
+func busText(t *testing.T, db *sql.DB, ts time.Time, sender, kind, text string) {
+	t.Helper()
+	id := line(t, db, ts, sender, kind, text)
+	if _, err := db.Exec("update event set source_key = ? where id = ?", fmt.Sprint("bus:f:", id), id); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// 10-25 09:00: the digest re-sent Quotes questions the owner had settled. An item of a lead's "Needs owner" is answered
+// when a crius:lead ANSWER, ORDER or CORRECTED on the bus after the GOAL stamp names it (a sha, an id like G-SUB-503,
+// or a quoted phrase) and speaks for the owner: it leaves the owner list and shows under its lead.
+func TestBuildLeavesOutAnOwnerQuestionAnsweredOnTheBus(t *testing.T) {
+	at := func(s string) time.Time {
+		v, _ := time.ParseInLocation("2006-01-02 15:04", s, time.Local)
+		return v
+	}
+	db := open(t)
+	busText(t, db, at("2026-10-25 00:02"), "crius:lead", "answer",
+		"Owner 00:10 on state pattern 15ccddb8: YES to all picks.")
+	busText(t, db, at("2026-10-24 18:30"), "crius:lead", "corrected",
+		"Price Watch wording: switch to A, the mockup's 'Vendor cost'. Owner 18:35: a customer price moves for only 2 reasons")
+	// Not answers: no word of the owner; another sender; before the stamp; a team log line.
+	busText(t, db, at("2026-10-25 01:51"), "crius:lead", "order", "Mockup scan: demoOpen 57, G-SUB-503 left open")
+	busText(t, db, at("2026-10-25 03:45"), "quotes:lead", "answer", "Lead to P5 G-SUB-503: yes, owner said so")
+	busText(t, db, at("2026-10-24 17:00"), "crius:lead", "answer", "Owner: Summary B option A")
+	line(t, db, at("2026-10-25 02:00"), "crius:lead", "answer", "Owner: Summary B option A, G-SUB-503 keep ours")
+	needs := "(1) P5 state-message pattern, 3 questions (p5/state-pattern 15ccddb8, DESIGN.md 'State messages'; asked " +
+		"17:46); (2) Summary B: add a pro-rated quote on another customer, rig write under a hold (asked 17:52); (3) Price " +
+		"Watch card words, mockup 'Vendor cost' or our 'price revision' (asked 18:02); (4) G-SUB-503 Subscription " +
+		"Details tab, keep ours until after 10-27 or copy the mockup now"
+	leads := []ingest.Lead{{Name: "quotes:lead", StatusFile: statusFile(t, t.TempDir(), "q.md",
+		block("2026-10-24 18:03", needs, "- [ ] one"))}}
+	r, err := Build(db, input(leads, nil), at("2026-10-25 09:00"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, rest, _ := strings.Cut(r.Text, "## Leads")
+	for _, want := range []string{"(2) Summary B", "(4) G-SUB-503"} {
+		if !strings.Contains(owner, want) {
+			t.Errorf("owner list lacks %q:\n%s", want, owner)
+		}
+	}
+	for _, gone := range []string{"15ccddb8", "Price Watch"} {
+		if strings.Contains(owner, gone) {
+			t.Errorf("owner list still has %q:\n%s", gone, owner)
+		}
+	}
+	for _, want := range []string{"answered on the bus, left out of Needs the owner: (1) by crius:lead ANSWER 2026-10-25 00:02",
+		"(3) by crius:lead CORRECTED 2026-10-24 18:30"} {
+		if !strings.Contains(rest, want) {
+			t.Errorf("lead entry lacks %q:\n%s", want, rest)
+		}
+	}
+}
