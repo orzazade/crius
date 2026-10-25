@@ -183,7 +183,8 @@ func Run(d Deps) error {
 	tried := false
 	for _, a := range alerts {
 		active[a[0]] = true
-		if last, ok := st.Alerted[a[0]]; ok && d.Now.Sub(last) < resend {
+		// The disk alarm is raised only when due (resources): the 20 min resend would hold back a 2 GB drop.
+		if last, ok := st.Alerted[a[0]]; ok && d.Now.Sub(last) < resend && a[0] != "disk" {
 			continue
 		}
 		// Send stores the line before it types it, so it gets every alert: one it holds is typed on a later run.

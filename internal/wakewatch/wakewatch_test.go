@@ -1812,6 +1812,7 @@ func TestTheDiskAlarmWakesOnCrossingThenOnA2GBDropOrAfter2h(t *testing.T) {
 		{160, 16.0, 1, "2 h after the last alarm"},
 		{165, 23.0, 0, "back over by 3 GB"},
 		{170, 19.9, 1, "a new crossing"},
+		{175, 17.5, 1, "2.4 GB lower 5 min on: the 20 min resend must not hold it (review of c7daa87)"},
 	} {
 		if got := runAt(c.min, c.free); got != c.want {
 			t.Errorf("min %d, %.1f GB (%s): %d disk alarms, want %d", c.min, c.free, c.why, got, c.want)
