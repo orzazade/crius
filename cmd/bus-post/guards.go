@@ -165,33 +165,56 @@ func checkShas(text string, repos, idDirs []string) ([]string, error) {
 
 // commits gives the full sha of each of words that is a commit in repo.
 func commits(repo string, words []string) (map[string]string, error) {
-	var in bytes.Buffer
-	for _, w := range words {
-		in.WriteString(w + "^{commit}\n")
-	}
-	cmd := exec.Command("git", "-C", expand(repo), "cat-file", "--batch-check")
-	cmd.Stdin = &in
 	// A GIT_DIR (or another repo variable) inherited from the caller would win over -C: check the wrong repo.
-	cmd.Env = slices.DeleteFunc(os.Environ(), func(kv string) bool {
+	env := slices.DeleteFunc(os.Environ(), func(kv string) bool {
 		return slices.ContainsFunc([]string{"GIT_DIR=", "GIT_WORK_TREE=", "GIT_COMMON_DIR=", "GIT_OBJECT_DIRECTORY=",
 			"GIT_ALTERNATE_OBJECT_DIRECTORIES="}, func(p string) bool { return strings.HasPrefix(kv, p) })
 	})
-	var errb bytes.Buffer
-	cmd.Stderr = &errb
-	out, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("could not check shas in %s: %v %s", repo, err, strings.TrimSpace(errb.String()))
+	git := func(stdin string, args ...string) (string, error) {
+		cmd := exec.Command("git", append([]string{"-C", expand(repo)}, args...)...)
+		cmd.Env, cmd.Stdin = env, strings.NewReader(stdin)
+		var errb bytes.Buffer
+		cmd.Stderr = &errb
+		out, err := cmd.Output()
+		if err != nil {
+			return "", fmt.Errorf("could not check shas in %s: %v %s", repo, err, strings.TrimSpace(errb.String()))
+		}
+		return string(out), nil
 	}
-	lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
-	if len(lines) != len(words) {
-		return nil, fmt.Errorf("could not check shas in %s: %d answers for %d words", repo, len(lines), len(words))
+	// The objects whose sha starts with each word, by sha alone: git reads "deadbeef^{commit}" as a branch or tag of
+	// that name first (reviews of 80b4c83 and 011e88b).
+	var objs []string
+	of := map[string][]string{}
+	for _, w := range words {
+		out, err := git("", "rev-parse", "--disambiguate="+w)
+		if err != nil {
+			return nil, err
+		}
+		of[w] = strings.Fields(out)
+		objs = append(objs, of[w]...)
 	}
 	is := map[string]string{}
-	for i, w := range words {
-		// git reads "deadbeef^{commit}" as a branch or tag of that name too: only a commit whose sha starts with the word
-		// counts (review of 80b4c83).
-		if f := strings.Fields(lines[i]); len(f) >= 2 && f[1] == "commit" && strings.HasPrefix(f[0], w) {
-			is[w] = f[0]
+	if len(objs) == 0 {
+		return is, nil
+	}
+	out, err := git(strings.Join(objs, "\n")+"\n", "cat-file", "--batch-check")
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) != len(objs) {
+		return nil, fmt.Errorf("could not check shas in %s: %d answers for %d objects", repo, len(lines), len(objs))
+	}
+	commit := map[string]bool{}
+	for _, l := range lines {
+		if f := strings.Fields(l); len(f) >= 2 && f[1] == "commit" {
+			commit[f[0]] = true
+		}
+	}
+	for _, w := range words {
+		// One commit only: a word that starts two commits names neither, as git would say.
+		if c := slices.DeleteFunc(slices.Clone(of[w]), func(o string) bool { return !commit[o] }); len(c) == 1 {
+			is[w] = c[0]
 		}
 	}
 	return is, nil

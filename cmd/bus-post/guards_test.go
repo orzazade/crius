@@ -384,3 +384,29 @@ func TestASkipRepoMatchesItsSpellingInShaRepos(t *testing.T) {
 		t.Errorf("rc %d %s", rc, errs)
 	}
 }
+
+// Review of 011e88b (P1): a branch named like a commit's sha start must not hide that commit. git reads "<word>^{commit}"
+// as the branch first; the object is looked up by its sha alone. Before, the commit counted as absent: a READY for it
+// was refused as no commit, or, when a skip repo also had it, passed with no record.
+func TestABranchNamedLikeAShaDoesNotHideTheCommit(t *testing.T) {
+	log, records, old, _ := readyBus(t)
+	repo := filepath.Join(filepath.Dir(log), "..", "..", "channels")
+	testutil.Write(t, filepath.Join(repo, "a.txt"), "a3")
+	testutil.CommitAll(t, repo)
+	out, err := exec.Command("git", "-C", repo, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := strings.TrimSpace(string(out))
+	if out, err := exec.Command("git", "-C", repo, "branch", short(head), old).CombinedOutput(); err != nil {
+		t.Fatal(err, string(out))
+	}
+	text := "READY G-3 " + short(head)
+	if rc, errs := post(t, at("2026-10-25T17:49"), log, "READY", "quotes:p2", "quotes:qa1", text); rc != 7 || !strings.Contains(errs, short(head)) {
+		t.Fatalf("no record yet: want rc 7 naming %s, got rc %d: %s", short(head), rc, errs)
+	}
+	record(t, records, head, "pre-ready PASS "+short(head)+" on base x")
+	if rc, errs := post(t, at("2026-10-25T17:50"), log, "READY", "quotes:p2", "quotes:qa1", text); rc != 0 {
+		t.Fatalf("with its record: rc %d: %s", rc, errs)
+	}
+}
