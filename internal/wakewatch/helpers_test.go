@@ -2,6 +2,7 @@ package wakewatch
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -123,6 +124,36 @@ func TestAfterBootThatCannotLookSaysSo(t *testing.T) {
 		d.Launchd = func(string) (bool, error) { return false, errors.New("launchctl hung") }
 		if err := AfterBoot(d); err != nil || len(*sent) != 1 || !strings.Contains((*sent)[0], c.want) {
 			t.Errorf("%q: %v %q", c.toml, err, *sent)
+		}
+	}
+}
+
+// Review of d2bbf74 (P2s): a long list goes in several lines, none cut, and a heartbeat stamped in the future is no
+// heartbeat.
+func TestAfterBootSendsEveryNameAndDistrustsFutureLines(t *testing.T) {
+	var b strings.Builder
+	for i := 1; i <= 20; i++ {
+		fmt.Fprintf(&b, "[[pid]]\nname = \"helper-%02d\"\nfile = \"~/watchers/helper-%02d.pid\"\n", i, i)
+	}
+	b.WriteString("[[bus]]\nname = \"future\"\nlog = \"quotes\"\nfrom = \"quotes:qa9\"\nhas = [\"beat\"]\nwithin_min = 75\n")
+	d, sent := boot(t, b.String())
+	t.Setenv("HOME", d.Home)
+	testutil.Write(t, filepath.Join(d.Home, "bus", "quotes.log"), stamp(t0.Add(24*time.Hour))+" INFO quotes:qa9 -> x — beat\n")
+	if err := AfterBoot(d); err != nil {
+		t.Fatal(err)
+	}
+	all := strings.Join(*sent, "\n")
+	for i := 1; i <= 20; i++ {
+		if want := fmt.Sprintf("helper-%02d (no ~/watchers/helper-%02d.pid)", i, i); !strings.Contains(all, want) {
+			t.Errorf("lacks %q", want)
+		}
+	}
+	if !strings.Contains(all, "future (no quotes:qa9 line") {
+		t.Errorf("a future line counted as a heartbeat:\n%s", all)
+	}
+	for _, m := range *sent {
+		if len([]rune(m)) > len(Prefix)+MaxLine || strings.HasSuffix(m, "…") {
+			t.Errorf("cut: %q", m)
 		}
 	}
 }

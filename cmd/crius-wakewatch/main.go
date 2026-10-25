@@ -149,7 +149,7 @@ func process(pid int) (time.Time, bool, error) {
 		}
 		return time.Time{}, false, fmt.Errorf("pid %d: %w", pid, err)
 	}
-	return time.Unix(k.Proc.P_starttime.Sec, 0), true, nil
+	return time.Unix(k.Proc.P_starttime.Sec, int64(k.Proc.P_starttime.Usec)*1000), true, nil
 }
 
 // launchd tells whether a launchd job is loaded in the user's session; launchctl print exits 113 for one that is not.

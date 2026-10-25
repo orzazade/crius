@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -74,7 +75,7 @@ func AfterBoot(d BootDeps) error {
 	}
 	for _, h := range l.Bus {
 		n++
-		at, err := lastLine(filepath.Join(d.Home, "bus", h.Log+".log"), h.From, h.Has, d.Now.Location())
+		at, err := lastLine(filepath.Join(d.Home, "bus", h.Log+".log"), h.From, h.Has, d.Now)
 		switch {
 		case err != nil:
 			down = append(down, h.Name+" (could not look: "+err.Error()+")")
@@ -89,8 +90,27 @@ func AfterBoot(d BootDeps) error {
 		fmt.Printf("%s after login: all %d helpers run\n", d.Now.Format(time.RFC3339), n)
 		return nil
 	}
-	return d.Send(Prefix + Clean(fmt.Sprintf("after login, %d of %d helpers are not running: %s", len(down), n,
-		strings.Join(down, "; "))))
+	// Several lines when one would be cut: every dead helper reaches Crius (review of d2bbf74).
+	head := fmt.Sprintf("after login, %d of %d helpers are not running: ", len(down), n)
+	var lines []string
+	line := head
+	for _, h := range down {
+		h = Clean(h)
+		if line != head && len([]rune(line+"; "+h)) > MaxLine {
+			lines, line = append(lines, line), "after login, more not running: "+h
+			continue
+		}
+		if line != head && !strings.HasSuffix(line, ": ") {
+			line += "; "
+		}
+		line += h
+	}
+	for _, l := range append(lines, line) {
+		if err := d.Send(Prefix + Clean(l)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // pidDown says why the process of a pid file is not running, or "" when it is: the pid must be a process that started
@@ -104,14 +124,21 @@ func pidDown(d BootDeps, file string) (string, error) {
 		}
 		path = filepath.Join(home, rest)
 	}
-	b, err := os.ReadFile(path)
+	// One open file gives both the pid and its time: a file replaced between two reads would mix them (review of
+	// d2bbf74).
+	f, err := os.Open(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return "no " + file, nil
 	}
 	if err != nil {
 		return "", err
 	}
-	fi, err := os.Stat(path)
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return "", err
+	}
+	b, err := io.ReadAll(f)
 	if err != nil {
 		return "", err
 	}
@@ -132,7 +159,8 @@ func pidDown(d BootDeps, file string) (string, error) {
 }
 
 // lastLine gives the stamp of the newest line on a bus log from sender whose text holds one of has (any case), or zero.
-func lastLine(log, from string, has []string, loc *time.Location) (time.Time, error) {
+func lastLine(log, from string, has []string, now time.Time) (time.Time, error) {
+	loc := now.Location()
 	f, err := os.Open(log)
 	if err != nil {
 		return time.Time{}, err
@@ -159,7 +187,8 @@ func lastLine(log, from string, has []string, loc *time.Location) (time.Time, er
 		if z, ok := strings.CutSuffix(fields[0], "Z"); ok {
 			at, err = time.Parse("2006-01-02T15:04", z)
 		}
-		if err == nil && at.After(last) {
+		// A line stamped in the future is no heartbeat (review of d2bbf74); 2 min is clock skew.
+		if err == nil && at.After(last) && !at.After(now.Add(2*time.Minute)) {
 			last = at
 		}
 	}
