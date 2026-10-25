@@ -157,3 +157,29 @@ func TestAfterBootSendsEveryNameAndDistrustsFutureLines(t *testing.T) {
 		}
 	}
 }
+
+// Review of 41b6d82 (P1): a held first line (a draft in Crius's box: the outbox keeps it) does not stop the others;
+// each line is tried, and the errors come back together.
+func TestAfterBootTriesEveryLineWhenOneIsHeld(t *testing.T) {
+	var b strings.Builder
+	for i := 1; i <= 20; i++ {
+		fmt.Fprintf(&b, "[[pid]]\nname = \"helper-%02d\"\nfile = \"~/watchers/helper-%02d.pid\"\n", i, i)
+	}
+	d, _ := boot(t, b.String())
+	t.Setenv("HOME", d.Home)
+	var tried []string
+	d.Send = func(text string) error {
+		tried = append(tried, text)
+		if len(tried) == 1 {
+			return errors.New("held: a draft in the box")
+		}
+		return nil
+	}
+	err := AfterBoot(d)
+	if len(tried) < 2 || err == nil || !strings.Contains(err.Error(), "held") {
+		t.Fatalf("tried %d lines, err %v", len(tried), err)
+	}
+	if all := strings.Join(tried, "\n"); !strings.Contains(all, "helper-20 (no ~/watchers/helper-20.pid)") {
+		t.Fatalf("helper-20 never tried:\n%s", all)
+	}
+}

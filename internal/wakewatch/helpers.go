@@ -105,12 +105,12 @@ func AfterBoot(d BootDeps) error {
 		}
 		line += h
 	}
+	// Each line is tried: one held or failed does not drop the rest (review of 41b6d82).
+	var errs []error
 	for _, l := range append(lines, line) {
-		if err := d.Send(Prefix + Clean(l)); err != nil {
-			return err
-		}
+		errs = append(errs, d.Send(Prefix+Clean(l)))
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // pidDown says why the process of a pid file is not running, or "" when it is: the pid must be a process that started
