@@ -49,7 +49,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, time.Now().Format(time.RFC3339), "crius-wakewatch: outbox:", err)
 	}
 	err := wakewatch.Run(wakewatch.Deps{Home: store.Home(), Now: time.Now(), Screens: screens, Send: send,
-		Workspaces: workspaces, Resources: resources, Tools: tools, Sessions: func() ([]wakewatch.Session, error) {
+		Workspaces: workspaces, Resources: resources, Load: loadAvg, Tools: tools, Sessions: func() ([]wakewatch.Session, error) {
 			home, err := os.UserHomeDir()
 			if err != nil {
 				return nil, err
@@ -190,6 +190,27 @@ func resources() (float64, float64, error) {
 		return 0, 0, err
 	}
 	return float64(fs.Bavail) * float64(fs.Bsize) / (1 << 30), swap, nil
+}
+
+// loadAvg reads the 1-minute load from sysctl vm.loadavg ("{ 6.02 5.81 5.40 }").
+func loadAvg() (float64, error) {
+	out, err := exec.Command("/usr/sbin/sysctl", "-n", "vm.loadavg").CombinedOutput()
+	if err != nil {
+		return 0, fmt.Errorf("sysctl vm.loadavg: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	return parseLoad(string(out))
+}
+
+func parseLoad(s string) (float64, error) {
+	f := strings.Fields(strings.Trim(strings.TrimSpace(s), "{}"))
+	if len(f) == 0 {
+		return 0, fmt.Errorf("sysctl vm.loadavg: no load in %q", strings.TrimSpace(s))
+	}
+	v, err := strconv.ParseFloat(f[0], 64)
+	if err != nil {
+		return 0, fmt.Errorf("sysctl vm.loadavg: %v", err)
+	}
+	return v, nil
 }
 
 // swapUsed reads "used = 15997.06M" (or G) from sysctl vm.swapusage, in GB.

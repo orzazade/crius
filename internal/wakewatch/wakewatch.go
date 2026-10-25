@@ -84,6 +84,7 @@ type Deps struct {
 	Screens    func() ([]Screen, error)
 	Send       func(text string) error
 	Resources  func() (freeDiskGB, swapUsedGB float64, err error)
+	Load       func() (float64, error) // the 1-minute load average
 	Tools      func() map[string]error // each tool the team needs, and why it failed or did not answer (nil: fine)
 	Sessions   func() ([]Session, error)
 	Workspaces func() ([]Workspace, error)
@@ -167,6 +168,7 @@ func Run(d Deps) error {
 		alerts = append(alerts, waiting(&st, d, watch, park, screens, hv)...)
 	}
 	alerts = append(alerts, resources(d, &st)...)
+	alerts = append(alerts, load(d)...)
 	alerts = append(alerts, tools(d)...)
 	alerts = append(alerts, fresh(d, watch, park, screens, ss, sesErr, hv)...)
 	alerts = append(alerts, unnamed(d, screens)...)
@@ -575,6 +577,28 @@ func resources(d Deps, st *state) [][2]string {
 		out = append(out, [2]string{"swap", fmt.Sprintf("swap: %.1f GB in use, above %d GB", swap, maxSwapGB)})
 	}
 	return out
+}
+
+// load logs the 1-minute load to logs/load.log, one line a run, for the experiment scorecard (E1, package
+// experiments); a load that could not be read or logged is an alert.
+func load(d Deps) [][2]string {
+	v, err := d.Load()
+	if err == nil {
+		err = os.MkdirAll(filepath.Join(d.Home, "logs"), 0o700)
+	}
+	if err == nil {
+		var f *os.File
+		if f, err = os.OpenFile(filepath.Join(d.Home, "logs", "load.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
+			_, err = fmt.Fprintf(f, "%s %.2f\n", d.Now.Format(time.RFC3339), v)
+			if cerr := f.Close(); err == nil {
+				err = cerr
+			}
+		}
+	}
+	if err != nil {
+		return [][2]string{{"load-failed", "the load check failed to look: " + err.Error()}}
+	}
+	return nil
 }
 
 // fresh gives an alert for each lead whose newest DONE (in the last 12 h) is 20 min old while no session of that lead

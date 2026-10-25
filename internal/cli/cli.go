@@ -20,6 +20,7 @@ import (
 	"github.com/orzazade/crius"
 	"github.com/orzazade/crius/internal/digest"
 	"github.com/orzazade/crius/internal/drivers"
+	"github.com/orzazade/crius/internal/experiments"
 	"github.com/orzazade/crius/internal/ingest"
 	"github.com/orzazade/crius/internal/quota"
 	"github.com/orzazade/crius/internal/recall"
@@ -758,6 +759,15 @@ func digestCmd(home string, now time.Time, write, printPath bool, stdout, stderr
 		return exitError
 	}
 	text, _ := redact.Redact(r.Text)
+	partial := r.Status != "complete"
+	if now.Hour() < 12 {
+		md, err := morningExperiments(db, home, now, write)
+		if err != nil {
+			md, partial = "## Experiments\n\nExperiments: could not count "+now.AddDate(0, 0, -1).Format("2006-01-02")+": "+err.Error()+"\n", true
+		}
+		md, _ = redact.Redact(md)
+		text += "\n" + md
+	}
 	if write {
 		snap, err := redact.JSON(r.Snap)
 		if err == nil {
@@ -780,10 +790,33 @@ func digestCmd(home string, now time.Time, write, printPath bool, stdout, stderr
 	} else {
 		fmt.Fprint(stdout, text)
 	}
-	if r.Status != "complete" {
+	if partial {
 		return exitPartial
 	}
 	return 0
+}
+
+// morningExperiments counts yesterday's experiments (package experiments) for the 09:00 goal report, and with write
+// saves them to state/experiments/<day>.md. The Quotes repo and the rig's quote counts are where the owner keeps them.
+func morningExperiments(db *sql.DB, home string, now time.Time, write bool) (string, error) {
+	user, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	day := now.AddDate(0, 0, -1)
+	rows, err := experiments.Build(db, experiments.Deps{Home: home,
+		Worktrees: experiments.Worktrees(filepath.Join(user, "Projects", "Appxite", "svc_quote", "channels")),
+		Leftovers: experiments.Leftovers(filepath.Join(user, "AppxiteRig", "run"))}, day)
+	if err != nil {
+		return "", err
+	}
+	md := experiments.Markdown(day, rows)
+	if write {
+		if err := experiments.Write(home, day, md); err != nil {
+			return "", err
+		}
+	}
+	return md, nil
 }
 
 func scorecardCmd(home string, now time.Time, day string, write bool, stdout, stderr io.Writer) int {

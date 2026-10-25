@@ -28,6 +28,8 @@ type fake struct {
 	freeGB  float64 // free disk; 0 means a healthy 100
 	swapGB  float64
 	resErr  error
+	load    float64
+	loadErr error
 	tools   map[string]error
 	ses     []Session
 	sesErr  error
@@ -44,6 +46,7 @@ func (f *fake) deps(home string, now time.Time) Deps {
 		Sessions:   func() ([]Session, error) { return f.ses, f.sesErr },
 		Workspaces: func() ([]Workspace, error) { return f.wss, f.wsErr },
 		States:     func() ([]sessionstate.State, error) { return f.states, f.stErr },
+		Load:       func() (float64, error) { return f.load, f.loadErr },
 		Resources: func() (float64, float64, error) {
 			if f.freeGB == 0 {
 				return 100, f.swapGB, f.resErr
@@ -737,6 +740,29 @@ func TestLowDiskOrHighSwapWakesCrius(t *testing.T) {
 		if len(f.sent) != map[string]int{"disk": 1, "swap": 2}[c.want] || !strings.Contains(f.sent[0], c.want) || !strings.Contains(f.sent[0], map[string]string{"disk": "20 GB", "swap": "26 GB"}[c.want]) {
 			t.Fatal(c, f.sent)
 		}
+	}
+}
+
+// Brief fixes-1025 item 7 (E1, crius:lead 18:38): each run logs the 1-minute load for the experiment scorecard; a
+// load read that fails wakes Crius, as a disk read that fails does.
+func TestEachRunLogsTheLoad(t *testing.T) {
+	home := setup(t, nil)
+	f := &fake{load: 6.5}
+	for _, m := range []time.Duration{0, 5} {
+		if err := Run(f.deps(home, t0.Add(m*time.Minute))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := t0.Format(time.RFC3339) + " 6.50\n" + t0.Add(5*time.Minute).Format(time.RFC3339) + " 6.50\n"
+	if got := testutil.Read(t, filepath.Join(home, "logs", "load.log")); got != want {
+		t.Fatalf("%q, want %q", got, want)
+	}
+	f = &fake{loadErr: errors.New("sysctl: exit status 1")}
+	if err := Run(f.deps(home, t0.Add(10*time.Minute))); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.sent) != 1 || !strings.Contains(f.sent[0], "the load check failed to look: sysctl: exit status 1") {
+		t.Fatal(f.sent)
 	}
 }
 

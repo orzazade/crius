@@ -116,6 +116,17 @@ func TestOneFailedTabReadKeepsTheOthers(t *testing.T) {
 	}
 }
 
+func TestLoadIsTheOneMinuteAverage(t *testing.T) {
+	if v, err := parseLoad("{ 6.93 8.27 8.48 }\n"); err != nil || v != 6.93 {
+		t.Fatal(v, err)
+	}
+	for _, bad := range []string{"", "{ }", "vm.loadavg: unknown oid"} {
+		if _, err := parseLoad(bad); err == nil {
+			t.Errorf("%q read as a load", bad)
+		}
+	}
+}
+
 func TestSwapUsedIsReadInGB(t *testing.T) {
 	for in, want := range map[string]float64{
 		"total = 17408.00M  used = 15997.06M  free = 1410.94M  (encrypted)\n": 15997.06 / 1024,
