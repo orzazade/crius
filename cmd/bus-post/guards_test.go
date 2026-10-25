@@ -302,3 +302,30 @@ func TestAnUnreadablePreReadyRecordIsSaid(t *testing.T) {
 		t.Fatalf("rc %d %s", rc, errs)
 	}
 }
+
+// Review of 80b4c83 (P2): a START stamped in UTC ("…Z", as the bus parser reads it) is a live run too.
+func TestAStartStampedInUTCIsOpen(t *testing.T) {
+	_, log, _, _ := quotesBus(t)
+	p6 := at("2026-10-25T02:20").UTC().Format("2006-01-02T15:04") + "Z START quotes:p6 -> quotes:all — P6 live START\n"
+	testutil.Write(t, log, p6)
+	rc, errs := post(t, at("2026-10-25T02:22"), log, "START", "quotes:p1", "quotes:all", "P1 live START: live-f55")
+	if rc != 4 || !strings.Contains(errs, "quotes:p6") {
+		t.Fatalf("want rc 4 naming quotes:p6, got rc %d: %s", rc, errs)
+	}
+}
+
+// Review of 80b4c83 (P2): git reads "deadbeef^{commit}" as a branch named deadbeef too; only a commit whose sha starts
+// with the word counts. And a word counts as an id only when a whole UUID starts with it.
+func TestABranchNamedLikeAShaOrABrokenUUIDIsNoProof(t *testing.T) {
+	home, log, repo, _ := quotesBus(t)
+	if out, err := exec.Command("git", "-C", repo, "branch", "deadbeef").CombinedOutput(); err != nil {
+		t.Fatal(err, string(out))
+	}
+	testutil.Write(t, filepath.Join(home, "..", "scripts", "bad.mjs"), "const x = 'cafebabe-1111-NOT-A-UUID';\n")
+	for _, text := range []string{"on deadbeef", "id cafebabe"} {
+		rc, errs := post(t, at("2026-10-25T02:26"), log, "INFO", "quotes:p5", "quotes:p5", text)
+		if rc != 3 || !strings.Contains(errs, "is not a commit") {
+			t.Errorf("%q: want rc 3 'is not a commit', got rc %d: %s", text, rc, errs)
+		}
+	}
+}

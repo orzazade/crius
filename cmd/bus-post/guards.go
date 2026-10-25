@@ -128,9 +128,11 @@ func checkShas(text string, repos, idDirs []string) ([]string, error) {
 		return words, nil
 	}
 	ids := map[string]bool{}
+	// A word is an id when a whole UUID starts with it (review of 80b4c83: "cafebabe-1111-NOT-A-UUID" is none). Words
+	// are 8 or more hex, so only one of 8 can start one.
 	idRes := make([]*regexp.Regexp, len(words))
 	for i, w := range words {
-		idRes[i] = regexp.MustCompile(`(?i)(?:^|[^0-9a-z])` + w + `[0-9a-f]*-[0-9a-f]{4}-`)
+		idRes[i] = regexp.MustCompile(`(?i)(?:^|[^0-9a-z])` + w + `-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:[^0-9a-z]|$)`)
 	}
 	for _, dir := range idDirs {
 		err := filepath.WalkDir(expand(dir), func(p string, d fs.DirEntry, err error) error {
@@ -186,7 +188,9 @@ func commits(repo string, words []string) (map[string]bool, error) {
 	}
 	is := map[string]bool{}
 	for i, w := range words {
-		if f := strings.Fields(lines[i]); len(f) >= 2 && f[1] == "commit" {
+		// git reads "deadbeef^{commit}" as a branch or tag of that name too: only a commit whose sha starts with the word
+		// counts (review of 80b4c83).
+		if f := strings.Fields(lines[i]); len(f) >= 2 && f[1] == "commit" && strings.HasPrefix(f[0], w) {
 			is[w] = true
 		}
 	}
@@ -262,7 +266,11 @@ func openRuns(f io.ReaderAt, size int64, now time.Time, window time.Duration) ([
 		if len(fields) < 3 {
 			continue
 		}
+		// A stamp ending in Z is UTC, as the bus parser reads it (review of 80b4c83).
 		at, err := time.ParseInLocation("2006-01-02T15:04", fields[0], now.Location())
+		if z, ok := strings.CutSuffix(fields[0], "Z"); ok {
+			at, err = time.Parse("2006-01-02T15:04", z)
+		}
 		if err != nil {
 			continue
 		}
