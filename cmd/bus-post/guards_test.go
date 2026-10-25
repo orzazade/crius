@@ -241,6 +241,17 @@ func TestNoLiveWindowNoStartRule(t *testing.T) {
 
 // readyBus is quotesBus with a RethinkBack repo next to channels and a pre-ready record folder (10-25, quotes:lead 18:12:
 // a READY needs pre-ready's PASS record; a RethinkBack fix has no pre-ready). It returns the RethinkBack head too.
+// short is the shortest prefix of 8 or more of sha with a letter: a word of digits only is no sha (hexWords), and a
+// test commit's sha differs every run.
+func short(sha string) string {
+	for n := 8; n < len(sha); n++ {
+		if strings.ContainsAny(sha[:n], "abcdef") {
+			return sha[:n]
+		}
+	}
+	return sha
+}
+
 func readyBus(t *testing.T) (log, records, head, rbHead string) {
 	home, log, repo, head := quotesBus(t)
 	rb := testutil.GitRepo(t, filepath.Join(home, "..", "RethinkBack"))
@@ -264,12 +275,12 @@ func record(t *testing.T, records, head, line string) {
 
 func TestAReadyWithNoPreReadyRecordIsRefused(t *testing.T) {
 	log, records, head, _ := readyBus(t)
-	text := "READY G-DET-14 " + head[:8] + " · in next"
+	text := "READY G-DET-14 " + short(head) + " · in next"
 	rc, errs := post(t, at("2026-10-25T17:49"), log, "READY", "quotes:p2", "quotes:qa1", text)
 	if rc != 7 || !strings.Contains(errs, "no pre-ready PASS record") || busText(t, log) != "" {
 		t.Fatalf("no record: rc %d %s", rc, errs)
 	}
-	record(t, records, head, "pre-ready FAIL "+head[:8]+" on base x")
+	record(t, records, head, "pre-ready FAIL "+short(head)+" on base x")
 	if rc, errs := post(t, at("2026-10-25T17:49"), log, "READY", "quotes:p2", "quotes:qa1", text); rc != 7 {
 		t.Fatalf("a FAIL record: rc %d %s", rc, errs)
 	}
@@ -284,9 +295,9 @@ func TestAReadyWithNoPreReadyRecordIsRefused(t *testing.T) {
 
 func TestAReadyWithAPassRecordOrARethinkBackShaIsPosted(t *testing.T) {
 	log, records, head, rbHead := readyBus(t)
-	record(t, records, head, "pre-ready PASS "+head[:8]+" on base x (G-1) · clean")
-	for _, text := range []string{"READY G-1 " + head[:8] + " · in next", "READY full " + head,
-		"READY RB-147 fx rate read " + rbHead[:10]} {
+	record(t, records, head, "pre-ready PASS "+short(head)+" on base x (G-1) · clean")
+	for _, text := range []string{"READY G-1 " + short(head) + " · in next", "READY full " + head,
+		"READY RB-147 fx rate read " + short(rbHead)} {
 		if rc, errs := post(t, at("2026-10-25T17:49"), log, "READY", "quotes:p2", "quotes:qa1", text); rc != 0 {
 			t.Errorf("%q: rc %d %s", text, rc, errs)
 		}
@@ -297,7 +308,7 @@ func TestAReadyWithAPassRecordOrARethinkBackShaIsPosted(t *testing.T) {
 func TestAnUnreadablePreReadyRecordIsSaid(t *testing.T) {
 	log, records, head, _ := readyBus(t)
 	testutil.Write(t, filepath.Join(records, head), `{"head":`)
-	rc, errs := post(t, at("2026-10-25T17:49"), log, "READY", "quotes:p2", "quotes:qa1", "READY "+head[:8])
+	rc, errs := post(t, at("2026-10-25T17:49"), log, "READY", "quotes:p2", "quotes:qa1", "READY "+short(head))
 	if rc != 2 || !strings.Contains(errs, head) || busText(t, log) != "" {
 		t.Fatalf("rc %d %s", rc, errs)
 	}
@@ -327,5 +338,49 @@ func TestABranchNamedLikeAShaOrABrokenUUIDIsNoProof(t *testing.T) {
 		if rc != 3 || !strings.Contains(errs, "is not a commit") {
 			t.Errorf("%q: want rc 3 'is not a commit', got rc %d: %s", text, rc, errs)
 		}
+	}
+}
+
+// Review of 2cb587f (P2): the sha a READY announces is the first commit it names, and that one needs the record; an
+// old sha it replaces, or a RethinkBack fix it builds on, is no proof. In all 11 Quotes READYs of 10-24/25 with a
+// record, the record's sha was the first one named. The record is the file of the full sha, not of a prefix (P3).
+func TestAReadyNeedsTheRecordOfTheFirstCommitItNames(t *testing.T) {
+	log, records, old, rbHead := readyBus(t)
+	repo := filepath.Join(filepath.Dir(log), "..", "..", "channels")
+	testutil.Write(t, filepath.Join(repo, "a.txt"), "a2")
+	testutil.CommitAll(t, repo)
+	out, err := exec.Command("git", "-C", repo, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := strings.TrimSpace(string(out))
+	record(t, records, old, "pre-ready PASS "+short(old)+" on base x")
+	// a record named by the new sha's first 8 and other hex: another object's record
+	other := short(head) + strings.Repeat("0", 40-len(short(head)))
+	testutil.Write(t, filepath.Join(records, other), fmt.Sprintf(`{"head":%q,"line":"pre-ready PASS x"}`, other))
+	for _, text := range []string{"READY G-2 " + short(head) + " · replaces " + short(old),
+		"READY G-2 " + short(head) + " (channels), built on RethinkBack fix " + short(rbHead)} {
+		rc, errs := post(t, at("2026-10-25T17:49"), log, "READY", "quotes:p2", "quotes:qa1", text)
+		if rc != 7 || !strings.Contains(errs, "no pre-ready PASS record") || !strings.Contains(errs, short(head)) {
+			t.Errorf("%q: want rc 7 naming %s, got rc %d: %s", text, short(head), rc, errs)
+		}
+	}
+	record(t, records, head, "pre-ready PASS "+short(head)+" on base x")
+	if rc, errs := post(t, at("2026-10-25T17:49"), log, "READY", "quotes:p2", "quotes:qa1",
+		"READY G-2 "+short(head)+" · replaces "+short(old)); rc != 0 {
+		t.Errorf("with its record: rc %d %s", rc, errs)
+	}
+}
+
+// Review of 2cb587f (P3): a skip repo written another way in sha_repos ("~/…" and the full path) is the same repo.
+func TestASkipRepoMatchesItsSpellingInShaRepos(t *testing.T) {
+	log, records, _, rbHead := readyBus(t)
+	home := filepath.Dir(filepath.Dir(log))
+	t.Setenv("HOME", filepath.Dir(home))
+	repo := filepath.Join(filepath.Dir(home), "channels")
+	testutil.Write(t, filepath.Join(home, "bus.toml"), fmt.Sprintf("[projects.quotes]\nsha_repos = [%q, \"~/RethinkBack\"]\n"+
+		"preready_dir = %q\npreready_skip_repos = [%q]\n", repo, records, filepath.Join(filepath.Dir(home), "RethinkBack")))
+	if rc, errs := post(t, at("2026-10-25T17:49"), log, "READY", "quotes:rig", "quotes:qa1", "READY RB-147 "+short(rbHead)); rc != 0 {
+		t.Errorf("rc %d %s", rc, errs)
 	}
 }

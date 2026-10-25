@@ -122,7 +122,7 @@ func checkShas(text string, repos, idDirs []string) ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		words = slices.DeleteFunc(words, func(w string) bool { return in[w] })
+		words = slices.DeleteFunc(words, func(w string) bool { return in[w] != "" })
 	}
 	if len(words) == 0 || len(idDirs) == 0 {
 		return words, nil
@@ -163,8 +163,8 @@ func checkShas(text string, repos, idDirs []string) ([]string, error) {
 	return left, nil
 }
 
-// commits gives which of words are a commit in repo.
-func commits(repo string, words []string) (map[string]bool, error) {
+// commits gives the full sha of each of words that is a commit in repo.
+func commits(repo string, words []string) (map[string]string, error) {
 	var in bytes.Buffer
 	for _, w := range words {
 		in.WriteString(w + "^{commit}\n")
@@ -186,70 +186,77 @@ func commits(repo string, words []string) (map[string]bool, error) {
 	if len(lines) != len(words) {
 		return nil, fmt.Errorf("could not check shas in %s: %d answers for %d words", repo, len(lines), len(words))
 	}
-	is := map[string]bool{}
+	is := map[string]string{}
 	for i, w := range words {
 		// git reads "deadbeef^{commit}" as a branch or tag of that name too: only a commit whose sha starts with the word
 		// counts (review of 80b4c83).
 		if f := strings.Fields(lines[i]); len(f) >= 2 && f[1] == "commit" && strings.HasPrefix(f[0], w) {
-			is[w] = true
+			is[w] = f[0]
 		}
 	}
 	return is, nil
 }
 
-// readyProven tells whether a READY's text names a sha that pre-ready passed: a record in g.PrereadyDir named by the
-// full sha, whose "head" is that sha and whose "line" starts "pre-ready PASS" (Quotes pre-ready.ts writes it), or a
-// commit of a preready_skip_repos repo that is a commit in no other sha_repos repo (a RethinkBack fix has no pre-ready;
-// quotes:lead 10-25 18:12). A record that does not read is an error: failed to look is not found nothing.
-func readyProven(text string, g guards) (bool, error) {
+// readyProven tells whether the sha a READY announces passed pre-ready. That sha is the first word of text that is a
+// commit in a sha_repos or preready_skip_repos repo (an old sha it replaces, or a fix it builds on, comes later: so in
+// all 11 Quotes READYs of 10-24/25 with a record; review of 2cb587f). It passes with pre-ready's record in
+// g.PrereadyDir, the file named by its full sha, whose "head" is that sha and whose "line" starts "pre-ready PASS"
+// (Quotes pre-ready.ts writes it), or when it is a commit of a skip repo only (a RethinkBack fix has no pre-ready;
+// quotes:lead 10-25 18:12). It gives the word it judged, "" when text names no commit. A record that does not read is
+// an error: failed to look is not found nothing.
+func readyProven(text string, g guards) (sha string, ok bool, err error) {
 	words := hexWords(text)
 	if len(words) == 0 {
-		return false, nil
+		return "", false, nil
 	}
-	dir := expand(g.PrereadyDir)
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return false, fmt.Errorf("could not read pre-ready records: %v", err)
+	skip := map[string]bool{}
+	for _, r := range g.PrereadySkipRepos {
+		skip[filepath.Clean(expand(r))] = true
+	}
+	full := map[string]string{} // word -> full sha, of a commit in a repo that pre-ready checks
+	only := map[string]bool{}   // a commit of a skip repo
+	for _, repo := range g.ShaRepos {
+		if skip[filepath.Clean(expand(repo))] {
+			continue
+		}
+		in, err := commits(repo, words)
+		if err != nil {
+			return "", false, err
+		}
+		for w, f := range in {
+			full[w] = f
+		}
+	}
+	for _, repo := range g.PrereadySkipRepos {
+		in, err := commits(repo, words)
+		if err != nil {
+			return "", false, err
+		}
+		for w := range in {
+			only[w] = full[w] == ""
+		}
 	}
 	for _, w := range words {
-		for _, e := range entries {
-			if !strings.HasPrefix(e.Name(), w) || !hexWordRe.MatchString(e.Name()) {
-				continue
-			}
-			b, err := os.ReadFile(filepath.Join(dir, e.Name()))
-			if err != nil {
-				return false, fmt.Errorf("could not read pre-ready record: %v", err)
-			}
-			var rec struct{ Head, Line string }
-			if err := json.Unmarshal(b, &rec); err != nil {
-				return false, fmt.Errorf("could not read pre-ready record %s: %v", filepath.Join(dir, e.Name()), err)
-			}
-			if rec.Head == e.Name() && strings.HasPrefix(rec.Line, "pre-ready PASS") {
-				return true, nil
-			}
+		if only[w] {
+			return w, true, nil
 		}
-	}
-	for _, skip := range g.PrereadySkipRepos {
-		in, err := commits(skip, words)
+		if full[w] == "" {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(expand(g.PrereadyDir), full[w]))
+		if errors.Is(err, fs.ErrNotExist) {
+			return w, false, nil
+		}
 		if err != nil {
-			return false, err
+			return w, false, fmt.Errorf("could not read pre-ready record: %v", err)
 		}
-		left := slices.DeleteFunc(slices.Clone(words), func(w string) bool { return !in[w] })
-		for _, repo := range g.ShaRepos {
-			if len(left) == 0 || slices.Contains(g.PrereadySkipRepos, repo) {
-				continue
-			}
-			other, err := commits(repo, left)
-			if err != nil {
-				return false, err
-			}
-			left = slices.DeleteFunc(left, func(w string) bool { return other[w] })
+		var rec struct{ Head, Line string }
+		if err := json.Unmarshal(b, &rec); err != nil {
+			return w, false, fmt.Errorf("could not read pre-ready record %s: %v", filepath.Join(g.PrereadyDir, full[w]), err)
 		}
-		if len(left) > 0 {
-			return true, nil
-		}
+		return w, rec.Head == full[w] && strings.HasPrefix(rec.Line, "pre-ready PASS"), nil
 	}
-	return false, nil
+	return "", false, nil
 }
 
 // openRuns reads the bus from f: each sender whose newest START at or after now-window has no later DONE or

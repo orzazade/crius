@@ -124,13 +124,18 @@ func run(args []string, now time.Time, stderr io.Writer) int {
 			g = all[project]
 		}
 		if g.PrereadyDir != "" {
-			ok, err := readyProven(text, g)
+			sha, ok, err := readyProven(text, g)
 			if err != nil {
 				return refuse(stderr, "%v", err)
 			}
-			if !ok {
-				fmt.Fprintf(stderr, "bus-post: refused: a READY names the sha pre-ready passed: no pre-ready PASS record "+
-					"in %s for a sha it names (run pre-ready on it first)\n", g.PrereadyDir)
+			switch {
+			case sha == "":
+				fmt.Fprintf(stderr, "bus-post: refused: a READY names the sha pre-ready passed, first: this one names no "+
+					"commit (8-40 lower-case hex with a letter a-f: a short sha of digits only needs more characters)\n")
+				return rcNoRecord
+			case !ok:
+				fmt.Fprintf(stderr, "bus-post: refused: %s, the first commit this READY names, has no pre-ready PASS record "+
+					"in %s (run pre-ready on it first; name the sha it announces first)\n", sha, g.PrereadyDir)
 				return rcNoRecord
 			}
 		}
