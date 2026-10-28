@@ -1509,3 +1509,166 @@ func TestQuotaGuardSplitRoleUsesTheRoomTestAndALaterPauseTellsCrius(t *testing.T
 		t.Fatalf("p2 also runs on max2, room: want no PAUSE and p2 named, got %q and %q", p, n)
 	}
 }
+
+// Live 10-29 00:06: max1's week reset at 00:00; its sessions had stopped before that (quotes ran on max2 and max3), so
+// no line could sample its new week, and the report called max1 stale and the quotes guard blind. An account with no
+// request since its reset has no open session: nothing to sample. A request after the reset needs a sample again.
+func TestQuotaAnAccountWithNoRequestSinceItsResetIsNotStale(t *testing.T) {
+	x := quotaCase(t)
+	d1, d2 := filepath.Join(x.home, "cfg1"), filepath.Join(x.home, "cfg2")
+	l1, l2 := x.signIn(d1, "u-1"), x.signIn(d2, "u-2")
+	testutil.Write(t, filepath.Join(x.home, "accounts.toml"), "[[account]]\nname = \"max1\"\nplan = \"max\"\ndirs = [\""+
+		d1+"\"]\n[[account]]\nname = \"max2\"\nplan = \"max\"\ndirs = [\""+d2+"\"]\n")
+	reset1, r2 := qNow.Add(-6*time.Minute), qNow.Add(2*24*time.Hour)
+	s1, s2 := "aaaaaaaa-0000-0000-0000-000000000001", "aaaaaaaa-0000-0000-0000-000000000002"
+	on := func(l quota.Line, login, dir string) quota.Line {
+		l.Login, l.Dir, l.Persona = login, dir, "work"
+		return l
+	}
+	x.session("work", s1, "/work/quotes", "", qNow.Add(-30*time.Minute))
+	x.session("work", s2, "/work/quotes", "", qNow.Add(-3*time.Minute))
+	x.spool(on(sampleAt(s1, qNow.Add(-30*time.Minute), 99, reset1), l1, d1),
+		on(sampleAt(s2, qNow.Add(-5*time.Minute), 13, r2), l2, d2))
+	x.run()
+	if rep := x.report(); len(rep.Stale) != 0 {
+		t.Fatalf("max1 has no request since its reset: want no stale entry, got %q", rep.Stale)
+	}
+	// max1's session works again after the reset, and no line sampled the new week: stale.
+	x.session("work", s1, "/work/quotes", "", qNow.Add(-30*time.Minute), qNow.Add(-2*time.Minute))
+	x.run()
+	if rep := x.report(); len(rep.Stale) != 1 || !strings.Contains(rep.Stale[0], "max1") {
+		t.Fatalf("max1 worked after its reset with no sample: want one stale entry naming max1, got %q", rep.Stale)
+	}
+}
+
+// Crius 10-29 00:06: a project's guard reads the accounts the project uses. A stale account that only another
+// project's sessions run on stays an ALERT; it does not make the quotes guard blind.
+func TestQuotaGuardIsBlindOnlyForAccountsItsProjectUses(t *testing.T) {
+	clock = func() time.Time { return qNow }
+	t.Cleanup(func() { clock = time.Now })
+	x := newIC(t, cfg{extra: axiProject + guardedProject})
+	d1, d2 := filepath.Join(x.home, "cfg1"), filepath.Join(x.home, "cfg2")
+	l1, l2 := x.signIn(d1, "u-1"), x.signIn(d2, "u-2")
+	testutil.Write(t, filepath.Join(x.home, "accounts.toml"), "[[account]]\nname = \"max1\"\nplan = \"max\"\ndirs = [\""+
+		d1+"\"]\n[[account]]\nname = \"max2\"\nplan = \"max\"\ndirs = [\""+d2+"\"]\n")
+	r := qNow.Add(2 * 24 * time.Hour)
+	axi, quotes := "aaaaaaaa-0000-0000-0000-000000000001", "aaaaaaaa-0000-0000-0000-000000000002"
+	on := func(l quota.Line, login, dir string) quota.Line {
+		l.Login, l.Dir, l.Persona = login, dir, "work"
+		return l
+	}
+	x.session("work", axi, "/work/axi", "", qNow.Add(-80*time.Minute), qNow.Add(-2*time.Minute))
+	x.session("work", quotes, "/work/quotes", "", qNow.Add(-3*time.Minute))
+	x.spool(on(sampleAt(axi, qNow.Add(-80*time.Minute), 20, r), l1, d1),
+		on(sampleAt(quotes, qNow.Add(-5*time.Minute), 13, r), l2, d2))
+	x.run()
+	if rep := x.report(); len(rep.Stale) != 1 || !strings.Contains(rep.Stale[0], "max1") {
+		t.Fatalf("want max1 stale (axi works on it), got %q", rep.Stale)
+	}
+	if n := grepAlerts(x.alerts(), " NEED "); len(n) != 0 {
+		t.Fatalf("quotes runs on max2 only: want no blind NEED, got %q", n)
+	}
+	// A quotes session on max1 makes the quotes guard blind.
+	q1 := "aaaaaaaa-0000-0000-0000-000000000003"
+	x.session("work", q1, "/work/quotes", "", qNow.Add(-4*time.Minute))
+	x.spool(on(sampleAt(q1, qNow.Add(-70*time.Minute), 20, r), l1, d1))
+	x.run()
+	if n := grepAlerts(x.alerts(), " NEED crius:ingest -> crius:lead — quota guard for quotes is blind"); len(n) != 1 || !strings.Contains(n[0], "max1") {
+		t.Fatalf("want one blind NEED for quotes naming max1, got %q", x.alerts())
+	}
+}
+
+// Owner 10-28 23:5x: when a running session's Max account reaches 95% of its week, Crius hears once, with the session
+// and the account to move it to by the rule (soonest reset under 95%); Crius parks and moves it. An account at 95%
+// with no session open on it is no news.
+func TestQuotaAccountAtTheLimitTellsCriusOnce(t *testing.T) {
+	x := quotaCase(t)
+	d1, d2, d3 := filepath.Join(x.home, "cfg1"), filepath.Join(x.home, "cfg2"), filepath.Join(x.home, "cfg3")
+	l1, l2, l3 := x.signIn(d1, "u-1"), x.signIn(d2, "u-2"), x.signIn(d3, "u-3")
+	for _, d := range []string{d1, d2, d3} {
+		if err := os.Symlink(x.work, filepath.Join(d, "projects")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	testutil.Write(t, filepath.Join(x.home, "accounts.toml"), "[[account]]\nname = \"max1\"\nplan = \"max\"\ndirs = [\""+
+		d1+"\"]\n[[account]]\nname = \"max2\"\nplan = \"max\"\ndirs = [\""+d2+"\"]\n[[account]]\nname = \"max3\"\nplan = \"max\"\ndirs = [\""+d3+"\"]\n")
+	r1, r2, r3 := qNow.Add(24*time.Hour), qNow.Add(4*24*time.Hour), qNow.Add(3*24*time.Hour)
+	s1, s2 := "aaaaaaaa-0000-0000-0000-000000000001", "bbbbbbbb-0000-0000-0000-000000000002"
+	on := func(l quota.Line, login, dir string) quota.Line {
+		l.Login, l.Dir, l.Persona = login, dir, "work"
+		return l
+	}
+	x.session("work", s1, "/work/axi", "[crius account=max project=axi role=qa1]", qNow.Add(-3*time.Minute))
+	x.session("work", s2, "/work/axi", "[crius account=max project=axi role=lead]", qNow.Add(-4*time.Minute))
+	x.spool(on(sampleAt(s1, qNow.Add(-2*time.Minute), 94, r1), l1, d1),
+		on(sampleAt(s2, qNow.Add(-2*time.Minute), 13, r2), l2, d2),
+		on(sampleAt(s2, qNow.Add(-90*time.Minute), 46, r3), l3, d3))
+	x.run()
+	if n := grepAlerts(x.alerts(), " NEED "); len(n) != 0 {
+		t.Fatalf("max1 at 94%%: want no NEED, got %q", n)
+	}
+	// Review of item 0: a session with no project (141 live, from before projects were filed) must not stop the check.
+	x.q("insert into session (id, persona) values ('cccccccc-0000-0000-0000-000000000003', 'work')")
+	x.q("insert into account_seen (source_key, session, persona, ts, rl, login) values ('k-null', 'cccccccc-0000-0000-0000-000000000003', 'work', ?, 1, ?)",
+		iso(qNow.Add(-time.Minute)), l1)
+	x.spool(on(sampleAt(s1, qNow.Add(-time.Minute), 96, r1), l1, d1))
+	x.run()
+	x.run()
+	need := grepAlerts(x.alerts(), " NEED crius:ingest -> crius:lead — ")
+	if len(need) != 1 {
+		t.Fatalf("want one NEED for max1 at 96%%, got %q", x.alerts())
+	}
+	for _, w := range []string{"max1 at 96%", "95%", "axi:qa1 aaaaaaaa", "max3"} {
+		if !strings.Contains(need[0], w) {
+			t.Errorf("NEED %q lacks %q", need[0], w)
+		}
+	}
+	if strings.Contains(need[0], "axi:lead") {
+		t.Errorf("NEED %q names axi:lead, which runs on max2", need[0])
+	}
+	// A session that starts on max1 later is news once more.
+	s4 := "dddddddd-0000-0000-0000-000000000004"
+	x.session("work", s4, "/work/axi", "[crius account=max project=axi role=p1]", qNow.Add(-time.Minute))
+	x.spool(on(sampleAt(s4, qNow.Add(-time.Minute), 96, r1), l1, d1))
+	x.run()
+	if need := grepAlerts(x.alerts(), " NEED crius:ingest -> crius:lead — "); len(need) != 2 || !strings.Contains(need[1], "axi:p1 dddddddd") {
+		t.Fatalf("want a second NEED naming axi:p1, got %q", need)
+	}
+	// max2 at 97% with its session gone 50 min ago: no session on it, no NEED.
+	y := quotaCase(t)
+	e2 := filepath.Join(y.home, "cfg2")
+	m2 := y.signIn(e2, "u-2")
+	testutil.Write(t, filepath.Join(y.home, "accounts.toml"), "[[account]]\nname = \"max2\"\nplan = \"max\"\ndirs = [\""+e2+"\"]\n")
+	y.session("work", s2, "/work/axi", "", qNow.Add(-50*time.Minute))
+	y.spool(on(sampleAt(s2, qNow.Add(-50*time.Minute), 97, r2), m2, e2))
+	y.run()
+	if n := grepAlerts(y.alerts(), " NEED "); len(n) != 0 {
+		t.Fatalf("no session on max2: want no NEED, got %q", n)
+	}
+}
+
+// Review of item 0: a stale account whose open session has no known project may be the guarded project's: blind.
+func TestQuotaGuardIsBlindForAStaleAccountOfAnUnknownProject(t *testing.T) {
+	clock = func() time.Time { return qNow }
+	t.Cleanup(func() { clock = time.Now })
+	x := newIC(t, cfg{extra: axiProject + guardedProject})
+	d1, d2 := filepath.Join(x.home, "cfg1"), filepath.Join(x.home, "cfg2")
+	l1, l2 := x.signIn(d1, "u-1"), x.signIn(d2, "u-2")
+	testutil.Write(t, filepath.Join(x.home, "accounts.toml"), "[[account]]\nname = \"max1\"\nplan = \"max\"\ndirs = [\""+
+		d1+"\"]\n[[account]]\nname = \"max2\"\nplan = \"max\"\ndirs = [\""+d2+"\"]\n")
+	sid, axi := "aaaaaaaa-0000-0000-0000-000000000001", "aaaaaaaa-0000-0000-0000-000000000002"
+	x.session("work", axi, "/work/axi", "", qNow.Add(-3*time.Minute))
+	la := sampleAt(axi, qNow.Add(-5*time.Minute), 13, qNow.Add(2*24*time.Hour))
+	la.Login, la.Dir, la.Persona = l2, d2, "work"
+	x.session("work", sid, "/work/nowhere", "", qNow.Add(-80*time.Minute), qNow.Add(-2*time.Minute))
+	l := sampleAt(sid, qNow.Add(-80*time.Minute), 20, qNow.Add(2*24*time.Hour))
+	l.Login, l.Dir, l.Persona = l1, d1, "work"
+	x.spool(l, la)
+	x.run()
+	if n := grepAlerts(x.alerts(), " NEED crius:ingest -> crius:lead — quota guard for quotes is blind"); len(n) != 1 {
+		t.Fatalf("want one blind NEED for quotes, got %q", x.alerts())
+	}
+	if rep := x.report(); len(rep.Stale) != 1 || !strings.Contains(rep.Stale[0], "max1") {
+		t.Fatalf("want the stale entry to name max1, got %q", rep.Stale)
+	}
+}

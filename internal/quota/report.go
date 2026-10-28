@@ -30,12 +30,15 @@ type Violation struct {
 }
 
 type Report struct {
-	Now        time.Time
-	Status     string   // complete or partial (design §4)
-	Reasons    []string // why partial: no sample, stale personas, epoch ended, unknown account, unpriced
-	Stale      []string // personas with open sessions and no statusline line within Gap, with their last line
-	LastSample time.Time
-	LastKind   string
+	Now     time.Time
+	Status  string   // complete or partial (design §4)
+	Reasons []string // why partial: no sample, stale personas, epoch ended, unknown account, unpriced
+	Stale   []string // personas with open sessions and no statusline line within Gap, with their last line
+	// StaleProjects: the projects whose open sessions run on the login a Stale entry names; none for a persona entry,
+	// which covers every project of the persona. A project's guard is blind only for its own accounts (Crius 10-29).
+	StaleProjects map[string][]string
+	LastSample    time.Time
+	LastKind      string
 	// SevenAt and FiveAt: the newest measurement showing SevenPct and FivePct. A share only rises within its window,
 	// so a lower reading is an older one; a measurement is a line that came with a response (one from before that
 	// mark: not a heartbeat, which repeats a session's last values).
@@ -598,8 +601,9 @@ func Build(db Querier, p Projects, now time.Time) (*Report, error) {
 		return nil, err
 	}
 	shares, entWeek, entDay := map[string]float64{}, map[string]float64{}, map[string]float64{}
-	newestOpen := map[string]time.Time{} // per persona: newest request of a session the sampler should cover
-	newestMax := map[string]time.Time{}  // per login ("" when its line names none): newest Max request
+	newestOpen := map[string]time.Time{}       // per persona: newest request of a session the sampler should cover
+	newestMax := map[string]time.Time{}        // per login ("" when its line names none): newest Max request
+	maxBy := map[string]map[string]time.Time{} // per login, per project: newest Max request
 	unknown := map[string]bool{}
 	for rows.Next() {
 		var sid, ts string
@@ -652,8 +656,16 @@ func Build(db Querier, p Projects, now time.Time) (*Report, error) {
 		if account != "enterprise" && t.After(newestOpen[s.persona]) {
 			newestOpen[s.persona] = t
 		}
-		if l := s.login(t); account == "max" && t.After(newestMax[l]) {
-			newestMax[l] = t
+		if l := s.login(t); account == "max" {
+			if t.After(newestMax[l]) {
+				newestMax[l] = t
+			}
+			if maxBy[l] == nil {
+				maxBy[l] = map[string]time.Time{}
+			}
+			if t.After(maxBy[l][project]) {
+				maxBy[l][project] = t
+			}
 		}
 	}
 	rows.Close()
@@ -676,11 +688,21 @@ func Build(db Querier, p Projects, now time.Time) (*Report, error) {
 	sort.Strings(rep.Stale)
 	// Lines can keep coming while none measures the current epoch (an idle session repeating an old window), so
 	// open Max sessions also need a current-epoch sample: of their own login's window, as each login has its own
-	// (live 10-23: max1's later reset hid max2's samples). A session whose line names no login takes any sample.
+	// (live 10-23: max1's later reset hid max2's samples). A session whose line names no login takes any sample. A
+	// login whose newest request came before its week began has no session open in that week: nothing to sample
+	// (live 10-29 00:06: max1 reset at 00:00 after its sessions had moved to max2 and max3).
+	began := map[string]time.Time{}
+	for _, a := range rep.Accounts {
+		if !a.Ended.IsZero() {
+			began[a.Login] = a.Ended
+		} else if !a.Reset.IsZero() {
+			began[a.Login] = a.Reset.Add(-week)
+		}
+	}
 	if len(rep.Stale) == 0 {
 		var logins []string
 		for l, t := range newestMax {
-			if now.Sub(t) <= Gap {
+			if now.Sub(t) <= Gap && !t.Before(began[l]) {
 				logins = append(logins, l)
 			}
 		}
@@ -708,6 +730,17 @@ func Build(db Querier, p Projects, now time.Time) (*Report, error) {
 				at = when(last)
 			}
 			rep.Stale = append(rep.Stale, name+": newest current-epoch sample "+at)
+			var projects []string
+			for project, t := range maxBy[l] {
+				if now.Sub(t) <= Gap && !t.Before(began[l]) {
+					projects = append(projects, project)
+				}
+			}
+			sort.Strings(projects)
+			if rep.StaleProjects == nil {
+				rep.StaleProjects = map[string][]string{}
+			}
+			rep.StaleProjects[rep.Stale[len(rep.Stale)-1]] = projects
 		}
 	}
 	if rep.LastSample.IsZero() {

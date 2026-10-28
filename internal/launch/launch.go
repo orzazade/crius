@@ -62,7 +62,7 @@ type Deps struct {
 	Wait    time.Duration                                                  // between two reads of the new tab
 	Front   func(tty string) (string, error)                               // the command in front on a tty, as ps shows it
 	Typed   func(surface string) (bool, error)                             // whether a tab's box holds typed text, not grey text (cmux input state)
-	// Pick is the Max account a session starts on, "max" for the one with the most room or a row's name, and its
+	// Pick is the Max account a session starts on, "max" for the one whose week resets soonest or a row's name, and its
 	// config folder (quota.Pick); no name launches as before, through aitch's own route. Nil: no accounts.
 	Pick func(project, want string) (name, dir string, err error)
 }
@@ -104,7 +104,7 @@ func Run(s Spawn, d Deps) (ws, surface, tag string, err error) {
 	if s.Account != "" {
 		account = s.Account
 	} else if s.Move != nil {
-		account = "max" // a move goes to the Max account with the most room, whatever the project starts on
+		account = "max" // a move goes to the Max account picked by reset, whatever the project starts on
 	}
 	var acct, dir string
 	switch {

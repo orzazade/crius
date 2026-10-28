@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -133,6 +135,9 @@ func (r *runner) quotaChecks(tx *sql.Tx) error {
 	if err := r.pauseChecks(tx, rep, p.Accounts); err != nil {
 		return err
 	}
+	if err := r.limitChecks(tx, rep, p.Accounts); err != nil {
+		return err
+	}
 	if rep.Reset.IsZero() || !rep.Reset.After(rep.Now) {
 		return nil
 	}
@@ -209,6 +214,9 @@ func (r *runner) pauseChecks(tx *sql.Tx, rep *quota.Report, as *quota.Accounts) 
 			continue
 		}
 		for _, st := range rep.Stale {
+			if projects, ok := rep.StaleProjects[st]; ok && !slices.Contains(projects, p.slug) && !slices.Contains(projects, "unknown") {
+				continue // an account only other known projects run on (Crius 10-29); a session of no known project may be p's
+			}
 			if err := r.queueLine(tx, "quota:blind:"+p.slug+":"+st, "NEED", "crius", "crius:lead", fmt.Sprintf(
 				"quota guard for %s is blind: the Max 7d share is stale (%s), so it cannot tell whether %s reached its "+
 					"%d%% pause; check the statusline sampler", p.slug, st, p.slug, p.pauseAt)); err != nil {
@@ -377,6 +385,108 @@ func (r *runner) pauseAccounts(tx *sql.Tx, rep *quota.Report, as *quota.Accounts
 	return r.queueLine(tx, key+":crius", "NEED", "crius", "crius:lead", fmt.Sprintf(
 		"quota guard: every Max account reached %s's pause at %d%% (%s); PAUSE posted to %s:all. Park %s in "+
 			"~/.crius/parked and stop its tabs", p.slug, p.pauseAt, strings.Join(shares, ", "), p.slug, p.slug))
+}
+
+// limitChecks tells Crius when a Max account its sessions run on reaches quota.Limit of its week (owner 10-28 23:5x):
+// one NEED per account and window, and one more when a later run finds a session on it not named before; each names
+// the sessions open on it (as tabsByLogin counts them) and the account each project moves to by the rule (quota.Pick).
+// Crius parks each with a RESUME note and moves it; nothing is stopped here. An account at the limit with no session
+// open on it is no news. A login no row lists is checked too: its sessions spend a Max week all the same.
+func (r *runner) limitChecks(tx *sql.Tx, rep *quota.Report, as *quota.Accounts) error {
+	open, err := sessionsByLogin(tx, rep.Now)
+	if err != nil {
+		return err
+	}
+	for _, a := range rep.Accounts {
+		if row := as.Of(a.Login); row != nil && row.Plan != "max" || len(open[a.Login]) == 0 || a.Reset.IsZero() ||
+			!a.Reset.After(rep.Now) || a.SevenPct < quota.Limit {
+			continue
+		}
+		key, err := window(tx, "quota:limit:"+a.Login+":", a.Reset)
+		if err != nil {
+			return err
+		}
+		var names, news []string // news: full ids, as two sessions may share 8 characters
+		next := map[string]string{}
+		for _, s := range open[a.Login] {
+			name := s.project + ":" + s.role + " " + s.id[:min(8, len(s.id))]
+			names = append(names, name)
+			res, err := tx.Exec("insert or ignore into alert (key, ts, text, sent) values (?,?,?,?)", key+":"+s.id,
+				utcNow(), "named in "+key, utcNow())
+			if err != nil {
+				return err
+			}
+			if n, err := res.RowsAffected(); err != nil {
+				return err
+			} else if n > 0 {
+				news = append(news, s.id)
+			}
+			if _, ok := next[s.project]; ok {
+				continue
+			}
+			to := "none (no Max account of its persona has room)"
+			root, pauseAt, err := ForSpawn(r.home, s.project)
+			if err == nil {
+				var name string
+				if name, _, _, err = quota.Pick(rep, as, root, "max", pauseAt); err == nil && name != "" {
+					to = name
+				}
+			}
+			if err != nil {
+				to = "none (" + err.Error() + ")"
+			}
+			next[s.project] = to
+		}
+		if news == nil {
+			continue
+		}
+		var moves []string
+		for _, project := range slices.Sorted(maps.Keys(next)) {
+			moves = append(moves, project+" to "+next[project])
+		}
+		at := "not measured"
+		if !a.SevenAt.IsZero() {
+			at = a.SevenAt.Local().Format("15:04")
+		}
+		if err := r.queueLine(tx, key+":need:"+strings.Join(news, ","), "NEED", "crius", "crius:lead", fmt.Sprintf(
+			"quota: account %s at %g%% of its 7d (%s, resets %s) reached the %d%% limit; on it: %s. Next by the rule: "+
+				"%s. Park each with a RESUME note and move it (crius-spawn -move)", a.Name, a.SevenPct, at,
+			a.Reset.Local().Format("Mon 15:04"), quota.Limit, strings.Join(names, ", "), strings.Join(moves, ", "))); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// openSession is a session open on a login: its project, role ("unknown" for none) and id.
+type openSession struct{ project, role, id string }
+
+// sessionsByLogin is every project's open sessions by the login they run on, as tabsByLogin reads them: a session's
+// login is that of its newest statusline line, and it is open while that line is within quota.Gap.
+func sessionsByLogin(tx *sql.Tx, now time.Time) (map[string][]openSession, error) {
+	rows, err := tx.Query(`select coalesce(s.project, 'unknown'), s.role, s.id, a.login, a.ts from session s join account_seen a on a.rowid = (
+		select rowid from account_seen where session = s.id order by ts desc, rowid desc limit 1)
+		where a.login is not null and a.login != '' order by s.project, s.role, s.id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]openSession{}
+	for rows.Next() {
+		var s openSession
+		var login, ts string
+		if err := rows.Scan(&s.project, &s.role, &s.id, &login, &ts); err != nil {
+			return nil, err
+		}
+		at, err := time.Parse(time.RFC3339, ts)
+		if err != nil {
+			return nil, fmt.Errorf("account_seen ts %q: %w", ts, err)
+		}
+		if now.Sub(at) <= quota.Gap {
+			out[login] = append(out[login], s)
+		}
+	}
+	return out, rows.Err()
 }
 
 // tabsByLogin is the roles of the project's open tabs by the login they run on: a tab's login is that of its newest

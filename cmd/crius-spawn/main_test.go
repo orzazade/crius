@@ -102,13 +102,13 @@ func TestPickReadsTheAccountsTheStoreAndTheProject(t *testing.T) {
 	testutil.Write(t, filepath.Join(home, "projects.toml"), "[transcripts]\nwork = \""+transcripts+
 		"\"\n[projects.quotes]\npersona = \"work\"\naccounts = [\"max\"]\npause_at = 90\n")
 	testutil.Write(t, filepath.Join(home, "accounts.toml"), "[[account]]\nname = \"max2\"\nplan = \"max\"\ndirs = [\""+m2+"\"]\n")
-	if name, dir, err := pick(home, "quotes", "max"); err != nil || name != "max2" || dir != m2 {
-		t.Errorf("max: %q %q %v, want max2 in %s", name, dir, err, m2)
+	if name, dir, why, err := pick(home, "quotes", "max"); err != nil || name != "max2" || dir != m2 || !strings.Contains(why, "max2: quota not measured") {
+		t.Errorf("max: %q %q %q %v, want max2 in %s, not measured", name, dir, why, err, m2)
 	}
-	if _, _, err := pick(home, "quotes", "max9"); err == nil || !strings.Contains(err.Error(), "no Max account max9") {
+	if _, _, _, err := pick(home, "quotes", "max9"); err == nil || !strings.Contains(err.Error(), "no Max account max9") {
 		t.Errorf("max9: %v, want no such account", err)
 	}
-	if _, _, err := pick(home, "gone", "max"); err == nil || !strings.Contains(err.Error(), "no project gone") {
+	if _, _, _, err := pick(home, "gone", "max"); err == nil || !strings.Contains(err.Error(), "no project gone") {
 		t.Errorf("gone: %v, want no such project", err)
 	}
 }
