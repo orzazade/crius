@@ -79,10 +79,13 @@ var (
 type Screen struct{ Surface, ID, Title, Text, Err string }
 
 type Deps struct {
-	Home       string
-	Now        time.Time
-	Screens    func() ([]Screen, error)
-	Send       func(text string) error
+	Home    string
+	Now     time.Time
+	Screens func() ([]Screen, error)
+	Send    func(text string) error
+	// HandedOver says a Send error still hands the text to the outbox: stored to be typed later, or set aside after
+	// it may have gone. nil: no error does.
+	HandedOver func(err error) bool
 	Resources  func() (freeDiskGB, swapUsedGB float64, err error)
 	Load       func() (float64, error) // the 1-minute load average
 	Tools      func() map[string]error // each tool the team needs, and why it failed or did not answer (nil: fine)
@@ -111,7 +114,10 @@ type seenScreen struct {
 }
 
 type state struct {
-	Alerted     map[string]time.Time // key -> when last typed, or posted on crius.log when typing failed
+	Alerted map[string]time.Time // key -> when last typed, or posted on crius.log when typing failed
+	// Typed: bus lines typed into Crius's tab, by key, and when; never typed again (Crius 10-29: an open DONE was typed
+	// every 20 min). Kept past the window a line can wake in, so a line that drops out for a run stays typed.
+	Typed       map[string]time.Time
 	Screens     map[string]seenScreen
 	SendFailing bool
 	Views       map[string][2]string // check -> what the screen and crius-hook's state said on the last run
@@ -147,6 +153,14 @@ func Run(d Deps) error {
 	}
 	if st.Screens == nil {
 		st.Screens = map[string]seenScreen{}
+	}
+	if st.Typed == nil {
+		st.Typed = map[string]time.Time{}
+	}
+	for k, at := range st.Typed {
+		if d.Now.Sub(at) > window+resend {
+			delete(st.Typed, k)
+		}
 	}
 
 	watch, alerts := watched(d.Home)
@@ -185,6 +199,9 @@ func Run(d Deps) error {
 	tried := false
 	for _, a := range alerts {
 		active[a[0]] = true
+		if _, ok := st.Typed[a[0]]; ok {
+			continue
+		}
 		// The disk alarm is raised only when due (resources): the 20 min resend would hold back a 2 GB drop.
 		if last, ok := st.Alerted[a[0]]; ok && d.Now.Sub(last) < resend && a[0] != "disk" {
 			continue
@@ -200,6 +217,9 @@ func Run(d Deps) error {
 		}
 		if err != nil {
 			sendErr = err
+		}
+		if strings.HasPrefix(a[0], "bus:") && (err == nil || d.HandedOver != nil && d.HandedOver(err)) {
+			st.Typed[a[0]] = d.Now
 		}
 		// Crius's waiter wakes on a bus line: a wake that cannot be typed goes there, so none is lost (S2, 10-22).
 		if err != nil {

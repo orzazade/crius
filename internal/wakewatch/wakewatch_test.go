@@ -1845,3 +1845,58 @@ func TestTheDiskAlarmWakesOnCrossingThenOnA2GBDropOrAfter2h(t *testing.T) {
 		}
 	}
 }
+
+// Crius 10-29 00:39: the same quotes.log 23:54 DONE was typed into Crius's tab 3 times, the last after a cmux restart:
+// an open bus line was typed again every 20 min until crius:lead answered on that same log. A bus line typed once is
+// never typed again, across runs (a restart is a new run on the same state file), and also when it drops out for a run
+// (its key went with it) and comes back.
+func TestABusLineTypedOnceIsNeverTypedAgain(t *testing.T) {
+	home := setup(t, map[string]string{"quotes.log": done(t0)})
+	f := &fake{}
+	for _, m := range []time.Duration{21, 41, 61, 120} {
+		if err := Run(f.deps(home, t0.Add(m*time.Minute))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(f.sent) != 1 {
+		t.Fatalf("typed %d times, want once: %q", len(f.sent), f.sent)
+	}
+	testutil.Write(t, filepath.Join(home, "bus", "quotes.log"), "")
+	if err := Run(f.deps(home, t0.Add(130*time.Minute))); err != nil {
+		t.Fatal(err)
+	}
+	testutil.Write(t, filepath.Join(home, "bus", "quotes.log"), done(t0))
+	if err := Run(f.deps(home, t0.Add(150*time.Minute))); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.sent) != 1 {
+		t.Fatalf("typed again after it dropped out for a run: %q", f.sent)
+	}
+	// A new line is typed.
+	testutil.Write(t, filepath.Join(home, "bus", "quotes.log"), done(t0)+done(t0.Add(2*time.Hour)))
+	if err := Run(f.deps(home, t0.Add(150*time.Minute))); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.sent) != 2 {
+		t.Fatalf("a new line: %q", f.sent)
+	}
+}
+
+// Review of the above: a send the outbox holds (or set aside after its Enter may have gone) hands the line over; the
+// outbox types it, so the 20 min resend must not.
+func TestABusLineTheOutboxHoldsIsNotTypedAgain(t *testing.T) {
+	home := setup(t, map[string]string{"quotes.log": done(t0)})
+	held := errors.New("held")
+	f := &fake{sendErr: fmt.Errorf("box not empty: %w", held)}
+	for _, m := range []time.Duration{21, 41, 61} {
+		d := f.deps(home, t0.Add(m*time.Minute))
+		d.HandedOver = func(err error) bool { return errors.Is(err, held) }
+		if err := Run(d); err != nil && !errors.Is(err, held) {
+			t.Fatal(err)
+		}
+		f.sendErr = nil
+	}
+	if len(f.tried) != 1 {
+		t.Fatalf("given to Send %d times, want once: %q", len(f.tried), f.tried)
+	}
+}

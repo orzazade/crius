@@ -48,7 +48,7 @@ func main() {
 	if err := flushOutbox(store.Home(), time.Now()); err != nil {
 		fmt.Fprintln(os.Stderr, time.Now().Format(time.RFC3339), "crius-wakewatch: outbox:", err)
 	}
-	err := wakewatch.Run(wakewatch.Deps{Home: store.Home(), Now: time.Now(), Screens: screens, Send: send,
+	err := wakewatch.Run(wakewatch.Deps{Home: store.Home(), Now: time.Now(), Screens: screens, Send: send, HandedOver: handedOver,
 		Workspaces: workspaces, Resources: resources, Load: loadAvg, Tools: tools, Sessions: func() ([]wakewatch.Session, error) {
 			home, err := os.UserHomeDir()
 			if err != nil {
@@ -169,6 +169,11 @@ func launchd(label string) (bool, error) {
 // titled "crius" (a file naming it went stale when Crius handed over to a new tab). Text held by a draft in Crius's
 // box stays stored, and the next run types it first.
 func send(text string) error { return outbox.Send(store.Home(), wakewatch.CriusTitle, text) }
+
+// handedOver: outbox.Send kept the text (typed by a later run) or set it aside after it may have gone.
+func handedOver(err error) bool {
+	return errors.Is(err, outbox.ErrHeld) || errors.Is(err, outbox.ErrOnto) || errors.Is(err, outbox.ErrMaybeSent)
+}
 
 // resources gives the free disk of the volume holding the home folder and the swap in use, both in GB.
 func resources() (float64, float64, error) {
