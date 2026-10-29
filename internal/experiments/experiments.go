@@ -315,13 +315,14 @@ var rearm = []string{"Monitor", "TaskStop", "ToolSearch"}
 
 // waiterRe is a command that waits on the bus, as the Quotes transcripts of 10-26 to 10-29 show them: team-wait.sh,
 // a bus*wait*.sh script (P2's scratchpad bus-wait.sh, review of 3165f6b), a bus-*.ts wait script, or a read of
-// ~/.crius/bus (tail, grep). A wait-line.sh on a build log is no bus wait.
-var waiterRe = regexp.MustCompile(`\b(?:team|bus)[\w-]*wait[\w-]*\.sh\b|\bbus[\w-]*\.ts\s+wait\b|\.crius/bus/`)
+// ~/.crius/bus (tail, grep). qa1's bus-qa1.sh wait of 10-23 and 10-24 too (review of f50ada2). A wait-line.sh on a
+// build log is no bus wait.
+var waiterRe = regexp.MustCompile(`\b(?:team|bus)[\w-]*wait[\w-]*\.sh\b|\bbus[\w-]*\.(?:ts|sh)\s+wait\b|\.crius/bus/`)
 
 // actRe is a step that acts, before or after a wait in one command: a post (bus-post, say.sh, status-add.sh), a git
 // write or fetch, a file written from a heredoc (review of 7dfa396: 7 of about 8000 real waits in the Quotes
 // transcripts of 10-29).
-var actRe = regexp.MustCompile(`bus-post|\bsay\.sh|\bstatus-add\.sh|\bgit\s+(?:commit|push|merge|fetch|rebase|checkout|reset)\b|<<`)
+var actRe = regexp.MustCompile(`bus-post|\bsay\.sh|\bstatus-add\.sh|\bgit\s+(?:-C\s+\S+\s+)?(?:commit|push|merge|fetch|rebase|checkout|reset)\b|<<-?\s*['"]?[A-Za-z_]`)
 
 // waiter tells a background command that waits on the bus from one that acts.
 func waiter(cmd string) bool {
