@@ -740,6 +740,8 @@ func TestAZshSplitIsReadAsBash(t *testing.T) {
 		`setopt GLOB_SUBST; x='*(e:"echo pwn >> ~/.crius/bus/crius.log":)'; print ${=x}`,
 		`emulate sh; x='*(e:"echo pwn >> ~/.crius/bus/crius.log":)'; print ${=x}`,
 		`zsh -o glob_subst -c "x='*(e:\"echo pwn >> ~/.crius/bus/crius.log\":)'; print \${=x}"`,
+		// A shell the command starts may run with any options (third review: zsh started as sh has glob_subst on).
+		`ARGV0=sh zsh -c "setopt BARE_GLOB_QUAL; unsetopt SH_GLOB; x='*(e:\"echo>>~/.crius/bus/crius.log\":)'; print \${=x}"`,
 	} {
 		if why := check(cmd); why != rawWrite {
 			t.Errorf("%q: %q", cmd, why)

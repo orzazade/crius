@@ -107,7 +107,8 @@ type walker struct {
 	named bool // the command names .crius/bus
 	// anyVar: a computed word named the variable a command set (export $(...), read "$N"), so any variable is unknown
 	anyVar bool
-	// globSubst: the command or one around it turns on zsh's glob_subst (setopt, -o, emulate), so ${=x} globs its value
+	// globSubst: zsh's glob_subst may be on, so ${=x} globs its value: the command names it or emulate, or this is a
+	// script a shell runs, which may start with any options (-o, ARGV0=sh: third review of the zsh fast path)
 	globSubst bool
 	why       string
 }
@@ -520,7 +521,7 @@ func (w *walker) script(text string) {
 		w.refuseUnknown()
 	default:
 		w.why = (&walker{cwd: w.cwd, vars: maps.Clone(w.vars), named: w.named || namesBus(text), anyVar: w.anyVar,
-			globSubst: w.globSubst}).check(text)
+			globSubst: true}).check(text)
 	}
 }
 
