@@ -117,20 +117,25 @@ func Verified(db *sql.DB, lead string, g *Goal) (checked []int64, rows, notCount
 	return out, len(seen), notCounted, nil
 }
 
-// withdrawnAfter: a FAIL, CORRECTION, CORRECTED or REOPEN bus line after event id, from the lead's project or Crius, or
-// a revoke in the store, names the milestone. A field correction in the store withdraws nothing (review of 1f2e54d).
+// withdrawnAfter: a FAIL, CORRECTION, CORRECTED or REOPEN line on a bus or team log after event id, from the lead's
+// project or Crius, names the milestone, or a revoke in the store is of its item. A field correction in the store
+// withdraws nothing (review of 1f2e54d).
 func withdrawnAfter(db *sql.DB, project string, id int64, m Milestone) (bool, error) {
-	q, err := db.Query("select text from event where id > ? and (project = ? or (project = 'crius' and actor = 'lead'))"+
-		" and (kind = 'revoked' or source_key like 'bus:%' and kind in ('fail', 'correction', 'corrected', 'reopen'))",
+	q, err := db.Query("select kind, coalesce(item, ''), text from event where id > ? and"+
+		" (project = ? or (project = 'crius' and actor = 'lead')) and (kind = 'revoked' or"+
+		" (source_key like 'bus:%' or source_key like 'team:%') and kind in ('fail', 'correction', 'corrected', 'reopen'))",
 		id, project)
 	if err != nil {
 		return false, err
 	}
 	defer q.Close()
 	for q.Next() {
-		var text string
-		if err := q.Scan(&text); err != nil {
+		var kind, item, text string
+		if err := q.Scan(&kind, &item, &text); err != nil {
 			return false, err
+		}
+		if kind == "revoked" { // its text names the fix and the reason's ids too (review of 19d3040)
+			text = item
 		}
 		if names(text, m) {
 			return true, nil
@@ -139,17 +144,24 @@ func withdrawnAfter(db *sql.DB, project string, id int64, m Milestone) (bool, er
 	return false, q.Err()
 }
 
-// itemIDRe: an item id (F-118, RB-89, G-SUB-503). A role tag (P2, QA1) is none: those are on most lines.
+// itemIDRe: an item id (F-118, RB-89, G-SUB-503). A role tag (P2, QA1) is none: those are on most lines. So is an id
+// with no hyphen (M5, F47): by its shape it is a role tag.
 var itemIDRe = regexp.MustCompile(`^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*-[0-9]+$`)
 
-// names: the text holds an item id or a sha of the milestone's refs, in any case. Its text and role tags do not
-// count, and a milestone with no id or sha in its refs is never named (review of 1f2e54d: "QA1 FAIL RB-98" withdrew
-// a milestone "QA1 signs off").
+// names: the text holds an item id of the milestone line (its text and refs), in any case, or its first sha is a sha
+// of that line. A later sha is another commit ("FAIL F22 2e90ad27 base 441055ff"), and the milestone's words name
+// nothing (review of 1f2e54d: "QA1 FAIL RB-98" withdrew a milestone "QA1 signs off"; review of 19d3040).
 func names(text string, m Milestone) bool {
+	line := m.Text + " " + m.Refs
 	words := tokenRe.FindAllString(strings.ToUpper(text), -1)
-	for _, r := range tokenRe.FindAllString(strings.ToUpper(m.Refs), -1) {
-		if itemIDRe.MatchString(r) && slices.Contains(words, r) || shaIn(r, text) {
+	for _, w := range tokenRe.FindAllString(strings.ToUpper(line), -1) {
+		if itemIDRe.MatchString(w) && slices.Contains(words, w) {
 			return true
+		}
+	}
+	for _, w := range wordRe.FindAllString(text, -1) {
+		if isSha(strings.ToLower(w)) {
+			return shaIn(w, line)
 		}
 	}
 	return false
