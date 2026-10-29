@@ -12,9 +12,12 @@ var (
 	shaRe    = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
 	letterRe = regexp.MustCompile(`[a-f]`)
 	wordRe   = regexp.MustCompile(`[0-9A-Za-z]+`)
-	tokenRe  = regexp.MustCompile(`[0-9A-Za-z]+(?:-[0-9A-Za-z]+)*`)
-	digitRe  = regexp.MustCompile(`[0-9]`)
-	alphaRe  = regexp.MustCompile(`[A-Za-z]`)
+	// baseRe finds the sha of a base or next commit: right after "base" or "next", or after one branch name (base main
+	// 441055ff, base: origin/main@441055ff, base next/main@441055ff), with no clause break between.
+	baseRe  = regexp.MustCompile(`(?i)\b(?:base|next)\b[\s:=@/.-]*(?:([0-9a-f]{7,40})\b|[\w.-]+(?:/[\w.-]+)*[\s:=@/]+([0-9a-f]{7,40})\b)`)
+	tokenRe = regexp.MustCompile(`[0-9A-Za-z]+(?:-[0-9A-Za-z]+)*`)
+	digitRe = regexp.MustCompile(`[0-9]`)
+	alphaRe = regexp.MustCompile(`[A-Za-z]`)
 	// The line's own header typed again at the start of its text (crius:lead 10-24 12:43).
 	headerRe = regexp.MustCompile(`^VERIFIED\s+\S+\s+->\s+[^—]+—\s*`)
 )
@@ -155,33 +158,12 @@ func names(text string, m Milestone) bool {
 			return true
 		}
 	}
-	// A base or next sha is another commit: the first sha right after "base" or "next", or after one branch name
-	// (base main 441055ff, base: origin/main@441055ff), with no clause break between.
-	idx := wordRe.FindAllStringIndex(text, -1)
-	after := -1 // names since a "base" or "next"; -1 when none
-	for i, ix := range idx {
-		w := strings.ToLower(text[ix[0]:ix[1]])
-		if after >= 0 {
-			gap := text[idx[i-1][1]:ix[0]]
-			if strings.Trim(gap, " \t:=@/.-") != "" {
-				after = -1 // a clause break
-			} else if strings.ContainsAny(gap, " \t:=@") {
-				after++ // a new name, not the next part of origin/main
-			}
-		}
-		if w == "base" || w == "next" {
-			after = 0
-			continue
-		}
-		if after == 1 || after == 2 {
-			if isSha(w) {
-				after = -1
-				continue
-			}
-		} else {
-			after = -1
-		}
-		if shaIn(w, line) {
+	skip := map[int]bool{} // where a base or next sha starts: another commit
+	for _, m := range baseRe.FindAllStringSubmatchIndex(text, -1) {
+		skip[max(m[2], m[4])] = true
+	}
+	for _, ix := range wordRe.FindAllStringIndex(text, -1) {
+		if !skip[ix[0]] && shaIn(text[ix[0]:ix[1]], line) {
 			return true
 		}
 	}
