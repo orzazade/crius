@@ -313,9 +313,10 @@ func (b builder) e5() (Row, error) {
 
 var rearm = []string{"Monitor", "TaskStop", "ToolSearch"}
 
-// waiterRe is a command that waits on the bus, as the Quotes transcripts of 10-29 show them: team-wait.sh, a bus-*.ts
-// wait script, or a read of ~/.crius/bus (tail, grep).
-var waiterRe = regexp.MustCompile(`team-wait\.sh|\bbus[\w-]*\.ts\s+wait\b|\.crius/bus/`)
+// waiterRe is a command that waits on the bus, as the Quotes transcripts of 10-26 to 10-29 show them: a *wait*.sh
+// script (team-wait.sh, P2's scratchpad bus-wait.sh, review of 3165f6b), a bus-*.ts wait script, or a read of
+// ~/.crius/bus (tail, grep).
+var waiterRe = regexp.MustCompile(`[\w-]*wait[\w-]*\.sh\b|\bbus[\w-]*\.ts\s+wait\b|\.crius/bus/`)
 
 // waiter tells a background command that waits on the bus from one that acts, such as bus-post posting a line.
 func waiter(cmd string) bool {

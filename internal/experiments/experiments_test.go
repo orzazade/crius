@@ -213,8 +213,8 @@ func TestReadyToPassPairsAnItemOnceByThePassesItem(t *testing.T) {
 }
 
 // Review of 7cb0397 (P2): a wake is the session's own turn, not a sub-agent's (isSidechain); a background Bash that
-// posts to the bus (bus-post) is an action, while one that waits on it (team-wait, a bus-*.ts wait script, a grep of
-// ~/.crius/bus) is a re-arm, as in the Quotes transcripts of 10-29; a transcript that is gone is counted, not read as 0.
+// posts to the bus (bus-post) is an action, while one that waits on it (team-wait, a scratchpad bus-wait.sh, a bus-*.ts
+// wait script, a grep of ~/.crius/bus) is a re-arm, as in the Quotes transcripts of 10-29; a transcript that is gone is counted, not read as 0.
 func TestWakesReadOnlyTheSessionsOwnTurns(t *testing.T) {
 	_, home := testutil.Temp(t)
 	os.MkdirAll(filepath.Join(home, "state"), 0o700)
@@ -240,6 +240,7 @@ func TestWakesReadOnlyTheSessionsOwnTurns(t *testing.T) {
 	testutil.Write(t, transcript, wake("2026-10-24 10:00", "")+bash("sleep 3; bun /tmp/s/bus-qa1.ts wait > /dev/null 2>&1 < /dev/null; true", "")+
 		wake("2026-10-24 10:10", "")+bash("~/.crius/bin/bus-post ~/.crius/bus/quotes.log INFO quotes:lead quotes:all 'queue: 3 open'", "")+
 		wake("2026-10-24 10:20", "")+bash("until /usr/bin/grep -E 'lock free' ~/.crius/bus/quotes.log; do sleep 20; done", "")+
+		wake("2026-10-24 10:22", "")+bash("/private/tmp/claude-501/x/scratchpad/bus-wait.sh > /dev/null 2>&1", "")+
 		wake("2026-10-24 10:25", side)+`{"type":"assistant",`+side+`"message":{"content":[{"type":"tool_use","name":"Edit","input":{}}]}}`+"\n")
 	call(t, db, "ql", "2026-10-24 09:00", 100000, 1)
 	call(t, db, "qg", "2026-10-24 09:00", 100000, 1)
@@ -248,7 +249,7 @@ func TestWakesReadOnlyTheSessionsOwnTurns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if md := Markdown(at("2026-10-24 00:00"), rows); !strings.Contains(md, "2 of 3 wakes with no action (lead 2); 1 of 2 transcripts missing") {
-		t.Errorf("want 2 of 3 idle, 1 transcript missing:\n%s", md)
+	if md := Markdown(at("2026-10-24 00:00"), rows); !strings.Contains(md, "3 of 4 wakes with no action (lead 3); 1 of 2 transcripts missing") {
+		t.Errorf("want 3 of 4 idle, 1 transcript missing:\n%s", md)
 	}
 }
