@@ -87,7 +87,7 @@ func TestTheScorecardCountsADayFromTheRecordAndTheBus(t *testing.T) {
 	bus(t, db, "2026-10-24 11:00", "quotes:p5", "ready", "READY G-2 beef5678")
 	// A repost (10-25 08:41 "repost via ready-post guard") does not restart the clock; a sha is cited at 8 or 9 hex.
 	bus(t, db, "2026-10-24 11:30", "quotes:p5", "ready", "READY G-2 beef56789 (repost via guard)")
-	bus(t, db, "2026-10-24 11:40", "quotes:qa2", "pass", "QA2 PASS G-2 beef567 on main 0abc1234 (no: 7 hex); beef5678a")
+	bus(t, db, "2026-10-24 11:40", "quotes:qa2", "pass", "QA2 PASS G-2 beef5678a on main 0abc1234")
 	bus(t, db, "2026-10-24 12:00", "quotes:qa1", "fail", "FAIL G-3 cafe0001: tab order")
 	bus(t, db, "2026-10-24 15:00", "quotes:qa3", "fail", "FAIL batch: G-1 abcd12345 breaks the tab bar") // after QA1's PASS
 	bus(t, db, "2026-10-24 15:10", "quotes:qa3", "fail", "FAIL G-9 f00dcafe on base 0ddba11a")           // the base, no item
@@ -183,5 +183,72 @@ func TestASourceThatFailsIsAnError(t *testing.T) {
 		Leftovers: func() (int, time.Time, error) { return 0, time.Time{}, nil }}
 	if _, err := Build(db, d, at("2026-10-24 00:00")); err == nil || !strings.Contains(err.Error(), "git: no repo") {
 		t.Fatal(err)
+	}
+}
+
+// Review of 7cb0397 (P2): a PASS pairs by its item sha, the first one it names, not by a base sha it also cites; and an
+// item pairs once, so a reposted READY and PASS of it are not a second pair.
+func TestReadyToPassPairsAnItemOnceByThePassesItem(t *testing.T) {
+	_, home := testutil.Temp(t)
+	os.MkdirAll(filepath.Join(home, "state"), 0o700)
+	db, err := store.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	bus(t, db, "2026-10-24 09:00", "quotes:p2", "ready", "READY G-1 aaaa1111")
+	bus(t, db, "2026-10-24 09:30", "quotes:qa1", "pass", "QA1 PASS G-4 bbbb2222 on base aaaa1111")
+	bus(t, db, "2026-10-24 10:00", "quotes:p5", "ready", "READY G-2 cccc3333")
+	bus(t, db, "2026-10-24 10:20", "quotes:qa1", "pass", "QA1 PASS G-2 cccc3333")
+	bus(t, db, "2026-10-24 11:00", "quotes:p5", "ready", "READY G-2 cccc3333 (repost)")
+	bus(t, db, "2026-10-24 11:10", "quotes:qa1", "pass", "QA1 PASS G-2 cccc3333 (repost)")
+	rows, err := Build(db, Deps{Home: home, Worktrees: func() (int, float64, error) { return 0, 0, nil },
+		Leftovers: func() (int, time.Time, error) { return 0, time.Time{}, nil }}, at("2026-10-24 00:00"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if md := Markdown(at("2026-10-24 00:00"), rows); !strings.Contains(md, "READY -> PASS median 20 min (1 pairs)") {
+		t.Errorf("want one pair of 20 min:\n%s", md)
+	}
+}
+
+// Review of 7cb0397 (P2): a wake is the session's own turn, not a sub-agent's (isSidechain); a background Bash that
+// posts to the bus (bus-post) is an action, while one that waits on it (team-wait, a bus-*.ts wait script, a grep of
+// ~/.crius/bus) is a re-arm, as in the Quotes transcripts of 10-29; a transcript that is gone is counted, not read as 0.
+func TestWakesReadOnlyTheSessionsOwnTurns(t *testing.T) {
+	_, home := testutil.Temp(t)
+	os.MkdirAll(filepath.Join(home, "state"), 0o700)
+	db, err := store.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	transcript := filepath.Join(home, "lead.jsonl")
+	if _, err := db.Exec("insert into session (id, project, role, transcript_path) values ('ql', 'quotes', 'lead', ?), "+
+		"('qg', 'quotes', 'p2', ?)", transcript, filepath.Join(home, "gone.jsonl")); err != nil {
+		t.Fatal(err)
+	}
+	wake := func(ts, side string) string {
+		return fmt.Sprintf(`{"type":"user",%s"timestamp":%q,"origin":{"kind":"task-notification"},"message":{"content":"<task-notification>x"}}`,
+			side, at(ts).UTC().Format(time.RFC3339)) + "\n"
+	}
+	bash := func(cmd, side string) string {
+		return `{"type":"assistant",` + side + `"message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":` +
+			fmt.Sprintf("%q", cmd) + `,"run_in_background":true}}]}}` + "\n"
+	}
+	side := `"isSidechain":true,`
+	testutil.Write(t, transcript, wake("2026-10-24 10:00", "")+bash("sleep 3; bun /tmp/s/bus-qa1.ts wait > /dev/null 2>&1 < /dev/null; true", "")+
+		wake("2026-10-24 10:10", "")+bash("~/.crius/bin/bus-post ~/.crius/bus/quotes.log INFO quotes:lead quotes:all 'queue: 3 open'", "")+
+		wake("2026-10-24 10:20", "")+bash("until /usr/bin/grep -E 'lock free' ~/.crius/bus/quotes.log; do sleep 20; done", "")+
+		wake("2026-10-24 10:25", side)+`{"type":"assistant",`+side+`"message":{"content":[{"type":"tool_use","name":"Edit","input":{}}]}}`+"\n")
+	call(t, db, "ql", "2026-10-24 09:00", 100000, 1)
+	call(t, db, "qg", "2026-10-24 09:00", 100000, 1)
+	rows, err := Build(db, Deps{Home: home, Worktrees: func() (int, float64, error) { return 0, 0, nil },
+		Leftovers: func() (int, time.Time, error) { return 0, time.Time{}, nil }}, at("2026-10-24 00:00"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if md := Markdown(at("2026-10-24 00:00"), rows); !strings.Contains(md, "2 of 3 wakes with no action (lead 2); 1 of 2 transcripts missing") {
+		t.Errorf("want 2 of 3 idle, 1 transcript missing:\n%s", md)
 	}
 }

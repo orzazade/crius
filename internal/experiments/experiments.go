@@ -165,33 +165,33 @@ func (b builder) lines(kinds string, since time.Time) ([]busLine, error) {
 	return out, rows.Err()
 }
 
-// E2: READY -> PASS: from the first READY (up to 3 days back) whose item sha, the first one it names, a PASS of the day
-// names, to that PASS; once per item. A sha counts by its first 8 hex: lines cite one at 8 or 9.
+// E2: READY -> PASS: from the first READY (up to 3 days back) of an item sha, the first one it names, to the first PASS
+// whose item sha, the first one it names, is the same (not a base sha it also cites); once per item, so a reposted
+// READY and PASS are no second pair. A sha counts by its first 8 hex: lines cite one at 8 or 9.
 func (b builder) e2() (Row, error) {
 	ls, err := b.lines("'ready', 'pass'", b.from.AddDate(0, 0, -3))
 	if err != nil {
 		return Row{}, err
 	}
-	ready := map[string]time.Time{}
+	ready, paired := map[string]time.Time{}, map[string]bool{}
 	var mins []float64
 	for _, l := range ls {
 		s := shas(l.text)
+		if len(s) == 0 || paired[s[0][:8]] {
+			continue
+		}
+		item := s[0][:8]
 		if l.kind == "ready" {
-			if len(s) > 0 {
-				if _, ok := ready[s[0][:8]]; !ok {
-					ready[s[0][:8]] = l.at
-				}
+			if _, ok := ready[item]; !ok {
+				ready[item] = l.at
 			}
 			continue
 		}
-		for _, w := range s {
-			if r, ok := ready[w[:8]]; ok {
-				if !l.at.Before(b.from) {
-					mins = append(mins, l.at.Sub(r).Minutes())
-				}
-				delete(ready, w[:8])
-				break
+		if r, ok := ready[item]; ok {
+			if !l.at.Before(b.from) {
+				mins = append(mins, l.at.Sub(r).Minutes())
 			}
+			paired[item] = true
 		}
 	}
 	median := "READY -> PASS: no pairs"
@@ -280,8 +280,12 @@ func (b builder) e5() (Row, error) {
 		return Row{}, err
 	}
 	wakes, idle := 0, map[string]int{}
-	total := 0
+	total, missing := 0, 0
 	for _, t := range trs {
+		if _, err := os.Stat(t.path); errors.Is(err, fs.ErrNotExist) { // moved away: the record has the calls, not the wakes
+			missing++
+			continue
+		}
 		w, n, err := b.wakes(t.path)
 		if err != nil {
 			return Row{}, err
@@ -301,10 +305,22 @@ func (b builder) e5() (Row, error) {
 	if len(by) > 0 {
 		v += " (" + strings.Join(by, ", ") + ")"
 	}
+	if missing > 0 {
+		v += fmt.Sprintf("; %d of %d transcripts missing", missing, len(trs))
+	}
 	return Row{"E5", "Filtered bus waiter", v, "under 200 a day"}, nil
 }
 
 var rearm = []string{"Monitor", "TaskStop", "ToolSearch"}
+
+// waiterRe is a command that waits on the bus, as the Quotes transcripts of 10-29 show them: team-wait.sh, a bus-*.ts
+// wait script, or a read of ~/.crius/bus (tail, grep).
+var waiterRe = regexp.MustCompile(`team-wait\.sh|\bbus[\w-]*\.ts\s+wait\b|\.crius/bus/`)
+
+// waiter tells a background command that waits on the bus from one that acts, such as bus-post posting a line.
+func waiter(cmd string) bool {
+	return waiterRe.MatchString(cmd) && !strings.Contains(cmd, "bus-post")
+}
 
 // wakes reads one transcript: the wakes that day and how many took no action.
 func (b builder) wakes(path string) (wakes, idle int, err error) {
@@ -317,13 +333,14 @@ func (b builder) wakes(path string) (wakes, idle int, err error) {
 	}
 	err = eachLine(path, func(line string) error {
 		var e struct {
-			Type      string
-			Timestamp string
-			Origin    struct{ Kind string }
-			Message   struct{ Content json.RawMessage }
+			Type        string
+			IsSidechain bool
+			Timestamp   string
+			Origin      struct{ Kind string }
+			Message     struct{ Content json.RawMessage }
 		}
-		if json.Unmarshal([]byte(line), &e) != nil {
-			return nil // a line that is not an entry is not a wake
+		if json.Unmarshal([]byte(line), &e) != nil || e.IsSidechain {
+			return nil // a line that is not an entry, or a sub-agent's, is not the session's turn
 		}
 		switch e.Type {
 		case "user":
@@ -352,8 +369,7 @@ func (b builder) wakes(path string) (wakes, idle int, err error) {
 				return nil
 			}
 			for _, p := range parts {
-				if p.Type != "tool_use" || slices.Contains(rearm, p.Name) ||
-					p.Name == "Bash" && p.Input.Background && strings.Contains(p.Input.Command, "bus") {
+				if p.Type != "tool_use" || slices.Contains(rearm, p.Name) || p.Name == "Bash" && p.Input.Background && waiter(p.Input.Command) {
 					continue
 				}
 				acted = true
@@ -362,9 +378,6 @@ func (b builder) wakes(path string) (wakes, idle int, err error) {
 		return nil
 	})
 	end()
-	if errors.Is(err, fs.ErrNotExist) {
-		return 0, 0, nil // a transcript moved away: the record still has the calls
-	}
 	return wakes, idle, err
 }
 
