@@ -564,6 +564,10 @@ func TestCardShowsTheWeeksMoneyByAccountAndProject(t *testing.T) {
 	if d := changes(Numbers{MaxPct: c.Numbers.MaxPct}, later, 2); !strings.HasSuffix(d, "Max $60 (new in v3), enterprise $400 (new in v3)") {
 		t.Errorf("changes from v2: %q", d)
 	}
+	later.ChildRevoked = 2 // counted since v2
+	if d := changes(Numbers{MaxPct: c.Numbers.MaxPct}, later, 1); !strings.Contains(d, "child revoked 2 (new in v2)") {
+		t.Errorf("changes from v1: %q", d)
+	}
 }
 
 func TestSmallAmountsDoNotReadAsNothing(t *testing.T) {

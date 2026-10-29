@@ -576,12 +576,14 @@ func defNum(def string) (int, bool) {
 func changes(a, b Numbers, from int) string {
 	var ss []string
 	for _, f := range []struct {
-		name string
-		a, b int
-	}{{"code", a.Code, b.Code}, {"research", a.Research, b.Research}, {"falcon", a.Falcon, b.Falcon},
-		{"other", a.Other, b.Other}, {"revoked", a.Revoked, b.Revoked}, {"defects", a.Defects, b.Defects},
-		{"escapes", a.Escapes, b.Escapes}, {"child revoked", a.ChildRevoked, b.ChildRevoked}} {
-		if f.a != f.b {
+		name      string
+		a, b, def int
+	}{{"code", a.Code, b.Code, 1}, {"research", a.Research, b.Research, 1}, {"falcon", a.Falcon, b.Falcon, 1},
+		{"other", a.Other, b.Other, 1}, {"revoked", a.Revoked, b.Revoked, 1}, {"defects", a.Defects, b.Defects, 1},
+		{"escapes", a.Escapes, b.Escapes, 1}, {"child revoked", a.ChildRevoked, b.ChildRevoked, 2}} {
+		if from < f.def {
+			ss = append(ss, fmt.Sprintf("%s %d (new in v%d)", f.name, f.b, f.def))
+		} else if f.a != f.b {
 			ss = append(ss, fmt.Sprintf("%s %d -> %d", f.name, f.a, f.b))
 		}
 	}
