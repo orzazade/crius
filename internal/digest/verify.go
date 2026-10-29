@@ -28,7 +28,8 @@ func isID(w string) bool {
 func isSha(w string) bool { return shaRe.MatchString(w) && letterRe.MatchString(w) }
 
 // Verified gives, per milestone, the id of the first VERIFIED line that checked it, 0 for none, and how many VERIFIED
-// lines to the lead count for no milestone (RULES 3.4). A VERIFIED line is to the lead and from Crius (crius:lead) or
+// lines to the lead count for no milestone (RULES 3.4). For a milestone not marked done it is the last such line,
+// and 0 when a later line withdraws it (see withdrawnAfter). A VERIFIED line is to the lead and from Crius (crius:lead) or
 // the lead's own project's QA (role qa or qa-*); it counts when it matches exactly one done milestone, so a check that
 // does not land is seen. The sender is trusted as written on the line. When the Done line counts rows (Goal.Rows), a
 // line "row <id> · <evidence>", the id one token with a letter and a digit, counts for that row, and rows gives the
@@ -116,11 +117,12 @@ func Verified(db *sql.DB, lead string, g *Goal) (checked []int64, rows, notCount
 	return out, len(seen), notCounted, nil
 }
 
-// withdrawnAfter: a FAIL, CORRECTION, CORRECTED or REOPEN line after event id, from the lead's project or Crius, names
-// the milestone.
+// withdrawnAfter: a FAIL, CORRECTION, CORRECTED or REOPEN bus line after event id, from the lead's project or Crius, or
+// a revoke in the store, names the milestone. A field correction in the store withdraws nothing (review of 1f2e54d).
 func withdrawnAfter(db *sql.DB, project string, id int64, m Milestone) (bool, error) {
-	q, err := db.Query("select text from event where id > ? and kind in ('fail', 'correction', 'corrected', 'reopen') and"+
-		" (project = ? or (project = 'crius' and actor = 'lead'))", id, project)
+	q, err := db.Query("select text from event where id > ? and (project = ? or (project = 'crius' and actor = 'lead'))"+
+		" and (kind = 'revoked' or source_key like 'bus:%' and kind in ('fail', 'correction', 'corrected', 'reopen'))",
+		id, project)
 	if err != nil {
 		return false, err
 	}
@@ -137,17 +139,20 @@ func withdrawnAfter(db *sql.DB, project string, id int64, m Milestone) (bool, er
 	return false, q.Err()
 }
 
-// names: the text holds an id of the milestone line (same case), a sha of it, or its whole text when that has 4 or
-// more words.
+// itemIDRe: an item id (F-118, RB-89, G-SUB-503). A role tag (P2, QA1) is none: those are on most lines.
+var itemIDRe = regexp.MustCompile(`^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*-[0-9]+$`)
+
+// names: the text holds an item id or a sha of the milestone's refs, in any case. Its text and role tags do not
+// count, and a milestone with no id or sha in its refs is never named (review of 1f2e54d: "QA1 FAIL RB-98" withdrew
+// a milestone "QA1 signs off").
 func names(text string, m Milestone) bool {
-	line := m.Text + " " + m.Refs
-	in := tokenRe.FindAllString(line, -1)
-	for _, w := range tokenRe.FindAllString(text, -1) {
-		if isID(w) && slices.Contains(in, w) || shaIn(w, line) {
+	words := tokenRe.FindAllString(strings.ToUpper(text), -1)
+	for _, r := range tokenRe.FindAllString(strings.ToUpper(m.Refs), -1) {
+		if itemIDRe.MatchString(r) && slices.Contains(words, r) || shaIn(r, text) {
 			return true
 		}
 	}
-	return len(tokenRe.FindAllString(m.Text, -1)) >= 4 && strings.Contains(text, m.Text)
+	return false
 }
 
 type strength int

@@ -183,30 +183,50 @@ func TestVerifiedLooksAtEveryMilestoneAndRowsKeepMilestones(t *testing.T) {
 }
 
 // Review of 26e2143: a bug found after acceptance withdraws it (RULES 2.3) and the lead un-ticks the milestone; the
-// old VERIFIED line then no longer makes it done. A later FAIL, CORRECTION, CORRECTED or REOPEN from the project or
-// Crius that names the milestone withdraws it; a VERIFIED after that counts again. A row line never closes an open
-// milestone, also in a lead that counts milestones.
+// old VERIFIED line then no longer makes it done. A later FAIL, CORRECTION, CORRECTED or REOPEN bus line from the
+// project or Crius, or a revoke, that names an id or sha of the milestone's refs in any case withdraws it; a VERIFIED
+// after that counts again. Review of 1f2e54d: a role tag or the milestone's text names nothing, a store field
+// correction withdraws nothing. A row line never closes an open milestone, also in a lead that counts milestones.
 func TestAWithdrawnAcceptanceDoesNotCloseAnOpenMilestone(t *testing.T) {
 	db := open(t)
 	at := time.Date(2026, 10, 25, 21, 0, 0, 0, time.Local)
+	bus := func(sender, kind, text string) {
+		id := line(t, db, at, sender, kind, text)
+		if _, err := db.Exec("update event set source_key = ? where id = ?", fmt.Sprint("bus:f:", id), id); err != nil {
+			t.Fatal(err)
+		}
+	}
 	verified(t, db, at, "crius:lead", "quotes:lead", "RB-91 · checked")
-	line(t, db, at, "quotes:qa1", "fail", "QA1 FAIL RB-91 breaks again on 7090")
-	line(t, db, at, "quotes:qa1", "fail", "QA1 FAIL c7c7c7c before it was checked")
+	bus("quotes:qa1", "fail", "qa1 fail rb-91 breaks again on 7090")
+	bus("quotes:qa1", "fail", "QA1 FAIL c7c7c7c before it was checked")
 	early := verified(t, db, at, "crius:lead", "quotes:lead", "c7c7c7c · checked after the fail")
 	verified(t, db, at, "crius:lead", "quotes:lead", "RB-93 · checked")
-	line(t, db, at, "crius:lead", "corrected", "my VERIFIED of RB-93 was wrong: the build was stale")
+	bus("quotes:qa1", "fail", "FAIL RB-93")
 	again := verified(t, db, at, "crius:lead", "quotes:lead", "RB-93 · checked again on the fix")
+	verified(t, db, at, "crius:lead", "quotes:lead", "RB-97 · checked")
+	bus("crius:lead", "corrected", "my VERIFIED of RB-97 was wrong: the build was stale")
+	verified(t, db, at, "crius:lead", "quotes:lead", "RB-98 · checked")
+	bus("quotes:lead", "reopen", "REOPEN RB-98: the fix broke the list")
+	verified(t, db, at, "crius:lead", "quotes:lead", "RB-99 · checked")
+	bus("quotes:lead", "correction", "my DONE of rb-99 named the wrong build")
+	verified(t, db, at, "crius:lead", "quotes:lead", "F-50 · checked")
+	line(t, db, at, "quotes:lead", "revoked", "revoked F-50 on 1a2b3c4 (D-9, by qa1); opened fix F-51: breaks")
 	other := verified(t, db, at, "crius:lead", "quotes:lead", "RB-94 · checked")
-	line(t, db, at, "axi:qa", "fail", "FAIL RB-94 of another project")
-	line(t, db, at, "quotes:qa1", "fail", "FAIL RB-940 is another id")
+	bus("axi:qa", "fail", "FAIL RB-94 of another project")
+	bus("quotes:qa1", "fail", "FAIL RB-940 is another id; QA1 P2 tags name nothing")
+	line(t, db, at, "quotes:lead", "correction", "correction C-1: F-52 title RB-94 old -> new (by lead)")
 	done := verified(t, db, at, "crius:lead", "quotes:lead", "RB-95 · checked")
-	line(t, db, at, "quotes:qa1", "fail", "FAIL RB-95")
+	bus("quotes:qa1", "fail", "FAIL RB-95")
 	verified(t, db, at, "crius:lead", "quotes:lead", "row F-12 · a row line")
 	g := &Goal{Milestones: []Milestone{
 		{State: Doing, Text: "withdrawn", Refs: "RB-91"},
 		{State: Todo, Text: "failed before", Refs: "c7c7c7c"},
 		{State: Doing, Text: "checked again", Refs: "RB-93"},
-		{State: Doing, Text: "failed elsewhere", Refs: "RB-94"},
+		{State: Doing, Text: "Crius corrected", Refs: "RB-97"},
+		{State: Doing, Text: "reopened", Refs: "RB-98"},
+		{State: Doing, Text: "corrected on the bus", Refs: "RB-99"},
+		{State: Doing, Text: "revoked", Refs: "F-50"},
+		{State: Doing, Text: "QA1 signs off after P2", Refs: "RB-94, by QA1 after P2"},
 		{State: Done, Text: "marked done", Refs: "RB-95"},
 		{State: Todo, Text: "a row", Refs: "row F-12"},
 	}}
@@ -214,7 +234,7 @@ func TestAWithdrawnAcceptanceDoesNotCloseAnOpenMilestone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []int64{0, early, again, other, done, 0}; !reflect.DeepEqual(got, want) || notCounted != 1 {
+	if want := []int64{0, early, again, 0, 0, 0, 0, other, done, 0}; !reflect.DeepEqual(got, want) || notCounted != 1 {
 		t.Fatalf("got %v, %d not counted; want %v, 1", got, notCounted, want)
 	}
 }
