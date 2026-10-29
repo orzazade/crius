@@ -49,7 +49,8 @@ var (
 	okRe        = regexp.MustCompile(`^OK ((?:surface|workspace):\d+)`)
 	optionRe    = regexp.MustCompile(`^❯?\s*(?:\d+\.\s+)?`)
 	modelRe     = regexp.MustCompile(`\b(?:Opus|Sonnet|Haiku|Fable) \d+(?:\.\d+)?\b`)
-	exitedRe    = regexp.MustCompile(`(?m)^claude exited, rc=\d+ *$`) // what exitLine prints at column 0; the shell line shows $?
+	pastedRe    = regexp.MustCompile(`\[Pastedtext#\d+(?:\+\d+lines)?\]`) // Claude Code's paste mark, squashed
+	exitedRe    = regexp.MustCompile(`(?m)^claude exited, rc=\d+ *$`)     // exitLine's line, seen when the command's last output ended its line; the shell line shows $?
 )
 
 // exitLine follows the command of a new tab, so a launch that ends (aitch refusing --primary, live 10-28) shows on screen
@@ -531,7 +532,7 @@ func start(d Deps, ws, surface, model, tag, prompt string) error {
 	}
 	if err := until(d, ws, surface, "the typed prompt in the box", func(screen string) bool {
 		draft, _ := wakewatch.Prompt(screen)
-		return squash(draft) == squash(tag+prompt)
+		return holds(draft, tag+prompt)
 	}); err != nil {
 		return err
 	}
@@ -556,7 +557,7 @@ func start(d Deps, ws, surface, model, tag, prompt string) error {
 		}
 		// A read taken just before Claude takes the prompt still draws it in the box, while the input state read after
 		// it says empty: that screen proves nothing and may hide the API error drawn next (review 10-22).
-		if squash(draft) == squash(tag+prompt) {
+		if holds(draft, tag+prompt) {
 			return false
 		}
 		held, err := typed(d, surface, draft)
@@ -670,6 +671,23 @@ func display(model string) string {
 }
 
 func squash(s string) string { return strings.Join(strings.Fields(s), "") }
+
+// holds tells whether a box's draft is text, white space aside: as typed, or with parts folded by Claude Code into
+// paste marks (live 10-28 AXI: "… Owner GO 2026-1[Pasted text #1]"), each mark standing for some text, the typed parts
+// in order and the draft's start typed. A mark may hold any text: a fold of all but the tag proves only the tag, which
+// start accepts as it typed into a box it saw empty.
+func holds(draft, text string) bool {
+	d, t := squash(draft), squash(text)
+	parts := pastedRe.Split(d, -1)
+	if len(parts) == 1 || parts[0] == "" {
+		return d == t
+	}
+	for i, p := range parts {
+		parts[i] = regexp.QuoteMeta(p)
+	}
+	ok, _ := regexp.MatchString(`^(?s)`+strings.Join(parts, ".+?")+`$`, t)
+	return ok
+}
 
 // onShell reports whether a screen shows the end of a typed resume line (--resume <id>; zsh keeps the end when it clips
 // a line wider than the tab) with no input box under it: the shell's line, not a quote of it above Claude's box (review

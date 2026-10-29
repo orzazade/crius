@@ -66,6 +66,7 @@ type fake struct {
 	quote    bool                                                     // the resumed Claude shows the shell line it was started with above its box (a restored message)
 	picked   func(project, want string) (name, dir string, err error) // the Max account picker; nil: none
 	account  string                                                   // the project's account in projects.toml; "" means max
+	paste    int                                                      // a send longer than this shows its end as "[Pasted text #1]", as Claude Code folds a long burst
 }
 
 const statusBar = "  %s │ main │ ██░░░░░░░░ ctx 2%%\n"
@@ -96,7 +97,11 @@ func (f *fake) deps() Deps {
 				if f.draft != "" && !slices.Contains(args, "--force") {
 					return "", errors.New("the agent prompt holds text someone is typing, so nothing was sent")
 				}
-				f.draft += args[len(args)-1]
+				text := args[len(args)-1]
+				if f.paste > 0 && len(text) > f.paste {
+					text = text[:f.paste] + "[Pasted text #1]"
+				}
+				f.draft += text
 			case "send-key":
 				switch key := args[len(args)-1]; {
 				case key == "down" && f.dialog != nil:
@@ -1125,5 +1130,40 @@ func TestALaunchWhoseCommandEndsFailsAtOnceWithTheTabsError(t *testing.T) {
 	f = &fake{trees: []string{tree}, boot: []string{strings.SplitAfter(dead, "\n")[0]}}
 	if _, _, _, err := Run(Spawn{Project: "quotes", Role: "lead", Prompt: "Read your brief."}, f.deps()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// 10-28 21:36 AXI: Claude Code folded the end of a long first prompt into "[Pasted text #1]"; spawn waited for the
+// prompt as typed, never pressed Enter, and failed after 120 reads. A box that holds the prompt with its end folded is
+// sent, once.
+func TestAPromptFoldedIntoPastedTextIsSent(t *testing.T) {
+	f := &fake{trees: []string{tree}, paste: 60}
+	if _, _, _, err := Run(Spawn{Project: "quotes", Role: "lead", Prompt: strings.Repeat("Read the brief and follow it. ", 10)}, f.deps()); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(f.called("send-key --workspace workspace:2 --surface surface:99 enter")); n != 2 { // the tag's and the prompt's
+		t.Fatalf("%d Enters: %v", n, f.calls)
+	}
+}
+
+func TestOnlyTheSamePromptFoldedCountsAsIt(t *testing.T) {
+	for _, c := range []struct {
+		draft string
+		want  bool
+	}{
+		{"[crius x]\n  Read the brief.", true},
+		{"[crius x]\n  Read the[Pasted text #1]", true},
+		{"[crius x]\n  Read the[Pasted text #2 +3 lines]", true},
+		{"[crius x]\n  Read a[Pasted text #1]", false},
+		{"[crius x]\n  Read the", false},
+		{"[Pasted text #1] Read the brief.", false},
+		{"[crius x]\n  Read[Pasted text #1] brief.", true}, // typed on after the fold (review)
+		{"[crius x]\n  Re[Pasted text #1]the[Pasted text #2 +2 lines]f.", true},
+		{"[crius x]\n  Read[Pasted text #1] other.", false},
+		{"[crius x]\n  Read the brief.[Pasted text #1]", false}, // nothing left to fold
+	} {
+		if got := holds(c.draft, "[crius x]Read the brief."); got != c.want {
+			t.Errorf("holds(%q) = %v", c.draft, got)
+		}
 	}
 }
