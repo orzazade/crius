@@ -9,10 +9,15 @@ A piece of work is done only when all of these hold:
 
 1. **Red first.** A test that fails before the change and passes after it. For a bug, the test shows the bug.
 2. **Reviewed.** A deep review (the `codex` agent; Opus when Codex is out) found no open P1. P2s are fixed or listed.
+   After the third review round on one item, only a P1 keeps it open; P2/P3 become follow-up rows (owner, 2026-10-20).
+   Small items (no money, auth or data code; under ~50 changed lines) may be reviewed and fully gated per batch: items merge
+   into an integration branch after their own tests and a quick QA check, and one batch gate (full suites, demo sweep, one
+   deep review of the batch diff) runs every 6-8 items or 3 hours; main moves to the gated sha (owner, 2026-10-25).
 3. **Proof in the DONE line.** The bus line names the item, the commit sha, the test command and its counts.
    A DONE without that is a claim, not done.
 4. **Checked by someone else.** QA, or Crius, re-runs the check on a clean checkout of that sha with real-shaped
-   data before it is reported to the owner. A builder's own word never closes an item.
+   data before it is reported to the owner. A builder's own word never closes an item. With batch gates, the team's QA
+   batch gate is that check and the lead merges on it; Crius does not re-run it (owner, 2026-10-25).
 5. **Live where it is meant to work.** Installed or deployed and seen working there (one live check), not only in tests.
 6. **Owner OK before anything outward-facing:** production, a public endpoint, messages as the owner, anything
    people outside the team see. Pushes: the owner's personal projects (scifi, aitch, …) push to main after the
@@ -45,7 +50,7 @@ Details: STATUS.md (rule for every step), [docs/BRIEF-build-1-2.md](BRIEF-build-
    own mistake is never punished; mistakes found by us are counted apart from ones that escaped.
 
 Details: [docs/MEMORY-AND-MEASUREMENT.md](MEMORY-AND-MEASUREMENT.md) §7b, `~/.claude/skills/cmux-team/reference/lessons.md`,
-`~/.claude/rules-shared.md` (Diagnose repeats, Solve the root cause, Claim completion only when verified).
+`~/.agents/AGENTS.md` (Diagnose repeats, Solve the root cause, Claim completion only when verified).
 
 ## 3. Goal and reports
 
