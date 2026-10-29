@@ -187,8 +187,9 @@ func TestVerifiedLooksAtEveryMilestoneAndRowsKeepMilestones(t *testing.T) {
 // project or Crius, or a revoke, that names an id or sha of the milestone's refs in any case withdraws it; a VERIFIED
 // after that counts again. Review of 1f2e54d: a role tag or the milestone's text names nothing, a store field
 // correction withdraws nothing. Review of 19d3040: an id or sha in the milestone's text names it too, a team log line
-// withdraws as a bus line does, only the first sha of a line names (a base sha is another commit), and a revoke names
-// its item alone. A row line never closes an open milestone, also in a lead that counts milestones.
+// of the project withdraws as a bus line does, and a base or next sha is another commit. Review of 24b07b1: any other
+// sha of the line names, Crius's team log names its own items, a lower-case word (slate-400) is no id, and a store
+// revoke is not read. A row line never closes an open milestone, also in a lead that counts milestones.
 func TestAWithdrawnAcceptanceDoesNotCloseAnOpenMilestone(t *testing.T) {
 	db := open(t)
 	at := time.Date(2026, 10, 25, 21, 0, 0, 0, time.Local)
@@ -212,7 +213,7 @@ func TestAWithdrawnAcceptanceDoesNotCloseAnOpenMilestone(t *testing.T) {
 	bus("quotes:lead", "reopen", "REOPEN RB-98: the fix broke the list")
 	verified(t, db, at, "crius:lead", "quotes:lead", "RB-99 · checked")
 	bus("quotes:lead", "correction", "my DONE of rb-99 named the wrong build")
-	verified(t, db, at, "crius:lead", "quotes:lead", "F-50 · checked")
+	revoked := verified(t, db, at, "crius:lead", "quotes:lead", "F-50 · checked")
 	revoke := line(t, db, at, "quotes:lead", "revoked", "revoked F-50 on 1a2b3c4 (D-9, by qa1); opened fix F-51: breaks RB-94")
 	if _, err := db.Exec("update event set item = 'F-50' where id = ?", revoke); err != nil {
 		t.Fatal(err)
@@ -220,13 +221,19 @@ func TestAWithdrawnAcceptanceDoesNotCloseAnOpenMilestone(t *testing.T) {
 	verified(t, db, at, "crius:lead", "quotes:lead", "F-60 · checked")
 	bus("quotes:qa1", "fail", "qa1 fail f-60 again")
 	verified(t, db, at, "crius:lead", "quotes:lead", "RB-70 · checked")
-	keyed("team:f:", "crius:lead", "corrected", "CORRECTED my RB-70 check was on a stale build")
+	keyed("team:f:", "quotes:lead", "corrected", "CORRECTED my RB-70 check was on a stale build")
 	verified(t, db, at, "crius:lead", "quotes:lead", "7f76684 · checked")
 	bus("quotes:qa1", "fail", "FAIL 7f76684 on the rig")
 	base := verified(t, db, at, "crius:lead", "quotes:lead", "441055ff · checked")
-	bus("quotes:qa1", "fail", "QA1 FAIL F22 2e90ad27 base 441055ff")
+	next := verified(t, db, at, "crius:lead", "quotes:lead", "52a52a5 · checked")
+	bus("quotes:qa1", "fail", "QA1 FAIL F22 2e90ad27 base 441055ff (next 52a52a5)")
+	verified(t, db, at, "crius:lead", "quotes:lead", "2a6560a4 · checked")
+	bus("quotes:qa1", "fail", "FAIL QA1 bug 1 (6b03f155 + d64c0078) on 2a6560a4")
+	slate := verified(t, db, at, "crius:lead", "quotes:lead", "F-61 · checked")
+	bus("quotes:qa1", "fail", "FAIL F-88: text slate-400 too light")
 	other := verified(t, db, at, "crius:lead", "quotes:lead", "RB-94 · checked")
 	bus("axi:qa", "fail", "FAIL RB-94 of another project")
+	keyed("team:f:", "crius:lead", "corrected", "CORRECTED my RB-94 row count") // its own team log
 	revoke = line(t, db, at, "quotes:lead", "revoked", "revoked F-53 on 9f9f9f9 (D-10, by qa1); opened fix F-54: as RB-94")
 	if _, err := db.Exec("update event set item = 'F-53' where id = ?", revoke); err != nil {
 		t.Fatal(err)
@@ -251,12 +258,15 @@ func TestAWithdrawnAcceptanceDoesNotCloseAnOpenMilestone(t *testing.T) {
 		{State: Doing, Text: "a team log check", Refs: "RB-70"},
 		{State: Doing, Text: "a dirty build", Refs: "7f76684-dirty"},
 		{State: Doing, Text: "the base of the next", Refs: "441055ff"},
+		{State: Doing, Text: "the next one", Refs: "52a52a5"},
+		{State: Doing, Text: "the head under test", Refs: "2a6560a4"},
+		{State: Doing, Text: "F-61 cards use slate-400", Refs: ""},
 	}}
 	got, _, notCounted, err := Verified(db, "quotes:lead", g)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []int64{0, early, again, 0, 0, 0, 0, other, done, 0, 0, 0, 0, base}; !reflect.DeepEqual(got, want) || notCounted != 1 {
+	if want := []int64{0, early, again, 0, 0, 0, revoked, other, done, 0, 0, 0, 0, base, next, 0, slate}; !reflect.DeepEqual(got, want) || notCounted != 1 {
 		t.Fatalf("got %v, %d not counted; want %v, 1", got, notCounted, want)
 	}
 }
