@@ -5,6 +5,7 @@
 package scorecard
 
 import (
+	"cmp"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
@@ -15,6 +16,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,7 +24,8 @@ import (
 	"github.com/orzazade/crius/internal/redact"
 )
 
-// Def is the scorecard definition; a week written under another one is not compared with this one. v2 (owner 10-19,
+// Def is the scorecard definition: a week written under an older one is counted again under this one (Write), and the
+// restore test does not compare a week written under another one. v2 (owner 10-19,
 // P3c): defects and revokes on the outcomes' accepted child tasks count against the outcome's week. v3 (P3b): the
 // week's list-price $ by account and project, and the enterprise guard's violations.
 const Def = "v3"
@@ -470,8 +473,10 @@ type written struct {
 }
 
 // Write saves an ended week as <dir>/<end date>.md with its numbers in .json. A week already written keeps its text;
-// when a number changed, one line `revised <date>: <name> <old> -> <new>, … (<record events since>)` is appended.
-// what is "wrote", "revised" or "unchanged".
+// when a number changed, one line `revised <date>: <name> <old> -> <new>, … (<record events since>)` is appended. A
+// week written under another definition is counted again under Def: one line `redefined <date>: def <old> -> <Def>,
+// counted again: <changes>` says so (a definition change, not new events), and later writes compare under Def (Crius
+// 10-29: the weekly run failed on two v2 weeks). what is "wrote", "revised", "redefined" or "unchanged".
 func Write(db *sql.DB, dir string, c *Card, now time.Time) (path, what string, err error) {
 	if now.Before(c.Week.End) {
 		return "", "", fmt.Errorf("%w: it ends %s; print it without --write", ErrRunning,
@@ -512,24 +517,38 @@ func Write(db *sql.DB, dir string, c *Card, now time.Time) (path, what string, e
 	if err := json.Unmarshal(b, &old); err != nil {
 		return "", "", fmt.Errorf("%s.json: %w", base, err)
 	}
-	if old.Def != Def {
-		return "", "", fmt.Errorf("%s was written with def %s, not %s: not compared", path, old.Def, Def)
-	}
 	// a revision must not make a hand-edited file the trusted copy (review of P5)
 	if md, err := os.ReadFile(path); err != nil {
 		return "", "", err
 	} else if mdHash(md) != old.MD {
 		return "", "", fmt.Errorf("%s changed since crius-rec wrote it: not revised", path)
 	}
+	// an older build must not count a newer week down, nor one under a definition it cannot read (review of the redefine)
+	have, ok := defNum(old.Def)
+	if want, _ := defNum(Def); !ok || have > want {
+		return "", "", fmt.Errorf("%s was written with def %q, newer than this build's %s or unknown to it: not revised", path, old.Def, Def)
+	}
 	diff := changes(old.Numbers, c.Numbers)
-	if diff == "" {
+	if old.Def == Def && diff == "" {
 		return path, "unchanged", nil
 	}
 	why, err := since(db, old.Event, slices.Concat(old.Items, old.Children, c.Items, c.Children))
 	if err != nil {
 		return "", "", err
 	}
-	line, _ := redact.Redact(fmt.Sprintf("revised %s: %s (%s)\n", now.UTC().Format("2006-01-02"), diff, why))
+	var line string
+	if old.Def != Def {
+		if why == noEvents {
+			why = ""
+		} else { // events since the last write may have changed numbers too
+			why = " (record events since: " + why + ")"
+		}
+		what, line = "redefined", fmt.Sprintf("redefined %s: def %s -> %s, counted again: %s%s\n", now.UTC().Format("2006-01-02"),
+			cmp.Or(old.Def, "none"), Def, cmp.Or(diff, "the same numbers"), why)
+	} else {
+		what, line = "revised", fmt.Sprintf("revised %s: %s (%s)\n", now.UTC().Format("2006-01-02"), diff, why)
+	}
+	line, _ = redact.Redact(line)
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
 	if err != nil {
 		return "", "", err
@@ -541,8 +560,18 @@ func Write(db *sql.DB, dir string, c *Card, now time.Time) (path, what string, e
 	if err := f.Close(); err != nil {
 		return "", "", err
 	}
-	// the line goes first: a crash before the numbers are saved repeats it on the next write, it never drops it
-	return path, "revised", save()
+	// The line goes first, so a crash never drops it; but a crash before the numbers are saved leaves the .md ahead of its
+	// hash, and the next write refuses the week as changed by hand (loud) until it is fixed by hand.
+	return path, what, save()
+}
+
+// defNum is the number of a definition "v<n>", 0 for none (""); false for any other form.
+func defNum(def string) (int, bool) {
+	if def == "" {
+		return 0, true
+	}
+	n, err := strconv.Atoi(strings.TrimPrefix(def, "v"))
+	return n, err == nil && n > 0 && def == "v"+strconv.Itoa(n)
 }
 
 func changes(a, b Numbers) string {
@@ -665,7 +694,9 @@ func since(db *sql.DB, id int64, items []string) (string, error) {
 		return "", err
 	}
 	if len(ss) == 0 {
-		return "no record event names these outcomes: late or re-ingested data", nil
+		return noEvents, nil
 	}
 	return strings.Join(ss, "; "), nil
 }
+
+const noEvents = "no record event names these outcomes: late or re-ingested data"

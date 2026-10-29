@@ -2,6 +2,7 @@ package scorecard
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -251,6 +252,75 @@ func TestRewriteAppendsARevisedLine(t *testing.T) {
 	}
 	if _, err := os.Stat(strings.TrimSuffix(path, ".md") + ".json"); err != nil {
 		t.Fatal("no numbers file next to the scorecard:", err)
+	}
+}
+
+// Crius 10-29 02:00: the weekly run re-writes the weeks still maturing, and two written under def v2 failed it after
+// the code moved to v3 ("written with def v2, not v3: not compared"). A week written under another definition is
+// counted again under this one: one line says so with what changed, and later writes compare under the new one.
+func TestANewDefinitionCountsAnOldWeekAgain(t *testing.T) {
+	db, home := fixture(t)
+	dir := filepath.Join(home, "state", "scorecards")
+	path, _, err := Write(db, dir, build(t, db, "2026-09-12T00:00:00Z", "2026-09-18T06:00:00Z"), at("2026-09-18T06:00:00Z"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig := testutil.Read(t, path)
+	nums := strings.TrimSuffix(path, ".md") + ".json"
+	var old written
+	if err := json.Unmarshal([]byte(testutil.Read(t, nums)), &old); err != nil {
+		t.Fatal(err)
+	}
+	old.Def, old.Numbers.Code = "v2", 5 // the old definition counted the week otherwise
+	b, err := json.Marshal(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	testutil.Write(t, nums, string(b))
+	for i, want := range []string{"redefined", "unchanged"} {
+		_, what, err := Write(db, dir, build(t, db, "2026-09-12T00:00:00Z", "2026-09-19T00:00:00Z"), at("2026-09-19T00:00:00Z"))
+		if err != nil || what != want {
+			t.Fatalf("write %d: %q %v, want %s", i+1, what, err, want)
+		}
+	}
+	added := strings.TrimPrefix(testutil.Read(t, path), orig)
+	if want := "redefined 2026-09-19: def v2 -> " + Def + ", counted again: code 5 -> 1\n"; added != want {
+		t.Errorf("added %q, want %q", added, want)
+	}
+	if err := json.Unmarshal([]byte(testutil.Read(t, nums)), &old); err != nil || old.Def != Def || old.Numbers.Code != 1 {
+		t.Errorf("numbers file %+v %v: want def %s and code 1", old, err, Def)
+	}
+	// Review: an older build never counts a week written under a newer definition down.
+	setDef := func(def string) {
+		var w written
+		if err := json.Unmarshal([]byte(testutil.Read(t, nums)), &w); err != nil {
+			t.Fatal(err)
+		}
+		w.Def = def
+		b, err := json.Marshal(w)
+		if err != nil {
+			t.Fatal(err)
+		}
+		testutil.Write(t, nums, string(b))
+	}
+	before := testutil.Read(t, path)
+	for _, def := range []string{"v99", "v3.1", "V4", "v03"} {
+		setDef(def)
+		if _, _, err := Write(db, dir, build(t, db, "2026-09-12T00:00:00Z", "2026-09-20T00:00:00Z"), at("2026-09-20T00:00:00Z")); err == nil ||
+			!strings.Contains(err.Error(), fmt.Sprintf("written with def %q, newer than this build's %s or unknown to it: not revised", def, Def)) ||
+			testutil.Read(t, path) != before {
+			t.Errorf("def %s: %v", def, err)
+		}
+	}
+	// Review: a record event since the last write that changed numbers is named on the redefined line too.
+	setDef("v2")
+	revoke(t, db, "demo#1")
+	if _, what, err := Write(db, dir, build(t, db, "2026-09-12T00:00:00Z", "2026-09-20T00:00:00Z"), at("2026-09-20T00:00:00Z")); err != nil || what != "redefined" {
+		t.Fatalf("%q %v", what, err)
+	}
+	if added := strings.TrimPrefix(testutil.Read(t, path), before); !strings.HasPrefix(added, "redefined 2026-09-20: def v2 -> "+Def+
+		", counted again: code 1 -> 0, revoked 0 -> 1") || !strings.HasSuffix(added, " (record events since: D-1 on demo#1; demo#1 revoked D-1)\n") {
+		t.Errorf("added %q", added)
 	}
 }
 
