@@ -528,7 +528,7 @@ func Write(db *sql.DB, dir string, c *Card, now time.Time) (path, what string, e
 	if want, _ := defNum(Def); !ok || have > want {
 		return "", "", fmt.Errorf("%s was written with def %q, newer than this build's %s or unknown to it: not revised", path, old.Def, Def)
 	}
-	diff := changes(old.Numbers, c.Numbers)
+	diff := changes(old.Numbers, c.Numbers, have)
 	if old.Def == Def && diff == "" {
 		return path, "unchanged", nil
 	}
@@ -544,7 +544,7 @@ func Write(db *sql.DB, dir string, c *Card, now time.Time) (path, what string, e
 			why = " (record events since: " + why + ")"
 		}
 		what, line = "redefined", fmt.Sprintf("redefined %s: def %s -> %s, counted again: %s%s\n", now.UTC().Format("2006-01-02"),
-			cmp.Or(old.Def, "none"), Def, cmp.Or(diff, "the same numbers"), why)
+			old.Def, Def, cmp.Or(diff, "the same numbers"), why)
 	} else {
 		what, line = "revised", fmt.Sprintf("revised %s: %s (%s)\n", now.UTC().Format("2006-01-02"), diff, why)
 	}
@@ -565,16 +565,15 @@ func Write(db *sql.DB, dir string, c *Card, now time.Time) (path, what string, e
 	return path, what, save()
 }
 
-// defNum is the number of a definition "v<n>", 0 for none (""); false for any other form.
+// defNum is the number of a definition "v<n>"; false for any other form.
 func defNum(def string) (int, bool) {
-	if def == "" {
-		return 0, true
-	}
 	n, err := strconv.Atoi(strings.TrimPrefix(def, "v"))
 	return n, err == nil && n > 0 && def == "v"+strconv.Itoa(n)
 }
 
-func changes(a, b Numbers) string {
+// changes lists what differs from a, counted under def from, to b. A number def from did not count is new in b, not
+// changed from 0 (review of 033573f: v2 counted no $).
+func changes(a, b Numbers, from int) string {
 	var ss []string
 	for _, f := range []struct {
 		name string
@@ -595,11 +594,15 @@ func changes(a, b Numbers) string {
 		}
 		ss = append(ss, fmt.Sprintf("Max %s -> %s", pct(a.MaxPct), pct(b.MaxPct)))
 	}
-	if a.MaxUSD != b.MaxUSD {
-		ss = append(ss, fmt.Sprintf("Max $%d -> $%d", a.MaxUSD, b.MaxUSD))
-	}
-	if a.EntUSD != b.EntUSD {
-		ss = append(ss, fmt.Sprintf("enterprise $%d -> $%d", a.EntUSD, b.EntUSD))
+	for _, f := range []struct {
+		name      string
+		a, b, def int
+	}{{"Max", a.MaxUSD, b.MaxUSD, 3}, {"enterprise", a.EntUSD, b.EntUSD, 3}} {
+		if from < f.def {
+			ss = append(ss, fmt.Sprintf("%s $%d (new in v%d)", f.name, f.b, f.def))
+		} else if f.a != f.b {
+			ss = append(ss, fmt.Sprintf("%s $%d -> $%d", f.name, f.a, f.b))
+		}
 	}
 	return strings.Join(ss, ", ")
 }

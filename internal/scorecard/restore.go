@@ -218,7 +218,8 @@ func compareWeek(db *sql.DB, base string, w Week, old written, lastEvent int64, 
 	if err != nil {
 		return "", err
 	}
-	if d := changes(old.Numbers, c.Numbers); d != "" {
+	def, _ := defNum(old.Def) // this build's: a week of another def is not compared
+	if d := changes(old.Numbers, c.Numbers, def); d != "" {
 		diff = append(diff, d)
 	}
 	if !slices.Equal(old.Items, c.Items) {

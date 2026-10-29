@@ -284,7 +284,7 @@ func TestANewDefinitionCountsAnOldWeekAgain(t *testing.T) {
 		}
 	}
 	added := strings.TrimPrefix(testutil.Read(t, path), orig)
-	if want := "redefined 2026-09-19: def v2 -> " + Def + ", counted again: code 5 -> 1\n"; added != want {
+	if want := "redefined 2026-09-19: def v2 -> " + Def + ", counted again: code 5 -> 1, Max $0 (new in v3), enterprise $0 (new in v3)\n"; added != want {
 		t.Errorf("added %q, want %q", added, want)
 	}
 	if err := json.Unmarshal([]byte(testutil.Read(t, nums)), &old); err != nil || old.Def != Def || old.Numbers.Code != 1 {
@@ -304,7 +304,7 @@ func TestANewDefinitionCountsAnOldWeekAgain(t *testing.T) {
 		testutil.Write(t, nums, string(b))
 	}
 	before := testutil.Read(t, path)
-	for _, def := range []string{"v99", "v3.1", "V4", "v03"} {
+	for _, def := range []string{"v99", "v3.1", "V4", "v03", ""} {
 		setDef(def)
 		if _, _, err := Write(db, dir, build(t, db, "2026-09-12T00:00:00Z", "2026-09-20T00:00:00Z"), at("2026-09-20T00:00:00Z")); err == nil ||
 			!strings.Contains(err.Error(), fmt.Sprintf("written with def %q, newer than this build's %s or unknown to it: not revised", def, Def)) ||
@@ -557,8 +557,12 @@ func TestCardShowsTheWeeksMoneyByAccountAndProject(t *testing.T) {
 	}
 	later := c.Numbers
 	later.MaxUSD, later.EntUSD = 60, 400
-	if d := changes(c.Numbers, later); d != "Max $50 -> $60, enterprise $417 -> $400" {
+	if d := changes(c.Numbers, later, 3); d != "Max $50 -> $60, enterprise $417 -> $400" {
 		t.Errorf("changes: %q", d)
+	}
+	// Review of 033573f: a v2 week has no $ (0 in its numbers file); counted again, its $ is new, not "$0 -> $60".
+	if d := changes(Numbers{MaxPct: c.Numbers.MaxPct}, later, 2); !strings.HasSuffix(d, "Max $60 (new in v3), enterprise $400 (new in v3)") {
+		t.Errorf("changes from v2: %q", d)
 	}
 }
 
