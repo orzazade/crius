@@ -86,10 +86,11 @@ func check(command string) string {
 	return (&walker{vars: map[string]string{}, named: namesBus(command)}).check(command)
 }
 
-// setsGlobSubst: the text may turn on zsh's glob_subst. Option names ignore case and _, and emulate sh, ksh or csh sets it.
+// setsGlobSubst: the text may turn on zsh's glob_subst. Option names ignore case and _, emulate sh, ksh or csh sets it,
+// and setopt -m sets options by pattern (fourth review of the zsh fast path).
 func setsGlobSubst(text string) bool {
 	t := strings.ReplaceAll(fold(text), "_", "")
-	return strings.Contains(t, "globsubst") || strings.Contains(t, "emulate")
+	return strings.Contains(t, "globsubst") || strings.Contains(t, "emulate") || strings.Contains(t, "setopt")
 }
 
 // namesBus says whether text names the bus folder, in any case.

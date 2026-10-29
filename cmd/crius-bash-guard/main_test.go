@@ -739,6 +739,7 @@ func TestAZshSplitIsReadAsBash(t *testing.T) {
 		// With glob_subst on, ${=x} globs the value too (second review of 29ca7fd); emulate sh turns it on.
 		`setopt GLOB_SUBST; x='*(e:"echo pwn >> ~/.crius/bus/crius.log":)'; print ${=x}`,
 		`emulate sh; x='*(e:"echo pwn >> ~/.crius/bus/crius.log":)'; print ${=x}`,
+		`setopt -m 'glob*'; x='*(e:"echo pwn >> ~/.crius/bus/crius.log":)'; print ${=x}`,
 		`zsh -o glob_subst -c "x='*(e:\"echo pwn >> ~/.crius/bus/crius.log\":)'; print \${=x}"`,
 		// A shell the command starts may run with any options (third review: zsh started as sh has glob_subst on).
 		`ARGV0=sh zsh -c "setopt BARE_GLOB_QUAL; unsetopt SH_GLOB; x='*(e:\"echo>>~/.crius/bus/crius.log\":)'; print \${=x}"`,
