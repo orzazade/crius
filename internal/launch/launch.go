@@ -251,17 +251,9 @@ func tab(d Deps, project, persona, name, cwd, cmd string) (ws, surface string, e
 // the screen said. A session that
 // ran on a Max account of accounts.toml (acct, its config folder dir) comes back in that folder; acct "" goes through aitch's own route as before.
 func Resume(project, role, id, cwd, acct, dir string, d Deps) (ws, surface string, err error) {
-	switch {
-	case acct != "" && !slugRe.MatchString(acct): // typed into a shell and a title
-		return "", "", fmt.Errorf("bad account name %q: want lowercase letters, digits and dashes", acct)
-	case acct != "" && !safeDir(dir):
-		return "", "", fmt.Errorf("bad folder %q for account %s: want an absolute path with no quote, backslash or control character", dir, acct)
-	case !slugRe.MatchString(project) || !slugRe.MatchString(role):
-		return "", "", fmt.Errorf("bad project %q or role %q: want lowercase letters, digits and dashes", project, role)
-	case !idRe.MatchString(id): // typed into a shell
-		return "", "", fmt.Errorf("bad session id %q", id)
-	case !safeDir(cwd):
-		return "", "", fmt.Errorf("bad folder %q: want an absolute path with no quote, backslash or control character", cwd)
+	line, err := ResumeLine(project, role, id, cwd, acct, dir)
+	if err != nil {
+		return "", "", err
 	}
 	if d.Lock == "" {
 		return "", "", fmt.Errorf("no launch lock file named: two resumes at once could both type into the tab")
@@ -292,8 +284,7 @@ func Resume(project, role, id, cwd, acct, dir string, d Deps) (ws, surface strin
 		if !shells[filepath.Base(strings.TrimPrefix(front, "-"))] {
 			return "", "", fmt.Errorf("%s (%s %s) runs %s in front, not a shell: left alone", name, ws, surface, front)
 		}
-		line := "clear && cd '" + cwd + "' && " + cmd
-		if out, err := d.Cmux("send", "--workspace", ws, "--surface", surface, "--", line); err != nil {
+		if out, err := d.Cmux("send", "--workspace", ws, "--surface", surface, "--", "clear && "+line); err != nil {
 			return "", "", fmt.Errorf("cmux send: %v: %s", err, out)
 		}
 		// The dead Claude's last screen may still show an input box (OF9): Enter goes once the line is on the shell's
@@ -333,6 +324,26 @@ func Resume(project, role, id, cwd, acct, dir string, d Deps) (ws, surface strin
 		return "", "", fmt.Errorf("%s in %s %s: %v", name, ws, surface, err)
 	}
 	return ws, surface, nil
+}
+
+// ResumeLine is the shell line that resumes session id as project's role in folder cwd, on account acct (its config
+// folder dir; "" for aitch's own route), as Resume types it into a crashed tab. A value that cannot go on a shell line
+// safely is refused.
+func ResumeLine(project, role, id, cwd, acct, dir string) (string, error) {
+	switch {
+	case acct != "" && !slugRe.MatchString(acct): // typed into a shell and a title
+		return "", fmt.Errorf("bad account name %q: want lowercase letters, digits and dashes", acct)
+	case acct != "" && !safeDir(dir):
+		return "", fmt.Errorf("bad folder %q for account %s: want an absolute path with no quote, backslash or control character", dir, acct)
+	case !slugRe.MatchString(project) || !slugRe.MatchString(role):
+		return "", fmt.Errorf("bad project %q or role %q: want lowercase letters, digits and dashes", project, role)
+	case !idRe.MatchString(id): // typed into a shell
+		return "", fmt.Errorf("bad session id %q", id)
+	case !safeDir(cwd):
+		return "", fmt.Errorf("bad folder %q: want an absolute path with no quote, backslash or control character", cwd)
+	}
+	_, _, cmd := command(project, role, acct, dir)
+	return "cd '" + cwd + "' && " + cmd + " --resume " + id, nil
 }
 
 // safeDir is a folder that can go in single quotes on a shell line: absolute, with no quote, backslash or control

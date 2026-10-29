@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/orzazade/crius/internal/launch"
 	"github.com/orzazade/crius/internal/sessionstate"
@@ -204,5 +205,74 @@ func TestAMoveReadsTheRolesSessionAndItsAccount(t *testing.T) {
 	testutil.Write(t, filepath.Join(m1, "sessions", "1.json"), status)
 	if _, err := moved(home, "quotes", "lead"); err == nil || !strings.Contains(err.Error(), fmt.Sprintf("still runs in process %d", os.Getpid())) {
 		t.Errorf("running: %v", err)
+	}
+}
+
+// 10-28: crius-spawn -resume falcon lead found no ~/.crius/roles/falcon.lead.json: the lead was started by hand without
+// the name "falcon · lead", so crius never filed a role for it. The error says how crius files a role and offers the
+// newest stopped sessions filed under no role in the project's launch folder, each with the line that resumes it by
+// hand as the role. Never offered (review of item 3, real data 10-29): an agent in a scratchpad or worktree (most
+// unnamed sessions), a session of another role, one still running, another project's. One that cannot be checked is
+// skipped and counted.
+func TestAResumeWithNoRoleFileSaysHow(t *testing.T) {
+	home, fal, har, m2, running := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
+	testutil.Write(t, filepath.Join(home, "projects.toml"), "[projects.falcon]\npersona = \"personal\"\naccounts = [\"max\"]\ncwd = [\""+fal+
+		"\"]\n[projects.harbor]\npersona = \"personal\"\naccounts = [\"max\"]\ncwd = [\""+har+"\"]\n")
+	quoted := filepath.Join(t.TempDir(), "it's") // a Max row's folder no shell line can hold
+	testutil.Write(t, filepath.Join(home, "accounts.toml"), "[[account]]\nname = \"max2\"\nplan = \"max\"\ndirs = [\""+m2+
+		"\"]\n[[account]]\nname = \"max3\"\nplan = \"max\"\ndirs = [\""+quoted+"\"]\n")
+	sessions := filepath.Join(home, "sessions")
+	at := time.Date(2026, 10, 28, 21, 0, 0, 0, time.Local)
+	for _, s := range []sessionstate.State{
+		{SessionID: "11111111-1111-4111-8111-111111111111", Time: at, Cwd: fal, Project: "falcon", Role: "unknown", Name: "falcon-a2", Config: m2},
+		{SessionID: "22222222-2222-4222-8222-222222222222", Time: at.Add(time.Hour), Cwd: fal, Project: "falcon", Role: "unknown", Config: t.TempDir(), State: "ended"},
+		{SessionID: "33333333-3333-4333-8333-333333333333", Time: at.Add(2 * time.Hour), Cwd: har + "/../quotes", Project: "quotes", Role: "unknown", Config: t.TempDir()},
+		{SessionID: "44444444-4444-4444-8444-444444444444", Time: at.Add(3 * time.Hour), Cwd: fal, Project: "falcon", Role: "worker", Config: t.TempDir()},
+		{SessionID: "55555555-5555-4555-8555-555555555555", Time: at.Add(4 * time.Hour), Cwd: fal, Project: "falcon", Role: "unknown", Config: running},
+		{SessionID: "66666666-6666-4666-8666-666666666666", Time: at.Add(5 * time.Hour), Cwd: t.TempDir() + "/scratchpad/wt-meet", Project: "falcon", Role: "unknown", Name: "wt-meet-5b", Config: t.TempDir()},
+		{SessionID: "77777777-7777-4777-8777-777777777777", Time: at.Add(6 * time.Hour), Cwd: fal, Project: "falcon", Role: "unknown"},
+		{SessionID: "88888888-8888-4888-8888-888888888888", Time: at.Add(7 * time.Hour), Cwd: fal, Project: "harbor", Role: "unknown", Config: t.TempDir()},
+		{SessionID: "99999999-9999-4999-8999-999999999999", Time: at.Add(8 * time.Hour), Cwd: fal, Project: "falcon", Role: "unknown", Config: quoted},
+	} {
+		if err := sessionstate.Write(sessions, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	status := fmt.Sprintf(`{"pid":%d,"sessionId":"55555555-5555-4555-8555-555555555555","procStart":%q}`, os.Getpid(), testutil.ProcStart(t, os.Getpid()))
+	testutil.Write(t, filepath.Join(running, "sessions", "1.json"), status)
+	var got []string
+	d := launch.Deps{Cmux: func(args ...string) (string, error) {
+		got = append(got, strings.Join(args, " "))
+		return "", errors.New("stop here")
+	}, Lock: filepath.Join(home, "launch.lock")}
+	err := resume(home, "falcon", "lead", d)
+	for _, want := range []string{filepath.Join(home, "roles", "falcon.lead.json"), `named "falcon · lead" starts (claude -n)`, "-resume works",
+		"2 sessions skipped, their Claude or their resume line cannot be checked (bad folder \"" + quoted + "\" for account max3",
+		"The newest stopped sessions in " + fal + " filed under no role",
+		`22222222-2222-4222-8222-222222222222 (name "", last event 2026-10-28 22:00): cd '` + fal + "' && aitch launch claude -- --model claude-opus-5-5",
+		"-n 'falcon · lead' --resume 22222222-2222-4222-8222-222222222222; 11111111-",
+		`(name "falcon-a2", last event 2026-10-28 21:00): cd '` + fal + "' && aitch launch claude --primary '" + m2 + "'",
+		"-n 'falcon · lead' --resume 11111111-1111-4111-8111-111111111111"} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("err %v: want %q in it", err, want)
+		}
+	}
+	for _, not := range []string{"33333333-", "44444444-", "55555555-", "66666666-", "88888888-", "99999999-"} {
+		if strings.Contains(err.Error(), not) {
+			t.Errorf("err %v: offers %s", err, not)
+		}
+	}
+	if len(got) != 0 {
+		t.Errorf("cmux called: %q", got)
+	}
+	// -move gets the same help; with no stopped session to offer, or no launch folder, it says so.
+	if _, err := moved(home, "falcon", "lead"); err == nil || !strings.Contains(err.Error(), "then -move works") {
+		t.Errorf("move: %v", err)
+	}
+	if err := resume(home, "harbor", "lead", d); err == nil || !strings.HasSuffix(err.Error(), "crius saw no stopped session in "+har+" filed under no role") {
+		t.Errorf("no session: %v", err)
+	}
+	if err := resume(home, "quotes", "lead", d); err == nil || !strings.Contains(err.Error(), "no session offered: ") || strings.Contains(err.Error(), "33333333-") {
+		t.Errorf("no launch folder: %v", err)
 	}
 }

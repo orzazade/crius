@@ -22,11 +22,14 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -144,9 +147,13 @@ func moved(home, project, role string) (*launch.Moved, error) {
 	return m, nil
 }
 
-// stopped is the session crius-hook keeps as the role's current one, refused while its Claude still runs.
+// stopped is the session crius-hook keeps as the role's current one, refused while its Claude still runs. A role with
+// no file is refused with how to go on (unfiled).
 func stopped(home, project, role, verb string) (sessionstate.State, error) {
 	s, err := sessionstate.ReadRole(filepath.Join(home, "roles"), project, role)
+	if errors.Is(err, fs.ErrNotExist) {
+		err = unfiled(home, project, role, verb, err)
+	}
 	if err != nil {
 		return s, fmt.Errorf("no session to %s for %s %s: %w", verb, project, role, err)
 	}
@@ -157,6 +164,62 @@ func stopped(home, project, role, verb string) (sessionstate.State, error) {
 		return s, fmt.Errorf("%s %s: session %s still runs in process %d (/exit in its tab stops it): nothing %sd", project, role, s.SessionID, pid, verb)
 	}
 	return s, nil
+}
+
+// unfiled says how to go on for a role whose file is missing (err) (10-28: falcon's lead, started by hand without its
+// name, had none): crius writes the file when a session named "<project> · <role>" starts (claude -n). It names the
+// newest stopped sessions crius filed under no role in the project's launch folder, where a lead started by hand runs,
+// each with the line that resumes it by hand as the role. Agents in worktrees and scratchpads are never offered.
+func unfiled(home, project, role, verb string, err error) error {
+	msg := fmt.Sprintf("%v: crius writes it when a session named %q starts (claude -n)", err, project+" · "+role)
+	folder, _, _, err := ingest.Place(home, project)
+	if err != nil {
+		return fmt.Errorf("%s; no session offered: %v", msg, err)
+	}
+	as, err := quota.LoadAccounts(home)
+	if err != nil {
+		return fmt.Errorf("%s; no session offered: %v", msg, err)
+	}
+	all, err := sessionstate.List(filepath.Join(home, "sessions"))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, sessionstate.ErrDamaged) {
+		return fmt.Errorf("%s; crius's session files: %v", msg, err)
+	} else if err != nil {
+		msg += fmt.Sprintf(" (%v)", err)
+	}
+	var unnamed []sessionstate.State
+	for _, s := range all {
+		if s.Project == project && s.Role == "unknown" && s.Cwd != "" && filepath.Clean(s.Cwd) == folder {
+			unnamed = append(unnamed, s)
+		}
+	}
+	slices.SortFunc(unnamed, func(a, b sessionstate.State) int { return b.Time.Compare(a.Time) })
+	var offers, unsure []string
+	for _, s := range unnamed {
+		if len(offers) == 3 {
+			break
+		}
+		if pid, _, err := sessionstate.Process(s.Config, s.SessionID); err != nil {
+			unsure = append(unsure, err.Error())
+			continue
+		} else if pid != 0 { // a running Claude is left alone, as for a filed role
+			continue
+		}
+		acct, dir := maxRow(as, s.FiledConfig())
+		line, err := launch.ResumeLine(project, role, s.SessionID, s.Cwd, acct, dir)
+		if err != nil {
+			unsure = append(unsure, err.Error())
+			continue
+		}
+		offers = append(offers, fmt.Sprintf("%s (name %q, last event %s): %s", s.SessionID, s.Name, s.Time.Local().Format("2006-01-02 15:04"), line))
+	}
+	if unsure != nil {
+		msg += fmt.Sprintf("; %d sessions skipped, their Claude or their resume line cannot be checked (%s)", len(unsure), unsure[0])
+	}
+	if offers == nil {
+		return fmt.Errorf("%s; crius saw no stopped session in %s filed under no role", msg, folder)
+	}
+	return fmt.Errorf("%s. The newest stopped sessions in %s filed under no role: if one is the %s, run its line in a new "+
+		"tab of the project's workspace (the name files it, then -%s works): %s", msg, folder, role, verb, strings.Join(offers, "; "))
 }
 
 // runCmux gives cmux's stdout, or on failure its stdout and stderr: a notice on stderr must not reach a parse.
@@ -201,8 +264,14 @@ func sessionAccount(home, config string) (acct, dir string, err error) {
 	if err != nil {
 		return "", "", err
 	}
+	acct, dir = maxRow(as, config)
+	return acct, dir, nil
+}
+
+// maxRow is the Max row of accounts.toml that lists config folder, and that folder; "" when none does.
+func maxRow(as *quota.Accounts, config string) (acct, dir string) {
 	if a := as.Dir(config); a != nil && a.Plan == "max" {
-		return a.Name, config, nil
+		return a.Name, config
 	}
-	return "", "", nil
+	return "", ""
 }
