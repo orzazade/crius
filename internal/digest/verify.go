@@ -12,9 +12,8 @@ var (
 	shaRe    = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
 	letterRe = regexp.MustCompile(`[a-f]`)
 	wordRe   = regexp.MustCompile(`[0-9A-Za-z]+`)
-	// baseRe finds the sha of a base or next commit: right after "base" or "next", or after one branch name (base main
-	// 441055ff, base: origin/main@441055ff, base next/main@441055ff), with no clause break between.
-	baseRe  = regexp.MustCompile(`(?i)\b(?:base|next)\b[\s:=@/.-]*(?:([0-9a-f]{7,40})\b|[\w.-]+(?:/[\w.-]+)*[\s:=@/]+([0-9a-f]{7,40})\b)`)
+	// baseRe finds "base" or "next" and the rest of its clause: up to a character no ref or separator has.
+	baseRe  = regexp.MustCompile(`(?i)\b(?:base|next)\b([\w\s:=@/.-]*)`)
 	tokenRe = regexp.MustCompile(`[0-9A-Za-z]+(?:-[0-9A-Za-z]+)*`)
 	digitRe = regexp.MustCompile(`[0-9]`)
 	alphaRe = regexp.MustCompile(`[A-Za-z]`)
@@ -158,9 +157,17 @@ func names(text string, m Milestone) bool {
 			return true
 		}
 	}
-	skip := map[int]bool{} // where a base or next sha starts: another commit
+	// A base or next sha is another commit: the first sha in the next three words of the clause (base main 441055ff,
+	// base: origin/main@441055ff, base 20261029@441055ff).
+	skip := map[int]bool{}
 	for _, m := range baseRe.FindAllStringSubmatchIndex(text, -1) {
-		skip[max(m[2], m[4])] = true
+		clause := text[m[2]:m[3]]
+		for _, ix := range wordRe.FindAllStringIndex(clause, 3) {
+			if isSha(strings.ToLower(clause[ix[0]:ix[1]])) {
+				skip[m[2]+ix[0]] = true
+				break
+			}
+		}
 	}
 	for _, ix := range wordRe.FindAllStringIndex(text, -1) {
 		if !skip[ix[0]] && shaIn(text[ix[0]:ix[1]], line) {
