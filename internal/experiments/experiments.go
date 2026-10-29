@@ -367,21 +367,24 @@ func steps(cmd string) []string {
 	var out []string
 	var cur strings.Builder
 	var q rune
+	esc := false // the rune before is escaped: Ticket\ #3 is one word
 	rs := []rune(cmd)
 	for i := 0; i < len(rs); i++ {
-		c := rs[i]
+		c, wasEsc := rs[i], esc
+		esc = false
 		switch {
 		case c == '\\' && q != '\'' && i+1 < len(rs):
 			if i++; rs[i] != '\n' {
 				cur.WriteRune(c)
 				cur.WriteRune(rs[i])
+				esc = true
 			}
 		case q != 0:
 			cur.WriteRune(c)
 			if c == q {
 				q = 0
 			}
-		case c == '#' && (i == 0 || strings.ContainsRune(" \t\n;|&(", rs[i-1])):
+		case c == '#' && (i == 0 || !wasEsc && strings.ContainsRune(" \t\n;|&(", rs[i-1])):
 			for i+1 < len(rs) && rs[i+1] != '\n' {
 				i++
 			}
