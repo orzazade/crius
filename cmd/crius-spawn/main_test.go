@@ -79,6 +79,28 @@ func TestAResumeOfARunningSessionIsRefused(t *testing.T) {
 	}
 }
 
+// Review of item 8: a session cmux restored in another folder than its role's start filed still runs there; the "still
+// runs" check looks where it runs (config), not where it was filed, so it is not resumed a second time.
+func TestAResumeOfASessionRestoredElsewhereIsRefused(t *testing.T) {
+	home, filed, running := t.TempDir(), t.TempDir(), t.TempDir()
+	id := "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b"
+	testutil.Write(t, filepath.Join(running, "sessions", "1.json"),
+		fmt.Sprintf(`{"pid":%d,"sessionId":%q,"name":"quotes · rig","procStart":%q}`, os.Getpid(), id, testutil.ProcStart(t, os.Getpid())))
+	s := sessionstate.State{SessionID: id, Cwd: "/Users/o/Projects/quotes", Project: "quotes", Role: "rig", Config: running, Filed: filed}
+	if err := sessionstate.WriteRole(filepath.Join(home, "roles"), s, true); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	d := launch.Deps{Cmux: func(args ...string) (string, error) {
+		got = append(got, strings.Join(args, " "))
+		return "", errors.New("stop here")
+	}}
+	err := resume(home, "quotes", "rig", d)
+	if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("still runs in process %d", os.Getpid())) || len(got) != 0 {
+		t.Errorf("err %v, cmux calls %q: want a refusal naming the process and no cmux call", err, got)
+	}
+}
+
 // Owner 10-23: with no -account, or -account max, crius-spawn starts the session on the Max account with the most room,
 // in that account's folder linked to the project's persona. The figures come from the record store, the folders from
 // accounts.toml and the persona and pause_at from projects.toml.

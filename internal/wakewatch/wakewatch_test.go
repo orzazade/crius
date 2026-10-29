@@ -1900,3 +1900,77 @@ func TestABusLineTheOutboxHoldsIsNotTypedAgain(t *testing.T) {
 		t.Fatalf("given to Send %d times, want once: %q", len(f.tried), f.tried)
 	}
 }
+
+// Item 8 (Crius 10-29 00:28): cmux restored sessions with no CLAUDE_CONFIG_DIR, so they ran on the default folder,
+// another account, and nothing said so. A live session in another folder than its role's start filed wakes Crius once,
+// naming the fix; one in its own folder (or a link to it), or no longer its role's session, does not.
+func TestASessionRestoredOnTheDefaultFolderIsCaught(t *testing.T) {
+	home := setup(t, nil)
+	u := t.TempDir()
+	max2, def, link := filepath.Join(u, ".claude-max2"), filepath.Join(u, ".claude"), filepath.Join(u, ".claude-personal")
+	for _, d := range []string{max2, def} {
+		os.MkdirAll(d, 0o700)
+	}
+	if err := os.Symlink(def, link); err != nil {
+		t.Fatal(err)
+	}
+	file := func(filed string) {
+		role := hookState("s1", sessionstate.Idle, "quotes", "p3")
+		role.Config, role.Filed = def, filed
+		if err := sessionstate.WriteRole(filepath.Join(home, "roles"), role, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	file(max2)
+	live := []Session{{Name: "quotes: p3", ID: "s1", Started: t0.Add(-time.Hour)}, {Name: "quotes: p4", ID: "s2", Started: t0}}
+	running := hookState("s1", sessionstate.Idle, "quotes", "p3")
+	running.Config = def
+	other := hookState("s2", sessionstate.Idle, "quotes", "p3") // not the role's session: a child claude run in a tab
+	other.Config = def
+	f := &fake{ses: live, states: []sessionstate.State{running, other}}
+	for _, m := range []time.Duration{0, 30, 60} {
+		if err := Run(f.deps(home, t0.Add(m*time.Minute))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(f.sent) != 1 || !strings.Contains(f.sent[0], "quotes · p3") || !strings.Contains(f.sent[0], "runs in "+def+",") ||
+		!strings.Contains(f.sent[0], max2) || !strings.Contains(f.sent[0], "crius-spawn -resume quotes p3") {
+		t.Fatalf("sent %q, want one wake naming quotes · p3, both folders and the fix", f.sent)
+	}
+	// A run that cannot read the role file did not see it go (review): no second wake once it reads again.
+	testutil.Write(t, filepath.Join(home, "roles", "quotes.p3.json"), "{")
+	if err := Run(f.deps(home, t0.Add(90*time.Minute))); err != nil {
+		t.Fatal(err)
+	}
+	file(max2)
+	if err := Run(f.deps(home, t0.Add(100*time.Minute))); err != nil {
+		t.Fatal(err)
+	}
+	wakes := 0
+	for _, m := range f.sent {
+		if strings.Contains(m, " runs in ") {
+			wakes++
+		}
+	}
+	if wakes != 1 || !strings.Contains(f.sent[len(f.sent)-1], "could not read its role file") {
+		t.Fatalf("sent %q, want the first wake and the unread role file only", f.sent)
+	}
+	f.sent = nil
+	for _, filed := range []string{def, link + "/"} {
+		file(filed)
+		if err := Run(f.deps(home, t0.Add(2*time.Hour))); err != nil {
+			t.Fatal(err)
+		}
+		if len(f.sent) != 0 {
+			t.Fatalf("filed in %s, running in %s: sent %q", filed, def, f.sent)
+		}
+	}
+	// Restored on the wrong folder again (review): it wakes Crius again.
+	file(max2)
+	if err := Run(f.deps(home, t0.Add(3*time.Hour))); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.sent) != 1 {
+		t.Fatalf("restored on the wrong folder again: sent %q, want one wake", f.sent)
+	}
+}

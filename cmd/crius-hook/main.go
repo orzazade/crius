@@ -104,6 +104,17 @@ func record(in sessionstate.Input) error {
 			return err
 		}
 	}
+	// A restart of the role's own session, or a new id in its tab other than a fresh start (/clear, whose first event
+	// may come before its start), keeps the folder its start filed (Crius 10-29 00:28: cmux restored sessions with no
+	// CLAUDE_CONFIG_DIR, on another account); wakewatch names one that runs elsewhere.
+	s.Filed = s.Config
+	if replace {
+		cur, err := sessionstate.ReadRole(roles, s.Project, s.Role)
+		sameTab := s.Surface != "" && cur.Surface == s.Surface && !(in.Event == "SessionStart" && s.Detail == "startup")
+		if err == nil && (cur.SessionID == s.SessionID || sameTab) {
+			s.Filed = cur.FiledConfig()
+		}
+	}
 	return sessionstate.WriteRole(roles, s, replace)
 }
 

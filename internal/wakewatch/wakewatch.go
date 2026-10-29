@@ -115,7 +115,7 @@ type seenScreen struct {
 
 type state struct {
 	Alerted map[string]time.Time // key -> when last typed, or posted on crius.log when typing failed
-	// Typed: bus lines typed into Crius's tab, by key, and when; never typed again (Crius 10-29: an open DONE was typed
+	// Typed: bus lines (and wrong-folder wakes) typed into Crius's tab, by key, and when; never typed again (Crius 10-29: an open DONE was typed
 	// every 20 min). Kept past the window a line can wake in, so a line that drops out for a run stays typed.
 	Typed       map[string]time.Time
 	Screens     map[string]seenScreen
@@ -174,6 +174,7 @@ func Run(d Deps) error {
 	ss, sesErr := d.Sessions()
 	hv, ha := readHooks(d, st.Views, ss, sesErr)
 	alerts = append(alerts, ha...)
+	alerts = append(alerts, wrongFolder(d.Home, hv)...)
 	screens, err := d.Screens()
 	if err != nil {
 		alerts = append(alerts, [2]string{screensFailed, "the tab check failed to look: " + err.Error()})
@@ -218,7 +219,7 @@ func Run(d Deps) error {
 		if err != nil {
 			sendErr = err
 		}
-		if strings.HasPrefix(a[0], "bus:") && (err == nil || d.HandedOver != nil && d.HandedOver(err)) {
+		if (strings.HasPrefix(a[0], "bus:") || strings.HasPrefix(a[0], "folder:")) && (err == nil || d.HandedOver != nil && d.HandedOver(err)) {
 			st.Typed[a[0]] = d.Now
 		}
 		// Crius's waiter wakes on a bus line: a wake that cannot be typed goes there, so none is lost (S2, 10-22).
@@ -250,6 +251,14 @@ func Run(d Deps) error {
 	for k := range st.Alerted {
 		if !active[k] {
 			delete(st.Alerted, k)
+		}
+	}
+	// A wrong folder can clear and come back (review of item 8: a second restore on it was silent for 12 h): once a run
+	// that saw the sessions finds it gone, it wakes Crius again when it returns.
+	for k := range st.Typed {
+		id, _, _ := strings.Cut(strings.TrimPrefix(k, "folder:"), ":")
+		if strings.HasPrefix(k, "folder:") && !active[k] && !hv.blind && !active["role-unread:"+id] {
+			delete(st.Typed, k)
 		}
 	}
 	b, _ := json.Marshal(st)
@@ -1063,6 +1072,39 @@ func readHooks(d Deps, prev map[string][2]string, ss []Session, sesErr error) (*
 		}
 	}
 	return h, out
+}
+
+// wrongFolder names each live session that is its role's current one but runs in another Claude Code config folder
+// than its role's start filed (crius-hook keeps that one on a restart and a /clear): another account or persona (Crius
+// 10-29 00:28, cmux restored sessions with no CLAUDE_CONFIG_DIR). crius-spawn -resume brings it back in the filed
+// folder. Typed once, like a bus line: a resume that aitch's route sends elsewhere again must not wake Crius for ever.
+func wrongFolder(home string, h *hooks) [][2]string {
+	var out [][2]string
+	for _, id := range slices.Sorted(maps.Keys(h.session)) {
+		s := h.session[id]
+		if s.Project == "" || s.Role == "" || s.Config == "" {
+			continue
+		}
+		r, err := sessionstate.ReadRole(filepath.Join(home, "roles"), s.Project, s.Role)
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			out = append(out, [2]string{"role-unread:" + id, "the folder check could not read its role file: " + err.Error()})
+		}
+		if err != nil || r.SessionID != id || r.FiledConfig() == "" || samePath(r.FiledConfig()) == samePath(s.Config) {
+			continue
+		}
+		out = append(out, [2]string{"folder:" + id + ":" + s.Config, fmt.Sprintf(
+			"%s · %s (session %s) runs in %s, but its role started in %s: another account or persona. Stop its Claude, then crius-spawn -resume %s %s",
+			s.Project, s.Role, id, s.Config, r.FiledConfig(), s.Project, s.Role)})
+	}
+	return out
+}
+
+// samePath is p with links resolved, so two spellings of one folder compare equal; p cleaned when it cannot be resolved.
+func samePath(p string) string {
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	return filepath.Clean(p)
 }
 
 // pick gives the view that decides, the screen's or the state's, and logs the pair when it changed since the last run

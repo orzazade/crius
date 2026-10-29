@@ -57,6 +57,9 @@ type State struct {
 	Workspace string    `json:"workspace,omitempty"` // cmux workspace and surface the session runs in
 	Surface   string    `json:"surface,omitempty"`
 	Config    string    `json:"config,omitempty"` // the Claude Code config folder it runs under, where its status file is
+	// Filed, in a role's file only: the config folder the role's session was started in, so its account. A restart of
+	// that session or a /clear in it keeps it (Crius 10-29 00:28: cmux restored sessions on another account's folder).
+	Filed string `json:"filed,omitempty"`
 	// PromptSHA is the first 16 hex digits of the sha256 of the last submitted prompt, trimmed: proof that a message
 	// a watcher typed was submitted as itself, not mixed with a draft. The prompt itself is never stored.
 	PromptSHA  string    `json:"prompt_sha,omitempty"`
@@ -455,6 +458,14 @@ func WriteRole(dir string, s State, replace bool) error {
 		return err
 	}
 	return nil
+}
+
+// FiledConfig is the config folder a role's session was started in: Filed, or Config in a file written before Filed.
+func (s State) FiledConfig() string {
+	if s.Filed != "" {
+		return s.Filed
+	}
+	return s.Config
 }
 
 // ReadRole gives the state crius-hook kept for a role's current session.

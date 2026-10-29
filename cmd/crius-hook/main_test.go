@@ -339,6 +339,84 @@ func TestARoleWhoseSessionEndedGoesToTheNextOne(t *testing.T) {
 	}
 }
 
+// Crius 10-29 00:28: cmux restored sessions with no CLAUDE_CONFIG_DIR, so they came back on the default folder,
+// another account, and their SessionStart filed that folder as the role's: crius-spawn -resume then kept them there. A
+// restart of the role's own session keeps the folder its start filed; the session's file says where it runs now.
+func TestARestoreInAnotherFolderKeepsTheRolesFolder(t *testing.T) {
+	w := newWorld(t)
+	roles := filepath.Join(w.crius, "roles")
+	run(t, w.env(), `{"session_id":"s-1","hook_event_name":"SessionStart","source":"startup","cwd":"/w/crius"}`)
+	def := filepath.Join(w.home, ".claude")
+	testutil.Write(t, filepath.Join(def, "sessions", fmt.Sprintf("%d.json", os.Getpid())),
+		fmt.Sprintf(`{"pid":%d,"sessionId":"s-1","cwd":"/w/crius","name":"quotes · p1","procStart":%q}`, os.Getpid(), testutil.ProcStart(t, os.Getpid())))
+	var env []string
+	for _, e := range w.env() {
+		if !strings.HasPrefix(e, "CLAUDE_CONFIG_DIR=") {
+			env = append(env, e)
+		}
+	}
+	env = append(env, "CLAUDE_CONFIG_DIR="+def)
+	run(t, env, `{"session_id":"s-1","hook_event_name":"SessionStart","source":"resume","cwd":"/w/crius"}`)
+	// Config stays where it runs: crius-spawn's "still runs" check and takesRole look for its process there (review).
+	r, err := sessionstate.ReadRole(roles, "quotes", "p1")
+	if err != nil || r.SessionID != "s-1" || r.Detail != "resume" || r.Config != def || r.FiledConfig() != w.claude {
+		t.Fatalf("role file %+v, %v; want s-1 resumed, running in %s, filed in %s", r, err, def, w.claude)
+	}
+	// A /clear gives the same Claude a new id: still the role's account (review: the alert went quiet after it).
+	testutil.Write(t, filepath.Join(def, "sessions", fmt.Sprintf("%d.json", os.Getpid())),
+		fmt.Sprintf(`{"pid":%d,"sessionId":"s-2","cwd":"/w/crius","name":"quotes · p1","procStart":%q}`, os.Getpid(), testutil.ProcStart(t, os.Getpid())))
+	run(t, env, `{"session_id":"s-2","hook_event_name":"SessionStart","source":"clear","cwd":"/w/crius"}`)
+	if r, err = sessionstate.ReadRole(roles, "quotes", "p1"); err != nil || r.SessionID != "s-2" || r.FiledConfig() != w.claude {
+		t.Fatalf("after /clear: role file %+v, %v; want s-2 filed in %s", r, err, w.claude)
+	}
+	// A restart of s-2 keeps it; a fresh start of a new session (crius-spawn, -move) files the folder it starts in.
+	run(t, env, `{"session_id":"s-2","hook_event_name":"SessionStart","source":"startup","cwd":"/w/crius"}`)
+	if r, err = sessionstate.ReadRole(roles, "quotes", "p1"); err != nil || r.FiledConfig() != w.claude {
+		t.Fatalf("a restart of s-2: role file %+v, %v; want filed in %s", r, err, w.claude)
+	}
+	testutil.Write(t, filepath.Join(def, "sessions", fmt.Sprintf("%d.json", os.Getpid())),
+		fmt.Sprintf(`{"pid":%d,"sessionId":"s-3","cwd":"/w/crius","name":"quotes · p1","procStart":%q}`, os.Getpid(), testutil.ProcStart(t, os.Getpid())))
+	run(t, env, `{"session_id":"s-3","hook_event_name":"SessionStart","source":"startup","cwd":"/w/crius"}`)
+	if r, err = sessionstate.ReadRole(roles, "quotes", "p1"); err != nil || r.SessionID != "s-3" || r.FiledConfig() != def {
+		t.Fatalf("a new session: role file %+v, %v; want s-3 filed in %s", r, err, def)
+	}
+}
+
+// Review of item 8: after /clear the new id's first event may come before its start; in the role's own tab it keeps the
+// role's folder. A /clear in another tab of the same role files its own.
+func TestAClearInTheRolesTabKeepsItsFolder(t *testing.T) {
+	w := newWorld(t)
+	roles := filepath.Join(w.crius, "roles")
+	run(t, w.env(), `{"session_id":"s-1","hook_event_name":"SessionStart","source":"startup","cwd":"/w/crius"}`)
+	def := filepath.Join(w.home, ".claude")
+	status := func(id string) {
+		testutil.Write(t, filepath.Join(def, "sessions", fmt.Sprintf("%d.json", os.Getpid())),
+			fmt.Sprintf(`{"pid":%d,"sessionId":%q,"cwd":"/w/crius","name":"quotes · p1","procStart":%q}`, os.Getpid(), id, testutil.ProcStart(t, os.Getpid())))
+	}
+	in := func(surface string) []string {
+		var env []string
+		for _, e := range w.env() {
+			if !strings.HasPrefix(e, "CLAUDE_CONFIG_DIR=") && !strings.HasPrefix(e, "CMUX_SURFACE_ID=") {
+				env = append(env, e)
+			}
+		}
+		return append(env, "CLAUDE_CONFIG_DIR="+def, "CMUX_SURFACE_ID="+surface)
+	}
+	status("s-1")
+	run(t, in("sf-3"), `{"session_id":"s-1","hook_event_name":"SessionStart","source":"resume","cwd":"/w/crius"}`)
+	status("s-2") // /clear: the same process now holds s-2, and its prompt is filed before its start
+	run(t, in("sf-3"), `{"session_id":"s-2","hook_event_name":"UserPromptSubmit","prompt":"go","cwd":"/w/crius"}`)
+	r, err := sessionstate.ReadRole(roles, "quotes", "p1")
+	if err != nil || r.SessionID != "s-2" || r.FiledConfig() != w.claude {
+		t.Fatalf("role file %+v, %v; want s-2 filed in %s", r, err, w.claude)
+	}
+	status("s-3")
+	run(t, in("sf-9"), `{"session_id":"s-3","hook_event_name":"SessionStart","source":"clear","cwd":"/w/crius"}`)
+	if r, err = sessionstate.ReadRole(roles, "quotes", "p1"); err != nil || r.SessionID != "s-3" || r.FiledConfig() != def {
+		t.Fatalf("another tab's /clear: role file %+v, %v; want s-3 filed in %s", r, err, def)
+	}
+}
+
 // OF4: a session's start prunes the files of sessions kept no longer; a prompt does not (it runs on every turn).
 func TestASessionStartPrunesOldSessions(t *testing.T) {
 	w := newWorld(t)

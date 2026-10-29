@@ -106,7 +106,7 @@ func resume(home, project, role string, d launch.Deps) error {
 	if err != nil {
 		return err
 	}
-	acct, dir, err := sessionAccount(home, s.Config)
+	acct, dir, err := sessionAccount(home, s.FiledConfig()) // its account, wherever a restore put it
 	if err != nil {
 		return err
 	}
