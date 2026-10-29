@@ -319,14 +319,74 @@ var rearm = []string{"Monitor", "TaskStop", "ToolSearch"}
 // build log is no bus wait.
 var waiterRe = regexp.MustCompile(`\b(?:team|bus)[\w-]*wait[\w-]*\.sh\b|\bbus[\w-]*\.(?:ts|sh)\s+wait\b|\.crius/bus/`)
 
-// actRe is a step that acts, before or after a wait in one command: a post (bus-post, say.sh, status-add.sh), a git
-// write or fetch, a file written from a heredoc (review of 7dfa396: 7 of about 8000 real waits in the Quotes
-// transcripts of 10-29).
+// actRe is a command that acts anywhere in it: a post (bus-post, say.sh, status-add.sh), a git write or fetch, a file
+// written from a heredoc (review of 7dfa396).
 var actRe = regexp.MustCompile(`bus-post|\bsay\.sh|\bstatus-add\.sh|\bgit\s+(?:-C\s+\S+\s+)?(?:commit|push|merge|fetch|rebase|checkout|reset)\b|<<-?\s*['"]?[A-Za-z_]`)
 
-// waiter tells a background command that waits on the bus from one that acts.
+// plumbing is what a wait does around the wait itself: variables, echo, sleep, cd, loop words, reading the log (tail,
+// grep, cut, awk), a fifo, stopping the last waiter (kill $T).
+var plumbing = map[string]bool{"true": true, ":": true, "echo": true, "printf": true, "sleep": true, "cd": true,
+	"{": true, "}": true, "done": true, "fi": true, "wait": true, "break": true, "exit": true, "[": true, "[[": true,
+	"for": true, "while": true, "until": true, "test": true, "read": true, "local": true, "unset": true, "export": true,
+	"mkfifo": true, "rm": true, "kill": true, "tail": true, "grep": true, "cat": true, "cut": true, "head": true, "wc": true,
+	"awk": true, "date": true}
+
+var leadRe = regexp.MustCompile(`^(?:(?:do|then|else|if|while|until|!)\s+)*`)
+
+// waiter tells a background command that waits on the bus from one that acts: every step is a bus wait or plumbing,
+// and none acts. A test run, a restart or a script before the wait is an action (review of 10da531: qa1's sed and
+// commit-status.sh before bus-qa1.sh wait). On the Quotes transcripts of 10-20 to 10-29, 154 of 9101 waits change,
+// all actions or checks but about 30 (a kill of a stand-in server, a shell function).
 func waiter(cmd string) bool {
-	return waiterRe.MatchString(cmd) && !actRe.MatchString(cmd)
+	if actRe.MatchString(cmd) {
+		return false
+	}
+	waits := false
+	for _, s := range steps(cmd) {
+		if waiterRe.MatchString(s) {
+			waits = true
+			continue
+		}
+		w, _, _ := strings.Cut(leadRe.ReplaceAllString(strings.TrimSpace(s), ""), " ")
+		w = strings.Trim(w, "()")
+		if _, val, ok := strings.Cut(w, "="); ok && !strings.ContainsAny(w[:len(w)-len(val)-1], "\"'$") {
+			continue // NAME=value
+		}
+		if w = w[strings.LastIndex(w, "/")+1:]; w != "" && !plumbing[w] {
+			return false
+		}
+	}
+	return waits
+}
+
+// steps splits a shell command at ;, &&, ||, | and new lines outside quotes.
+func steps(cmd string) []string {
+	var out []string
+	var cur strings.Builder
+	var q rune
+	rs := []rune(cmd)
+	for i := 0; i < len(rs); i++ {
+		c := rs[i]
+		switch {
+		case q != 0:
+			cur.WriteRune(c)
+			if c == q {
+				q = 0
+			}
+		case c == '\'' || c == '"':
+			q = c
+			cur.WriteRune(c)
+		case c == ';' || c == '\n' || c == '|' || c == '&' && i+1 < len(rs) && rs[i+1] == '&':
+			out = append(out, cur.String())
+			cur.Reset()
+			if (c == '|' || c == '&') && i+1 < len(rs) && rs[i+1] == c {
+				i++
+			}
+		default:
+			cur.WriteRune(c)
+		}
+	}
+	return append(out, cur.String())
 }
 
 // wakes reads one transcript: the wakes that day and how many took no action.

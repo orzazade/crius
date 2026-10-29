@@ -215,7 +215,8 @@ func TestReadyToPassPairsAnItemOnceByThePassesItem(t *testing.T) {
 // Review of 7cb0397 (P2): a wake is the session's own turn, not a sub-agent's (isSidechain); a background Bash that
 // posts to the bus (bus-post, say.sh) or commits is an action, also when it waits after, while one that waits on it
 // (team-wait, a scratchpad bus-wait.sh, a bus-*.ts wait script, a grep of ~/.crius/bus) is a re-arm; a wait-line.sh
-// on a build log is no bus wait; qa1's bus-qa1.sh wait is one (review of f50ada2), as in the Quotes transcripts of 10-29; a transcript that is gone is counted, not read as 0.
+// on a build log is no bus wait; qa1's bus-qa1.sh wait is one (review of f50ada2); a sed or a script before the wait
+// acts, while stopping the last waiter and reading the log do not (review of 10da531), as in the Quotes transcripts of 10-29; a transcript that is gone is counted, not read as 0.
 func TestWakesReadOnlyTheSessionsOwnTurns(t *testing.T) {
 	_, home := testutil.Temp(t)
 	os.MkdirAll(filepath.Join(home, "state"), 0o700)
@@ -248,6 +249,9 @@ func TestWakesReadOnlyTheSessionsOwnTurns(t *testing.T) {
 		wake("2026-10-24 10:27", "")+bash("bash $S/bus-qa1.sh wait > /dev/null 2>&1", "")+
 		wake("2026-10-24 10:28", "")+bash("git -C $W commit -q -m x; bash $S/bus-wait.sh", "")+
 		wake("2026-10-24 10:29", "")+bash(`grep -q READY <<< "$(tail -n 5 ~/.crius/bus/quotes.log)"`, "")+
+		wake("2026-10-24 10:30", "")+bash("sed -e 's/a/b/' $S/t91-job.sh > $S/t92-job.sh; bash $S/bus-qa1.sh wait", "")+
+		wake("2026-10-24 10:31", "")+bash("bash $S/commit-status.sh 'T92 READY' && bash $S/bus-qa1.sh wait", "")+
+		wake("2026-10-24 10:32", "")+bash(`kill $T 2>/dev/null; t0=$(date +%s); tail -n 3 $S/w.out; tail -n 0 -F ~/.crius/bus/quotes.log | /usr/bin/grep -a -m1 -E '(quotes:qa1|quotes:all)'; echo "waiter rc $?"`, "")+
 		wake("2026-10-24 10:25", side)+`{"type":"assistant",`+side+`"message":{"content":[{"type":"tool_use","name":"Edit","input":{}}]}}`+"\n")
 	call(t, db, "ql", "2026-10-24 09:00", 100000, 1)
 	call(t, db, "qg", "2026-10-24 09:00", 100000, 1)
@@ -256,7 +260,7 @@ func TestWakesReadOnlyTheSessionsOwnTurns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if md := Markdown(at("2026-10-24 00:00"), rows); !strings.Contains(md, "5 of 10 wakes with no action (lead 5); 1 of 2 transcripts missing") {
-		t.Errorf("want 5 of 10 idle, 1 transcript missing:\n%s", md)
+	if md := Markdown(at("2026-10-24 00:00"), rows); !strings.Contains(md, "6 of 13 wakes with no action (lead 6); 1 of 2 transcripts missing") {
+		t.Errorf("want 6 of 13 idle, 1 transcript missing:\n%s", md)
 	}
 }
