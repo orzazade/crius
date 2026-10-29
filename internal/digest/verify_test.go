@@ -189,7 +189,8 @@ func TestVerifiedLooksAtEveryMilestoneAndRowsKeepMilestones(t *testing.T) {
 // correction withdraws nothing. Review of 19d3040: an id or sha in the milestone's text names it too, a team log line
 // of the project withdraws as a bus line does, and a base or next sha is another commit. Review of 24b07b1: any other
 // sha of the line names, Crius's team log names its own items, a lower-case word (slate-400) is no id, and a store
-// revoke is not read. Review of 48708f9: a base on a branch (base main 441055ff) is another commit too. A row line never closes an open milestone, also in a lead that counts milestones.
+// revoke is not read. Review of 48708f9: a base on a branch (base main 441055ff) is another commit too; review of 3c7fc4f: only the sha
+// of the base or next is, not a later sha of the line or one after a clause break. A row line never closes an open milestone, also in a lead that counts milestones.
 func TestAWithdrawnAcceptanceDoesNotCloseAnOpenMilestone(t *testing.T) {
 	db := open(t)
 	at := time.Date(2026, 10, 25, 21, 0, 0, 0, time.Local)
@@ -228,6 +229,14 @@ func TestAWithdrawnAcceptanceDoesNotCloseAnOpenMilestone(t *testing.T) {
 	next := verified(t, db, at, "crius:lead", "quotes:lead", "52a52a5 · checked")
 	bus("quotes:qa1", "fail", "QA1 FAIL F22 2e90ad27 base main 441055ff (next 52a52a5)")
 	verified(t, db, at, "crius:lead", "quotes:lead", "2a6560a4 · checked")
+	verified(t, db, at, "crius:lead", "quotes:lead", "c3c3c3c3 · checked")
+	verified(t, db, at, "crius:lead", "quotes:lead", "d4d4d4d4 · checked")
+	verified(t, db, at, "crius:lead", "quotes:lead", "e5e5e5e5 · checked")
+	onMain := verified(t, db, at, "crius:lead", "quotes:lead", "9a9a9a9a · checked")
+	bus("quotes:qa1", "fail", "QA1 FAIL F23 e1e1e1e1 base 9a9a9a9a; c3c3c3c3 also fails")
+	bus("quotes:qa1", "fail", "QA1 retest on next build; d4d4d4d4 still fails")
+	bus("quotes:qa1", "fail", "FAIL F24 on base 9a9a9a9a e5e5e5e5 (head)")
+	bus("quotes:qa1", "fail", "FAIL F25 on base: origin/main@9a9a9a9a")
 	bus("quotes:qa1", "fail", "FAIL QA1 bug 1 (6b03f155 + d64c0078) on 2a6560a4")
 	slate := verified(t, db, at, "crius:lead", "quotes:lead", "F-61 · checked")
 	bus("quotes:qa1", "fail", "FAIL F-88: text slate-400 too light")
@@ -261,12 +270,16 @@ func TestAWithdrawnAcceptanceDoesNotCloseAnOpenMilestone(t *testing.T) {
 		{State: Doing, Text: "the next one", Refs: "52a52a5"},
 		{State: Doing, Text: "the head under test", Refs: "2a6560a4"},
 		{State: Doing, Text: "F-61 cards use slate-400", Refs: ""},
+		{State: Doing, Text: "fails after a base", Refs: "c3c3c3c3"},
+		{State: Doing, Text: "fails after rebased on next", Refs: "d4d4d4d4"},
+		{State: Doing, Text: "fails on a base", Refs: "e5e5e5e5"},
+		{State: Doing, Text: "the base on origin/main", Refs: "9a9a9a9a"},
 	}}
 	got, _, notCounted, err := Verified(db, "quotes:lead", g)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []int64{0, early, again, 0, 0, 0, revoked, other, done, 0, 0, 0, 0, base, next, 0, slate}; !reflect.DeepEqual(got, want) || notCounted != 1 {
+	if want := []int64{0, early, again, 0, 0, 0, revoked, other, done, 0, 0, 0, 0, base, next, 0, slate, 0, 0, 0, onMain}; !reflect.DeepEqual(got, want) || notCounted != 1 {
 		t.Fatalf("got %v, %d not counted; want %v, 1", got, notCounted, want)
 	}
 }

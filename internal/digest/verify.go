@@ -155,12 +155,35 @@ func names(text string, m Milestone) bool {
 			return true
 		}
 	}
-	var prev [2]string // a base or next sha, also on a branch (base main 441055ff), is another commit
-	for _, w := range wordRe.FindAllString(text, -1) {
-		if !slices.ContainsFunc(prev[:], func(p string) bool { return p == "base" || p == "next" }) && shaIn(w, line) {
+	// A base or next sha is another commit: the first sha right after "base" or "next", or after one branch name
+	// (base main 441055ff, base: origin/main@441055ff), with no clause break between.
+	idx := wordRe.FindAllStringIndex(text, -1)
+	after := -1 // names since a "base" or "next"; -1 when none
+	for i, ix := range idx {
+		w := strings.ToLower(text[ix[0]:ix[1]])
+		if after >= 0 {
+			gap := text[idx[i-1][1]:ix[0]]
+			if strings.Trim(gap, " \t:=@/.-") != "" {
+				after = -1 // a clause break
+			} else if strings.ContainsAny(gap, " \t:=@") {
+				after++ // a new name, not the next part of origin/main
+			}
+		}
+		if w == "base" || w == "next" {
+			after = 0
+			continue
+		}
+		if after == 1 || after == 2 {
+			if isSha(w) {
+				after = -1
+				continue
+			}
+		} else {
+			after = -1
+		}
+		if shaIn(w, line) {
 			return true
 		}
-		prev = [2]string{strings.ToLower(w), prev[0]}
 	}
 	return false
 }
