@@ -712,3 +712,26 @@ func TestACmuxSendWithoutALiteralTargetIsRefused(t *testing.T) {
 		}
 	}
 }
+
+// Crius 10-29 03:2x: a for loop with zsh's set -- ${=pair} writing run logs, then bus-post, was refused as a bus write:
+// the parser cannot read ${=x}, and the text rule refuses any > in a command that names the bus. Read as bash, the
+// walker judges it. A form that runs code or reads another variable ((e), (P), a glob's e: or + qualifier) keeps the
+// text rule.
+func TestAZshSplitIsReadAsBash(t *testing.T) {
+	runLogs := "for pair in \"56ad6de item1\" \"058480d item2\"; do set -- ${=pair}; cat > ~/.crius/runs/crius-build-$1-$2.log <<EOF2\n" +
+		"sha: $1\nEOF2\ndone\n~/.crius/bin/bus-post ~/.crius/bus/crius.log VERIFIED crius:lead crius:build \"56ad6de · x\""
+	for _, cmd := range []string{runLogs, "echo ${=x} > /tmp/a; cat ~/.crius/bus/crius.log", "ls **/*.go(.) > /tmp/l; cat ~/.crius/bus/x.log"} {
+		if why := check(cmd); why != "" {
+			t.Errorf("%q refused: %s", cmd, why)
+		}
+	}
+	for _, cmd := range []string{
+		"for p in a; do set -- ${=p}; echo s > ~/.crius/bus/crius.log; done", "x=~/.crius/bus/crius.log; echo s > ${=x}",
+		"echo ${(e)x} > /tmp/a; cat ~/.crius/bus/crius.log", "echo ${(P)x} > /tmp/a; cat ~/.crius/bus/crius.log",
+		"echo ${=y}; ls *(+f) > /tmp/a; cat ~/.crius/bus/crius.log", "echo ${=y}; ls *(e:f:) > /tmp/a; cat ~/.crius/bus/crius.log",
+	} {
+		if why := check(cmd); why != rawWrite {
+			t.Errorf("%q: %q", cmd, why)
+		}
+	}
+}

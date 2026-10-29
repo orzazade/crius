@@ -796,8 +796,21 @@ func checkText(text string, err error) string {
 		return detached
 	}
 	// A command that prints every variable is refused in zsh text too, read as bash: quoted text and a heredoc stay text
-	// (second review of the rule). Text still unreadable gets no such check (a known gap).
-	if b := zshRe.ReplaceAllStringFunc(text, bashForm); b != text {
+	// (second review of the rule). Text still unreadable gets no such check (a known gap). When the bash form reads and
+	// changes no command or value (${=x} splits, ${(k)x} lists keys), the walker judges it whole (10-29: a for loop with
+	// set -- ${=pair} writing run logs was refused as a bus write); (e), (P) and a glob's e: or + qualifier run code or
+	// read another variable, so they keep the text rules.
+	same := true
+	b := zshRe.ReplaceAllStringFunc(text, func(m string) string {
+		if i := strings.Index(m, "("); i >= 0 && strings.ContainsAny(m[i:], "eP+") {
+			same = false
+		}
+		return bashForm(m)
+	})
+	if b != text {
+		if _, err := syntax.NewParser().Parse(strings.NewReader(b), ""); err == nil && same {
+			return check(b)
+		}
 		if why := check(b); why == dump || why == untargeted {
 			return why
 		}
