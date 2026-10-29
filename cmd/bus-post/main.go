@@ -108,6 +108,9 @@ func postLine(args []string, now time.Time, stderr io.Writer) int {
 			return refuse(stderr, "--at needs a time")
 		}
 		given, err := time.ParseInLocation("2006-01-02T15:04", args[1], now.Location())
+		if err == nil { // in the repeated summer-time hour, the reading of the two that is near now (review of 1f3e18c)
+			given, err = wakewatch.StampAt(args[1], now.Location(), now.Add(maxSkew))
+		}
 		if err != nil {
 			return refuse(stderr, "--at %q is not YYYY-MM-DDTHH:MM local time", args[1])
 		}

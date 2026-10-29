@@ -71,6 +71,22 @@ func TestAHandTypedTimeAheadIsRefused(t *testing.T) {
 	}
 }
 
+// Review of 1f3e18c: in the hour repeated when summer time ends, a typed time is read as the reading near now; the
+// later one is an hour off in the first pass.
+func TestAGivenTimeInTheRepeatedHourIsKept(t *testing.T) {
+	riga, err := time.LoadLocation("Europe/Riga")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, now := range []time.Time{time.Date(2026, 10, 25, 0, 31, 0, 0, time.UTC), time.Date(2026, 10, 25, 1, 31, 0, 0, time.UTC)} {
+		_, log := setup(t)
+		rc, errs := post(t, now.In(riga), "--at", "2026-10-25T03:30", log, "INFO", "crius:build", "crius:lead", "x")
+		if rc != 0 || !strings.HasPrefix(busText(t, log), "2026-10-25T03:30 INFO") {
+			t.Errorf("at %s: rc %d %s %q", now, rc, errs, busText(t, log))
+		}
+	}
+}
+
 func TestAGivenTimeWithin2MinIsKept(t *testing.T) {
 	_, log := setup(t)
 	rc, errs := post(t, at("2026-10-21T22:56"), "--at", "2026-10-21T22:54", log, "INFO", "crius:build", "crius:lead", "x")
