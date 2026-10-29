@@ -80,9 +80,12 @@ func TestAResumeOfARunningSessionIsRefused(t *testing.T) {
 }
 
 // Review of item 8: a session cmux restored in another folder than its role's start filed still runs there; the "still
-// runs" check looks where it runs (config), not where it was filed, so it is not resumed a second time.
+// runs" check looks where it runs (config), not where it was filed, so it is not resumed a second time. Once it stops,
+// -resume brings it back on the account it was filed on, not the one the restore put it on (Crius 10-29 00:28).
 func TestAResumeOfASessionRestoredElsewhereIsRefused(t *testing.T) {
 	home, filed, running := t.TempDir(), t.TempDir(), t.TempDir()
+	testutil.Write(t, filepath.Join(home, "accounts.toml"), "[[account]]\nname = \"max2\"\nplan = \"max\"\ndirs = [\""+filed+
+		"\"]\n[[account]]\nname = \"max1\"\nplan = \"max\"\ndirs = [\""+running+"\"]\n")
 	id := "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b"
 	testutil.Write(t, filepath.Join(running, "sessions", "1.json"),
 		fmt.Sprintf(`{"pid":%d,"sessionId":%q,"name":"quotes · rig","procStart":%q}`, os.Getpid(), id, testutil.ProcStart(t, os.Getpid())))
@@ -98,6 +101,21 @@ func TestAResumeOfASessionRestoredElsewhereIsRefused(t *testing.T) {
 	err := resume(home, "quotes", "rig", d)
 	if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("still runs in process %d", os.Getpid())) || len(got) != 0 {
 		t.Errorf("err %v, cmux calls %q: want a refusal naming the process and no cmux call", err, got)
+	}
+	if err := os.Remove(filepath.Join(running, "sessions", "1.json")); err != nil { // its Claude stopped
+		t.Fatal(err)
+	}
+	d = launch.Deps{Lock: filepath.Join(home, "launch.lock"), Persona: func(string) (string, error) { return "personal", nil },
+		Cmux: func(args ...string) (string, error) {
+			got = append(got, strings.Join(args, " "))
+			if args[0] == "tree" {
+				return "", nil // no tab and no workspace: a new workspace opens with its tab
+			}
+			return "", errors.New("stop here")
+		}}
+	if err := resume(home, "quotes", "rig", d); err == nil || len(got) != 3 || !strings.Contains(got[2], "--primary '"+filed+"'") ||
+		strings.Contains(got[2], running) {
+		t.Errorf("err %v, cmux calls %q: want the new tab on max2's folder %s", err, got, filed)
 	}
 }
 
