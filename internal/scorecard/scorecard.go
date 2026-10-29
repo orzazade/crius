@@ -665,10 +665,12 @@ func whole(v float64) string {
 }
 
 // since names the record events (defect, revoke, correction) after event id that touch one of items (outcomes and
-// their child tasks).
+// their child tasks). Only the store writes them (keys defect:, revoke:, correct:); a bus CORRECTION line has the
+// kind correction too, with no refs (live 10-29).
 func since(db *sql.DB, id int64, items []string) (string, error) {
-	rows, err := db.Query("select kind, coalesce(item, ''), coalesce(refs, '') from event where id > ? and kind in"+
-		" ('defect', 'revoked', 'correction') order by id", id)
+	rows, err := db.Query("select kind, coalesce(item, ''), coalesce(refs, '') from event where id > ? and ("+
+		"kind = 'defect' and source_key like 'defect:%' or kind = 'revoked' and source_key like 'revoke:%' or"+
+		" kind = 'correction' and source_key like 'correct:%') order by id", id)
 	if err != nil {
 		return "", err
 	}

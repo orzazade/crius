@@ -206,6 +206,7 @@ func TestCorrectionChangesTheScorecard(t *testing.T) {
 }
 
 // §7b: re-writing a changed week appends `revised <date>: …` and keeps the old value; an unchanged week is left alone.
+// The revised line names the store events since, not a bus line of the same kind.
 func TestRewriteAppendsARevisedLine(t *testing.T) {
 	db, home := fixture(t)
 	dir := filepath.Join(home, "state", "scorecards")
@@ -228,6 +229,11 @@ func TestRewriteAppendsARevisedLine(t *testing.T) {
 		t.Fatalf("an unchanged week was rewritten:\n%s", got)
 	}
 	revoke(t, db, "demo#1")
+	// A bus CORRECTION line is a correction event too, with no refs (live 10-29: "a correction event has bad refs").
+	if _, err := db.Exec("insert into event (ts, project, kind, actor, text, source_key) values" +
+		" (\x272026-09-19T12:00:00Z\x27, \x27demo\x27, \x27correction\x27, \x27lead\x27, \x27CORRECTION my demo#1 line\x27, \x27bus:x:1:y\x27)"); err != nil {
+		t.Fatal(err)
+	}
 	if _, _, err := Write(db, dir, build(t, db, "2026-09-12T00:00:00Z", "2026-09-20T00:00:00Z"), at("2026-09-20T00:00:00Z")); err != nil {
 		t.Fatal(err)
 	}
