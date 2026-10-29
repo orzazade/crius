@@ -720,7 +720,8 @@ func TestACmuxSendWithoutALiteralTargetIsRefused(t *testing.T) {
 func TestAZshSplitIsReadAsBash(t *testing.T) {
 	runLogs := "for pair in \"56ad6de item1\" \"058480d item2\"; do set -- ${=pair}; cat > ~/.crius/runs/crius-build-$1-$2.log <<EOF2\n" +
 		"sha: $1\nEOF2\ndone\n~/.crius/bin/bus-post ~/.crius/bus/crius.log VERIFIED crius:lead crius:build \"56ad6de · x\""
-	for _, cmd := range []string{runLogs, "echo ${=x} > /tmp/a; cat ~/.crius/bus/crius.log", "ls **/*.go(.) > /tmp/l; cat ~/.crius/bus/x.log"} {
+	for _, cmd := range []string{runLogs, "echo ${=x} > /tmp/a; cat ~/.crius/bus/crius.log", "ls **/*.go(.) > /tmp/l; cat ~/.crius/bus/x.log",
+		"echo ${(f)x} ${(j:,:)y} > /tmp/a; cat ~/.crius/bus/crius.log"} {
 		if why := check(cmd); why != "" {
 			t.Errorf("%q refused: %s", cmd, why)
 		}
@@ -729,6 +730,12 @@ func TestAZshSplitIsReadAsBash(t *testing.T) {
 		"for p in a; do set -- ${=p}; echo s > ~/.crius/bus/crius.log; done", "x=~/.crius/bus/crius.log; echo s > ${=x}",
 		"echo ${(e)x} > /tmp/a; cat ~/.crius/bus/crius.log", "echo ${(P)x} > /tmp/a; cat ~/.crius/bus/crius.log",
 		"echo ${=y}; ls *(+f) > /tmp/a; cat ~/.crius/bus/crius.log", "echo ${=y}; ls *(e:f:) > /tmp/a; cat ~/.crius/bus/crius.log",
+		// Flags that do math or prompt expansion, and ${~x}, which globs the value with its qualifiers, run code too
+		// (review of 2f86353: each wrote the bus in zsh).
+		`typeset -a a; x='a[$(echo pwn >> ~/.crius/bus/crius.log)]'; echo ${(#)x}`,
+		`typeset -a a; n='a[$(echo pwn >> ~/.crius/bus/crius.log)]'; x=ab; echo ${(l:n:)x}`,
+		`x='$(echo pwn >> ~/.crius/bus/crius.log)'; echo ${(%%)x}`,
+		`x='*(e:"echo pwn >> ~/.crius/bus/crius.log":)'; echo ${~x}`,
 	} {
 		if why := check(cmd); why != rawWrite {
 			t.Errorf("%q: %q", cmd, why)

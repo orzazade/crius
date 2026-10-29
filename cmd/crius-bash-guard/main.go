@@ -63,6 +63,11 @@ var (
 	// qualifier dropped (**/*.go(.) as **/*.go). No match holds a quote or $, so quotes and $(...) stay (third review).
 	zshRe = regexp.MustCompile(`\$\{(\([^)'"$\s]*\)|[=~^])+|(^|[\s;&|(])=\(|` +
 		`[^\s;&|()<>{}'"$]*[*?][^\s;&|()<>{}'"$]*\([^()'"$\s]*\)`)
+	// zshSafeRe: a zshRe match whose bash form changes no command or value: ${= and ${^, the flags f, k, v, @, s:x: and
+	// j:x:, =(, and a glob qualifier of file types and modes. Any other form may run code: (e) and (%) expand the value,
+	// (#), (l:n:) and a qualifier's [n] do math, which runs a $(...) in an index, (P) reads another variable, ${~x} globs
+	// the value with its qualifiers, and a qualifier's e: or + runs a command (review of 2f86353).
+	zshSafeRe = regexp.MustCompile(`^(\$\{(\(([fkv@]|[sj]:[^:]*:)+\)|[=^])+|(^|[\s;&|(])=\(|[^\s;&|()<>{}'"$]*[*?][^\s;&|()<>{}'"$]*\([./@=*%NnDTFrwxRWX^-]*\))$`)
 )
 
 // unknown stands for text only the run shows: a $(...), $1, ${a[0]}, a variable read sets, a script on stdin. The
@@ -798,11 +803,10 @@ func checkText(text string, err error) string {
 	// A command that prints every variable is refused in zsh text too, read as bash: quoted text and a heredoc stay text
 	// (second review of the rule). Text still unreadable gets no such check (a known gap). When the bash form reads and
 	// changes no command or value (${=x} splits, ${(k)x} lists keys), the walker judges it whole (10-29: a for loop with
-	// set -- ${=pair} writing run logs was refused as a bus write); (e), (P) and a glob's e: or + qualifier run code or
-	// read another variable, so they keep the text rules.
+	// set -- ${=pair} writing run logs was refused as a bus write); any form not in zshSafeRe keeps the text rules.
 	same := true
 	b := zshRe.ReplaceAllStringFunc(text, func(m string) string {
-		if i := strings.Index(m, "("); i >= 0 && strings.ContainsAny(m[i:], "eP+") {
+		if !zshSafeRe.MatchString(m) {
 			same = false
 		}
 		return bashForm(m)
