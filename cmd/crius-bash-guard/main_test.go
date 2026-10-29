@@ -736,6 +736,10 @@ func TestAZshSplitIsReadAsBash(t *testing.T) {
 		`typeset -a a; n='a[$(echo pwn >> ~/.crius/bus/crius.log)]'; x=ab; echo ${(l:n:)x}`,
 		`x='$(echo pwn >> ~/.crius/bus/crius.log)'; echo ${(%%)x}`,
 		`x='*(e:"echo pwn >> ~/.crius/bus/crius.log":)'; echo ${~x}`,
+		// With glob_subst on, ${=x} globs the value too (second review of 29ca7fd); emulate sh turns it on.
+		`setopt GLOB_SUBST; x='*(e:"echo pwn >> ~/.crius/bus/crius.log":)'; print ${=x}`,
+		`emulate sh; x='*(e:"echo pwn >> ~/.crius/bus/crius.log":)'; print ${=x}`,
+		`zsh -o glob_subst -c "x='*(e:\"echo pwn >> ~/.crius/bus/crius.log\":)'; print \${=x}"`,
 	} {
 		if why := check(cmd); why != rawWrite {
 			t.Errorf("%q: %q", cmd, why)

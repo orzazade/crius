@@ -86,6 +86,12 @@ func check(command string) string {
 	return (&walker{vars: map[string]string{}, named: namesBus(command)}).check(command)
 }
 
+// setsGlobSubst: the text may turn on zsh's glob_subst. Option names ignore case and _, and emulate sh, ksh or csh sets it.
+func setsGlobSubst(text string) bool {
+	t := strings.ReplaceAll(fold(text), "_", "")
+	return strings.Contains(t, "globsubst") || strings.Contains(t, "emulate")
+}
+
 // namesBus says whether text names the bus folder, in any case.
 func namesBus(text string) bool { return strings.Contains(fold(text), ".crius/bus") }
 
@@ -101,13 +107,16 @@ type walker struct {
 	named bool // the command names .crius/bus
 	// anyVar: a computed word named the variable a command set (export $(...), read "$N"), so any variable is unknown
 	anyVar bool
-	why    string
+	// globSubst: the command or one around it turns on zsh's glob_subst (setopt, -o, emulate), so ${=x} globs its value
+	globSubst bool
+	why       string
 }
 
 func (w *walker) check(command string) string {
+	w.globSubst = w.globSubst || setsGlobSubst(command)
 	f, err := syntax.NewParser().Parse(strings.NewReader(command), "")
 	if err != nil {
-		return checkText(command, err)
+		return checkText(command, err, w.globSubst)
 	}
 	syntax.Walk(f, func(n syntax.Node) bool {
 		if s, ok := n.(*syntax.Stmt); ok && s.Background && runsWaiter(s) {
@@ -510,7 +519,8 @@ func (w *walker) script(text string) {
 	case strings.Contains(text, unknown): // a computed part may be any command
 		w.refuseUnknown()
 	default:
-		w.why = (&walker{cwd: w.cwd, vars: maps.Clone(w.vars), named: w.named || namesBus(text), anyVar: w.anyVar}).check(text)
+		w.why = (&walker{cwd: w.cwd, vars: maps.Clone(w.vars), named: w.named || namesBus(text), anyVar: w.anyVar,
+			globSubst: w.globSubst}).check(text)
 	}
 }
 
@@ -796,15 +806,16 @@ func bashForm(m string) string {
 
 // checkText judges a command the parser cannot read. Bash runs the lines before a syntax error's line (a cp, a sed -i),
 // so a command naming the bus folder with an error past line 1 is refused, and on line 1 when it holds > or tee.
-func checkText(text string, err error) string {
+func checkText(text string, err error, globSubst bool) string {
 	if strings.Contains(text, "team-wait.sh") && loneAmpRe.MatchString(text) {
 		return detached
 	}
 	// A command that prints every variable is refused in zsh text too, read as bash: quoted text and a heredoc stay text
 	// (second review of the rule). Text still unreadable gets no such check (a known gap). When the bash form reads and
 	// changes no command or value (${=x} splits, ${(k)x} lists keys), the walker judges it whole (10-29: a for loop with
-	// set -- ${=pair} writing run logs was refused as a bus write); any form not in zshSafeRe keeps the text rules.
-	same := true
+	// set -- ${=pair} writing run logs was refused as a bus write); any form not in zshSafeRe keeps the text rules, and
+	// so does all text when glob_subst may be on: ${=x} then runs a qualifier's e: code from the value.
+	same := !globSubst
 	b := zshRe.ReplaceAllStringFunc(text, func(m string) string {
 		if !zshSafeRe.MatchString(m) {
 			same = false
