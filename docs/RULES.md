@@ -75,6 +75,9 @@ Details: [docs/MEMORY-AND-MEASUREMENT.md](MEMORY-AND-MEASUREMENT.md) §7b, `~/.c
    A check counts only as one bus line per milestone:
    `VERIFIED crius:lead -> <project:role> — <ref> · <evidence>`, where `<ref>` is a sha, the milestone's own ref
    (e.g. F-126) or its exact text. The lead's QA may post these too. Prose like "checked PASS" does not count.
+   bus-post checks the sha the line checked against the named run log in ~/.crius/runs: the one sha the ref names, else
+   the first word after it (`row F-118 · <sha> · …`); other shas and numbers after the ref (a baseline, a CI run id)
+   are free of it.
 5. **A lead never stops while its goal has work it can do.** A session cannot continue after its turn ends, so
    "Next I'll do X" followed by ✅ is an idle lead. End a turn only on ❓ (owner needed, with the question) or ⏳
    (own background work running, named). ✅ is only for a finished goal. Crius's bus watch flags a lead that stops

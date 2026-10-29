@@ -95,9 +95,26 @@ func TestAVerifiedWhoseRunLogHoldsAnotherShaIsRefused(t *testing.T) {
 	runLog := filepath.Join(home, "runs", "clean-suite-1ea27a8.log")
 	testutil.Write(t, runLog, "sha: 1ea27a8\npass: 936\n")
 	rc, errs := post(t, at("2026-10-21T12:00"), log, "VERIFIED", "crius:lead", "quotes:lead",
-		"B0 · live on 620c99f; "+runLog)
+		"620c99f · B0 live; "+runLog)
 	if rc != 2 || !strings.Contains(errs, "620c99f") || busText(t, log) != "" {
 		t.Fatal(rc, errs, busText(t, log))
+	}
+	// A ref that is no sha (B0): the sha first after it must be the run's, whatever the words around a sha elsewhere
+	// ("baseline", "run"), and a sha of digits only counts (reviews of 10-29). A line with no sha there is refused with
+	// the form to write.
+	for _, c := range []struct{ text, live string }{
+		{"B0 · 620c99f live, baseline 1ea27a8; ", "620c99f"},
+		{"B0 · 1234567 live, baseline 1ea27a8; ", "1234567"},
+		{"B0 · run 620c99f green, earlier 1ea27a8; ", "row F-177 · <sha>"},
+		{"B0 · baseline 1ea27a8, live 620c99f; ", "row F-177 · <sha>"},
+		{"B0 · live on 620c99f, baseline 1ea27a8; ", "row F-177 · <sha>"},
+		{"main 620c99f · 1ea27a8 clean clone; ", "620c99f"}, // the ref's own sha, not the run's after it (review)
+		{"main 620c99f, base 1ea27a8 · 1ea27a8; ", "620c99f and 1ea27a8"},
+	} {
+		rc, errs = post(t, at("2026-10-21T12:00"), log, "VERIFIED", "crius:lead", "quotes:lead", c.text+runLog)
+		if rc != 2 || !strings.Contains(errs, c.live) || busText(t, log) != "" {
+			t.Fatal(c.text, rc, errs, busText(t, log))
+		}
 	}
 }
 
@@ -245,20 +262,50 @@ func TestARelativeHomeFindsItsRuns(t *testing.T) {
 }
 
 // Review round 2: a sha hidden in a prefixed path or an underscore word must not stand in for the sha the line
-// names. Every sha the line names must be one its run log ran.
-func TestEveryNamedShaMustBeTheRunsSha(t *testing.T) {
+// names. The line's ref, its first word, must be the sha its run log ran.
+func TestTheRefMustBeTheRunsSha(t *testing.T) {
 	home, log := setup(t)
 	runLog := filepath.Join(home, "runs", "r.log")
 	testutil.Write(t, runLog, "sha: 3622eda\npass: 3\n")
 	for _, text := range []string{
 		"620c99f path=" + filepath.Join(home, "runs", "3622eda.log") + " " + runLog,
 		"620c99f not_3622eda_checked " + runLog,
-		"3622eda and 620c99f " + runLog,
+		"620c99f and 3622eda " + runLog,
+		"620c99f\t3622eda · " + runLog, // a tab ends the ref too (review)
 	} {
 		rc, errs := post(t, at("2026-10-21T15:10"), log, "VERIFIED", "crius:lead", "x:lead", text)
 		if rc != 2 || busText(t, log) != "" {
 			t.Fatal(text, rc, errs)
 		}
+	}
+}
+
+// Crius 10-29: VERIFIED lines naming a GitHub run id or a baseline commit were refused, as every sha-like word had to
+// be the run's. Only the sha checked must be: the ref, or the first word after a ref that is no sha (RULES 3.1's row
+// ref); other numbers and shas are free.
+func TestOnlyTheRefOfAVerifiedMustBeTheRunsSha(t *testing.T) {
+	home, log := setup(t)
+	runLog := filepath.Join(home, "runs", "r.log")
+	testutil.Write(t, runLog, "sha: 3622eda9f0\npass: 3\n")
+	for _, text := range []string{
+		"3622eda · CI run 40682051329 green, baseline 620c99f had 2 fails · " + runLog,
+		"row F-177 · 3622eda · CI run 40682051329, baseline 620c99f · " + runLog,
+		"row F-177 · 3622eda green, run 40682051329, DB run 620c99f · " + runLog,
+		"main 3622eda (train-75) · clean clone · " + runLog,
+		"README 3622eda on origin/main, CI success on 3622eda; " + runLog,                 // one sha named twice, no "·" (aitch 10-20)                               // quotes 10-24
+		"VERIFIED crius:lead -> x:lead — 3622eda · item 1: bun test 745 pass · " + runLog, // the header typed twice, cortex 10-27
+	} {
+		rc, errs := post(t, at("2026-10-29T02:30"), log, "VERIFIED", "crius:lead", "x:lead", text)
+		if rc != 0 || !strings.HasSuffix(busText(t, log), "— "+text+"\n") {
+			t.Fatal(rc, errs, busText(t, log))
+		}
+	}
+	// A short sha of digits only is a sha (review): a ref that is no sha can name one.
+	testutil.Write(t, runLog, "sha: 1234567f0\npass: 3\n")
+	text := "row F-177 · 1234567 green · " + runLog
+	rc, errs := post(t, at("2026-10-29T02:30"), log, "VERIFIED", "crius:lead", "x:lead", text)
+	if rc != 0 || !strings.HasSuffix(busText(t, log), "— "+text+"\n") {
+		t.Fatal(rc, errs, busText(t, log))
 	}
 }
 

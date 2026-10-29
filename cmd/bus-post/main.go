@@ -7,8 +7,9 @@
 // text ("Crius 17:50", "Lead to P5 13:28") is held to the same 2 min (store.FormatLine; 31 such lines 10-23 to 10-25).
 //
 // A VERIFIED line must name a run log of Crius's own: a file under ~/.crius/runs whose header (first 20 lines) holds
-// `sha: <sha>` for a sha the line names and `pass: <N>` with N >= 1. Twice a VERIFIED went out before its run
-// (10-21 12:08 and 14:54).
+// `sha: <sha>` and `pass: <N>` with N >= 1, for the sha the line checked: the one sha its ref names, else the first
+// word after a ref like "row F-177" (`row F-177 · <sha> · …`). Twice a VERIFIED went out before its run (10-21 12:08 and
+// 14:54). Other shas and numbers after the ref (a baseline, a CI run id) are free of it (Crius 10-29).
 //
 // A recipient name with a project part is lower case: a line to quotes:P5 went unread for 2 h (quotes:lead 04:58).
 //
@@ -289,24 +290,40 @@ func lastByte(f *os.File) (byte, bool) {
 	return b[0], true
 }
 
-// shasOf gives the words of text that are a sha. A word runs between spaces, less the punctuation at its ends, so a
-// sha inside a path, a file name or another word is never one.
-func shasOf(text string) []string {
-	var shas []string
-	for _, w := range strings.Fields(text) {
-		if w = strings.TrimFunc(w, unicode.IsPunct); shaRe.MatchString(w) {
-			shas = append(shas, w)
+// checkedSha is the sha a VERIFIED line checked: the one sha its ref names (the text up to the first "·": `3622eda`,
+// `main 3622eda (train-75)`), else the first word after the ref (`row F-177 · 3622eda · …`). A ref that names two is
+// refused; a word of 7 or more digits counts as a sha there. A word runs between spaces, less the punctuation at its
+// ends. Rules on the words around a sha elsewhere in
+// the line ("baseline", "run") let a sha no run tested through, three reviews running (10-29).
+func checkedSha(text string) (string, error) {
+	ref, evidence, _ := strings.Cut(text, "·")
+	var named []string
+	for _, w := range strings.Fields(ref) {
+		if w = strings.TrimFunc(w, unicode.IsPunct); shaRe.MatchString(w) && !slices.Contains(named, w) {
+			named = append(named, w)
 		}
 	}
-	return shas
+	switch {
+	case len(named) == 1:
+		return named[0], nil
+	case len(named) > 1:
+		return "", fmt.Errorf("the ref of a VERIFIED line names %s: name the one sha it checked, then \"·\"", strings.Join(named, " and "))
+	}
+	if f := strings.Fields(evidence); len(f) > 0 {
+		if w := strings.TrimFunc(f[0], unicode.IsPunct); shaRe.MatchString(w) {
+			return w, nil
+		}
+	}
+	return "", errors.New("a VERIFIED line names the sha it checked: in its ref, or first after a ref with none (row F-177 · <sha> · …)")
 }
 
-// checkRunLog passes when every sha the text names is the sha in the header of a run log the text names, under
-// ~/.crius/runs, with a pass count of at least 1. Naming a sha no run tested is the mistake it stops.
+// checkRunLog passes when the sha the text checked (checkedSha) is the sha in the header of a run log the text names,
+// under ~/.crius/runs, with a pass count of at least 1. Naming a sha no run tested is the mistake it stops; other shas
+// and numbers after the ref (a baseline, a CI run id) are free of this check (a project's guards may still check them).
 func checkRunLog(text string) error {
-	shas := shasOf(text)
-	if len(shas) == 0 {
-		return errors.New("a VERIFIED line names the sha it checked")
+	sha, err := checkedSha(text)
+	if err != nil {
+		return err
 	}
 	runs, err := filepath.Abs(filepath.Join(store.Home(), "runs"))
 	if err == nil {
@@ -352,15 +369,9 @@ func checkRunLog(text string) error {
 		}
 		ran = append(ran, sha)
 	}
-	// Other paths (an evidence folder, say) may stand beside the run log; only an unproven sha refuses the line.
-	var unproven []string
-	for _, s := range shas {
-		// The line may shorten the run's sha, never lengthen it.
-		if !slices.ContainsFunc(ran, func(r string) bool { return strings.HasPrefix(r, s) }) {
-			unproven = append(unproven, s)
-		}
-	}
-	if len(unproven) == 0 {
+	// Other paths (an evidence folder, say) may stand beside the run log; only an unproven sha refuses the line. The
+	// line may shorten the run's sha, never lengthen it.
+	if slices.ContainsFunc(ran, func(r string) bool { return strings.HasPrefix(r, sha) }) {
 		return nil
 	}
 	if len(ran) == 0 {
@@ -368,7 +379,7 @@ func checkRunLog(text string) error {
 			"with `sha:` and `pass:` in its header)"}, problems...), "; "))
 	}
 	problems = append(problems, fmt.Sprintf("no passing run log named here ran %s (they ran: %s)",
-		strings.Join(unproven, ", "), strings.Join(ran, ", ")))
+		sha, strings.Join(ran, ", ")))
 	return errors.New(strings.Join(problems, "; "))
 }
 
