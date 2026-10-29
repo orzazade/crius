@@ -181,3 +181,40 @@ func TestVerifiedLooksAtEveryMilestoneAndRowsKeepMilestones(t *testing.T) {
 		t.Fatalf("got %v, %d rows, %d not counted; want %v, 2, 0", got, rows, notCounted, want)
 	}
 }
+
+// Review of 26e2143: a bug found after acceptance withdraws it (RULES 2.3) and the lead un-ticks the milestone; the
+// old VERIFIED line then no longer makes it done. A later FAIL, CORRECTION, CORRECTED or REOPEN from the project or
+// Crius that names the milestone withdraws it; a VERIFIED after that counts again. A row line never closes an open
+// milestone, also in a lead that counts milestones.
+func TestAWithdrawnAcceptanceDoesNotCloseAnOpenMilestone(t *testing.T) {
+	db := open(t)
+	at := time.Date(2026, 10, 25, 21, 0, 0, 0, time.Local)
+	verified(t, db, at, "crius:lead", "quotes:lead", "RB-91 · checked")
+	line(t, db, at, "quotes:qa1", "fail", "QA1 FAIL RB-91 breaks again on 7090")
+	line(t, db, at, "quotes:qa1", "fail", "QA1 FAIL c7c7c7c before it was checked")
+	early := verified(t, db, at, "crius:lead", "quotes:lead", "c7c7c7c · checked after the fail")
+	verified(t, db, at, "crius:lead", "quotes:lead", "RB-93 · checked")
+	line(t, db, at, "crius:lead", "corrected", "my VERIFIED of RB-93 was wrong: the build was stale")
+	again := verified(t, db, at, "crius:lead", "quotes:lead", "RB-93 · checked again on the fix")
+	other := verified(t, db, at, "crius:lead", "quotes:lead", "RB-94 · checked")
+	line(t, db, at, "axi:qa", "fail", "FAIL RB-94 of another project")
+	line(t, db, at, "quotes:qa1", "fail", "FAIL RB-940 is another id")
+	done := verified(t, db, at, "crius:lead", "quotes:lead", "RB-95 · checked")
+	line(t, db, at, "quotes:qa1", "fail", "FAIL RB-95")
+	verified(t, db, at, "crius:lead", "quotes:lead", "row F-12 · a row line")
+	g := &Goal{Milestones: []Milestone{
+		{State: Doing, Text: "withdrawn", Refs: "RB-91"},
+		{State: Todo, Text: "failed before", Refs: "c7c7c7c"},
+		{State: Doing, Text: "checked again", Refs: "RB-93"},
+		{State: Doing, Text: "failed elsewhere", Refs: "RB-94"},
+		{State: Done, Text: "marked done", Refs: "RB-95"},
+		{State: Todo, Text: "a row", Refs: "row F-12"},
+	}}
+	got, _, notCounted, err := Verified(db, "quotes:lead", g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []int64{0, early, again, other, done, 0}; !reflect.DeepEqual(got, want) || notCounted != 1 {
+		t.Fatalf("got %v, %d not counted; want %v, 1", got, notCounted, want)
+	}
+}

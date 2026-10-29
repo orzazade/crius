@@ -62,10 +62,14 @@ func Verified(db *sql.DB, lead string, g *Goal) (checked []int64, rows, notCount
 		}
 		text = headerRe.ReplaceAllString(text, "")
 		row := false
-		if ref, evidence, _ := strings.Cut(text, " · "); countsRows && strings.TrimSpace(evidence) != "" {
+		if ref, evidence, _ := strings.Cut(text, " · "); strings.TrimSpace(evidence) != "" {
 			if id, ok := strings.CutPrefix(strings.TrimSpace(ref), "row "); ok && isID(id) {
-				seen[strings.ToUpper(id)], row = true, true
-				text = id + " · " + evidence
+				// A row line never closes an open milestone, also in a lead that counts milestones (review of 26e2143).
+				row = true
+				if countsRows {
+					seen[strings.ToUpper(id)] = true
+					text = id + " · " + evidence
+				}
 			}
 		}
 		// The strongest match over all milestones decides; the line counts when it points at one milestone. One not
@@ -82,16 +86,68 @@ func Verified(db *sql.DB, lead string, g *Goal) (checked []int64, rows, notCount
 			}
 		}
 		if len(hits) != 1 {
-			if !row {
+			if !row || !countsRows {
 				notCounted++
 			}
 			continue
 		}
-		if out[hits[0]] == 0 {
+		if out[hits[0]] == 0 || g.Milestones[hits[0]].State != Done {
 			out[hits[0]] = id
 		}
 	}
-	return out, len(seen), notCounted, q.Err()
+	if err := q.Err(); err != nil {
+		return nil, 0, 0, err
+	}
+	// An open milestone is done by its last VERIFIED line only while no later FAIL, CORRECTION, CORRECTED or REOPEN
+	// line names it: a bug found after acceptance withdraws it (RULES 2.3) and the lead un-ticks the milestone
+	// (review of 26e2143).
+	for i, m := range g.Milestones {
+		if m.State == Done || out[i] == 0 {
+			continue
+		}
+		withdrawn, err := withdrawnAfter(db, project, out[i], m)
+		if err != nil {
+			return nil, 0, 0, err
+		}
+		if withdrawn {
+			out[i] = 0
+		}
+	}
+	return out, len(seen), notCounted, nil
+}
+
+// withdrawnAfter: a FAIL, CORRECTION, CORRECTED or REOPEN line after event id, from the lead's project or Crius, names
+// the milestone.
+func withdrawnAfter(db *sql.DB, project string, id int64, m Milestone) (bool, error) {
+	q, err := db.Query("select text from event where id > ? and kind in ('fail', 'correction', 'corrected', 'reopen') and"+
+		" (project = ? or (project = 'crius' and actor = 'lead'))", id, project)
+	if err != nil {
+		return false, err
+	}
+	defer q.Close()
+	for q.Next() {
+		var text string
+		if err := q.Scan(&text); err != nil {
+			return false, err
+		}
+		if names(text, m) {
+			return true, nil
+		}
+	}
+	return false, q.Err()
+}
+
+// names: the text holds an id of the milestone line (same case), a sha of it, or its whole text when that has 4 or
+// more words.
+func names(text string, m Milestone) bool {
+	line := m.Text + " " + m.Refs
+	in := tokenRe.FindAllString(line, -1)
+	for _, w := range tokenRe.FindAllString(text, -1) {
+		if isID(w) && slices.Contains(in, w) || shaIn(w, line) {
+			return true
+		}
+	}
+	return len(tokenRe.FindAllString(m.Text, -1)) >= 4 && strings.Contains(text, m.Text)
 }
 
 type strength int
