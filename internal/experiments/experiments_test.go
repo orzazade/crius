@@ -270,3 +270,26 @@ func TestWakesReadOnlyTheSessionsOwnTurns(t *testing.T) {
 		t.Errorf("want 11 of 18 idle, 1 transcript missing:\n%s", md)
 	}
 }
+
+// A background command is a bus wait when every step is a bus wait or plumbing. Each shape a review found, on its own:
+// of 10da531 (an edit or a script before the wait acts), 888e251 (a lone loop word, an escape, a tab, a continued
+// line) and 333d8b5 (a comment ends at its line and holds no step; T#3 is no comment).
+func TestAWaitIsOnlyBusWaitsAndPlumbing(t *testing.T) {
+	for cmd, want := range map[string]bool{
+		"sed -e 's/a/b/' $S/t91-job.sh > $S/t92-job.sh; bash $S/bus-qa1.sh wait": false,
+		"bash $S/commit-status.sh 'T92 READY' && bash $S/bus-qa1.sh wait":        false,
+		"kill $T 2>/dev/null; t0=$(date +%s); bash $S/bus-qa1.sh wait":           true,
+		"while true; do\n  bash $S/bus-qa1.sh wait\ndone":                        true,
+		"echo a\\;b; bash $S/bus-qa1.sh wait":                                    true,
+		"echo \"a\\\";b\\\"\"; bash $S/bus-qa1.sh wait":                          true,
+		"sleep\t1; bash $S/bus-qa1.sh wait":                                      true,
+		"sleep 1 && bash $S/bus-qa1.sh \\\n  wait":                               true,
+		"echo waiting # \\\nnpm test; bash $S/bus-qa1.sh wait":                   false,
+		"sleep 1 # then; npm test\nbash $S/bus-qa1.sh wait":                      true,
+		"printf T#3; bash $S/bus-qa1.sh wait":                                    true,
+	} {
+		if got := waiter(cmd); got != want {
+			t.Errorf("waiter(%q) = %v, want %v", cmd, got, want)
+		}
+	}
+}

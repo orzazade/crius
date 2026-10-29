@@ -362,7 +362,7 @@ func waiter(cmd string) bool {
 }
 
 // steps splits a shell command at ;, &&, ||, | and new lines outside quotes; a backslash escapes the next character
-// outside single quotes, and a backslash-newline joins two lines.
+// outside single quotes, a backslash-newline joins two lines, and a comment is dropped up to its new line.
 func steps(cmd string) []string {
 	var out []string
 	var cur strings.Builder
@@ -380,6 +380,10 @@ func steps(cmd string) []string {
 			cur.WriteRune(c)
 			if c == q {
 				q = 0
+			}
+		case c == '#' && (i == 0 || strings.ContainsRune(" \t\n;|&(", rs[i-1])):
+			for i+1 < len(rs) && rs[i+1] != '\n' {
+				i++
 			}
 		case c == '\'' || c == '"':
 			q = c
