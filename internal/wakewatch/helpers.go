@@ -185,7 +185,7 @@ func lastLine(log, from string, has []string, now time.Time) (time.Time, error) 
 			continue
 		}
 		// A line stamped in the future is no heartbeat (review of d2bbf74); 2 min is clock skew.
-		at, err := stampAt(fields[0], loc, now.Add(2*time.Minute))
+		at, err := StampAt(fields[0], loc, now)
 		if err == nil && at.After(last) && !at.After(now.Add(2*time.Minute)) {
 			last = at
 		}
@@ -193,9 +193,9 @@ func lastLine(log, from string, has []string, now time.Time) (time.Time, error) 
 	return last, sc.Err()
 }
 
-// stampAt reads a bus stamp: UTC with a Z, else the wall time in loc. A wall time the clock showed twice (the hour
+// StampAt reads a bus stamp: UTC with a Z, else the wall time in loc. A wall time the clock showed twice (the hour
 // repeated when summer time ends) is the later of the two that is not after limit, else the earlier (review of 41b6d82).
-func stampAt(stamp string, loc *time.Location, limit time.Time) (time.Time, error) {
+func StampAt(stamp string, loc *time.Location, limit time.Time) (time.Time, error) {
 	const layout = "2006-01-02T15:04"
 	if z, ok := strings.CutSuffix(stamp, "Z"); ok {
 		return time.Parse(layout, z)

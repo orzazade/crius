@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/orzazade/crius/internal/testutil"
 )
@@ -417,5 +418,24 @@ func TestABranchNamedLikeAShaDoesNotHideTheCommit(t *testing.T) {
 	record(t, records, head, "pre-ready PASS "+short(head)+" on base x")
 	if rc, errs := post(t, at("2026-10-25T17:50"), log, "READY", "quotes:p2", "quotes:qa1", text); rc != 0 {
 		t.Fatalf("with its record: rc %d: %s", rc, errs)
+	}
+}
+
+// Review of bb715a1: in the hour repeated when summer time ends, a START from the first pass read as the second, an
+// hour later, so a run past the live window stayed open. It is the later reading not after now.
+func TestAStartInTheRepeatedHourIsReadAsOfNow(t *testing.T) {
+	riga, err := time.LoadLocation("Europe/Riga")
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := "2026-10-25T03:30 START quotes:p6 -> quotes:all — P6 live START: mockup-scan\n"
+	for now, open := range map[time.Time]bool{
+		time.Date(2026, 10, 25, 1, 5, 0, 0, time.UTC):  false, // 03:05 second pass: the START was 00:30Z, 35 min ago
+		time.Date(2026, 10, 25, 1, 40, 0, 0, time.UTC): true,  // 03:40 second pass: the START may be 01:30Z
+	} {
+		runs, err := openRuns(strings.NewReader(log), int64(len(log)), now.In(riga), 30*time.Minute)
+		if err != nil || (len(runs) == 1) != open {
+			t.Errorf("at %s: %q %v, want open %v", now, runs, err, open)
+		}
 	}
 }

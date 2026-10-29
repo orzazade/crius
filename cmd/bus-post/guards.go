@@ -31,6 +31,8 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/orzazade/crius/internal/wakewatch"
 )
 
 const (
@@ -299,11 +301,9 @@ func openRuns(f io.ReaderAt, size int64, now time.Time, window time.Duration) ([
 		if len(fields) < 3 {
 			continue
 		}
-		// A stamp ending in Z is UTC, as the bus parser reads it (review of 80b4c83).
-		at, err := time.ParseInLocation("2006-01-02T15:04", fields[0], now.Location())
-		if z, ok := strings.CutSuffix(fields[0], "Z"); ok {
-			at, err = time.Parse("2006-01-02T15:04", z)
-		}
+		// A stamp ending in Z is UTC, as the bus parser reads it (review of 80b4c83); one in the repeated summer-time
+		// hour is the later reading not after now (review of bb715a1).
+		at, err := wakewatch.StampAt(fields[0], now.Location(), now)
 		if err != nil {
 			continue
 		}

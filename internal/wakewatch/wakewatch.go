@@ -422,7 +422,7 @@ func missed(home string, now time.Time, watch projects, park parked) ([][2]strin
 			if team, _, ok := strings.Cut(from, ":"); ok && !watch.has(team) {
 				continue
 			}
-			at, err := lineTime(m[1])
+			at, err := lineTime(m[1], now)
 			if err != nil {
 				continue
 			}
@@ -455,11 +455,10 @@ func recipients(to string) []string {
 	return strings.FieldsFunc(to, func(c rune) bool { return c == ',' || c == ' ' || c == '(' || c == ')' })
 }
 
-func lineTime(s string) (time.Time, error) {
-	if strings.HasSuffix(s, "Z") {
-		return time.Parse("2006-01-02T15:04Z", s)
-	}
-	return time.ParseInLocation("2006-01-02T15:04", s, time.Local)
+// lineTime reads a bus stamp as of now: in the repeated summer-time hour, the later reading not after now (review of
+// bb715a1).
+func lineTime(s string, now time.Time) (time.Time, error) {
+	return StampAt(s, time.Local, now)
 }
 
 // waiting gives [key, text] for each tab whose screen has waited on a question or dialog, unchanged, for 10 min, and
@@ -526,7 +525,7 @@ func waiting(st *state, d Deps, watch projects, park parked, screens []Screen, h
 			clear = clearReady(body)
 			var found bool
 			var err error
-			if lastLine, found, err = lastFrom(d.Home, who, ""); err != nil {
+			if lastLine, found, err = lastFrom(d.Home, who, "", d.Now); err != nil {
 				live[s.Surface] = true
 				out = append(out, [2]string{"screen-failed:" + s.Surface, fmt.Sprintf("tab %q (%s): idle check could not read its bus: %v", s.Title, s.Surface, err)})
 				continue
@@ -534,7 +533,7 @@ func waiting(st *state, d Deps, watch projects, park parked, screens []Screen, h
 				continue // no bus for this project: not a team Crius runs
 			}
 			var p bool
-			if p, unparked, err = parkedOnBus(d.Home, who); err != nil {
+			if p, unparked, err = parkedOnBus(d.Home, who, d.Now); err != nil {
 				live[s.Surface] = true
 				out = append(out, [2]string{"screen-failed:" + s.Surface, fmt.Sprintf("tab %q (%s): idle check could not read its bus: %v", s.Title, s.Surface, err)})
 				continue
@@ -673,7 +672,7 @@ func fresh(d Deps, watch projects, park parked, screens []Screen, ss []Session, 
 	sort.Strings(whos)
 	var out [][2]string
 	for _, who := range whos {
-		at, found, err := lastFrom(d.Home, who, "DONE")
+		at, found, err := lastFrom(d.Home, who, "DONE", d.Now)
 		if err != nil {
 			out = append(out, [2]string{"fresh-failed:" + who, fmt.Sprintf("the lead fresh-start check failed to look at %s's bus: %v", who, err)})
 			hv.keep("fresh:" + who)
@@ -849,13 +848,13 @@ func clearReady(body string) bool {
 
 // lastFrom gives the time of the newest whole line sent by who ("quotes:lead") on its project's bus, of type typ or
 // any type for "". found is false when the project has no bus.
-func lastFrom(home, who, typ string) (last time.Time, found bool, err error) {
+func lastFrom(home, who, typ string, now time.Time) (last time.Time, found bool, err error) {
 	lines, found, err := busLines(home, who)
 	for _, m := range lines {
 		if m[3] != who || typ != "" && m[2] != typ {
 			continue
 		}
-		if at, err := lineTime(m[1]); err == nil && at.After(last) {
+		if at, err := lineTime(m[1], now); err == nil && at.After(last) {
 			last = at
 		}
 	}
@@ -886,7 +885,7 @@ func orderAfterDone(home, who string) (bool, error) {
 // after work, "P2 is parked", "park it in refs/wip") does not count: a role told to work first still wakes when idle.
 // Lines to <project>:all neither park nor unpark: a whole project is ~/.crius/parked. unparked is the minute of the
 // line that ended the newest park, where an idle spell starts afresh (review: a park and an unpark between two runs).
-func parkedOnBus(home, who string) (parked bool, unparked time.Time, err error) {
+func parkedOnBus(home, who string, now time.Time) (parked bool, unparked time.Time, err error) {
 	lines, _, err := busLines(home, who)
 	project := strings.SplitN(who, ":", 2)[0]
 	for _, m := range lines {
@@ -915,7 +914,7 @@ func parkedOnBus(home, who string) (parked bool, unparked time.Time, err error) 
 			parks = parks || parkRe.MatchString(s)
 		}
 		if parked && !(aimed && parks) {
-			if at, err := lineTime(m[1]); err == nil {
+			if at, err := lineTime(m[1], now); err == nil {
 				unparked = at
 			}
 		}

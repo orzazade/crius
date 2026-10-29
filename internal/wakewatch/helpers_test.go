@@ -202,7 +202,11 @@ func TestAfterBootReadsThePidFileTimeAfterThePid(t *testing.T) {
 	d.Process = func(pid int) (time.Time, bool, error) { return started, pid == 400, nil }
 	go func() {
 		w, err := os.OpenFile(p, os.O_WRONLY, 0)
-		if err != nil {
+		if err != nil { // a reader-writer open does not wait, and its close ends the reader's wait
+			t.Error(err)
+			if w, err = os.OpenFile(p, os.O_RDWR, 0); err == nil {
+				w.Close()
+			}
 			return
 		}
 		defer w.Close()
@@ -218,28 +222,55 @@ func TestAfterBootReadsThePidFileTimeAfterThePid(t *testing.T) {
 }
 
 // Review of 41b6d82: when summer time ends, 03:00-04:00 comes twice in Riga. A line from the first pass read as the
-// second, an hour ahead: a future line, so no heartbeat. In the second pass the newer reading counts.
+// second, an hour ahead: a future line, so no heartbeat. In the second pass the newer reading counts. Review of
+// bb715a1: the reading is never after now, so a line an hour old is not taken for one a minute ahead.
 func TestAfterBootReadsTheRepeatedHourOfSummerTime(t *testing.T) {
 	loc, err := time.LoadLocation("Europe/Riga")
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, c := range []struct {
-		now  time.Time // the line is 03:30
-		desc string
+		now   time.Time
+		stamp string
+		alert bool
+		desc  string
 	}{
-		{time.Date(2026, 10, 25, 0, 55, 0, 0, time.UTC), "03:55 first pass, line from it: 25 min ago"},
-		{time.Date(2026, 10, 25, 1, 5, 0, 0, time.UTC), "03:05 second pass, line from the first: 35 min ago"},
-		{time.Date(2026, 10, 25, 1, 40, 0, 0, time.UTC), "03:40 second pass, line from it: 10 min ago, not 70"},
+		{time.Date(2026, 10, 25, 0, 55, 0, 0, time.UTC), "03:30", false, "03:55 first pass, line from it: 25 min ago"},
+		{time.Date(2026, 10, 25, 1, 5, 0, 0, time.UTC), "03:30", false, "03:05 second pass, line from the first: 35 min ago"},
+		{time.Date(2026, 10, 25, 1, 40, 0, 0, time.UTC), "03:30", false, "03:40 second pass, line from it: 10 min ago, not 70"},
+		{time.Date(2026, 10, 25, 0, 59, 0, 0, time.UTC), "03:00", true, "03:59 first pass, line from it: 59 min ago, not 1 min ahead"},
 	} {
 		d, sent := boot(t, "[[bus]]\nname = \"hourly\"\nlog = \"quotes\"\nfrom = \"quotes:lead\"\nhas = [\"hourly\"]\nwithin_min = 40\n")
 		d.Now = c.now.In(loc)
-		testutil.Write(t, filepath.Join(d.Home, "bus", "quotes.log"), "2026-10-25T03:30 INFO quotes:lead -> crius:lead — hourly\n")
+		testutil.Write(t, filepath.Join(d.Home, "bus", "quotes.log"), "2026-10-25T"+c.stamp+" INFO quotes:lead -> crius:lead — hourly\n")
 		if err := AfterBoot(d); err != nil {
 			t.Fatal(err)
 		}
-		if len(*sent) != 0 {
+		if len(*sent) != 0 != c.alert {
 			t.Errorf("%s: %q", c.desc, *sent)
 		}
+	}
+}
+
+// Review of bb715a1: the wake checks read bus stamps the same way, so a first-pass line in the repeated hour is not
+// an hour ahead (a quiet session read as active).
+func TestLineTimeReadsTheRepeatedHourAsOfNow(t *testing.T) {
+	riga, err := time.LoadLocation("Europe/Riga")
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := time.Local
+	time.Local = riga
+	t.Cleanup(func() { time.Local = old })
+	for now, want := range map[time.Time]time.Time{
+		time.Date(2026, 10, 25, 0, 40, 0, 0, time.UTC): time.Date(2026, 10, 25, 0, 30, 0, 0, time.UTC),
+		time.Date(2026, 10, 25, 1, 40, 0, 0, time.UTC): time.Date(2026, 10, 25, 1, 30, 0, 0, time.UTC),
+	} {
+		if at, err := lineTime("2026-10-25T03:30", now); err != nil || !at.Equal(want) {
+			t.Errorf("at %s: %s %v, want %s", now, at.UTC(), err, want)
+		}
+	}
+	if at, err := lineTime("2026-10-25T03:30Z", time.Time{}); err != nil || !at.Equal(time.Date(2026, 10, 25, 3, 30, 0, 0, time.UTC)) {
+		t.Errorf("Z stamp: %s %v", at, err)
 	}
 }
