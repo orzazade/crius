@@ -9,6 +9,7 @@ import (
 	"github.com/orzazade/crius/internal/wakewatch"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -717,31 +718,32 @@ func TestSessionsSkipsAStatusFileWhosePidWasReused(t *testing.T) {
 	}
 }
 
-// The resume record as cmux 0.65.2 gives it (trimmed from a live tab, 10-29): the folder its Claude binding restores
-// with, none when the binding sets no CLAUDE_CONFIG_DIR, and no Claude when the tab keeps another binding or none.
-func TestTheRestoreFolderIsReadFromTheTabsClaudeBinding(t *testing.T) {
-	rec := func(binding string) []byte {
-		return []byte(`{"cleared":false,"surface_ref":"surface:1000050036","restore_record":{"kind":"claude","environment":` +
-			`{"CLAUDE_CONFIG_DIR":"/Users/o/.claude-max1"}},"resume_binding":` + binding + `}`)
+// The resume record as cmux 0.65.2 gives it (trimmed from a live tab, 10-29): the folder each Claude record (resume
+// binding, restore record) restores with, "" for one that sets no CLAUDE_CONFIG_DIR; a record of another kind or none
+// gives nothing.
+func TestTheRestoreFoldersAreReadFromTheTabsClaudeRecords(t *testing.T) {
+	rec := func(binding, record string) []byte {
+		return []byte(`{"cleared":false,"surface_ref":"surface:1000050036","restore_record":` + record + `,"resume_binding":` + binding + `}`)
 	}
+	m1 := `{"kind":"claude","environment":{"CLAUDE_CONFIG_DIR":"/Users/o/.claude-max1"}}`
 	for _, c := range []struct {
-		b      []byte
-		config string
-		found  bool
+		b    []byte
+		want []string
 	}{
-		{rec(`{"kind":"claude","auto_resume":false,"environment":{"CLAUDE_CONFIG_DIR":"/Users/o/.claude-max2-personal",` +
-			`"CMUX_PRESERVE_CLAUDE_AUTH_SELECTION_ENV":"1"}}`), "/Users/o/.claude-max2-personal", true},
-		{rec(`{"kind":"claude","environment":{"CMUX_CUSTOM_CLAUDE_PATH":"/x"}}`), "", true},
-		{rec(`{"kind":"claude"}`), "", true},
-		{rec(`{"kind":"codex","environment":{"CLAUDE_CONFIG_DIR":"/Users/o/.claude-max2"}}`), "", false},
-		{rec(`null`), "", false},
+		{rec(`{"kind":"claude","auto_resume":false,"environment":{"CLAUDE_CONFIG_DIR":"/Users/o/.claude-max2-personal",`+
+			`"CMUX_PRESERVE_CLAUDE_AUTH_SELECTION_ENV":"1"}}`, m1), []string{"/Users/o/.claude-max2-personal", "/Users/o/.claude-max1"}},
+		{rec(`{"kind":"claude","environment":{"CMUX_CUSTOM_CLAUDE_PATH":"/x"}}`, `null`), []string{""}},
+		{rec(`{"kind":"claude"}`, `{"kind":"claude"}`), []string{"", ""}},
+		{rec(`null`, m1), []string{"/Users/o/.claude-max1"}},
+		{rec(`{"kind":"codex","environment":{"CLAUDE_CONFIG_DIR":"/Users/o/.claude-max2"}}`, `null`), nil},
+		{rec(`null`, `null`), nil},
 	} {
-		config, found, err := restoreFolder(c.b)
-		if err != nil || config != c.config || found != c.found {
-			t.Errorf("%s: got %q %v %v, want %q %v", c.b, config, found, err, c.config, c.found)
+		got, err := restoreFolders(c.b)
+		if err != nil || !slices.Equal(got, c.want) {
+			t.Errorf("%s: got %q %v, want %q", c.b, got, err, c.want)
 		}
 	}
-	if _, _, err := restoreFolder([]byte("Error: invalid_params")); err == nil {
+	if _, err := restoreFolders([]byte("Error: invalid_params")); err == nil {
 		t.Error("an answer that is no record gave no error")
 	}
 }

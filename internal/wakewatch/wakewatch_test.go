@@ -37,7 +37,7 @@ type fake struct {
 	wsErr   error
 	states  []sessionstate.State // crius-hook's session files
 	stErr   error
-	restore map[string]string // surface -> the config folder cmux would restore its Claude in; absent: no Claude kept
+	restore map[string][]string // surface -> the config folder of each Claude record cmux keeps for it
 	rsErr   error
 }
 
@@ -48,11 +48,8 @@ func (f *fake) deps(home string, now time.Time) Deps {
 		Sessions:   func() ([]Session, error) { return f.ses, f.sesErr },
 		Workspaces: func() ([]Workspace, error) { return f.wss, f.wsErr },
 		States:     func() ([]sessionstate.State, error) { return f.states, f.stErr },
-		Restore: func(_, surface string) (string, bool, error) {
-			c, ok := f.restore[surface]
-			return c, ok, f.rsErr
-		},
-		Load: func() (float64, error) { return f.load, f.loadErr },
+		Restore:    func(surface string) ([]string, error) { return f.restore[surface], f.rsErr },
+		Load:       func() (float64, error) { return f.load, f.loadErr },
 		Resources: func() (float64, float64, error) {
 			if f.freeGB == 0 {
 				return 100, f.swapGB, f.resErr
@@ -2002,7 +1999,7 @@ func TestATabThatWouldRestoreOnAnotherFolderIsCaught(t *testing.T) {
 	}
 	f := &fake{ses: []Session{{Name: "quotes: p3", ID: "s1", Started: t0.Add(-time.Hour)}}, states: []sessionstate.State{role}}
 	at := t0
-	run := func(restore map[string]string, err error) []string {
+	run := func(restore map[string][]string, err error) []string {
 		f.sent, f.restore, f.rsErr = nil, restore, err
 		at = at.Add(30 * time.Minute)
 		if err := Run(f.deps(home, at)); err != nil {
@@ -2011,18 +2008,20 @@ func TestATabThatWouldRestoreOnAnotherFolderIsCaught(t *testing.T) {
 		return f.sent
 	}
 	for _, c := range []struct {
-		restore map[string]string
+		restore map[string][]string
 		err     error
 		want    []string // each a part of the one wake; nil: no wake
 	}{
-		{map[string]string{sfID: ""}, nil, []string{"quotes · p3", sfID, "~/.claude", max2, "crius-spawn -resume quotes p3"}},
-		{map[string]string{sfID: ""}, nil, nil}, // once
-		{map[string]string{sfID: def}, nil, []string{"quotes · p3", def, max2, "crius-spawn -resume quotes p3"}},
-		{map[string]string{sfID: max2}, nil, nil},
-		{map[string]string{sfID: link + "/"}, nil, nil},
-		{map[string]string{}, nil, nil},
+		{map[string][]string{sfID: {""}}, nil, []string{"quotes · p3", sfID, "~/.claude", max2, "crius-spawn -resume quotes p3"}},
+		{map[string][]string{sfID: {""}}, nil, nil}, // once
+		{map[string][]string{sfID: {def}}, nil, []string{"quotes · p3", def, max2, "crius-spawn -resume quotes p3"}},
+		{map[string][]string{sfID: {max2}}, nil, nil},
+		// cmux keeps a resume binding and a restore record and does not say which a restart uses (review of fae23e6).
+		{map[string][]string{sfID: {max2, def}}, nil, []string{"quotes · p3", def, max2}},
+		{map[string][]string{sfID: {link + "/", max2}}, nil, nil},
+		{map[string][]string{}, nil, nil},
 		{nil, errors.New("cmux: socket gone"), []string{"could not read", "socket gone"}},
-		{map[string]string{sfID: def}, nil, []string{"quotes · p3", def}}, // wrong again after a right run: again
+		{map[string][]string{sfID: {def}}, nil, []string{"quotes · p3", def}}, // wrong again after a right run: again
 	} {
 		sent := run(c.restore, c.err)
 		if c.want == nil {

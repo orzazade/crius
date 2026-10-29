@@ -93,9 +93,9 @@ type Deps struct {
 	Sessions   func() ([]Session, error)
 	Workspaces func() ([]Workspace, error)
 	States     func() ([]sessionstate.State, error) // crius-hook's file of each session (package sessionstate)
-	// Restore is the config folder cmux would restore a tab's Claude in after a restart, "" when its record sets none;
-	// found is false when the tab keeps no Claude to restore.
-	Restore func(workspace, surface string) (config string, found bool, err error)
+	// Restore gives, for each record of a Claude that cmux keeps to restore a tab after a restart (its resume binding and
+	// its restore record), the config folder it restores in, "" when it sets none; none when the tab keeps no Claude.
+	Restore func(surface string) (configs []string, err error)
 }
 
 // Workspace is one cmux workspace: Named is false while it shows a default title, and Color is "" when none is set.
@@ -1109,14 +1109,16 @@ func wrongFolder(d Deps, h *hooks) [][2]string {
 		if s.Surface == "" { // not in a cmux tab: nothing restores it
 			continue
 		}
-		c, found, err := d.Restore(s.Workspace, s.Surface)
+		cs, err := d.Restore(s.Surface)
 		if err != nil {
 			unread = cmp.Or(unread, err)
 			continue
 		}
-		if !found || c != "" && samePath(c) == samePath(r.FiledConfig()) {
+		i := slices.IndexFunc(cs, func(c string) bool { return c == "" || samePath(c) != samePath(r.FiledConfig()) })
+		if i < 0 {
 			continue
 		}
+		c := cs[i]
 		where := c
 		if c == "" {
 			where = "~/.claude (its record names no folder)"

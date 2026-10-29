@@ -116,35 +116,37 @@ func workspaces() ([]wakewatch.Workspace, error) {
 	return out, nil
 }
 
-// restore is the config folder cmux would restore a tab's Claude in after a restart (restoreFolder).
-func restore(workspace, surface string) (string, bool, error) {
-	args := []string{"surface", "resume", "show", "--json", "--surface", surface}
-	if workspace != "" {
-		args = append(args, "--workspace", workspace)
-	}
-	b, err := outbox.Cmux(args...)
+// restore gives the config folders cmux would restore a tab's Claude in after a restart (restoreFolders). The surface id
+// alone names the tab: the workspace a session started in is stale once its tab moves (review of fae23e6).
+func restore(surface string) ([]string, error) {
+	b, err := outbox.Cmux("surface", "resume", "show", "--json", "--surface", surface)
 	if err != nil {
-		return "", false, fmt.Errorf("cmux surface resume show --surface %s: %v: %s", surface, err, strings.TrimSpace(string(b)))
+		return nil, fmt.Errorf("cmux surface resume show --surface %s: %v: %s", surface, err, strings.TrimSpace(string(b)))
 	}
-	return restoreFolder(b)
+	return restoreFolders(b)
 }
 
-// restoreFolder reads cmux's resume record of a tab: the CLAUDE_CONFIG_DIR its Claude binding restores with, "" when it
-// sets none; found is false when the tab keeps no Claude binding.
-func restoreFolder(b []byte) (config string, found bool, err error) {
+// restoreFolders reads cmux's resume record of a tab: the CLAUDE_CONFIG_DIR of each Claude record it keeps, its resume
+// binding and its restore record ("" for one that sets none): cmux does not say which one a restart uses.
+func restoreFolders(b []byte) ([]string, error) {
+	type claude *struct {
+		Kind        string
+		Environment map[string]string
+	}
 	var r struct {
-		Binding *struct {
-			Kind        string
-			Environment map[string]string
-		} `json:"resume_binding"`
+		Binding claude `json:"resume_binding"`
+		Record  claude `json:"restore_record"`
 	}
 	if err := json.Unmarshal(b, &r); err != nil {
-		return "", false, fmt.Errorf("cmux surface resume show --json: %v", err)
+		return nil, fmt.Errorf("cmux surface resume show --json: %v", err)
 	}
-	if r.Binding == nil || r.Binding.Kind != "claude" {
-		return "", false, nil
+	var out []string
+	for _, c := range []claude{r.Binding, r.Record} {
+		if c != nil && c.Kind == "claude" {
+			out = append(out, c.Environment["CLAUDE_CONFIG_DIR"])
+		}
 	}
-	return r.Binding.Environment["CLAUDE_CONFIG_DIR"], true, nil
+	return out, nil
 }
 
 // screens reads the last 30 lines of every terminal tab in cmux. A tab whose read fails comes back with Err set.
