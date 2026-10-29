@@ -49,7 +49,12 @@ var (
 	okRe        = regexp.MustCompile(`^OK ((?:surface|workspace):\d+)`)
 	optionRe    = regexp.MustCompile(`^❯?\s*(?:\d+\.\s+)?`)
 	modelRe     = regexp.MustCompile(`\b(?:Opus|Sonnet|Haiku|Fable) \d+(?:\.\d+)?\b`)
+	exitedRe    = regexp.MustCompile(`(?m)^claude exited, rc=\d+ *$`) // what exitLine prints at column 0; the shell line shows $?
 )
+
+// exitLine follows the command of a new tab, so a launch that ends (aitch refusing --primary, live 10-28) shows on screen
+// at once, where the launch read the shell for two minutes.
+const exitLine = `; echo "claude exited, rc=$?"`
 
 // reads is how many times a step reads the new tab before it gives up (with Wait between: two minutes at 1s).
 const reads = 120
@@ -229,7 +234,7 @@ func tab(d Deps, project, persona, name, cwd, cmd string) (ws, surface string, e
 		h.Write([]byte(project))
 		look.name, look.color = strings.ToUpper(project[:1])+project[1:], palette[h.Sum32()%uint32(len(palette))]
 	}
-	if ws, surface, err = open(d, look.name, look.color, table, cwd, cmd); err != nil {
+	if ws, surface, err = open(d, look.name, look.color, table, cwd, cmd+exitLine); err != nil {
 		return "", "", err
 	}
 	if out, err := d.Cmux("rename-tab", "--workspace", ws, "--surface", surface, "--", name); err != nil {
@@ -241,7 +246,8 @@ func tab(d Deps, project, persona, name, cwd, cmd string) (ws, surface string, e
 // Resume brings a role's session back after a crash or a reboot: claude --resume <id> in the session's own folder,
 // typed into the role's tab when the tab is still there with a shell in front (a crash), else in a new tab of the
 // project's workspace named as before (a reboot). A tab with anything else in front, Claude itself, is left alone. It
-// waits for Claude's input box, so a resume that finds no conversation fails with what the screen said. A session that
+// waits for Claude's input box, so a resume that finds no conversation, or a new tab whose command ended, fails with what
+// the screen said. A session that
 // ran on a Max account of accounts.toml (acct, its config folder dir) comes back in that folder; acct "" goes through aitch's own route as before.
 func Resume(project, role, id, cwd, acct, dir string, d Deps) (ws, surface string, err error) {
 	switch {
@@ -312,7 +318,10 @@ func Resume(project, role, id, cwd, acct, dir string, d Deps) (ws, surface strin
 			return false
 		}
 		_, boxed := wakewatch.Prompt(screen)
-		failed = !boxed && strings.Contains(screen, "No conversation found") // an up screen may quote the words
+		// An up screen may quote the words. Only a new tab's command ends with exitLine: a crashed tab may still show the
+		// exit line of its first launch, and in a tab narrower than about 80 columns zsh's clipped line would lose the
+		// resume id onShell looks for.
+		failed = !boxed && (strings.Contains(screen, "No conversation found") || !typed && exitedRe.MatchString(screen))
 		return boxed || failed
 	})
 	if err == nil && failed {
@@ -448,7 +457,8 @@ func uncoloured(d Deps, window, ws string) (bool, error) {
 }
 
 // start waits for Claude's empty input box (answering the folder-trust dialog Yes), checks the banner shows the model
-// asked for, types the tag line and the prompt, sends them, and waits until the tab shows the prompt was taken.
+// asked for, types the tag line and the prompt, sends them, and waits until the tab shows the prompt was taken. A tab
+// whose command ended before Claude's box came up (exitLine) fails at once, with its last lines.
 func start(d Deps, ws, surface, model, tag, prompt string) error {
 	var screen string
 	answered := false
@@ -462,6 +472,9 @@ func start(d Deps, ws, surface, model, tag, prompt string) error {
 		var err error
 		if screen, err = read(d, ws, surface); err != nil {
 			return err
+		}
+		if exitedRe.MatchString(screen) {
+			return fmt.Errorf("Claude did not start: the tab's command ended; the screen ends: %s", tail(screen))
 		}
 		if keys := answer(screen); keys != nil {
 			if !answered { // once: a dialog still drawn after its Enter must not get another (review 10-22)

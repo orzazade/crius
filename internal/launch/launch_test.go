@@ -326,7 +326,7 @@ func TestClaudeStartsThroughAitchWithTheRoleModelAndName(t *testing.T) {
 		ns := f.called("new-surface")[0]
 		want := "--command aitch launch claude -- --model " + model +
 			` --permission-mode bypassPermissions --settings '{"autoCompactWindow":300000}' -n 'quotes · ` + role + `'`
-		if !strings.HasSuffix(ns, want) {
+		if !strings.HasSuffix(ns, want+exitLine) {
 			t.Fatalf("%s:\n got %s\nwant suffix %s", role, ns, want)
 		}
 	}
@@ -659,7 +659,7 @@ func TestResumeOpensANewTabWhenTheTabIsGone(t *testing.T) {
 		t.Errorf("got %s %s, want a new tab in Quotes", ws, surface)
 	}
 	if got := f.called("new-surface "); len(got) != 1 || !strings.Contains(got[0], "--working-directory /Users/o/Projects/quotes ") ||
-		!strings.HasSuffix(got[0], "-n 'quotes · lead' --resume "+resumeID) {
+		!strings.HasSuffix(got[0], "-n 'quotes · lead' --resume "+resumeID+exitLine) {
 		t.Errorf("new-surface %q", got)
 	}
 	if got := f.called("rename-tab "); len(got) != 1 || !strings.HasSuffix(got[0], "-- quotes · lead") {
@@ -887,7 +887,7 @@ func TestAPickedAccountStartsInItsFolderAndIsNotInTheTitle(t *testing.T) {
 	}
 	want := "--command aitch launch claude --primary '/Users/o/.claude-max2' -- --model claude-opus-5-5" +
 		` --permission-mode bypassPermissions --settings '{"autoCompactWindow":300000}' -n 'quotes · lead'`
-	if ns := f.called("new-surface")[0]; !strings.HasSuffix(ns, want) {
+	if ns := f.called("new-surface")[0]; !strings.HasSuffix(ns, want+exitLine) {
 		t.Errorf("new-surface\n got %s\nwant suffix %s", ns, want)
 	}
 	if got := f.called("rename-tab "); len(got) != 1 || !strings.HasSuffix(got[0], "-- quotes · lead") {
@@ -907,7 +907,7 @@ func TestAPickedAccountStartsInItsFolderAndIsNotInTheTitle(t *testing.T) {
 		if _, _, _, err := Run(Spawn{Project: "quotes", Role: "lead", Account: c.account, Prompt: "go"}, f.deps()); err != nil {
 			t.Fatal(c.account, err)
 		}
-		if strings.Join(asked, ",") != c.asked || !strings.HasSuffix(f.called("new-surface")[0], c.suffix) {
+		if strings.Join(asked, ",") != c.asked || !strings.HasSuffix(f.called("new-surface")[0], c.suffix+exitLine) {
 			t.Errorf("%s: asked %q, new-surface %s", c.account, asked, f.called("new-surface")[0])
 		}
 	}
@@ -915,7 +915,7 @@ func TestAPickedAccountStartsInItsFolderAndIsNotInTheTitle(t *testing.T) {
 	if _, _, _, err := Run(Spawn{Project: "quotes", Role: "lead", Prompt: "go"}, f.deps()); err != nil {
 		t.Fatal(err)
 	}
-	if ns := f.called("new-surface")[0]; !strings.Contains(ns, "aitch launch claude -- --model") || !strings.HasSuffix(ns, "-n 'quotes · lead'") {
+	if ns := f.called("new-surface")[0]; !strings.Contains(ns, "aitch launch claude -- --model") || !strings.HasSuffix(ns, "-n 'quotes · lead'"+exitLine) {
 		t.Errorf("no pick: %s", ns)
 	}
 }
@@ -983,7 +983,7 @@ func TestResumeStartsInTheSessionsAccountFolder(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := f.called("new-surface "); len(got) != 1 || !strings.Contains(got[0], "--primary '/Users/o/.claude-max2' ") ||
-		!strings.HasSuffix(got[0], "-n 'quotes · lead' --resume "+resumeID) {
+		!strings.HasSuffix(got[0], "-n 'quotes · lead' --resume "+resumeID+exitLine) {
 		t.Errorf("new-surface %q", got)
 	}
 	for _, c := range [][2]string{{"Max 2", "/Users/o/.claude-max2"}, {"max2", "/Users/o/.claude-max2'; rm x"}, {"max2", ""}} {
@@ -1009,7 +1009,7 @@ func TestAMoveStartsTheRoleInItsFolderOnAnotherAccountAndClosesTheOldTab(t *test
 		if strings.HasPrefix(c, "new-surface ") {
 			opened = i
 			if !strings.Contains(c, "--working-directory /Users/o/Projects/quotes/.worktrees/lead ") ||
-				!strings.Contains(c, "--primary '/Users/o/.claude-max2' ") || !strings.HasSuffix(c, "-n 'quotes · lead'") {
+				!strings.Contains(c, "--primary '/Users/o/.claude-max2' ") || !strings.HasSuffix(c, "-n 'quotes · lead'"+exitLine) {
 				t.Errorf("new-surface %q", c)
 			}
 		}
@@ -1088,5 +1088,42 @@ func TestAMoveHoldsTheRolesLockAndClosesTheOldTabLast(t *testing.T) {
 	}
 	if _, _, _, err := Run(s, d); err == nil || !strings.Contains(err.Error(), "runs claude in front") || len(f.called("close-surface")) != 0 {
 		t.Errorf("err %v, calls %q: want the old tab left open, its Claude named", err, f.calls)
+	}
+}
+
+// 10-28 09:30: aitch refused --primary in the new lenovo-pentest tab and the shell came back, but the launch went on
+// reading the tab for its two minutes (the owner stopped it). A tab whose command ended fails at once, with its last
+// lines; the shell line that started it, which shows the exit line unexpanded, is no exit.
+func TestALaunchWhoseCommandEndsFailsAtOnceWithTheTabsError(t *testing.T) {
+	dead := "o@mac lenovo-pentest % aitch launch claude --primary '/Users/o/.claude-max2' -- --model claude-opus-5-5" +
+		` -n 'quotes · lead'; echo "claude exited, rc=$?"` + "\n" +
+		"error: --primary /Users/o/.claude-max2 is not /Users/o/.claude or a folder linked to it\n" +
+		"claude exited, rc=1\no@mac lenovo-pentest % \n"
+	f := &fake{trees: []string{tree}, boot: slices.Repeat([]string{dead}, 2*reads)}
+	_, _, _, err := Run(Spawn{Project: "quotes", Role: "lead", Prompt: "Read your brief."}, f.deps())
+	if n := len(f.called("read-screen")); n != 1 {
+		t.Fatalf("%d reads of a tab whose command ended, want 1: %v", n, err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "rc=1") || !strings.Contains(err.Error(), "error: --primary") {
+		t.Fatal(err)
+	}
+	if ns := f.called("new-surface")[0]; !strings.HasSuffix(ns, `; echo "claude exited, rc=$?"`) {
+		t.Fatalf("new-surface %s: want the exit line after the command", ns)
+	}
+	// A resume in a new tab, the same.
+	f = &fake{trees: []string{tree}, boot: slices.Repeat([]string{dead}, 2*reads)}
+	_, _, err = Resume("quotes", "lead", resumeID, "/Users/o/Projects/quotes", "", "", f.deps())
+	if n := len(f.called("read-screen")); n > 2 || err == nil || !strings.Contains(err.Error(), "error: --primary") { // the second gives the error its lines
+		t.Fatalf("%d reads: %v", n, err)
+	}
+	// A resumed conversation drawn before its box may quote the exit line, indented: no exit (review).
+	f = &fake{trees: []string{tree}, boot: []string{"⏺ Bash(echo)\n  ⎿  claude exited, rc=1\n     claude exited, rc=1\n"}}
+	if _, _, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/quotes", "", "", f.deps()); err != nil {
+		t.Fatal(err)
+	}
+	// The shell line alone is no exit: the launch waits for Claude.
+	f = &fake{trees: []string{tree}, boot: []string{strings.SplitAfter(dead, "\n")[0]}}
+	if _, _, _, err := Run(Spawn{Project: "quotes", Role: "lead", Prompt: "Read your brief."}, f.deps()); err != nil {
+		t.Fatal(err)
 	}
 }
