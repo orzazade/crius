@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -311,6 +312,14 @@ func TestAnUnreadablePreReadyRecordIsSaid(t *testing.T) {
 	rc, errs := post(t, at("2026-10-25T17:49"), log, "READY", "quotes:p2", "quotes:qa1", "READY "+short(head))
 	if rc != 2 || !strings.Contains(errs, head) || busText(t, log) != "" {
 		t.Fatalf("rc %d %s", rc, errs)
+	}
+	// Review of d0186bc (P2): a records folder that is gone is failed to look (rc 2), not a READY with no record (rc 7).
+	if err := os.RemoveAll(records); err != nil {
+		t.Fatal(err)
+	}
+	rc, errs = post(t, at("2026-10-25T17:49"), log, "READY", "quotes:p2", "quotes:qa1", "READY "+short(head))
+	if rc != 2 || !strings.Contains(errs, "could not read pre-ready records: ") || !strings.Contains(errs, records) || busText(t, log) != "" {
+		t.Fatalf("no records folder: rc %d %s", rc, errs)
 	}
 }
 

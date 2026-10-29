@@ -225,8 +225,8 @@ func commits(repo string, words []string) (map[string]string, error) {
 // all 11 Quotes READYs of 10-24/25 with a record; review of 2cb587f). It passes with pre-ready's record in
 // g.PrereadyDir, the file named by its full sha, whose "head" is that sha and whose "line" starts "pre-ready PASS"
 // (Quotes pre-ready.ts writes it), or when it is a commit of a skip repo only (a RethinkBack fix has no pre-ready;
-// quotes:lead 10-25 18:12). It gives the word it judged, "" when text names no commit. A record that does not read is
-// an error: failed to look is not found nothing.
+// quotes:lead 10-25 18:12). It gives the word it judged, "" when text names no commit. A record that does not read, or
+// a records folder that is gone, is an error: failed to look is not found nothing.
 func readyProven(text string, g guards) (sha string, ok bool, err error) {
 	words := hexWords(text)
 	if len(words) == 0 {
@@ -268,6 +268,9 @@ func readyProven(text string, g guards) (sha string, ok bool, err error) {
 		}
 		b, err := os.ReadFile(filepath.Join(expand(g.PrereadyDir), full[w]))
 		if errors.Is(err, fs.ErrNotExist) {
+			if _, err := os.Stat(expand(g.PrereadyDir)); err != nil { // no folder: failed to look (review of d0186bc)
+				return w, false, fmt.Errorf("could not read pre-ready records: %v", err)
+			}
 			return w, false, nil
 		}
 		if err != nil {
