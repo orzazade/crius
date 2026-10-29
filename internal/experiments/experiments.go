@@ -331,7 +331,7 @@ var plumbing = map[string]bool{"true": true, ":": true, "echo": true, "printf": 
 	"mkfifo": true, "rm": true, "kill": true, "tail": true, "grep": true, "cat": true, "cut": true, "head": true, "wc": true,
 	"awk": true, "date": true}
 
-var leadRe = regexp.MustCompile(`^(?:(?:do|then|else|if|while|until|!)\s+)*`)
+var leadRe = regexp.MustCompile(`^(?:(?:do|then|else|if|while|until|!)(?:\s+|$))*`)
 
 // waiter tells a background command that waits on the bus from one that acts: every step is a bus wait or plumbing,
 // and none acts. A test run, a restart or a script before the wait is an action (review of 10da531: qa1's sed and
@@ -347,8 +347,10 @@ func waiter(cmd string) bool {
 			waits = true
 			continue
 		}
-		w, _, _ := strings.Cut(leadRe.ReplaceAllString(strings.TrimSpace(s), ""), " ")
-		w = strings.Trim(w, "()")
+		w := ""
+		if f := strings.Fields(leadRe.ReplaceAllString(strings.TrimSpace(s), "")); len(f) > 0 {
+			w = strings.Trim(f[0], "()")
+		}
 		if _, val, ok := strings.Cut(w, "="); ok && !strings.ContainsAny(w[:len(w)-len(val)-1], "\"'$") {
 			continue // NAME=value
 		}
@@ -359,7 +361,8 @@ func waiter(cmd string) bool {
 	return waits
 }
 
-// steps splits a shell command at ;, &&, ||, | and new lines outside quotes.
+// steps splits a shell command at ;, &&, ||, | and new lines outside quotes; a backslash escapes the next character
+// outside single quotes, and a backslash-newline joins two lines.
 func steps(cmd string) []string {
 	var out []string
 	var cur strings.Builder
@@ -368,6 +371,11 @@ func steps(cmd string) []string {
 	for i := 0; i < len(rs); i++ {
 		c := rs[i]
 		switch {
+		case c == '\\' && q != '\'' && i+1 < len(rs):
+			if i++; rs[i] != '\n' {
+				cur.WriteRune(c)
+				cur.WriteRune(rs[i])
+			}
 		case q != 0:
 			cur.WriteRune(c)
 			if c == q {
