@@ -155,12 +155,12 @@ func names(text string, m Milestone) bool {
 			return true
 		}
 	}
-	prev := ""
+	var prev [2]string // a base or next sha, also on a branch (base main 441055ff), is another commit
 	for _, w := range wordRe.FindAllString(text, -1) {
-		if prev != "base" && prev != "next" && shaIn(w, line) {
+		if !slices.ContainsFunc(prev[:], func(p string) bool { return p == "base" || p == "next" }) && shaIn(w, line) {
 			return true
 		}
-		prev = strings.ToLower(w)
+		prev = [2]string{strings.ToLower(w), prev[0]}
 	}
 	return false
 }

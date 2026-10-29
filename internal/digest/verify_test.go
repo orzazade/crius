@@ -189,7 +189,7 @@ func TestVerifiedLooksAtEveryMilestoneAndRowsKeepMilestones(t *testing.T) {
 // correction withdraws nothing. Review of 19d3040: an id or sha in the milestone's text names it too, a team log line
 // of the project withdraws as a bus line does, and a base or next sha is another commit. Review of 24b07b1: any other
 // sha of the line names, Crius's team log names its own items, a lower-case word (slate-400) is no id, and a store
-// revoke is not read. A row line never closes an open milestone, also in a lead that counts milestones.
+// revoke is not read. Review of 48708f9: a base on a branch (base main 441055ff) is another commit too. A row line never closes an open milestone, also in a lead that counts milestones.
 func TestAWithdrawnAcceptanceDoesNotCloseAnOpenMilestone(t *testing.T) {
 	db := open(t)
 	at := time.Date(2026, 10, 25, 21, 0, 0, 0, time.Local)
@@ -226,7 +226,7 @@ func TestAWithdrawnAcceptanceDoesNotCloseAnOpenMilestone(t *testing.T) {
 	bus("quotes:qa1", "fail", "FAIL 7f76684 on the rig")
 	base := verified(t, db, at, "crius:lead", "quotes:lead", "441055ff · checked")
 	next := verified(t, db, at, "crius:lead", "quotes:lead", "52a52a5 · checked")
-	bus("quotes:qa1", "fail", "QA1 FAIL F22 2e90ad27 base 441055ff (next 52a52a5)")
+	bus("quotes:qa1", "fail", "QA1 FAIL F22 2e90ad27 base main 441055ff (next 52a52a5)")
 	verified(t, db, at, "crius:lead", "quotes:lead", "2a6560a4 · checked")
 	bus("quotes:qa1", "fail", "FAIL QA1 bug 1 (6b03f155 + d64c0078) on 2a6560a4")
 	slate := verified(t, db, at, "crius:lead", "quotes:lead", "F-61 · checked")
