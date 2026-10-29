@@ -125,7 +125,8 @@ func pidDown(d BootDeps, file string) (string, error) {
 		path = filepath.Join(home, rest)
 	}
 	// One open file gives both the pid and its time: a file replaced between two reads would mix them (review of
-	// d2bbf74).
+	// d2bbf74). The time is read after the pid: a pid written in place after the time was read would look younger
+	// than its process (review of 41b6d82).
 	f, err := os.Open(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return "no " + file, nil
@@ -134,11 +135,11 @@ func pidDown(d BootDeps, file string) (string, error) {
 		return "", err
 	}
 	defer f.Close()
-	fi, err := f.Stat()
+	b, err := io.ReadAll(f)
 	if err != nil {
 		return "", err
 	}
-	b, err := io.ReadAll(f)
+	fi, err := f.Stat()
 	if err != nil {
 		return "", err
 	}
@@ -183,14 +184,39 @@ func lastLine(log, from string, has []string, now time.Time) (time.Time, error) 
 		if !hit {
 			continue
 		}
-		at, err := time.ParseInLocation("2006-01-02T15:04", fields[0], loc)
-		if z, ok := strings.CutSuffix(fields[0], "Z"); ok {
-			at, err = time.Parse("2006-01-02T15:04", z)
-		}
 		// A line stamped in the future is no heartbeat (review of d2bbf74); 2 min is clock skew.
+		at, err := stampAt(fields[0], loc, now.Add(2*time.Minute))
 		if err == nil && at.After(last) && !at.After(now.Add(2*time.Minute)) {
 			last = at
 		}
 	}
 	return last, sc.Err()
+}
+
+// stampAt reads a bus stamp: UTC with a Z, else the wall time in loc. A wall time the clock showed twice (the hour
+// repeated when summer time ends) is the later of the two that is not after limit, else the earlier (review of 41b6d82).
+func stampAt(stamp string, loc *time.Location, limit time.Time) (time.Time, error) {
+	const layout = "2006-01-02T15:04"
+	if z, ok := strings.CutSuffix(stamp, "Z"); ok {
+		return time.Parse(layout, z)
+	}
+	wall, err := time.Parse(layout, stamp)
+	if err != nil {
+		return wall, err
+	}
+	var best time.Time
+	for _, near := range []time.Time{wall.Add(-12 * time.Hour), wall.Add(12 * time.Hour)} {
+		_, off := near.In(loc).Zone()
+		at := wall.Add(-time.Duration(off) * time.Second).In(loc)
+		if at.Format(layout) != stamp {
+			continue
+		}
+		if best.IsZero() || (at.After(best) && !at.After(limit)) || (best.After(limit) && at.Before(best)) {
+			best = at
+		}
+	}
+	if best.IsZero() {
+		return time.ParseInLocation(layout, stamp, loc)
+	}
+	return best, nil
 }

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -181,5 +182,64 @@ func TestAfterBootTriesEveryLineWhenOneIsHeld(t *testing.T) {
 	}
 	if all := strings.Join(tried, "\n"); !strings.Contains(all, "helper-20 (no ~/watchers/helper-20.pid)") {
 		t.Fatalf("helper-20 never tried:\n%s", all)
+	}
+}
+
+// Review of 41b6d82: a pid written in place after its file's time was read looked younger than its process. A fifo
+// shows it: its time moves when the pid is written, after the open.
+func TestAfterBootReadsThePidFileTimeAfterThePid(t *testing.T) {
+	d, sent := boot(t, "[[pid]]\nname = \"fresh\"\nfile = \"~/fresh.pid\"\n")
+	t.Setenv("HOME", d.Home)
+	p := filepath.Join(d.Home, "fresh.pid")
+	if err := syscall.Mkfifo(p, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(p, old, old); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	d.Process = func(pid int) (time.Time, bool, error) { return started, pid == 400, nil }
+	go func() {
+		w, err := os.OpenFile(p, os.O_WRONLY, 0)
+		if err != nil {
+			return
+		}
+		defer w.Close()
+		time.Sleep(50 * time.Millisecond)
+		w.WriteString("400\n")
+	}()
+	if err := AfterBoot(d); err != nil {
+		t.Fatal(err)
+	}
+	if len(*sent) != 0 {
+		t.Errorf("a pid written after the open is reported: %q", *sent)
+	}
+}
+
+// Review of 41b6d82: when summer time ends, 03:00-04:00 comes twice in Riga. A line from the first pass read as the
+// second, an hour ahead: a future line, so no heartbeat. In the second pass the newer reading counts.
+func TestAfterBootReadsTheRepeatedHourOfSummerTime(t *testing.T) {
+	loc, err := time.LoadLocation("Europe/Riga")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		now  time.Time // the line is 03:30
+		desc string
+	}{
+		{time.Date(2026, 10, 25, 0, 55, 0, 0, time.UTC), "03:55 first pass, line from it: 25 min ago"},
+		{time.Date(2026, 10, 25, 1, 5, 0, 0, time.UTC), "03:05 second pass, line from the first: 35 min ago"},
+		{time.Date(2026, 10, 25, 1, 40, 0, 0, time.UTC), "03:40 second pass, line from it: 10 min ago, not 70"},
+	} {
+		d, sent := boot(t, "[[bus]]\nname = \"hourly\"\nlog = \"quotes\"\nfrom = \"quotes:lead\"\nhas = [\"hourly\"]\nwithin_min = 40\n")
+		d.Now = c.now.In(loc)
+		testutil.Write(t, filepath.Join(d.Home, "bus", "quotes.log"), "2026-10-25T03:30 INFO quotes:lead -> crius:lead — hourly\n")
+		if err := AfterBoot(d); err != nil {
+			t.Fatal(err)
+		}
+		if len(*sent) != 0 {
+			t.Errorf("%s: %q", c.desc, *sent)
+		}
 	}
 }
