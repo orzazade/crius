@@ -37,6 +37,8 @@ type fake struct {
 	wsErr   error
 	states  []sessionstate.State // crius-hook's session files
 	stErr   error
+	restore map[string]string // surface -> the config folder cmux would restore its Claude in; absent: no Claude kept
+	rsErr   error
 }
 
 func (f *fake) deps(home string, now time.Time) Deps {
@@ -46,7 +48,11 @@ func (f *fake) deps(home string, now time.Time) Deps {
 		Sessions:   func() ([]Session, error) { return f.ses, f.sesErr },
 		Workspaces: func() ([]Workspace, error) { return f.wss, f.wsErr },
 		States:     func() ([]sessionstate.State, error) { return f.states, f.stErr },
-		Load:       func() (float64, error) { return f.load, f.loadErr },
+		Restore: func(_, surface string) (string, bool, error) {
+			c, ok := f.restore[surface]
+			return c, ok, f.rsErr
+		},
+		Load: func() (float64, error) { return f.load, f.loadErr },
 		Resources: func() (float64, float64, error) {
 			if f.freeGB == 0 {
 				return 100, f.swapGB, f.resErr
@@ -1972,5 +1978,66 @@ func TestASessionRestoredOnTheDefaultFolderIsCaught(t *testing.T) {
 	}
 	if len(f.sent) != 1 {
 		t.Fatalf("restored on the wrong folder again: sent %q, want one wake", f.sent)
+	}
+}
+
+// Item A (crius:lead 10-29 05:56): before a restart, a live role session whose cmux tab would restore it in another
+// folder than its role's start filed, or in none (claude then begins on ~/.claude, another account: 00:28), wakes Crius
+// once with the tab and the fix. Its own folder (or a link to it), or a tab that keeps no Claude, does not; a record
+// cmux cannot give says so once.
+func TestATabThatWouldRestoreOnAnotherFolderIsCaught(t *testing.T) {
+	home := setup(t, nil)
+	u := t.TempDir()
+	max2, def, link := filepath.Join(u, ".claude-max2"), filepath.Join(u, ".claude"), filepath.Join(u, ".claude-max2-link")
+	for _, d := range []string{max2, def} {
+		os.MkdirAll(d, 0o700)
+	}
+	if err := os.Symlink(max2, link); err != nil {
+		t.Fatal(err)
+	}
+	role := hookState("s1", sessionstate.Idle, "quotes", "p3")
+	role.Config, role.Filed, role.Workspace = max2, max2, "W1"
+	if err := sessionstate.WriteRole(filepath.Join(home, "roles"), role, true); err != nil {
+		t.Fatal(err)
+	}
+	f := &fake{ses: []Session{{Name: "quotes: p3", ID: "s1", Started: t0.Add(-time.Hour)}}, states: []sessionstate.State{role}}
+	at := t0
+	run := func(restore map[string]string, err error) []string {
+		f.sent, f.restore, f.rsErr = nil, restore, err
+		at = at.Add(30 * time.Minute)
+		if err := Run(f.deps(home, at)); err != nil {
+			t.Fatal(err)
+		}
+		return f.sent
+	}
+	for _, c := range []struct {
+		restore map[string]string
+		err     error
+		want    []string // each a part of the one wake; nil: no wake
+	}{
+		{map[string]string{sfID: ""}, nil, []string{"quotes · p3", sfID, "~/.claude", max2, "crius-spawn -resume quotes p3"}},
+		{map[string]string{sfID: ""}, nil, nil}, // once
+		{map[string]string{sfID: def}, nil, []string{"quotes · p3", def, max2, "crius-spawn -resume quotes p3"}},
+		{map[string]string{sfID: max2}, nil, nil},
+		{map[string]string{sfID: link + "/"}, nil, nil},
+		{map[string]string{}, nil, nil},
+		{nil, errors.New("cmux: socket gone"), []string{"could not read", "socket gone"}},
+		{map[string]string{sfID: def}, nil, []string{"quotes · p3", def}}, // wrong again after a right run: again
+	} {
+		sent := run(c.restore, c.err)
+		if c.want == nil {
+			if len(sent) != 0 {
+				t.Fatalf("restore %q, err %v: sent %q, want nothing", c.restore, c.err, sent)
+			}
+			continue
+		}
+		if len(sent) != 1 {
+			t.Fatalf("restore %q, err %v: sent %q, want one wake", c.restore, c.err, sent)
+		}
+		for _, w := range c.want {
+			if !strings.Contains(sent[0], w) {
+				t.Errorf("restore %q, err %v: %q lacks %q", c.restore, c.err, sent[0], w)
+			}
+		}
 	}
 }

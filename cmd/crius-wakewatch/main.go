@@ -57,7 +57,7 @@ func main() {
 			return wakewatch.LiveSessions(home)
 		}, States: func() ([]sessionstate.State, error) {
 			return sessionstate.List(filepath.Join(store.Home(), "sessions"))
-		}})
+		}, Restore: restore})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, time.Now().Format(time.RFC3339), "crius-wakewatch:", err)
 		os.Exit(1)
@@ -114,6 +114,37 @@ func workspaces() ([]wakewatch.Workspace, error) {
 		}
 	}
 	return out, nil
+}
+
+// restore is the config folder cmux would restore a tab's Claude in after a restart (restoreFolder).
+func restore(workspace, surface string) (string, bool, error) {
+	args := []string{"surface", "resume", "show", "--json", "--surface", surface}
+	if workspace != "" {
+		args = append(args, "--workspace", workspace)
+	}
+	b, err := outbox.Cmux(args...)
+	if err != nil {
+		return "", false, fmt.Errorf("cmux surface resume show --surface %s: %v: %s", surface, err, strings.TrimSpace(string(b)))
+	}
+	return restoreFolder(b)
+}
+
+// restoreFolder reads cmux's resume record of a tab: the CLAUDE_CONFIG_DIR its Claude binding restores with, "" when it
+// sets none; found is false when the tab keeps no Claude binding.
+func restoreFolder(b []byte) (config string, found bool, err error) {
+	var r struct {
+		Binding *struct {
+			Kind        string
+			Environment map[string]string
+		} `json:"resume_binding"`
+	}
+	if err := json.Unmarshal(b, &r); err != nil {
+		return "", false, fmt.Errorf("cmux surface resume show --json: %v", err)
+	}
+	if r.Binding == nil || r.Binding.Kind != "claude" {
+		return "", false, nil
+	}
+	return r.Binding.Environment["CLAUDE_CONFIG_DIR"], true, nil
 }
 
 // screens reads the last 30 lines of every terminal tab in cmux. A tab whose read fails comes back with Err set.
