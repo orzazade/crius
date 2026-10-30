@@ -1449,7 +1449,7 @@ func (h *hooks) keep(key string) {
 }
 
 // finish closes the pairs of the last run that this run did not see: kept as they were when it was blind, and a
-// disagreement that went (its tab gone or no longer watched) gets one "gone" line, so statelog does not judge it open.
+// disagreement that went (its tab gone, busy or parked) gets one "gone" line, so statelog does not judge it open.
 func (h *hooks) finish() {
 	for _, key := range slices.Sorted(maps.Keys(h.prev)) {
 		p := h.prev[key]
