@@ -465,7 +465,7 @@ func checkScript(a word, c ctx, plain bool) string {
 	if err != nil {
 		return unsure(c, "a shell script")
 	}
-	if plain && c.safeAround(name) && safeScript(string(body)) {
+	if plain && c.safeAround(name, string(body)) && safeScript(string(body)) {
 		return ""
 	}
 	// any other script gets the command check ("az" in quotes, review of ace0c14) and asks when unsure
@@ -484,12 +484,12 @@ func checkScript(a word, c ctx, plain bool) string {
 // it or bus-post is read from. Proving that the commands around write no such file failed six reviews (awk > file,
 // git --output, a glob or ~user redirect target), so the command around may hold only what writes nothing and sets
 // nothing: commands that print or read (aroundCmds, git as safeGit reads it), cd, a shell running a script (read on
-// its own), an export or declare of a name a script word uses ($S), and a plain assignment of that name or of one not
-// exported already; codeNameRe names none of them, and export and declare take no option (-f, -n). No loop,
+// its own), an export or declare of a name a script word uses ($S), and a plain assignment of that name or another;
+// codeNameRe names none of them, the script reads none, and export and declare take no option (-f, -n). No loop,
 // function, ${X:=}, arithmetic or [[ ]] (bash runs a $(...) in a value they read), and no assignment in front of a
 // command (it reaches that command). A file is written only by a redirect, whose target must be a path the guard
 // reads as bash does (no glob, no ~ but ~/), outside the script's folder and bus-post's, and no link.
-func (c ctx) safeAround(script string) bool {
+func (c ctx) safeAround(script, body string) bool {
 	home, _ := os.UserHomeDir()
 	keep := []string{realDir(filepath.Dir(script)), filepath.Dir(realDir(script)), realDir(home + "/.crius/bin")}
 	for _, r := range c.files {
@@ -502,14 +502,15 @@ func (c ctx) safeAround(script string) bool {
 				return true
 			})
 		}
-		// an export reaches the script, so only a name its path uses; a plain assignment reaches it only when the name
-		// is exported already (review of 73f3942: M='text'; bash $S/say.sh "$M")
+		// an export reaches the script, so only a name its path uses; a plain assignment reaches it too when the session
+		// exported the name before, which the guard cannot see, so no name the script reads may be set (review of
+		// 3d38316: SAY_FREE_GB='x[$(…)]' runs in say.sh's (( free >= 25 ))); M='text'; bash $S/say.sh "$M" passes
 		named := func(a *syntax.Assign, export bool) bool {
-			if a.Name == nil || codeNameRe.MatchString(a.Name.Value) {
+			if a.Name == nil || codeNameRe.MatchString(a.Name.Value) ||
+				regexp.MustCompile(`\$\{?`+a.Name.Value+`([^A-Za-z0-9_]|$)`).MatchString(body) {
 				return false
 			}
-			_, inherited := os.LookupEnv(a.Name.Value)
-			return used[a.Name.Value] || !export && !inherited
+			return used[a.Name.Value] || !export
 		}
 		safe := true
 		syntax.Walk(r.file, func(n syntax.Node) bool {
@@ -622,13 +623,19 @@ func (c ctx) safeWrite(rd *syntax.Redirect, keep []string) bool {
 	if fi, err := os.Lstat(p); err == nil && fi.Mode()&os.ModeSymlink != 0 {
 		return false
 	}
-	dir := realDir(filepath.Dir(p))
-	for _, k := range keep {
-		if dir == k || strings.HasPrefix(dir, k+"/") {
-			return false
+	// by file identity, not by text: the disk may fold case (review of 3d38316: > dir/LEAD/say.sh is lead/say.sh)
+	for d := filepath.Dir(p); ; d = filepath.Dir(d) {
+		if fi, err := os.Stat(d); err == nil {
+			for _, k := range keep {
+				if ki, err := os.Stat(k); err == nil && os.SameFile(fi, ki) {
+					return false
+				}
+			}
+		}
+		if d == filepath.Dir(d) {
+			return true
 		}
 	}
-	return true
 }
 
 // realDir gives a folder with its links followed, or cleaned when it does not exist.

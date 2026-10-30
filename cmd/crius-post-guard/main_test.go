@@ -350,7 +350,6 @@ func TestUnparsableCommands(t *testing.T) {
 // $S, so the guard could not read it, and the bus text named az ("az blob list"). S is set to a literal earlier in the
 // same command: the guard reads the script and checks its own commands.
 func TestAScriptNamedThroughAVariableSetInTheCommandIsRead(t *testing.T) {
-	t.Setenv("CRIUS_INHERITED", "1")
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "lead"), 0o755); err != nil {
 		t.Fatal(err)
@@ -544,14 +543,31 @@ func TestAScriptNamedThroughAVariableSetInTheCommandIsRead(t *testing.T) {
 		s + `X='$(az boards work-item update --id 1)'; bash $S/lead/say.sh INFO x "${X@P}"`,
 		s + `export M='az blob list ok'; bash $S/lead/say.sh INFO x "$M"`, // an export of a name no script word uses
 		s + `PAGER='less'; bash $S/lead/say.sh INFO x 'az login'`,         // already exported, runs code
-		s + `CRIUS_INHERITED=x; bash $S/lead/say.sh INFO x 'az login'`,    // already exported (t.Setenv)
-		s + `bash $S/g7.sh 'az login'`,                                    // -O in a bundle of short flags
+		// review of 3d38316: a name the script reads (the session may have exported it; bash runs a $(...) in its value
+		// in (( )))
+		s + `SAY_FREE_GB='x[$(az boards work-item update --id 1)]'; bash $S/lead/say.sh START x hi`,
+		s + `SAY_FREE_GB=30; bash $S/lead/say.sh START x 'az login'`,
+		s + `bash $S/g7.sh 'az login'`, // -O in a bundle of short flags
 		s + `git -C /tmp log -1 --output=/tmp/x; bash $S/lead/say.sh INFO x 'az login'`,
 		s + `export PAGER='az boards work-item update --id 1'; bash $S/lead/say.sh INFO x hi`, // a name no script word uses
 		`HOME=` + dir + `; bash $HOME/lead/say.sh INFO x 'az login'`,                          // a code variable the path uses
 		s + `bash $S/lead/say.sh INFO x "${S:X} az login"`,                                    // X from the environment
 		s + `: {PATH}>/tmp/x; bash $S/lead/say.sh INFO x 'az login'`,
 		`XDG_CONFIG_HOME=` + dir + `; bash $XDG_CONFIG_HOME/lead/say.sh INFO x 'az login'`,
+	} {
+		if why := check(bash(cmd, dir)); !strings.Contains(why, "owner's click") {
+			t.Errorf("%q: %q", cmd, why)
+		}
+	}
+	// review of 3d38316: the script's folder named in another case, on a disk that folds case as macOS's does
+	if _, err := os.Stat(filepath.Join(dir, "LEAD")); err != nil {
+		t.Log("the disk keeps case: the folded-case writes are not tried")
+		return
+	}
+	for _, cmd := range []string{
+		s + `printf x > ` + dir + `/LEAD/say.sh; bash $S/lead/say.sh INFO x 'az login'`,
+		s + `printf x > ` + dir + `/Lead/new/x.sh; bash $S/lead/say.sh INFO x 'az login'`,
+		s + `printf x > ~/.CRIUS/bin/bus-post; bash $S/lead/say.sh INFO x 'az login'`,
 	} {
 		if why := check(bash(cmd, dir)); !strings.Contains(why, "owner's click") {
 			t.Errorf("%q: %q", cmd, why)
