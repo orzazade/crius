@@ -32,7 +32,9 @@ and the band and `/waiting` carry everything.
 ```
 
 - Number (accent), title (bold), `from · age` (dim) on one row.
-- Label column 10 cells wide, labels dim; the Do text in the main colour, Why you and Unblocks in the soft colour.
+- Label column 10 cells wide, labels dim; the Do text in the main colour, Why you, Unblocks and Details in the soft
+  colour. A GOAL row's title opens with the project's plain name; its Details are the questions its ask points to (a
+  file section or a label, read in when the row opened, with the path it came from).
   A part the row does not have is left out, never drawn empty.
 - Buttons: the row's options; the first is the primary one (accent). A row with no options has none.
 - The free-text field is always there, under the buttons.

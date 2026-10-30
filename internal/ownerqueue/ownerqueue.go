@@ -67,6 +67,7 @@ type Row struct {
 	Answer     string   `json:"answer,omitempty"`
 	AnsweredAt string   `json:"answeredAt,omitempty"`
 	AnsweredBy string   `json:"answeredBy,omitempty"`
+	Detail     string   `json:"detail,omitempty"`  // what a GOAL ask points to, read in when the row opened (needref)
 	Asked      string   `json:"asked,omitempty"`   // the owner's last answer that asked back: the row stays open
 	AskedAt    string   `json:"askedAt,omitempty"` // when, as AnsweredAt
 	Carried    bool     `json:"carried,omitempty"` // Asked came from the lead's row before this one
@@ -77,8 +78,12 @@ type Row struct {
 
 // GoalNeed is what one lead's GOAL block asks of the owner ("Needs owner:", RULES 3.1) that the bus has not answered;
 // Text is "" when nothing waits, Stamp the block's heading (local, 2006-01-02T15:04). Unread says why the block could
-// not be read.
-type GoalNeed struct{ Lead, Text, Stamp, Unread string }
+// not be read. Project is the project's plain name, and Detail reads in what Text points to (Crius 10-30 16:45: q8 said
+// only "the 3 questions in STATUS-2026-10-28.md section 6"); Detail runs only when a row opens, never on each list.
+type GoalNeed struct {
+	Lead, Text, Stamp, Unread, Project string
+	Detail                             func() string
+}
 
 // noLongerAsked is the answer of a withdrawn GOAL row.
 const noLongerAsked = "the GOAL block no longer asks this"
@@ -139,6 +144,12 @@ func SyncGoals(home string, now time.Time, read func() ([]GoalNeed, error)) (hel
 			}
 			r := parse(n.Text)
 			r.ID, r.State, r.Opened, r.From, r.Goal, r.Line = next(q), Open, now.Format(stamp), from(n.Lead), n.Lead, n.Text
+			if n.Project != "" {
+				r.Title = n.Project + ": " + r.Title
+			}
+			if n.Detail != nil {
+				r.Detail = n.Detail()
+			}
 			r.Asked, r.AskedAt = askedOn(q, n.Lead)
 			r.Carried = r.Asked != ""
 			q.Rows = append(q.Rows, r)

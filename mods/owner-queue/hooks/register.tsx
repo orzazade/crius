@@ -183,6 +183,9 @@ function listText(v: View | null, err: string | null): string {
           out.push(`    ${k.padEnd(9)} ${val}`)
         }
       }
+      if (r.detail) {
+        out.push(`    ${'Details'.padEnd(9)} ${r.detail.replaceAll('\n', '\n              ')}`)
+      }
       if (r.options?.length) {
         out.push(`    ${'Options'.padEnd(9)} ${r.options.join(' | ')}`)
       }
@@ -358,6 +361,7 @@ export const register: Register = on => {
         {part('Do', r.do && r.do !== r.title ? r.do : undefined, C.fg)}
         {part('Why you', r.why, C.soft)}
         {part('Unblocks', r.unblocks, C.soft)}
+        {part('Details', r.detail, C.soft)}
         {part('You asked', r.asked ? `${r.asked} (${shortAt(r.askedAt, v?.now)})` : undefined, C.accentFg)}
         {(r.options?.length ?? 0) > 0 && (
           <Box flexDirection="row" flexWrap="wrap" gap={1}>

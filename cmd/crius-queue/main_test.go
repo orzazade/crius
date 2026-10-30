@@ -605,3 +605,62 @@ func TestASettledQuestionIsNotCarriedAgain(t *testing.T) {
 		t.Errorf("q3 carries the question settled on q2: %+v", v.Open)
 	}
 }
+
+// Crius 10-30 16:45: q8 showed only "the 3 questions in STATUS-2026-10-28.md section 6", with no project and no
+// question. A GOAL row is titled with the project's plain name and carries the questions its ask points to, read in
+// once when the row opens.
+func TestAGoalRowNamesTheProjectAndCarriesTheQuestions(t *testing.T) {
+	h := setup(t, "")
+	repo := filepath.Join(h, "svc_sku_builder-91260")
+	section := filepath.Join(repo, "docs/specs/91260-angular-22-upgrade/STATUS-2026-10-28.md")
+	questions := "## 6. Questions for the owner\n\n1. **94489 has not started. Should the upgrade keep waiting for it?**\n" +
+		"2. **Should Step 0 fix the failing tests, or only record them?**\n3. Close the spike and open the upgrade ticket?\n"
+	status := filepath.Join(h, "state", "angular-91260", "STATUS.md")
+	for path, text := range map[string]string{
+		section: "# Angular 22 plan\n## 5. Steps\nStep 0 first.\n" + questions + "## 7. Next\nnone\n",
+		status: "## GOAL (2026-10-30 12:00)\nGoal: Angular 22\n- [x] spike · abc1234\nDone: 20% (1 of 5 milestones)\n" +
+			"Next: Step 0\nNeeds owner: the 3 questions in STATUS-2026-10-28.md section 6\n",
+		filepath.Join(h, "projects.toml"): fmt.Sprintf("[projects.angular-91260]\nname = \"Angular 22 upgrade of the SKU builder (AB#91260)\"\n"+
+			"cwd = [%q]\nleads = { lead = %q }\n", repo, status),
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var v struct {
+		Open []map[string]any `json:"open"`
+	}
+	if err := json.Unmarshal([]byte(cli(t, h, "list", "--json")), &v); err != nil {
+		t.Fatal(err)
+	}
+	if len(v.Open) != 1 {
+		t.Fatalf("want the q8 row: %+v", v.Open)
+	}
+	r := v.Open[0]
+	if r["title"] != "Angular 22 upgrade of the SKU builder (AB#91260): the 3 questions in STATUS-2026-10-28.md section 6" || r["from"] != "angular-91260" {
+		t.Errorf("q8 names no project in plain words: title %q, from %q", r["title"], r["from"])
+	}
+	detail, _ := r["detail"].(string)
+	for _, want := range []string{"1. 94489 has not started. Should the upgrade keep waiting for it?",
+		"2. Should Step 0 fix the failing tests, or only record them?", "3. Close the spike", "(from " + section + " section 6)"} {
+		if !strings.Contains(detail, want) {
+			t.Errorf("q8 does not carry %q: detail %q", want, detail)
+		}
+	}
+	if strings.Contains(detail, "Step 0 first") || strings.Contains(detail, "## 7.") {
+		t.Errorf("q8 carries more than section 6: %q", detail)
+	}
+	if got := cli(t, h, "list"); !strings.Contains(got, "    Details   ## 6. Questions for the owner\n") ||
+		!strings.Contains(got, "\n              1. 94489 has not started.") {
+		t.Errorf("list does not show the questions:\n%s", got)
+	}
+	if err := os.WriteFile(section, []byte("## 6. Questions for the owner\nall answered\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := cli(t, h, "list"); !strings.Contains(got, "1. 94489 has not started.") {
+		t.Errorf("the open row read its file again on a later list:\n%s", got)
+	}
+}

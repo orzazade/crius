@@ -331,6 +331,22 @@ test('held GOAL asks are said with the list, never hidden', async ($, on) => {
 
 // Crius 10-30 16:58: an owner answer that asks back keeps the card open. The card and /waiting show the question, so
 // the owner sees it is still theirs and what they asked.
+// Crius 10-30 16:45: q8 showed only "the 3 questions in STATUS-2026-10-28.md section 6". The card and /waiting show
+// the questions its ask points to.
+test('a GOAL card shows the questions its ask points to', async ($, on) => {
+  const detail = '## 6. Questions for the owner\n1. Should the upgrade keep waiting for 94489?\n(from /w/STATUS-2026-10-28.md section 6)'
+  const q8 = row('q8', 'Angular 22 upgrade (AB#91260): the 3 questions in STATUS-2026-10-28.md section 6', '1h', {
+    from: 'angular-91260', do: 'the 3 questions in STATUS-2026-10-28.md section 6', detail })
+  engine(on, () => ({ ...EMPTY, open: [q8] }))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect((await ui.find({ type: 'Text', text: /^Details/ }))?.text).toBe('Details')
+  expect((await ui.find({ type: 'Text', text: /^## 6\. Questions/ }))?.text).toBe(detail)
+  await ui.unmount()
+  const list = await $.command.run({ command: 'waiting', args: '' })
+  expect(list.text).toContain('    Details   ## 6. Questions for the owner\n              1. Should the upgrade keep waiting for 94489?\n')
+})
+
 test('a card the owner asked back on shows the question', async ($, on) => {
   const asked = row('q13', 'Falcon: 3 choices', '20m', { from: 'falcon', asked: 'what you need?', askedAt: '2026-10-30T13:47' })
   engine(on, () => ({ ...EMPTY, open: [asked] }))

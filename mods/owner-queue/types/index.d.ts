@@ -5,6 +5,7 @@ export type Item = {
   do?: string
   why?: string
   unblocks?: string
+  detail?: string // what a GOAL ask points to (a file section, a label), read in when the row opened
   options?: string[]
   from: string
   opened: string

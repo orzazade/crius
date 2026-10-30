@@ -9,7 +9,8 @@
 // Every NEED-OWNER bus line is a row without a call; a Crius DECISION/INFO/OWNER/ANSWER line whose text opens with
 // "[queue qN]" answers row qN (the tag further on answers nothing). list also reads every lead's
 // GOAL block (projects.toml): what its "Needs owner" asks that the bus has not answered, as the goal report lists it,
-// is one row per lead. Exit codes: 0 done, 1 failed, 2 bad arguments.
+// is one row per lead, titled with the project's plain name (projects.toml name), with what the ask points to read in
+// (package needref). Exit codes: 0 done, 1 failed, 2 bad arguments.
 package main
 
 import (
@@ -19,12 +20,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/orzazade/crius/internal/digest"
 	"github.com/orzazade/crius/internal/ingest"
+	"github.com/orzazade/crius/internal/needref"
 	"github.com/orzazade/crius/internal/ownerqueue"
 	"github.com/orzazade/crius/internal/store"
 )
@@ -163,6 +166,10 @@ func list(home string, now time.Time) (q *ownerqueue.Queue, unread, held []strin
 		return nil, nil, nil, err
 	}
 	defer db.Close()
+	byName := map[string]ingest.Lead{}
+	for _, l := range leads {
+		byName[l.Name] = l
+	}
 	held, err = ownerqueue.SyncGoals(home, now, func() ([]ownerqueue.GoalNeed, error) {
 		needs, err := digest.OwnerNeeds(db, leads)
 		if err != nil {
@@ -170,7 +177,10 @@ func list(home string, now time.Time) (q *ownerqueue.Queue, unread, held []strin
 		}
 		goals := make([]ownerqueue.GoalNeed, 0, len(needs))
 		for _, n := range needs {
-			g := ownerqueue.GoalNeed{Lead: n.Lead, Text: strings.Join(n.Items, "; "), Stamp: n.Updated.Format("2006-01-02T15:04")}
+			l := byName[n.Lead]
+			g := ownerqueue.GoalNeed{Lead: n.Lead, Text: strings.Join(n.Items, "; "), Stamp: n.Updated.Format("2006-01-02T15:04"),
+				Project: l.Project}
+			g.Detail = func() string { return needref.Read(g.Text, statusPath(l), l.Dirs) }
 			if n.Err != nil {
 				g.Unread = n.Err.Error()
 				unread = append(unread, n.Lead+": "+g.Unread)
@@ -184,6 +194,16 @@ func list(home string, now time.Time) (q *ownerqueue.Queue, unread, held []strin
 	}
 	q, err = ownerqueue.List(home, now)
 	return q, unread, held, err
+}
+
+// statusPath is the lead's status file on disk: a git-object one ("origin/main:docs/RESUME.md") is read from its repo's
+// working tree, whose labels may be newer than the object the GOAL block was read from.
+func statusPath(l ingest.Lead) string {
+	if l.Repo == "" {
+		return l.StatusFile
+	}
+	_, path, _ := strings.Cut(l.StatusFile, ":")
+	return filepath.Join(l.Repo, path)
 }
 
 func items(rows []ownerqueue.Row, now time.Time) []Item {
@@ -235,6 +255,9 @@ func printList(out io.Writer, v View) {
 			}
 			if len(r.Options) > 0 {
 				fmt.Fprintf(out, "    %-9s %s\n", "Options", strings.Join(r.Options, " | "))
+			}
+			if r.Detail != "" {
+				fmt.Fprintf(out, "    %-9s %s\n", "Details", strings.ReplaceAll(r.Detail, "\n", "\n              "))
 			}
 			if r.Asked != "" {
 				fmt.Fprintf(out, "    %-9s %s (%s)\n", "You asked", r.Asked, shortAt(r.AskedAt, v.Now))

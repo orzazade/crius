@@ -13,15 +13,18 @@ import (
 )
 
 // Step 5 P1: projects.toml names each lead's status file, the one holding its GOAL block; the lead is named as it
-// signs bus lines, <project>:<role>.
+// signs bus lines, <project>:<role>. Each lead also has its project's plain name and folders (Crius 10-30 16:45: a
+// queue row names the project in plain words and reads in the file its ask points to).
 func TestLeadsComeFromProjectsToml(t *testing.T) {
 	home := t.TempDir()
 	testutil.Write(t, filepath.Join(home, "projects.toml"), `
 [projects.crius]
+name = "Crius (your lead agent)"
 cwd = ["/w/crius"]
 leads = { build = "~/w/crius/RESUME.md", lead = "/w/crius/STATUS.md" }
 [projects.axi]
-cwd = ["/w/axi"]
+launch = "/w/axi/first-order"
+cwd = ["/w/axi", "/w/axi/first-order"]
 leads = { leader = "/w/axi/STATUS.md" }
 [projects.infra]
 cwd = ["/w/infra"]
@@ -31,8 +34,10 @@ cwd = ["/w/infra"]
 		t.Fatal(err)
 	}
 	h, _ := os.UserHomeDir()
-	want := []Lead{{"axi:leader", "/w/axi/STATUS.md", ""}, {"crius:build", filepath.Join(h, "w/crius/RESUME.md"), ""},
-		{"crius:lead", "/w/crius/STATUS.md", ""}}
+	crius := "Crius (your lead agent)"
+	want := []Lead{{Name: "axi:leader", StatusFile: "/w/axi/STATUS.md", Dirs: []string{"/w/axi/first-order", "/w/axi"}},
+		{Name: "crius:build", StatusFile: filepath.Join(h, "w/crius/RESUME.md"), Project: crius, Dirs: []string{"/w/crius"}},
+		{Name: "crius:lead", StatusFile: "/w/crius/STATUS.md", Project: crius, Dirs: []string{"/w/crius"}}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("%+v", got)
 	}
@@ -50,7 +55,7 @@ func TestLeadsNameAGitObject(t *testing.T) {
 		"[projects.crius]\nleads = { build = \"git:~/w/crius#origin/main:docs/notes/RESUME.md\" }\n")
 	got, err := Leads(home)
 	h, _ := os.UserHomeDir()
-	if want := []Lead{{"crius:build", "origin/main:docs/notes/RESUME.md", filepath.Join(h, "w/crius")}}; err != nil || !reflect.DeepEqual(got, want) {
+	if want := []Lead{{Name: "crius:build", StatusFile: "origin/main:docs/notes/RESUME.md", Repo: filepath.Join(h, "w/crius")}}; err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("%+v %v", got, err)
 	}
 	for _, bad := range []string{"git:/w/crius", "git:/w/crius#origin/main", "git:#main:R.md", "git:/w/crius#:R.md", "git:/w/crius#main:"} {

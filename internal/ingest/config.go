@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -17,7 +18,7 @@ import (
 var defaultRoots = map[string]string{"personal": "~/.claude-personal/projects", "work": "~/.claude-work/projects"}
 
 type project struct {
-	slug, persona, launch                        string
+	slug, name, persona, launch                  string // name: the project in plain words ("" when unset)
 	accounts, cwd, repos, teamLogs, artifactDirs []string
 	leads                                        map[string]Lead // role -> status file holding the GOAL block (no Name)
 	pauseAt                                      int             // Max 7d share at which the project pauses; 0: none
@@ -52,6 +53,7 @@ func loadConfig(home string) (*config, error) {
 	var raw struct {
 		Transcripts map[string]string
 		Projects    map[string]struct {
+			Name         string
 			Persona      string
 			Accounts     []string
 			CWD          []string `toml:"cwd"`
@@ -119,7 +121,7 @@ func loadConfig(home string) (*config, error) {
 				cwd[i] = filepath.Clean(d)
 			}
 		}
-		c.projects = append(c.projects, project{slug: slug, persona: p.Persona, launch: expand(p.Launch), accounts: p.Accounts, cwd: cwd, repos: expandAll(p.Repos),
+		c.projects = append(c.projects, project{slug: slug, name: p.Name, persona: p.Persona, launch: expand(p.Launch), accounts: p.Accounts, cwd: cwd, repos: expandAll(p.Repos),
 			teamLogs: expandAll(p.TeamLogs), artifactDirs: expandAll(p.ArtifactDirs), leads: leads, pauseAt: pauseAt})
 	}
 	sort.Slice(c.projects, func(i, j int) bool { return c.projects[i].slug < c.projects[j].slug })
@@ -179,8 +181,13 @@ func QuotaProjects(home string) (quota.Projects, error) {
 
 // Lead is a lead as it signs bus lines (<project>:<role>) and the status file holding its GOAL block (RULES 3.1).
 // With Repo set, StatusFile is a git object in that repo, <rev>:<path>: projects.toml names it
-// "git:<repo>#<rev>:<path>" for a lead that commits its file elsewhere than a checkout (Crius 10-19 18:00).
-type Lead struct{ Name, StatusFile, Repo string }
+// "git:<repo>#<rev>:<path>" for a lead that commits its file elsewhere than a checkout (Crius 10-19 18:00). Project is
+// its project in plain words (projects.toml name, "" when unset), Dirs the project's launch and cwd folders.
+type Lead struct {
+	Name, StatusFile, Repo string
+	Project                string
+	Dirs                   []string
+}
 
 // Leads reads projects.toml in home: every lead with its status file, sorted by name (step 5, the digest).
 func Leads(home string) ([]Lead, error) {
@@ -190,8 +197,14 @@ func Leads(home string) ([]Lead, error) {
 	}
 	var out []Lead
 	for _, p := range c.projects {
+		var dirs []string
+		for _, d := range append([]string{p.launch}, p.cwd...) {
+			if d != "" && !slices.Contains(dirs, d) {
+				dirs = append(dirs, d)
+			}
+		}
 		for role, l := range p.leads {
-			l.Name = p.slug + ":" + role
+			l.Name, l.Project, l.Dirs = p.slug+":"+role, p.name, dirs
 			out = append(out, l)
 		}
 	}
