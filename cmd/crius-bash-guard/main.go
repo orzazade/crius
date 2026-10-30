@@ -371,9 +371,10 @@ func (w *walker) call(c *syntax.CallExpr, redirs []*syntax.Redirect) {
 		w.cwd = unknown
 	case "bash", "sh", "zsh", "eval":
 		// the script gets this command's VAR=v too (HEAVY_SLOTS=1 bash -c '... heavy.ts run -- docker build .')
-		exp := w.exported
+		exp, all := w.exported, w.allExport
 		w.exported = maps.Clone(exp)
 		maps.Copy(w.exported, given)
+		w.allExport = all && name == "eval" // a child shell starts without set -a
 		switch s := shellScript(args); {
 		case name == "eval":
 			w.script(strings.Join(rest, " "))
@@ -382,12 +383,19 @@ func (w *walker) call(c *syntax.CallExpr, redirs []*syntax.Redirect) {
 		case readsStdin(args):
 			w.stdin(redirs)
 		}
-		w.exported = exp
-	case "set": // set -a exports every variable set after it
+		w.exported, w.allExport = exp, all
+	case "set": // set -a exports every variable set after it, until set +a
 		for i, o := range rest {
-			if strings.HasPrefix(o, "-") && !strings.HasPrefix(o, "--") && strings.Contains(o, "a") ||
-				o == "-o" && i+1 < len(rest) && rest[i+1] == "allexport" {
-				w.allExport = true
+			if o == "--" || o == "-" {
+				break
+			}
+			switch on := strings.HasPrefix(o, "-"); {
+			case o == "-o" || o == "+o":
+				if i+1 < len(rest) && rest[i+1] == "allexport" {
+					w.allExport = on
+				}
+			case len(o) > 1 && (on || o[0] == '+') && o[1] != '-' && strings.Contains(o, "a"):
+				w.allExport = on
 			}
 		}
 	case "read", "mapfile", "readarray":
@@ -415,7 +423,7 @@ func (w *walker) call(c *syntax.CallExpr, redirs []*syntax.Redirect) {
 			w.why = unslotted
 		}
 	case "bun", "node":
-		alone := w.vars["HEAVY_SLOTS"] == "1" && (given["HEAVY_SLOTS"] || w.exported["HEAVY_SLOTS"] || w.allExport)
+		alone := w.vars["HEAVY_SLOTS"] == "1" && (given["HEAVY_SLOTS"] || w.exported["HEAVY_SLOTS"])
 		if job := heavyJob(args); len(job) > 0 && !alone && builds(job) {
 			w.why = unslotted
 		}
@@ -505,6 +513,9 @@ func (w *walker) assign(a *syntax.Assign) {
 	}
 	if a.Name == nil || a.Naked {
 		return
+	}
+	if w.allExport {
+		w.exported[a.Name.Value] = true
 	}
 	v := w.resolve(a.Value)
 	switch {
@@ -1095,7 +1106,7 @@ func merge(a, b map[string]bool) map[string]bool {
 
 // builds says whether a docker or docker-compose command (args[0] is the program, after its wrappers) builds images:
 // docker build, docker buildx, image or builder build (and bake), docker compose build, and compose up, create or run
-// with --build before its service. --help, -h and --dry-run build nothing, nor does bake --print. A word only the run
+// with --build before its service. --help and --dry-run build nothing, nor does bake --print. A word only the run
 // shows is no subcommand.
 func builds(args []*syntax.Word) bool {
 	args, _, _, _, _ = unwrap(args)
@@ -1111,8 +1122,12 @@ func builds(args []*syntax.Word) bool {
 		v, ok := literal(a)
 		if !ok {
 			v = computed
+			// an option with a computed value glued on (--file="$F", -p"$P") stays an option that takes no next word
+			if l, lit := a.Parts[0].(*syntax.Lit); lit && strings.HasPrefix(l.Value, "-") {
+				v = l.Value + computed
+			}
 		}
-		if v == "--help" || v == "--dry-run" || v == "--print" { // not -h: compose run api df -h
+		if v == "--help" || v == "--dry-run" || v == "--print" { // not -h: compose run api df -h is a build
 			return false
 		}
 		words = append(words, v)

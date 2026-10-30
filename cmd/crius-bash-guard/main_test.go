@@ -769,6 +769,11 @@ func TestADockerBuildOutsideOneHeavySlotIsRefused(t *testing.T) {
 		`HEAVY_SLOTS=1; ` + heavy + `docker build .`, `HEAVY_SLOTS=1 && ` + heavy + `docker build .`,
 		`docker compose -f "$F" up -d --build`, `docker compose run -e A=1 --build api`, `docker buildx b .`,
 		`docker-compose -H tcp://h build`, `docker-compose --log-level INFO build`, `docker compose run --build api df -h`,
+		// review of 833ddf2: a glued option value is an option; set -a exports only what is set after it, until set +a
+		`docker compose --file="$F" up -d --build`, `docker compose --env-file="$E" build`, `docker compose -p"$P" up --build`,
+		`docker --context="$CTX" build .`, `HEAVY_SLOTS=1; set -a; ` + heavy + `docker build .`,
+		`set -a; set +a; HEAVY_SLOTS=1; ` + heavy + `docker build .`, `set -- -a; HEAVY_SLOTS=1; ` + heavy + `docker build .`,
+		`set -a; bash -c 'HEAVY_SLOTS=1; ` + heavy + `docker build .'`,
 	} {
 		if why := check(cmd); !strings.Contains(why, "HEAVY_SLOTS=1") {
 			t.Errorf("%q: %q", cmd, why)
