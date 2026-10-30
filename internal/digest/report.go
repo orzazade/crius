@@ -287,6 +287,19 @@ func readGoal(l ingest.Lead) (*Goal, error) {
 	if l.Repo == "" {
 		return ReadGoal(l.StatusFile)
 	}
+	b, err := GitStatus(l)
+	if err != nil {
+		return nil, err
+	}
+	g, err := ParseGoal(string(b))
+	if err != nil {
+		return nil, fmt.Errorf("%s %s: %w", l.Repo, l.StatusFile, err)
+	}
+	return g, nil
+}
+
+// GitStatus reads the git object a lead names as its status file (l.Repo set), as the GOAL block is read from it.
+func GitStatus(l ingest.Lead) ([]byte, error) {
 	var out, errb bytes.Buffer
 	// --end-of-options: an object from projects.toml that starts with '-' is never read as an option.
 	cmd := exec.Command("git", "-C", l.Repo, "cat-file", "blob", "--end-of-options", l.StatusFile)
@@ -298,11 +311,7 @@ func readGoal(l ingest.Lead) (*Goal, error) {
 		}
 		return nil, fmt.Errorf("%s %s: git cat-file: %v: %s", l.Repo, l.StatusFile, err, why)
 	}
-	g, err := ParseGoal(out.String())
-	if err != nil {
-		return nil, fmt.Errorf("%s %s: %w", l.Repo, l.StatusFile, err)
-	}
-	return g, nil
+	return out.Bytes(), nil
 }
 
 // staleness says a lead's GOAL block is stale when the lead posted a DONE or CLEAR-READY on the Crius bus after its

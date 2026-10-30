@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -653,7 +654,7 @@ func TestAGoalRowNamesTheProjectAndCarriesTheQuestions(t *testing.T) {
 	if strings.Contains(detail, "Step 0 first") || strings.Contains(detail, "## 7.") {
 		t.Errorf("q8 carries more than section 6: %q", detail)
 	}
-	if got := cli(t, h, "list"); !strings.Contains(got, "    Details   ## 6. Questions for the owner\n") ||
+	if got := cli(t, h, "list"); strings.Contains(got, "    Do ") || !strings.Contains(got, "    Details   ## 6. Questions for the owner\n") ||
 		!strings.Contains(got, "\n              1. 94489 has not started.") {
 		t.Errorf("list does not show the questions:\n%s", got)
 	}
@@ -662,5 +663,44 @@ func TestAGoalRowNamesTheProjectAndCarriesTheQuestions(t *testing.T) {
 	}
 	if got := cli(t, h, "list"); !strings.Contains(got, "1. 94489 has not started.") {
 		t.Errorf("the open row read its file again on a later list:\n%s", got)
+	}
+}
+
+// A lead whose status file is a git object (crius:build, "git:<repo>#origin/main:docs/notes/RESUME.md") has its labels
+// read from that object, as its GOAL block is, not from a checkout on another branch (review of f1c57f3, P2).
+func TestAGitObjectLeadReadsItsLabelFromTheObject(t *testing.T) {
+	h := setup(t, "")
+	repo := filepath.Join(h, "crius")
+	git := func(args ...string) {
+		t.Helper()
+		if out, err := exec.Command("git", append([]string{"-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	resume := filepath.Join(repo, "docs/notes/RESUME.md")
+	if err := os.MkdirAll(filepath.Dir(resume), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(resume, []byte("## GOAL (2026-10-30 12:00)\nGoal: g\n- [x] one · abc1234\nDone: 50% (1 of 2 milestones)\nNext: two\n"+
+		"Needs owner: yes or no on the split (see \"Open with owner\")\n\nOpen with owner: should the split ship today?\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("init", "-q", "-b", "main")
+	git("add", ".")
+	git("commit", "-q", "-m", "goal")
+	if err := os.WriteFile(resume, []byte("## GOAL\nOpen with owner: an old question from another branch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(h, "projects.toml"), []byte(fmt.Sprintf("[projects.crius]\nleads = { build = \"git:%s#main:docs/notes/RESUME.md\" }\n", repo)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var v struct {
+		Open []map[string]any `json:"open"`
+	}
+	if err := json.Unmarshal([]byte(cli(t, h, "list", "--json")), &v); err != nil {
+		t.Fatal(err)
+	}
+	if want := "Open with owner: should the split ship today?\n(from " + repo + " main:docs/notes/RESUME.md)"; len(v.Open) != 1 || v.Open[0]["detail"] != want {
+		t.Errorf("want detail %q: %+v", want, v.Open)
 	}
 }

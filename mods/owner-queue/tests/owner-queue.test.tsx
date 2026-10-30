@@ -329,8 +329,6 @@ test('held GOAL asks are said with the list, never hidden', async ($, on) => {
   expect(list.text).toContain('Held, as you may have answered them already (1):\n  marketplace:lead: the owner answered q5')
 })
 
-// Crius 10-30 16:58: an owner answer that asks back keeps the card open. The card and /waiting show the question, so
-// the owner sees it is still theirs and what they asked.
 // Crius 10-30 16:45: q8 showed only "the 3 questions in STATUS-2026-10-28.md section 6". The card and /waiting show
 // the questions its ask points to.
 test('a GOAL card shows the questions its ask points to', async ($, on) => {
@@ -347,6 +345,8 @@ test('a GOAL card shows the questions its ask points to', async ($, on) => {
   expect(list.text).toContain('    Details   ## 6. Questions for the owner\n              1. Should the upgrade keep waiting for 94489?\n')
 })
 
+// Crius 10-30 16:58: an owner answer that asks back keeps the card open. The card and /waiting show the question, so
+// the owner sees it is still theirs and what they asked.
 test('a card the owner asked back on shows the question', async ($, on) => {
   const asked = row('q13', 'Falcon: 3 choices', '20m', { from: 'falcon', asked: 'what you need?', askedAt: '2026-10-30T13:47' })
   engine(on, () => ({ ...EMPTY, open: [asked] }))

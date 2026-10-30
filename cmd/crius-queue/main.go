@@ -21,6 +21,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -180,7 +181,7 @@ func list(home string, now time.Time) (q *ownerqueue.Queue, unread, held []strin
 			l := byName[n.Lead]
 			g := ownerqueue.GoalNeed{Lead: n.Lead, Text: strings.Join(n.Items, "; "), Stamp: n.Updated.Format("2006-01-02T15:04"),
 				Project: l.Project}
-			g.Detail = func() string { return needref.Read(g.Text, statusPath(l), l.Dirs) }
+			g.Detail = func() string { return readIn(g.Text, l) }
 			if n.Err != nil {
 				g.Unread = n.Err.Error()
 				unread = append(unread, n.Lead+": "+g.Unread)
@@ -196,14 +197,19 @@ func list(home string, now time.Time) (q *ownerqueue.Queue, unread, held []strin
 	return q, unread, held, err
 }
 
-// statusPath is the lead's status file on disk: a git-object one ("origin/main:docs/RESUME.md") is read from its repo's
-// working tree, whose labels may be newer than the object the GOAL block was read from.
-func statusPath(l ingest.Lead) string {
-	if l.Repo == "" {
-		return l.StatusFile
+// readIn reads in what a lead's ask points to (needref). A git-object status file's labels are read from that object,
+// as its GOAL block was, and named files are looked for from its folder in the repo.
+func readIn(ask string, l ingest.Lead) string {
+	st := needref.Status{Path: l.StatusFile, Dir: filepath.Dir(l.StatusFile)}
+	if l.Repo != "" {
+		_, path, _ := strings.Cut(l.StatusFile, ":")
+		b, err := digest.GitStatus(l)
+		if err != nil {
+			return "Could not read " + l.StatusFile + ": " + err.Error()
+		}
+		st = needref.Status{Path: l.Repo + " " + l.StatusFile, Dir: filepath.Join(l.Repo, filepath.Dir(path)), Text: b}
 	}
-	_, path, _ := strings.Cut(l.StatusFile, ":")
-	return filepath.Join(l.Repo, path)
+	return needref.Read(ask, st, slices.Concat(l.Dirs, []string{l.Repo}))
 }
 
 func items(rows []ownerqueue.Row, now time.Time) []Item {

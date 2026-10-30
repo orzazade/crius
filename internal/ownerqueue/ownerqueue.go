@@ -145,6 +145,9 @@ func SyncGoals(home string, now time.Time, read func() ([]GoalNeed, error)) (hel
 			r := parse(n.Text)
 			r.ID, r.State, r.Opened, r.From, r.Goal, r.Line = next(q), Open, now.Format(stamp), from(n.Lead), n.Lead, n.Text
 			if n.Project != "" {
+				if r.Do == r.Title {
+					r.Do = "" // the title holds it all: the CLI and pane drew Do only when it says more (review of f1c57f3)
+				}
 				r.Title = n.Project + ": " + r.Title
 			}
 			if n.Detail != nil {
