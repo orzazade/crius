@@ -528,7 +528,7 @@ func waiting(st *state, d Deps, watch projects, park parked, screens []Screen, h
 	var config error // projects.toml unread: no role is known to be a lead, so none is handed back (review round 2)
 	finished := func(who string) bool {
 		if done == nil {
-			done, unread, leads, config = finishedLeads(d.Home)
+			done, _, unread, leads, config = finishedLeads(d.Home)
 		}
 		return done[strings.ToLower(who)]
 	}
@@ -788,14 +788,16 @@ func plainName(home, project string) string {
 // (git:<repo>#<rev>:<path>), cannot be read or has no readable GOAL block, and a projects.toml that cannot be read.
 // unread gives why a lead's GOAL block cannot be read, for its idle alert to say (Crius 10-30 15:33: appxite-map's
 // "Done: 100% of phase 1" drew an IDLE every 20 min with no word why). leads gives every lead role, finished or not: a
-// lead may have another name (axi = { leader }, crius = { build }).
-func finishedLeads(home string) (out map[string]bool, unread map[string]string, leads map[string]bool, err error) {
-	out, unread, leads = map[string]bool{}, map[string]string{}, map[string]bool{}
+// lead may have another name (axi = { leader }, crius = { build }). A lead whose GOAL Next starts with PARKED is in
+// out and in parked: parked by the owner, it has no work to be idle on (Crius 10-30 23:19: axi:leader, parked 22:02,
+// drew a second idle alert).
+func finishedLeads(home string) (out, parked map[string]bool, unread map[string]string, leads map[string]bool, err error) {
+	out, parked, unread, leads = map[string]bool{}, map[string]bool{}, map[string]string{}, map[string]bool{}
 	var c struct {
 		Projects map[string]struct{ Leads map[string]string }
 	}
 	if _, err := toml.DecodeFile(filepath.Join(home, "projects.toml"), &c); err != nil {
-		return out, unread, leads, err
+		return out, parked, unread, leads, err
 	}
 	for p, pc := range c.Projects {
 		for role, f := range pc.Leads {
@@ -810,6 +812,8 @@ func finishedLeads(home string) (out map[string]bool, unread map[string]string, 
 			g, err := goal.ReadGoal(f)
 			var u *goal.Unreadable
 			switch {
+			case err == nil && strings.HasPrefix(g.Next, "PARKED"):
+				out[strings.ToLower(p+":"+role)], parked[strings.ToLower(p+":"+role)] = true, true
 			case err == nil && g.Done == 100:
 				out[strings.ToLower(p+":"+role)] = true
 			case errors.As(err, &u):
@@ -817,7 +821,7 @@ func finishedLeads(home string) (out map[string]bool, unread map[string]string, 
 			}
 		}
 	}
-	return out, unread, leads, nil
+	return out, parked, unread, leads, nil
 }
 
 // answersDone are the line types that answer a DONE and give no work.
@@ -854,11 +858,36 @@ func handedBack(home, who string, lead bool) (bool, error) {
 // live waiter of Crius's has covered for 10 min (Crius 10-30 13:22: a Cortex NEED sat ~20 min unseen with no waiter on
 // cortex.log; Falcon missed two lines the same way on 10-29 16:23). Each gap is said once; a project leaves st.Unwaited
 // once a waiter covers it again, so a later gap alerts again. A check that cannot look is its own alert, and every gap
-// stays as it was.
+// stays as it was. A project whose every lead is parked (finishedLeads) needs no waiter until a NEED-OWNER line lands
+// in its log during the gap (Crius 10-30 23:19); a log that cannot be read alerts as any gap does.
 func unwaited(d Deps, st *state, watch projects) [][2]string {
 	logs, err := d.Waiters()
 	if err != nil {
 		return [][2]string{{"waiters-failed", "the waiter check failed to look: " + err.Error()}}
+	}
+	_, parked, _, leads, _ := finishedLeads(d.Home) // projects.toml unread: no lead is parked, every gap alerts
+	quiet := func(name, log string, since time.Time) bool {
+		n := 0
+		for l := range leads {
+			if strings.HasPrefix(l, name+":") {
+				if !parked[l] {
+					return false
+				}
+				n++
+			}
+		}
+		b, err := os.ReadFile(log)
+		if n == 0 || err != nil {
+			return false
+		}
+		for _, line := range strings.Split(string(b), "\n") {
+			if f := strings.Fields(line); len(f) > 1 && f[1] == "NEED-OWNER" {
+				if t, err := lineTime(f[0], d.Now); err != nil || !t.Before(since.Truncate(time.Minute)) { // stamps are to the minute
+					return false
+				}
+			}
+		}
+		return true
 	}
 	covered := map[string]bool{}
 	for _, l := range logs {
@@ -876,7 +905,7 @@ func unwaited(d Deps, st *state, watch projects) [][2]string {
 		if !ok {
 			g.Since = d.Now
 		}
-		if !g.Said && d.Now.Sub(g.Since) >= waiterAfter {
+		if !g.Said && d.Now.Sub(g.Since) >= waiterAfter && !quiet(name, b, g.Since) {
 			g.Said = true
 			due = append(due, name)
 		}

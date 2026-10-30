@@ -2157,6 +2157,48 @@ func TestABusLogWithNoWaiterFor10MinWakesCriusOnce(t *testing.T) {
 	}
 }
 
+// Crius 10-30 23:19: a team whose every lead is parked (GOAL Next: PARKED …) needs no waiter, so its bus log with none
+// stays quiet, until a NEED-OWNER line lands in it: that wakes Crius as any gap does. A team with a lead at work still
+// needs one.
+func TestAParkedTeamNeedsNoWaiterUntilItAsksTheOwner(t *testing.T) {
+	home := setup(t, map[string]string{"axi.log": busFrom("axi:leader", t0), "falcon.log": ""})
+	testutil.Write(t, filepath.Join(home, "projects.toml"), "[projects.axi]\nleads = { leader = \""+home+"/axi.md\" }\n"+
+		"[projects.falcon]\nleads = { lead = \""+home+"/falcon.md\" }\n")
+	goalWith := func(next string) string {
+		return "## GOAL (2026-10-30 18:04)\nGoal: AXI orders.\n- [~] B101 · x\nDone: 17% (1 of 6 milestones)\nNext: " + next +
+			"\nNeeds owner: nothing\n"
+	}
+	testutil.Write(t, filepath.Join(home, "axi.md"), goalWith("PARKED by owner (2026-10-30 22:02)."))
+	testutil.Write(t, filepath.Join(home, "falcon.md"), goalWith("item 2"))
+	f := &fake{waiters: []string{filepath.Join(home, "bus", "crius.log")}}
+	runAt(t, home, f, func(time.Time) []Screen { return nil }, 0, 11)
+	if len(f.sent) != 1 || !strings.Contains(f.sent[0], "no bus waiter covers falcon for") {
+		t.Fatalf("sent %q, want one wake for falcon alone", f.sent)
+	}
+	f.sent = nil
+	testutil.Write(t, filepath.Join(home, "bus", "axi.log"), busFrom("axi:leader", t0)+stamp(t0.Add(12*time.Minute))+
+		" NEED-OWNER axi:leader -> crius:lead — owner: log in to the F3 look\n")
+	runAt(t, home, f, func(time.Time) []Screen { return nil }, 13, 24)
+	if len(f.sent) != 1 || !strings.Contains(f.sent[0], "no bus waiter covers axi for") {
+		t.Fatalf("sent %q, want one wake for axi after its NEED-OWNER", f.sent)
+	}
+	// a NEED-OWNER in the gap's first minute counts: bus stamps are to the minute, the gap's start is not
+	home = setup(t, map[string]string{"axi.log": ""})
+	testutil.Write(t, filepath.Join(home, "projects.toml"), "[projects.axi]\nleads = { leader = \""+home+"/axi.md\" }\n")
+	testutil.Write(t, filepath.Join(home, "axi.md"), goalWith("PARKED by owner (2026-10-30 22:02)."))
+	f = &fake{waiters: []string{filepath.Join(home, "bus", "crius.log")}}
+	if err := Run(f.deps(home, t0.Add(30*time.Second))); err != nil { // the gap starts at 22:00:30
+		t.Fatal(err)
+	}
+	testutil.Write(t, filepath.Join(home, "bus", "axi.log"), stamp(t0)+" NEED-OWNER axi:leader -> crius:lead — owner: log in\n")
+	if err := Run(f.deps(home, t0.Add(11*time.Minute+30*time.Second))); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.sent) != 1 || !strings.Contains(f.sent[0], "no bus waiter covers axi for") {
+		t.Fatalf("sent %q, want the NEED-OWNER of the gap's first minute to wake Crius", f.sent)
+	}
+}
+
 // Only the watched projects need a waiter, and a waiter check that cannot look is loud, never "all covered".
 func TestTheWaiterCheckWatchesTheListedProjectsAndFailsLoud(t *testing.T) {
 	home := setup(t, map[string]string{"cortex.log": "", "quotes.log": ""})
@@ -2175,28 +2217,36 @@ func TestTheWaiterCheckWatchesTheListedProjectsAndFailsLoud(t *testing.T) {
 
 // Falcon 10-30: its goal was done (Done: 100%) and it drew IDLE alerts again and again. A lead whose GOAL block says
 // Done: 100% is finished, not idle; a lead with work left, or another role of that team, still alerts.
+//
+// Crius 10-30 23:19: axi:leader, parked by the owner at 22:02 (GOAL "Next: PARKED by owner …"), drew a second idle
+// alert. A lead whose GOAL Next starts with PARKED has no work to be idle on either; another role of its team still
+// alerts, and so does a Next that only names the word later.
 func TestAnIdleLeadWhoseGoalIsDoneDoesNotAlert(t *testing.T) {
+	parked := "PARKED by owner (2026-10-30 22:02). On resume read the RESUME block below, then item 1 (B101 qa)."
 	for _, c := range []struct {
-		done, who string
-		idle      bool
+		done, who, next string
+		idle            bool
 	}{
-		{"100", "falcon: lead", false},
-		{"80", "falcon: lead", true},
-		{"100", "falcon: qa", true},
+		{"100", "falcon: lead", "nothing", false},
+		{"80", "falcon: lead", "nothing", true},
+		{"100", "falcon: qa", "nothing", true},
+		{"17", "falcon: lead", parked, false},
+		{"17", "falcon: qa", parked, true},
+		{"17", "falcon: lead", "item 1, then PARKED until the owner logs in", true},
 	} {
 		home := setup(t, map[string]string{"falcon.log": busFrom("falcon:lead", t0) + busFrom("falcon:qa", t0)})
 		status := filepath.Join(home, "falcon-STATUS.md")
 		testutil.Write(t, filepath.Join(home, "projects.toml"), "[projects.falcon]\npersona = \"personal\"\ncwd = [\"/x\"]\n"+
 			"leads = { lead = \""+status+"\" }\n\n[projects.crius]\nleads = { build = \"git:/nowhere#origin/main:STATUS.md\" }\n")
 		testutil.Write(t, status, "# Falcon\n\n## GOAL (2026-10-30 09:00)\nGoal: Falcon is Crius's senses.\n"+
-			"- [x] Sources flow · 9c644de\nDone: "+c.done+"% (1 of 1 milestones)\nNext: nothing\nNeeds owner: nothing\n")
+			"- [x] Sources flow · 9c644de\nDone: "+c.done+"% (1 of 1 milestones)\nNext: "+c.next+"\nNeeds owner: nothing\n")
 		f := &fake{}
 		draw := func(at time.Time) []Screen {
 			return []Screen{screen("falcon", tab(c.who, "All milestones verified.", "  ⏵⏵ bypass permissions on\n", at))}
 		}
 		runAt(t, home, f, draw, 0, 5, 11)
 		if idle := len(f.sent) == 1 && strings.Contains(f.sent[0], "is idle"); idle != c.idle || len(f.sent) > 1 {
-			t.Errorf("%s, Done: %s%%: sent %q, want idle %v", c.who, c.done, f.sent, c.idle)
+			t.Errorf("%s, Done: %s%%, Next: %s: sent %q, want idle %v", c.who, c.done, c.next, f.sent, c.idle)
 		}
 	}
 }
