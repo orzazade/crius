@@ -145,8 +145,8 @@ func TestBuildReviewOfCbd8517(t *testing.T) {
 	}
 }
 
-// "nothing" with one note in brackets that ends the field asks nothing (Crius 10-30 16:51: the q16 line, a parked
-// lead, asked the owner nothing). Any other text after it still asks, and so does a note that opens with
+// "nothing" or "none" with one note in brackets that ends the field asks nothing (Crius 10-30 16:51: the q16 line, a
+// parked lead, asked the owner nothing; Crius 10-30 18:03: falcon's "none (…)" the same). Any other text after it still asks, and so does a note that opens with
 // but/except/unless: the forms that made the reverted nothingRe a P1 (review of the queue gap round 1 P1-2) and the
 // ones the review of 0ca5eaa found hidden.
 func TestNothingWithANoteInBracketsIsNothing(t *testing.T) {
@@ -155,9 +155,13 @@ func TestNothingWithANoteInBracketsIsNothing(t *testing.T) {
 	fields := map[string]bool{ // field → asks
 		"nothing (owner 2026-10-30 16:44: parked; GAINS.md walk-through when the owner resumes it)":                   false, // q16
 		"nothing (owner 2026-10-30 16:47: parked; START ask 3 split and the phase-1 walk-through wait until resumed)": false, // q17
-		`"nothing" (parked).`:                            false,
-		"Nothing.":                                       false,
-		`"Nothing."`:                                     false, // distiportal 10-30
+		`"nothing" (parked).`: false,
+		"Nothing.":            false,
+		`"Nothing."`:          false, // distiportal 10-30
+		"none (Q1, Q2, S2 answered 10-30 16:59; 10:58 work-config guard dropped 10-30, nothing to decide)": false, // falcon 10-30
+		"None.":                                          false,
+		"none (but OK on PR 12 before Friday)":           true,
+		"nonessential drafts: OK to drop?":               true,
 		"nothing, except (1) OK to merge #12":            true,
 		"nothing; (1) OK to deploy":                      true,
 		"none; (1) OK to deploy":                         true,

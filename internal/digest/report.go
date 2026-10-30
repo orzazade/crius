@@ -360,11 +360,12 @@ var (
 	needIDRe    = regexp.MustCompile(`\b[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*-[0-9]+\b`)
 	needQuoteRe = regexp.MustCompile(`(?:^|[^\w])(?:'([^']{3,60})'|"([^"]{3,60})")`) // a pair of one mark: "owner's choice"
 	ownerWordRe = regexp.MustCompile(`(?i)\bowner\b`)
-	// "nothing" with at most one note in brackets that ends the field asks nothing (Crius 10-30 16:51: "nothing (owner
-	// 16:44: parked; …)" made queue row q16). Any other text after "nothing" is an ask, and so is a note that opens with
-	// but/except/unless or holds a "?" (reviews of the queue gap round 1 P1-2, of 0ca5eaa P1 and round 2 P2). An ask in a
-	// note with none of these marks ("nothing (still need OK on #12)") is still read as nothing: follow-up F27.
-	nothingRe    = regexp.MustCompile(`(?i)^"?nothing\.?"?\.?\s*(?:\(([^()]*)\))?\.?$`)
+	// "nothing" or "none" with at most one note in brackets that ends the field asks nothing (Crius 10-30 16:51: "nothing
+	// (owner 16:44: parked; …)" made queue row q16; 18:03: falcon's "none (Q1, Q2, S2 answered …)"). Any other text
+	// after the word is an ask, and so is a note that opens with but/except/unless or holds a "?" (reviews of the queue
+	// gap round 1 P1-2, of 0ca5eaa P1 and round 2 P2). An ask in a note with none of these marks ("nothing (still need
+	// OK on #12)") is still read as nothing: follow-up F27.
+	nothingRe    = regexp.MustCompile(`(?i)^"?(?:nothing|none)\.?"?\.?\s*(?:\(([^()]*)\))?\.?$`)
 	askingNoteRe = regexp.MustCompile(`(?i)^\s*(?:but|except|unless)\b|\?`)
 )
 
