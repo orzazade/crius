@@ -479,45 +479,55 @@ func checkScript(a word, c ctx, plain bool) string {
 }
 
 // safeAround says whether the command around a script run leaves the script nothing that runs code. A script on the
-// list runs only listed commands, so only what reaches it from the shell that starts it could post: an exported or
-// already-exported variable that runs code (PS4 with set -x, BASH_ENV, PATH, an exported function) or a file it or
-// bus-post is read from. Proving that by banned spellings failed five reviews (read PS4, printf -vPS4, for PS4 in,
-// ${BASH_ENV:=x} with set -a, tar -C ~), so the command around is held to a list as the script is: every command in it
-// is one safeCall passes, cd, ls, or a shell running a script (read on its own); eval, source, read and printf -v are
-// not on it, and declare and export take no option (export -f). With the commands listed, a variable is set only by
-// the bash forms read here, each checked against codeNameRe: an assignment, a loop name, ${X:=}, a {fd}> redirect, and
-// no arithmetic or [[ ]] (bash runs a $(...) in a value they read). A file is written only by a redirect, which must
-// name a path the guard reads outside the script's folder and bus-post's, and no link.
+// list runs only listed commands, so only what reaches it from the shell that starts it could post: a variable it
+// inherits that runs code (PS4 with set -x, BASH_ENV, PATH, XDG_CONFIG_HOME for git, an exported function) or a file
+// it or bus-post is read from. Proving that the commands around write no such file failed six reviews (awk > file,
+// git --output, a glob or ~user redirect target), so the command around may hold only what writes nothing and sets
+// nothing: commands that print or read (aroundCmds), cd, a shell running a script (read on its own), and an
+// assignment, export or declare of a name a script word uses ($S) and codeNameRe does not name (no option: -f, -n).
+// No loop, function, ${X:=}, arithmetic or [[ ]] (bash runs a $(...) in a value they read), and no assignment in front of a
+// command (it reaches that command). A file is written only by a redirect, whose target must be a path the guard
+// reads as bash does (no glob, no ~ but ~/), outside the script's folder and bus-post's, and no link.
 func (c ctx) safeAround(script string) bool {
 	home, _ := os.UserHomeDir()
 	keep := []string{realDir(filepath.Dir(script)), filepath.Dir(realDir(script)), realDir(home + "/.crius/bin")}
 	for _, r := range c.files {
-		funcs := map[string]bool{}
-		syntax.Walk(r.file, func(n syntax.Node) bool {
-			if fd, ok := n.(*syntax.FuncDecl); ok {
-				funcs[fd.Name.Value] = true
-			}
-			return true
-		})
+		used := map[string]bool{} // the names the script words use
+		for w := range r.scripts {
+			syntax.Walk(w, func(n syntax.Node) bool {
+				if pe, ok := n.(*syntax.ParamExp); ok && pe.Param != nil {
+					used[pe.Param.Value] = true
+				}
+				return true
+			})
+		}
+		named := func(a *syntax.Assign) bool {
+			return a.Name != nil && used[a.Name.Value] && !codeNameRe.MatchString(a.Name.Value)
+		}
 		safe := true
 		syntax.Walk(r.file, func(n syntax.Node) bool {
 			switch n := n.(type) {
-			case *syntax.Assign:
-				safe = safe && (n.Name == nil || !codeNameRe.MatchString(n.Name.Value))
-			case *syntax.WordIter:
-				safe = safe && !codeNameRe.MatchString(n.Name.Value)
 			case *syntax.ParamExp:
-				safe = safe && (n.Exp == nil || n.Exp.Op != syntax.AssignUnset && n.Exp.Op != syntax.AssignUnsetOrNull)
-			case *syntax.ArithmExp, *syntax.ArithmCmd, *syntax.LetClause, *syntax.TestClause, *syntax.CoprocClause:
+				safe = safe && n.Exp == nil && n.Slice == nil && n.Repl == nil && n.Index == nil && n.Names == 0 &&
+					!n.Excl && !n.Width
+			case *syntax.ForClause, *syntax.WhileClause, *syntax.FuncDecl, *syntax.ArithmExp, *syntax.ArithmCmd,
+				*syntax.LetClause, *syntax.TestClause, *syntax.CoprocClause, *syntax.TimeClause:
 				safe = false
 			case *syntax.DeclClause:
 				for _, a := range n.Args {
-					safe = safe && a.Name != nil // no option (export -f, -n)
+					safe = safe && named(a)
 				}
+				return false
 			case *syntax.Redirect:
-				safe = safe && (n.N == nil || !codeNameRe.MatchString(strings.Trim(n.N.Value, "{}"))) && c.safeWrite(n, keep)
+				safe = safe && n.N == nil && c.safeWrite(n, keep)
 			case *syntax.CallExpr:
-				safe = safe && aroundCall(n.Args, r, funcs)
+				if len(n.Args) == 0 {
+					for _, a := range n.Assigns {
+						safe = safe && named(a)
+					}
+				} else {
+					safe = safe && len(n.Assigns) == 0 && aroundCall(n.Args, r)
+				}
 			}
 			return safe
 		})
@@ -530,40 +540,42 @@ func (c ctx) safeAround(script string) bool {
 
 // codeNameRe is a variable that runs code or finds commands for a shell or git started later (codeVarRe's, and ZDOTDIR).
 var codeNameRe = regexp.MustCompile(`^(PS[0-4]|BASH_ENV|ENV|ZDOTDIR|PATH|HOME|IFS|CDPATH|GLOBIGNORE|SHELLOPTS|BASHOPTS|` +
-	`PROMPT_COMMAND|(GIT|BASH|LD|DYLD)_[A-Za-z0-9_]*)$`)
+	`PROMPT_COMMAND|(GIT|BASH|LD|DYLD|XDG)_[A-Za-z0-9_]*)$`)
+
+// aroundCmds are the commands that may sit around a script run: they print or read, and none has an option that
+// writes a file or runs a command (awk, git, sort -o, tee and find do).
+var aroundCmds = map[string]bool{":": true, "true": true, "false": true, "echo": true, "printf": true, "test": true,
+	"[": true, "date": true, "cat": true, "head": true, "tail": true, "wc": true, "grep": true, "ls": true, "tr": true,
+	"cut": true, "basename": true, "dirname": true, "sleep": true, "cd": true}
 
 // aroundCall says whether one command around a script run may pass: a shell running a script (that script is judged
-// on its own), cd, ls, printf with no option (-v sets a variable), or one safeCall passes.
-func aroundCall(args []*syntax.Word, r runs, funcs map[string]bool) bool {
+// on its own), or one of aroundCmds, bare or in a system folder; printf takes no option (-v sets a variable).
+func aroundCall(args []*syntax.Word, r runs) bool {
 	k := 0
 	for k < len(args)-1 && (literal(args[k]).text == "builtin" || literal(args[k]).text == "command") {
 		k++
-	}
-	if k >= len(args) {
-		return true // only assignments
 	}
 	words := make([]word, len(args)-k)
 	for i, w := range args[k:] {
 		words[i] = literal(w)
 	}
-	name := path.Base(words[0].text)
-	switch {
-	case !words[0].ok:
+	a := words[0]
+	if !a.ok || strings.Contains(a.text, "/") && !sysDirs[path.Dir(a.text)] {
 		return false
+	}
+	name := path.Base(a.text)
+	switch {
 	case shells[name]:
 		for _, w := range args[k+1:] {
 			if r.scripts[w] {
 				return true
 			}
 		}
-	case name == "cd" || name == "pushd" || name == "popd" || name == "ls":
-		return !strings.Contains(words[0].text, "/")
+		return false
 	case name == "printf":
-		if len(words) > 1 && (!words[1].ok || strings.HasPrefix(words[1].text, "-")) {
-			return false
-		}
+		return len(words) > 1 && words[1].ok && !strings.HasPrefix(words[1].text, "-")
 	}
-	return safeCall(words, funcs)
+	return aroundCmds[name] && (name != "cd" || !strings.Contains(a.text, "/"))
 }
 
 // safeWrite says whether a redirect writes nowhere a script run or bus-post is read from: input and copies of a numbered
@@ -577,6 +589,11 @@ func (c ctx) safeWrite(rd *syntax.Redirect, keep []string) bool {
 	}
 	p, ok := c.resolve(rd.Word)
 	if !ok {
+		return false
+	}
+	// bash expands a glob in a target and ~user, ~+ and ~-, which resolve keeps as text (review of 26148a0)
+	if l, ok := rd.Word.Parts[0].(*syntax.Lit); ok && strings.HasPrefix(l.Value, "~") && l.Value != "~" &&
+		!strings.HasPrefix(l.Value, "~/") || strings.ContainsAny(p, "*?[{") {
 		return false
 	}
 	if rd.Op == syntax.DplOut && (p == "-" || p != "" && strings.Trim(p, "0123456789") == "") {
@@ -628,7 +645,7 @@ var busPostRe = regexp.MustCompile(`^"?\$\{?HOME\}?/\.crius/bin/bus-post"?$`)
 // by set -x (PS4), a file sourced at start (BASH_ENV, ENV), PATH, HOME (bus-post's path), IFS, the shell's options and
 // any GIT_, BASH_, LD_ or DYLD_ variable (GIT_EXTERNAL_DIFF, GIT_CONFIG_*). Review of 377cc0a.
 var codeVarRe = regexp.MustCompile(`(^|[^A-Za-z0-9_])(PS[0-4]|BASH_ENV|ENV|PATH|HOME|IFS|CDPATH|GLOBIGNORE|SHELLOPTS|` +
-	`BASHOPTS|PROMPT_COMMAND|(GIT|BASH|LD|DYLD)_[A-Za-z0-9_]*)\+?=`)
+	`BASHOPTS|PROMPT_COMMAND|(GIT|BASH|LD|DYLD|XDG)_[A-Za-z0-9_]*)\+?=`)
 
 // plainFlagRe is a shell option that runs nothing else: -c, -e, -u, -x and their mixes (not -i or -l, which read a
 // start-up file, nor --rcfile or -o).
@@ -761,8 +778,9 @@ func safeAwk(args []word) bool {
 	return false
 }
 
-// safeGit passes a git that reads: no -c, --config-env or --exec-path, a literal subcommand from gitReads, and no option
-// that starts a program (grep -O, diff --ext-diff).
+// safeGit passes a git that reads: no -c, --config-env or --exec-path, a literal subcommand from gitReads, no option
+// that starts a program or writes (grep -O, diff --ext-diff, log --output, or a shortening of one), and a computed
+// word only after -- or as -e's value.
 func safeGit(args []word) bool {
 	i := 0
 	for ; i < len(args); i++ {
@@ -784,13 +802,36 @@ func safeGit(args []word) bool {
 	if i >= len(args) || !args[i].ok || !gitReads[args[i].text] {
 		return false
 	}
-	for _, a := range args[i+1:] {
-		if a.ok && (strings.HasPrefix(a.text, "-O") || strings.HasPrefix(a.text, "--open-files-in-pager") ||
-			a.text == "--ext-diff") {
+	ends := false // after --: paths
+	for j, a := range args[i+1:] {
+		switch {
+		case !a.ok:
+			// a computed word could be an option (-O<cmd>, --output=<file>): only a path or -e's pattern (Crius 10-30 22:55)
+			if !ends && (j == 0 || !args[i+j].ok || args[i+j].text != "-e") {
+				return false
+			}
+		case ends:
+		case a.text == "--":
+			ends = true
+		case strings.HasPrefix(a.text, "-O") || runsOption(a.text):
 			return false
 		}
 	}
 	return true
+}
+
+// gitRuns are the long options of the git reads that start a program or write a file.
+var gitRuns = []string{"--open-files-in-pager", "--output", "--ext-diff"}
+
+// runsOption says whether a literal word is one of gitRuns or a shortening git takes for one (--open, --out).
+func runsOption(w string) bool {
+	w, _, _ = strings.Cut(w, "=")
+	for _, r := range gitRuns {
+		if len(w) > 2 && strings.HasPrefix(r, w) || strings.HasPrefix(w, r) {
+			return true
+		}
+	}
+	return false
 }
 
 // scan reads what a command sets up for the scripts it runs: the variables it sets once, to a literal value, as a

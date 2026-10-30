@@ -1,5 +1,6 @@
 #!/bin/bash
-# Test data: the quotes lead's bus wrapper as it ran on 10-30 (crius-post-guard asked the owner for it, Crius 20:27).
+# Test data: the quotes lead's bus wrapper as it ran on 10-30 (crius-post-guard asked the owner for it, Crius 20:27),
+# with -e before the computed grep pattern (Crius 22:55).
 # Lead's only way to post on the quotes bus. Sender is fixed to quotes:lead.
 # Usage: say.sh TYPE "rcpt1,rcpt2" "text"
 # rc 2: bad type, empty or over 300 chars. rc 3: an 8-12 char hex word that is not a commit (nor a UUID prefix in scripts).
@@ -27,7 +28,7 @@ main() {
   for w in $(printf %s "$TEXT" | /usr/bin/grep -o -E '(^|[^0-9A-Za-z])[0-9a-f]{8,12}([^0-9A-Za-z]|$)' | tr -cd '0-9a-f\n'); do
     [[ "$w" =~ ^[0-9]+$ ]] && continue
     git -C "$REPO" cat-file -e "${w}^{commit}" 2>/dev/null && continue
-    git -C "$REPO" grep -q -i -E "$w-[0-9a-f]{4}-" main -- poc/ui-app/scripts 2>/dev/null && continue
+    git -C "$REPO" grep -q -i -E -e "$w-[0-9a-f]{4}-" main -- poc/ui-app/scripts 2>/dev/null && continue
     echo "say.sh: '$w' is not a commit here nor a UUID prefix in main's scripts" >&2; return 3
   done
   if [[ "$TYPE" == START ]]; then

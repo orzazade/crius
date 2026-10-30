@@ -402,6 +402,13 @@ func TestAScriptNamedThroughAVariableSetInTheCommandIsRead(t *testing.T) {
 	write("home.sh", "#!/bin/bash\nHOME=/tmp/evil; \"$HOME/.crius/bin/bus-post\"\n")
 	write("log.sh", "#!/bin/bash\necho \"$1\" >> /tmp/x.log\n")
 	write("co.sh", "#!/bin/bash\nbash -co\n")
+	// review of 26148a0: a computed git word that becomes an option, a shortened option that writes, git's config folder
+	write("g1.sh", "#!/bin/bash\ngit -C /tmp grep \"-O$1\" -e hello -- n.txt\n")
+	write("g2.sh", "#!/bin/bash\ngit -C /tmp grep \"$1\" -- n.txt\n")
+	write("g3.sh", "#!/bin/bash\ngit -C /tmp grep --open-files=less -e hi\n")
+	write("g4.sh", "#!/bin/bash\ngit -C /tmp log -1 --out=/tmp/x\n")
+	write("g5.sh", "#!/bin/bash\nXDG_CONFIG_HOME=/tmp/y git -C /tmp show HEAD\n")
+	write("g6.sh", "#!/bin/bash\ngit -C /tmp grep -q -e \"$1\" -- n.txt; git -C /tmp log -1 --oneline -- \"$2\"\n")
 	self := "#!/bin/bash\n" + strings.Repeat("bash "+filepath.Join(dir, "self.sh")+"\n", 15)
 	write("self.sh", self)
 	s := `S=` + dir + `; `
@@ -427,9 +434,10 @@ func TestAScriptNamedThroughAVariableSetInTheCommandIsRead(t *testing.T) {
 		s + `bash $S/lead/say.sh INFO x 'HOME=/tmp az blob list ok'`,
 		s + `bash -x -- $S/lead/say.sh INFO x 'az blob list ok'`,
 		// review of 516ec50: a dot after cd, a code variable's name in notes text, a bare glob
-		s + `cd ~/Projects && git status --short . && bash $S/lead/say.sh INFO crius:lead 'az blob list ok'`,
 		s + `echo '- 10-30 lead: fixed PATH in rig' >> /tmp/TRIAGE.md && bash $S/lead/say.sh INFO crius:lead 'az blob list ok'`,
 		s + `cd ~/Projects && ls *; grep -rn foo . ; bash $S/lead/say.sh INFO x 'az blob list ok'`,
+		// review of 26148a0: a computed git word as -e's pattern or after --
+		s + `bash $S/g6.sh 'az blob list' 'az login'`,
 	} {
 		if why := check(bash(cmd, dir)); why != "" {
 			t.Errorf("%q asked: %s", cmd, why)
@@ -511,6 +519,28 @@ func TestAScriptNamedThroughAVariableSetInTheCommandIsRead(t *testing.T) {
 		s + `(( PATH=1 )); bash $S/lead/say.sh INFO x 'az login'`,
 		s + `for PATH in /tmp/az-bin; do :; done; bash $S/lead/say.sh INFO x 'az login'`, // PATH is exported already
 		s + `cd ` + dir + `/lead && echo x > say.sh; bash $S/lead/say.sh INFO x 'az login'`,
+		// review of 26148a0: commands that write on their own (awk >, git --output), a target bash expands and the guard
+		// does not (a glob, ~user, ~+), git's config folder, a computed git word or a shortened option, and a $(...) in a
+		// value bash reads as a number or a prompt; git around the script asks with them
+		s + `awk 'BEGIN{print "x" > "` + dir + `/lead/say.sh"}'; bash $S/lead/say.sh INFO x 'az login'`,
+		s + `git -C /tmp log -1 --format=x --output=$S/lead/say.sh; bash $S/lead/say.sh INFO x 'az login'`,
+		s + `printf x > ` + dir + `/lea[d]/say.sh; bash $S/lead/say.sh INFO x 'az login'`,
+		s + `printf x > ` + dir + `/l*/say.sh; bash $S/lead/say.sh INFO x 'az login'`,
+		s + `printf x > ~` + os.Getenv("USER") + `/.crius/bin/bus-post; bash $S/lead/say.sh INFO x 'az login'`,
+		s + `cd ~ && printf x > ~+/.crius/bin/bus-post; bash $S/lead/say.sh INFO x 'az login'`,
+		s + `XDG_CONFIG_HOME=/tmp/y bash $S/lead/say.sh INFO x 'az login'`,
+		s + `XDG_CONFIG_HOME=/tmp/y; bash $S/lead/say.sh INFO x 'az login'`,
+		s + `bash $S/g1.sh '` + run + `;:'`, s + `bash $S/g2.sh '-O` + run + `;:'`, s + `bash $S/g3.sh 'az login'`,
+		s + `bash $S/g4.sh 'az login'`, s + `bash $S/g5.sh 'az login'`,
+		s + `X='a[$(az boards work-item update --id 1)]'; for ((X;0;)); do :; done; bash $S/lead/say.sh INFO x hi`,
+		s + `X='a[$(az boards work-item update --id 1)]'; bash $S/lead/say.sh INFO x "${S:X}"`,
+		s + `X='$(az boards work-item update --id 1)'; bash $S/lead/say.sh INFO x "${X@P}"`,
+		s + `cd ~/Projects && git status --short . && bash $S/lead/say.sh INFO crius:lead 'az blob list ok'`,
+		s + `export PAGER='az boards work-item update --id 1'; bash $S/lead/say.sh INFO x hi`, // a name no script word uses
+		`HOME=` + dir + `; bash $HOME/lead/say.sh INFO x 'az login'`,                          // a code variable the path uses
+		s + `bash $S/lead/say.sh INFO x "${S:X} az login"`,                                    // X from the environment
+		s + `: {PATH}>/tmp/x; bash $S/lead/say.sh INFO x 'az login'`,
+		`XDG_CONFIG_HOME=` + dir + `; bash $XDG_CONFIG_HOME/lead/say.sh INFO x 'az login'`,
 	} {
 		if why := check(bash(cmd, dir)); !strings.Contains(why, "owner's click") {
 			t.Errorf("%q: %q", cmd, why)
