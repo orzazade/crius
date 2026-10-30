@@ -20,7 +20,8 @@
 // =(...) and glob qualifiers are put as bash, and other languages; it also refuses env | cut -d= -f1, xargs printenv,
 // printenv --help, typeset +x and zsh text holding a *(...) with a quote in it, which bash reads as an extglob. The
 // docker rule misses a compose up, run or watch with no --build that builds a missing image, a build inside a script the
-// heavy.ts job runs (heavy.ts run -- sh -c '...'), a heavy.ts path from a variable, and an export inside a pipe part.
+// heavy.ts job runs (heavy.ts run -- sh -c '...'), a heavy.ts path from a variable, an export in a subshell or pipe
+// part or undone by unset, sudo's clean environment, and docker build -h (help, refused).
 package main
 
 import (
@@ -108,9 +109,10 @@ func fold(s string) string { return strings.ToLower(strings.ToUpper(s)) }
 type walker struct {
 	cwd  string // "" before a cd, or after one it cannot follow
 	vars map[string]string
-	// exported: names an export gave to the commands after it (a plain X=1; reaches no program)
-	exported map[string]bool
-	named    bool // the command names .crius/bus
+	// exported: names an export gave to the commands after it (a plain X=1; reaches no program); allExport: set -a
+	exported  map[string]bool
+	allExport bool
+	named     bool // the command names .crius/bus
 	// anyVar: a computed word named the variable a command set (export $(...), read "$N"), so any variable is unknown
 	anyVar bool
 	// globSubst: zsh's glob_subst may be on, so ${=x} globs its value: the command names it or emulate, or this is a
@@ -236,10 +238,24 @@ func (w *walker) stmt(s *syntax.Stmt) {
 			w.why = dump
 			return
 		}
+		// export X=1, declare -x X=1, typeset -x and export "X=1" give X to the commands after them
+		exports := c.Variant.Value == "export" || slices.ContainsFunc(c.Args, func(a *syntax.Assign) bool {
+			if a.Name != nil || a.Value == nil {
+				return false
+			}
+			o, ok := literal(a.Value)
+			return ok && strings.HasPrefix(o, "-") && strings.Contains(o, "x")
+		})
 		for _, a := range c.Args {
 			w.assign(a)
-			if c.Variant.Value == "export" && a.Name != nil {
+			switch {
+			case !exports:
+			case a.Name != nil:
 				w.exported[a.Name.Value] = true
+			case a.Value != nil:
+				if n, _, ok := strings.Cut(w.resolve(a.Value), "="); ok && nameRe.MatchString(n) {
+					w.exported[n] = true
+				}
 			}
 			// export D={/tmp,~/.crius/bus}: bash expands braces in a declaration's word and the last one wins (review
 			// round 15); a plain D={a,b} keeps its text.
@@ -353,14 +369,27 @@ func (w *walker) call(c *syntax.CallExpr, redirs []*syntax.Redirect) {
 		w.cd(rest)
 	case "popd":
 		w.cwd = unknown
-	case "bash", "sh", "zsh":
-		if s := shellScript(args); s != nil {
+	case "bash", "sh", "zsh", "eval":
+		// the script gets this command's VAR=v too (HEAVY_SLOTS=1 bash -c '... heavy.ts run -- docker build .')
+		exp := w.exported
+		w.exported = maps.Clone(exp)
+		maps.Copy(w.exported, given)
+		switch s := shellScript(args); {
+		case name == "eval":
+			w.script(strings.Join(rest, " "))
+		case s != nil:
 			w.script(w.resolve(s))
-		} else if readsStdin(args) {
+		case readsStdin(args):
 			w.stdin(redirs)
 		}
-	case "eval":
-		w.script(strings.Join(rest, " "))
+		w.exported = exp
+	case "set": // set -a exports every variable set after it
+		for i, o := range rest {
+			if strings.HasPrefix(o, "-") && !strings.HasPrefix(o, "--") && strings.Contains(o, "a") ||
+				o == "-o" && i+1 < len(rest) && rest[i+1] == "allexport" {
+				w.allExport = true
+			}
+		}
 	case "read", "mapfile", "readarray":
 		for _, a := range rest {
 			if nameRe.MatchString(a) {
@@ -386,7 +415,7 @@ func (w *walker) call(c *syntax.CallExpr, redirs []*syntax.Redirect) {
 			w.why = unslotted
 		}
 	case "bun", "node":
-		alone := w.vars["HEAVY_SLOTS"] == "1" && (given["HEAVY_SLOTS"] || w.exported["HEAVY_SLOTS"])
+		alone := w.vars["HEAVY_SLOTS"] == "1" && (given["HEAVY_SLOTS"] || w.exported["HEAVY_SLOTS"] || w.allExport)
 		if job := heavyJob(args); len(job) > 0 && !alone && builds(job) {
 			w.why = unslotted
 		}
@@ -547,7 +576,7 @@ func (w *walker) script(text string) {
 	case strings.Contains(text, unknown): // a computed part may be any command
 		w.refuseUnknown()
 	default:
-		w.why = (&walker{cwd: w.cwd, vars: maps.Clone(w.vars), exported: maps.Clone(w.exported),
+		w.why = (&walker{cwd: w.cwd, vars: maps.Clone(w.vars), exported: maps.Clone(w.exported), allExport: w.allExport,
 			named: w.named || namesBus(text), anyVar: w.anyVar, globSubst: true}).check(text)
 	}
 }
@@ -1053,7 +1082,8 @@ var (
 	runValued = map[string]bool{"-e": true, "--env": true, "-l": true, "--label": true, "-p": true, "--publish": true,
 		"-v": true, "--volume": true, "-w": true, "--workdir": true, "-u": true, "--user": true, "--name": true,
 		"--entrypoint": true, "--env-from-file": true, "--cap-add": true, "--cap-drop": true, "--pull": true}
-	// computed stands for a word only the run shows (-f "$F"): it is read as a value, never as a subcommand
+	// computed stands for a word only the run shows: after an option it is the value (-f "$F"); where the subcommand goes
+	// it ends the reading
 	computed = "\x00computed\x00"
 )
 
@@ -1082,7 +1112,7 @@ func builds(args []*syntax.Word) bool {
 		if !ok {
 			v = computed
 		}
-		if v == "--help" || v == "-h" || v == "--dry-run" || v == "--print" {
+		if v == "--help" || v == "--dry-run" || v == "--print" { // not -h: compose run api df -h
 			return false
 		}
 		words = append(words, v)
@@ -1139,7 +1169,8 @@ func subcommand(words []string, valued map[string]bool) (string, []string) {
 			if valued[o] {
 				i++
 			}
-		case o == computed:
+		case o == computed: // docker $C build: the subcommand is only known when it runs
+			return "", nil
 		default:
 			return o, words[i+1:]
 		}

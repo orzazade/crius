@@ -768,7 +768,7 @@ func TestADockerBuildOutsideOneHeavySlotIsRefused(t *testing.T) {
 		// review of cc9ab86: a HEAVY_SLOTS=1 no export gives reaches no program; values and forms read wrongly
 		`HEAVY_SLOTS=1; ` + heavy + `docker build .`, `HEAVY_SLOTS=1 && ` + heavy + `docker build .`,
 		`docker compose -f "$F" up -d --build`, `docker compose run -e A=1 --build api`, `docker buildx b .`,
-		`docker-compose -H tcp://h build`, `docker-compose --log-level INFO build`,
+		`docker-compose -H tcp://h build`, `docker-compose --log-level INFO build`, `docker compose run --build api df -h`,
 	} {
 		if why := check(cmd); !strings.Contains(why, "HEAVY_SLOTS=1") {
 			t.Errorf("%q: %q", cmd, why)
@@ -787,6 +787,11 @@ func TestADockerBuildOutsideOneHeavySlotIsRefused(t *testing.T) {
 		heavy + `bun build ./src`, `docker build --help`, `docker image build --help`, `docker compose build --help`,
 		`docker buildx bake --print`, `docker compose up --build --dry-run`, `docker compose --workdir build ps`,
 		`HEAVY_SLOTS=1; export HEAVY_SLOTS; ` + heavy + `docker build .`, `docker compose run api make --build`,
+		// review of 51bbeea: the variable reaches a child shell and other export forms; a computed subcommand
+		`HEAVY_SLOTS=1 bash -c '` + heavy + `docker build .'`, `env HEAVY_SLOTS=1 sh -c '` + heavy + `docker build .'`,
+		"HEAVY_SLOTS=1 bash <<'EOF'\n" + heavy + "docker build .\nEOF", `declare -x HEAVY_SLOTS=1; ` + heavy + `docker build .`,
+		`typeset -x HEAVY_SLOTS=1; ` + heavy + `docker build .`, `set -a; HEAVY_SLOTS=1; ` + heavy + `docker build .`,
+		`export "HEAVY_SLOTS=1"; ` + heavy + `docker build .`, `C=logs; docker $C build`, `docker "$cmd" compose up --build`,
 	} {
 		if why := check(cmd); why != "" {
 			t.Errorf("%q refused: %s", cmd, why)
