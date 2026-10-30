@@ -440,8 +440,8 @@ func missed(home string, now time.Time, watch projects, park parked) ([][2]strin
 				continue
 			}
 			// a crius:lead line to the asker, of any type, answers the asker's lines before it (a DECISION, Crius 10-30
-			// 20:32: cortex's 16:40 DONE and 18:30 NEED, falcon's two 20:07 ASKs); a copy (cc) or a line to the whole
-			// team answers nothing, and Crius's own notes stay
+			// 20:32: cortex's 16:40 DONE and 18:30 NEED, falcon's two 20:07 ASKs); here a copy (cc) or a line to the
+			// whole team answers nothing (a reply type above still clears all), and Crius's own notes stay
 			if from == "crius:lead" {
 				team := strings.TrimSuffix(filepath.Base(log), ".log")
 				open = slices.DeleteFunc(open, func(l string) bool {
