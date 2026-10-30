@@ -2311,6 +2311,10 @@ func TestALeadThatAsksOnItsScreenBecomesAQueueRow(t *testing.T) {
 		return string(asked[:box]) + "\n✻ Worked for 27s · done 1:57 PM\n\n⏺ Background shell command didn't finish before the previous session ended\n" + string(asked[box:])
 	}
 	headless := func(time.Time) string { return string(asked[strings.Index(string(asked), "  Three things"):]) }
+	// review round 2 of 2bca850 (P2-2): the same above the "✻ Worked for" line a long turn leaves
+	worked := func(time.Time) string {
+		return string(asked[strings.Index(string(asked), "  Three things"):box]) + "\n✻ Worked for 27s · done 1:57 PM\n" + string(asked[box:])
+	}
 	unseen := func(time.Time) string {
 		return "⏺ Compacted while idle, before the prompt cache expired\n" + string(asked[box:])
 	}
@@ -2335,6 +2339,7 @@ func TestALeadThatAsksOnItsScreenBecomesAQueueRow(t *testing.T) {
 			idle("Holding until the owner answers A1. ⏳")}, ownerqueue.Open},
 		// review round 1 of 2bca850 (P2): a long ask whose "⏺" line has scrolled off
 		{"the head scrolled off", "", "marketplace · lead", []func(time.Time) string{headless, headless, headless, headless}, ownerqueue.Open},
+		{"the head scrolled off above a Worked-for line", "", "marketplace · lead", []func(time.Time) string{worked, worked, worked, worked}, ownerqueue.Open},
 		{"a dialog", "", "marketplace · lead", []func(time.Time) string{dialog, dialog, dialog, dialog}, ""},
 	} {
 		home := setup(t, map[string]string{"marketplace.log": busFrom("marketplace:lead", t0.Add(-time.Hour)) + c.bus})
@@ -2385,6 +2390,40 @@ func TestALeadThatAsksOnItsScreenBecomesAQueueRow(t *testing.T) {
 			if !strings.Contains(r.Do, want) {
 				t.Errorf("%s: the row does not carry %q:\n%s", c.name, want, r.Do)
 			}
+		}
+	}
+}
+
+// A projects.toml that cannot be read names no lead, so no tab is read for what it asks: that is said, never a quiet
+// "nothing asked" (review round 2 of 2bca850, P3-5).
+func TestScreenAsksUnreadForWantOfProjectsTomlAreSaid(t *testing.T) {
+	asked, err := os.ReadFile(filepath.Join("testdata", "marketplace-asks-1458.screen"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := setup(t, map[string]string{"marketplace.log": busFrom("marketplace:lead", t0.Add(-time.Hour))})
+	testutil.Write(t, filepath.Join(home, "projects.toml"), "[projects.marketplace\n")
+	if err := ownerqueue.Init(home, stamp(t0.Add(-2*time.Hour))); err != nil {
+		t.Fatal(err)
+	}
+	f := &fake{}
+	runAt(t, home, f, func(time.Time) []Screen {
+		return []Screen{{Surface: "surface:7", Title: "marketplace", Text: string(asked)}}
+	}, 0, 5, 11)
+	if !strings.Contains(strings.Join(f.sent, "\n"), "no lead tab was read for what it asks the owner: projects.toml cannot be read") {
+		t.Fatalf("not said: %q", f.sent)
+	}
+}
+
+// A tool's output whose "⏺" call line scrolled off is no reply: its last line may end on "?" (review round 2 of
+// 2bca850, P3-4: "⎿ Interrupted · What should Claude do instead?" was read as the lead's ask).
+func TestToolOutputWithItsCallScrolledOffIsNoReply(t *testing.T) {
+	for _, body := range []string{
+		"  ⎿  (no output)\n  ⎿  Interrupted · What should Claude do instead?\n",
+		"     lines 1-40 of the log\n  ⎿  Push to origin main?\n\n✻ Worked for 3s\n",
+	} {
+		if r := lastReply(body); r != "" {
+			t.Errorf("lastReply(%q) = %q, want none", body, r)
 		}
 	}
 }

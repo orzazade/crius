@@ -39,7 +39,7 @@ import (
 const (
 	Open      = "open"
 	Answered  = "answered"
-	Withdrawn = "withdrawn" // a GOAL or screen row whose lead no longer asks it: no owner decision
+	Withdrawn = "withdrawn" // a GOAL row whose lead no longer asks it: no owner decision
 	stamp     = "2006-01-02T15:04"
 )
 
@@ -178,8 +178,8 @@ type ScreenAsk struct {
 }
 
 // SyncScreens puts the screen asks in the queue. A screen read before makes nothing new. A newer ask from the tab of an
-// open screen row rewrites that row (the lead's newest words, one row). Else the ask is held when the bus or the owner
-// has it (heldBy), or it opens a row. Nothing closes a screen row but the owner, Crius or that rewrite: a reply that
+// open screen row rewrites that row (the lead's newest words, one row). Else the ask is held when the same turn posted it as
+// a NEED-OWNER or GOAL ask (heldBy), or it opens a row. Nothing closes a screen row but the owner, Crius or that rewrite: a reply that
 // asks nothing ("holding until the owner answers ⏳") does not mean the question was answered (review round 1 of
 // 2bca850, P1). Crius's own team asks Crius, not the owner. held names each ask held back; it is also kept for list.
 func SyncScreens(home string, now time.Time, asks []ScreenAsk) (held []string, err error) {
@@ -201,7 +201,9 @@ func SyncScreens(home string, now time.Time, asks []ScreenAsk) (held []string, e
 			if i := slices.IndexFunc(q.Rows, func(r Row) bool {
 				return r.State == Open && r.Screen == a.Lead && strings.HasPrefix(r.Line, surface)
 			}); i >= 0 {
+				// the owner's "You asked …" was about the old words (review round 2 of 2bca850, P3-3)
 				q.Rows[i].Title, q.Rows[i].Do, q.Rows[i].Line = title, a.Text, a.Key
+				q.Rows[i].Asked, q.Rows[i].AskedAt, q.Rows[i].Carried = "", "", false
 				changed = true
 				continue
 			}
@@ -225,9 +227,12 @@ func SyncScreens(home string, now time.Time, asks []ScreenAsk) (held []string, e
 	return held, err
 }
 
-// ScreenHeld gives the screen asks the last SyncScreens held back (wakewatch's last run), for list to show.
-func ScreenHeld(home string) ([]string, error) {
-	b, err := os.ReadFile(heldPath(home))
+// ScreenHeld gives the screen asks the last SyncScreens held back (wakewatch's last run), for list to show. SyncScreens
+// writes the file on every run, so one older than screenSlack says when it was written: wakewatch has not looked since,
+// and what it held may be old (review round 2 of 2bca850, P3-5).
+func ScreenHeld(home string, now time.Time) ([]string, error) {
+	path := heldPath(home)
+	b, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
@@ -235,7 +240,19 @@ func ScreenHeld(home string) ([]string, error) {
 		return nil, err
 	}
 	var held []string
-	return held, json.Unmarshal(b, &held)
+	if err := json.Unmarshal(b, &held); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if at := fi.ModTime(); now.Sub(at) > screenSlack {
+		for i := range held {
+			held[i] += " (as of " + at.Format(stamp) + ": wakewatch has not read the tabs since)"
+		}
+	}
+	return held, nil
 }
 
 func heldPath(home string) string {
@@ -246,66 +263,23 @@ func heldPath(home string) string {
 // asks the same: wakewatch reads each tab every 5 min.
 const screenSlack = 15 * time.Minute
 
-// heldBy names the row of the ask's project that has it already, "" when none does: a NEED-OWNER the same turn may
-// have posted (since the screen was first seen, less screenSlack), or an open row, or one the owner answered since
-// then, that asks the same (sameAsk). An open row about something else holds nothing (review round 1 of 2bca850, P1:
-// upload-central's old q14 would hide every new question).
+// heldBy names the row that has the ask already, "" when none does: an open NEED-OWNER bus line of the ask's project,
+// or an open GOAL row of the same lead, that came no earlier than screenSlack before the screen was first seen (the
+// same turn wrote both). Nothing else holds: guessing whether two texts ask the same held unrelated questions, and an
+// older or answered row of the project said nothing of a new ask (reviews of 2bca850 round 1 P1 and round 2 P1, P2-1).
 func heldBy(q *Queue, a ScreenAsk) string {
 	project, since := from(a.Lead), a.Since.Format(stamp)
 	slack := a.Since.Add(-screenSlack).Format(stamp)
 	for _, r := range q.Rows {
 		switch {
-		case r.From != project || r.Screen != "":
-		case r.Goal == "" && r.Opened >= slack:
+		case r.State != Open || r.Screen != "" || r.Opened < slack:
+		case r.Goal == "" && r.Log != "" && r.From == project:
 			return "its NEED-OWNER " + r.ID + " came at " + r.Opened + ", as the screen began (" + since + ")"
-		case r.State == Open && sameAsk(r, a.Text):
-			return "its ask " + r.ID + " is open in the queue and asks the same"
-		case r.State == Answered && r.AnsweredAt >= slack && byOwner(r) && sameAsk(r, a.Text):
-			return "the owner answered " + r.ID + " at " + r.AnsweredAt + ", which asked the same"
+		case r.Goal == a.Lead:
+			return "its GOAL ask " + r.ID + " came at " + r.Opened + ", as the screen began (" + since + ")"
 		}
 	}
 	return ""
-}
-
-var (
-	// refRe is an id an ask names: A1, B4, q14, BD10.3, AB#94489, F-118
-	refRe  = regexp.MustCompile(`\b(?:[A-Z]{1,3}#?-?\d{1,6}(?:\.\d+)?|q\d{1,4})\b`)
-	wordRe = regexp.MustCompile(`\p{L}{5,}`)
-	// common words that say nothing of what is asked
-	plain = map[string]bool{"about": true, "after": true, "before": true, "could": true, "decide": true, "needs": true,
-		"owner": true, "should": true, "still": true, "their": true, "there": true, "these": true, "those": true,
-		"which": true, "would": true, "answer": true, "waiting": true, "question": true, "questions": true}
-)
-
-// sameAsk says row r asks what text asks: they name a common id (A1, B4), or share 3 words of 5 letters or more.
-func sameAsk(r Row, text string) bool {
-	rowText := r.Title + "\n" + r.Do + "\n" + r.Detail
-	for _, id := range refRe.FindAllString(rowText, -1) {
-		if slices.Contains(refRe.FindAllString(text, -1), id) {
-			return true
-		}
-	}
-	words := map[string]bool{}
-	for _, w := range wordRe.FindAllString(strings.ToLower(rowText), -1) {
-		if !plain[w] {
-			words[w] = true
-		}
-	}
-	n := 0
-	for w := range set(wordRe.FindAllString(strings.ToLower(text), -1)) {
-		if words[w] {
-			n++
-		}
-	}
-	return n >= 3
-}
-
-func set(ws []string) map[string]bool {
-	m := map[string]bool{}
-	for _, w := range ws {
-		m[w] = true
-	}
-	return m
 }
 
 // firstAsk is the line of a screen ask that asks: the text after its label ("Needs you: …", not "Needs owner:
@@ -318,7 +292,7 @@ func firstAsk(text string) string {
 			if rest := strings.TrimSpace(m[1]); rest != "" {
 				return rest
 			}
-			return strings.Trim(strings.TrimSpace(l), "*:")
+			return strings.Trim(strings.TrimLeft(strings.TrimSpace(l), "-*+#>0123456789.) \t"), "*: ")
 		}
 	}
 	last := ""
@@ -387,8 +361,9 @@ func Asks(reply string) bool {
 var checkRe = regexp.MustCompile(`^(?:[-*+]\s+)?\[[ xX~]\]`)
 
 // nothingRe is a label's text that asks nothing: "Needs you: nothing", "Waiting on you: none", "—", "n/a", "not
-// now", the GOAL template's "<what, or "nothing">" (review round 1 of 2bca850).
-var nothingRe = regexp.MustCompile(`(?i)^\W*(?:nothing|none|no\b|n/?a\b|not (?:now|yet)\b|<what\b|$)`)
+// now", each alone or with one note in brackets, and the GOAL template's "<what, or "nothing">" (review round 1 of
+// 2bca850). More words after it ask: "nothing new; A1 still open" (round 2, P3-2).
+var nothingRe = regexp.MustCompile(`(?i)^\W*(?:(?:nothing|none|no|n/?a|not (?:now|yet))\W*(?:\([^()]*\)\W*)?$|<what\b|$)`)
 
 // nothing says a label's text asks nothing; a label with no text on its line asks with the lines under it.
 func nothing(text string) bool { return strings.TrimSpace(text) != "" && nothingRe.MatchString(text) }
@@ -424,7 +399,7 @@ func byOwner(r Row) bool {
 func shown(q *Queue, project, stamp string) string {
 	for _, r := range q.Rows {
 		switch {
-		case r.Goal != "" || r.From != project:
+		case r.Goal != "" || r.Screen != "" || r.From != project:
 		case r.State == Open:
 			return "its ask " + r.ID + " is open in the queue"
 		case r.State == Answered && r.AnsweredAt >= stamp && byOwner(r):

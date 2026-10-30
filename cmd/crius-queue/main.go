@@ -194,7 +194,7 @@ func list(home string, now time.Time) (q *ownerqueue.Queue, unread, held []strin
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	onScreen, err := ownerqueue.ScreenHeld(home)
+	onScreen, err := ownerqueue.ScreenHeld(home, now)
 	if err != nil {
 		return nil, nil, nil, err
 	}

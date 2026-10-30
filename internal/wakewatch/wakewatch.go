@@ -639,13 +639,17 @@ func waiting(st *state, d Deps, watch projects, park parked, screens []Screen, h
 			delete(st.Screens, k)
 		}
 	}
+	sa.unread = config
 	return out
 }
 
 // screenAsks is what lead tabs ask the owner on screen this run (Crius 10-30 17:15: marketplace asked A1, A2 and "go"
 // in its own tab, more than once, with no NEED-OWNER line): each screen unchanged for screenAfter whose last reply asks
-// (ownerqueue.Asks).
-type screenAsks struct{ asks []ownerqueue.ScreenAsk }
+// (ownerqueue.Asks). unread is why no tab was known to be a lead's, so none was read.
+type screenAsks struct {
+	asks   []ownerqueue.ScreenAsk
+	unread error
+}
 
 func (sa *screenAsks) note(d Deps, lead, key, body string, since time.Time) {
 	if reply := lastReply(body); reply != "" && ownerqueue.Asks(reply) && d.Now.Sub(since) >= screenAfter {
@@ -655,18 +659,24 @@ func (sa *screenAsks) note(d Deps, lead, key, body string, since time.Time) {
 }
 
 // queueAsks puts the screen asks in the owner queue (ownerqueue.SyncScreens); a queue that cannot take them is said, as
-// any other failure to look. It runs on every run, so the asks it holds back are always the current ones.
+// any other failure to look, and so are lead tabs a set-up queue could not have read (review round 2 of 2bca850, P3-5).
+// It runs on every run, so the asks it holds back are always the current ones.
 func queueAsks(d Deps, sa screenAsks) [][2]string {
-	if _, err := ownerqueue.SyncScreens(d.Home, d.Now, sa.asks); err != nil && (len(sa.asks) > 0 || !errors.Is(err, ownerqueue.ErrNotSetUp)) {
+	_, err := ownerqueue.SyncScreens(d.Home, d.Now, sa.asks)
+	switch {
+	case err != nil && (len(sa.asks) > 0 || !errors.Is(err, ownerqueue.ErrNotSetUp)):
 		return [][2]string{{"queue-failed", "wakewatch could not put a lead's on-screen ask in the owner queue: " + err.Error()}}
+	case err == nil && sa.unread != nil:
+		return [][2]string{{"screen-asks-failed", "no lead tab was read for what it asks the owner: projects.toml cannot be read (" + sa.unread.Error() + ")"}}
 	}
 	return nil
 }
 
 // lastReply gives a screen's last reply: the "⏺" block nearest the bottom that is no notice, with that mark and the
 // 2-cell indent taken off, up to the next "⏺" or "✻" line; with no "⏺" line in sight, a reply whose head has scrolled
-// off, all of what is seen (review round 1 of 2bca850: a long ask was never seen). "" when that block is a tool call
-// (the turn did not end on text). A notice after the reply ("Background shell command didn't finish …") is passed
+// off, what is seen above its "✻ Worked for …" line (reviews of 2bca850: round 1, a long ask was never seen; round 2,
+// nor one above that line). "" when that block is a tool call, and when what is seen holds a tool's "⎿" lines (the
+// turn did not end on text; round 2: "⎿ Interrupted · What should Claude do instead?" read as an ask). A notice after the reply ("Background shell command didn't finish …") is passed
 // over: the upload-central lead's ❓ sat above one (live tabs, 10-30 17:44).
 func lastReply(body string) string {
 	lines := strings.Split(body, "\n")
@@ -688,10 +698,13 @@ func lastReply(body string) string {
 		}
 		return unindent(append([]string{t}, lines[i+1:max(i+1, end)]...))
 	}
-	if end == len(lines) && !slices.ContainsFunc(lines, func(l string) bool { return strings.HasPrefix(strings.TrimSpace(l), "⏺") }) {
-		return unindent(lines)
+	if slices.ContainsFunc(lines[:end], func(l string) bool {
+		l = strings.TrimSpace(l)
+		return strings.HasPrefix(l, "⏺") || strings.HasPrefix(l, "⎿")
+	}) {
+		return ""
 	}
-	return ""
+	return unindent(lines[:end])
 }
 
 // unindent joins a reply's lines with the 2-cell indent under its "⏺" taken off.
