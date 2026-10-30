@@ -2197,6 +2197,35 @@ func TestAParkedTeamNeedsNoWaiterUntilItAsksTheOwner(t *testing.T) {
 	if len(f.sent) != 1 || !strings.Contains(f.sent[0], "no bus waiter covers axi for") {
 		t.Fatalf("sent %q, want the NEED-OWNER of the gap's first minute to wake Crius", f.sent)
 	}
+	// Review of d848ec9: a one-shot waiter exits on a line at 22:00, the lead asks the owner at 22:02, and the next run
+	// sees the gap at 22:05: the gap counts from the run before it. Any NEED, and any line from another role, wakes
+	// Crius too, and the alert names it; a line of Crius's own does not.
+	for _, c := range []struct{ line, want string }{
+		{"NEED-OWNER axi:leader -> crius:lead — owner: log in to the F3 look", "NEED-OWNER axi:leader"},
+		{"NEED axi:leader -> crius:lead — the F3 host is down", "NEED axi:leader"},
+		{"DONE axi:qa -> crius:lead — B101 qa a1b2c3d go test 12 ok", "DONE axi:qa"},
+		{"INFO crius:lead -> axi:leader — parked: hold until the owner is back", ""},
+		{"INFO axi:leader -> crius:lead — parked, holding", ""},
+	} {
+		home = setup(t, map[string]string{"axi.log": ""})
+		testutil.Write(t, filepath.Join(home, "projects.toml"), "[projects.axi]\nleads = { leader = \""+home+"/axi.md\" }\n")
+		testutil.Write(t, filepath.Join(home, "axi.md"), goalWith("PARKED by owner (2026-10-30 22:02)."))
+		f = &fake{waiters: []string{filepath.Join(home, "bus", "axi.log")}}
+		runAt(t, home, f, func(time.Time) []Screen { return nil }, 0)
+		testutil.Write(t, filepath.Join(home, "bus", "axi.log"), stamp(t0.Add(2*time.Minute))+" "+c.line+"\n")
+		f.waiters = []string{filepath.Join(home, "bus", "crius.log")}
+		runAt(t, home, f, func(time.Time) []Screen { return nil }, 5, 10, 15, 20)
+		if c.want == "" {
+			if len(f.sent) != 0 {
+				t.Errorf("%s: sent %q, want nothing", c.line, f.sent)
+			}
+			continue
+		}
+		if len(f.sent) != 1 || !strings.Contains(f.sent[0], "no bus waiter covers axi for") ||
+			!strings.Contains(f.sent[0], "has every lead parked, and its bus has: "+stamp(t0.Add(2*time.Minute))+" "+c.want) {
+			t.Errorf("%s: sent %q, want one wake for axi that names the line", c.line, f.sent)
+		}
+	}
 }
 
 // Only the watched projects need a waiter, and a waiter check that cannot look is loud, never "all covered".

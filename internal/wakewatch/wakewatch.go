@@ -135,12 +135,14 @@ type state struct {
 	HookLog     int64                // how much of crius-hook.log was already reported
 	Disk        diskAlarm            // the last disk alarm sent; zero once disk is back over the line
 	Unwaited    map[string]waitGap   // project -> its bus log's gap with no waiter, while it lasts
+	Looked      time.Time            // when the waiter check last looked: a gap seen now began after it
 }
 
-// waitGap is when a bus log was first seen with no waiter, and whether that gap was said to Crius.
+// waitGap is when a bus log was first seen with no waiter, and whether that gap was said to Crius. From is the run before
+// it, the last that saw a waiter there or did not look (zero: none): the waiter may have left at any time after it.
 type waitGap struct {
-	Since time.Time
-	Said  bool
+	Since, From time.Time
+	Said        bool
 }
 
 // diskAlarm is when the last disk alarm went out and how much disk was free then.
@@ -858,36 +860,48 @@ func handedBack(home, who string, lead bool) (bool, error) {
 // live waiter of Crius's has covered for 10 min (Crius 10-30 13:22: a Cortex NEED sat ~20 min unseen with no waiter on
 // cortex.log; Falcon missed two lines the same way on 10-29 16:23). Each gap is said once; a project leaves st.Unwaited
 // once a waiter covers it again, so a later gap alerts again. A check that cannot look is its own alert, and every gap
-// stays as it was. A project whose every lead is parked (finishedLeads) needs no waiter until a NEED-OWNER line lands
-// in its log during the gap (Crius 10-30 23:19); a log that cannot be read alerts as any gap does.
+// stays as it was. A project whose every lead is parked (finishedLeads) needs no waiter until a line lands in its log
+// during the gap that is a NEED or NEED-OWNER, or comes from neither a parked lead nor Crius (Crius 10-30 23:19); the
+// gap is counted from the run before it was seen, as a one-shot waiter exits on a line and the lead may ask the owner
+// next (review of d848ec9). A log that cannot be read alerts as any gap does.
 func unwaited(d Deps, st *state, watch projects) [][2]string {
 	logs, err := d.Waiters()
 	if err != nil {
 		return [][2]string{{"waiters-failed", "the waiter check failed to look: " + err.Error()}}
 	}
 	_, parked, _, leads, _ := finishedLeads(d.Home) // projects.toml unread: no lead is parked, every gap alerts
-	quiet := func(name, log string, since time.Time) bool {
+	// quiet says whether the gap of a parked team holds nothing for Crius; else the line that does ("" when not parked).
+	quiet := func(name, log string, from time.Time) (bool, string) {
 		n := 0
 		for l := range leads {
 			if strings.HasPrefix(l, name+":") {
 				if !parked[l] {
-					return false
+					return false, ""
 				}
 				n++
 			}
 		}
 		b, err := os.ReadFile(log)
-		if n == 0 || err != nil {
-			return false
+		if n == 0 {
+			return false, ""
+		}
+		if err != nil {
+			return false, "its bus log could not be read: " + err.Error()
 		}
 		for _, line := range strings.Split(string(b), "\n") {
-			if f := strings.Fields(line); len(f) > 1 && f[1] == "NEED-OWNER" {
-				if t, err := lineTime(f[0], d.Now); err != nil || !t.Before(since.Truncate(time.Minute)) { // stamps are to the minute
-					return false
-				}
+			f := strings.Fields(line)
+			if len(f) == 0 {
+				continue
+			}
+			t, err := lineTime(f[0], d.Now)
+			if err == nil && t.Before(from.Truncate(time.Minute)) { // stamps are to the minute
+				continue
+			}
+			if err != nil || len(f) < 3 || strings.HasPrefix(f[1], "NEED") || !parked[f[2]] && f[2] != "crius:lead" {
+				return false, line
 			}
 		}
-		return true
+		return true, ""
 	}
 	covered := map[string]bool{}
 	for _, l := range logs {
@@ -895,7 +909,7 @@ func unwaited(d Deps, st *state, watch projects) [][2]string {
 	}
 	buses, _ := filepath.Glob(filepath.Join(d.Home, "bus", "*.log")) // sorted; the pattern is fixed
 	gaps := map[string]waitGap{}
-	var due []string
+	var due, why []string
 	for _, b := range buses {
 		name := strings.TrimSuffix(filepath.Base(b), ".log")
 		if name == "waits" || !watch.has(name) || covered[samePath(b)] {
@@ -903,20 +917,31 @@ func unwaited(d Deps, st *state, watch projects) [][2]string {
 		}
 		g, ok := st.Unwaited[name]
 		if !ok {
-			g.Since = d.Now
+			g.Since, g.From = d.Now, st.Looked
+			if g.From.IsZero() {
+				g.From = d.Now
+			}
 		}
-		if !g.Said && d.Now.Sub(g.Since) >= waiterAfter && !quiet(name, b, g.Since) {
-			g.Said = true
-			due = append(due, name)
+		if !g.Said && d.Now.Sub(g.Since) >= waiterAfter {
+			if q, line := quiet(name, b, g.From); !q {
+				g.Said = true
+				due = append(due, name)
+				if line != "" {
+					why = append(why, name+" has every lead parked, and its bus has: "+line)
+				}
+			}
 		}
 		gaps[name] = g
 	}
-	st.Unwaited = gaps
+	st.Unwaited, st.Looked = gaps, d.Now
 	if len(due) == 0 {
 		return nil
 	}
-	return [][2]string{{"waiter:" + strings.Join(due, ","), "no bus waiter covers " + strings.Join(due, ", ") +
-		" for 10+ min: their DONE/NEED lines wake nobody; re-arm the waiter"}}
+	text := "no bus waiter covers " + strings.Join(due, ", ") + " for 10+ min: their DONE/NEED lines wake nobody; re-arm the waiter"
+	if len(why) > 0 {
+		text += " (" + strings.Join(why, "; ") + ")"
+	}
+	return [][2]string{{"waiter:" + strings.Join(due, ","), text}}
 }
 
 // resources gives an alert when free disk is below 20 GB or swap in use above 26 GB, or when they could not be read.
