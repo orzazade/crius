@@ -18,7 +18,9 @@
 // typeset -F, another machine's environment (kubectl exec ... -- env, docker exec c env, ssh host printenv), a computed
 // command name, options inside one env -S string (env -S 'printenv -0'), zsh text the parser cannot read once ${(k)x},
 // =(...) and glob qualifiers are put as bash, and other languages; it also refuses env | cut -d= -f1, xargs printenv,
-// printenv --help, typeset +x and zsh text holding a *(...) with a quote in it, which bash reads as an extglob.
+// printenv --help, typeset +x and zsh text holding a *(...) with a quote in it, which bash reads as an extglob. The
+// docker rule misses a compose up, run or watch with no --build that builds a missing image, a build inside a script the
+// heavy.ts job runs (heavy.ts run -- sh -c '...'), a heavy.ts path from a variable, and an export inside a pipe part.
 package main
 
 import (
@@ -84,7 +86,7 @@ const tempName = "\x00name\x00"
 
 // check gives the reason to refuse command, or "".
 func check(command string) string {
-	return (&walker{vars: map[string]string{}, named: namesBus(command)}).check(command)
+	return (&walker{vars: map[string]string{}, exported: map[string]bool{}, named: namesBus(command)}).check(command)
 }
 
 // setsGlobSubst: the text may turn on zsh's glob_subst. Option names ignore case and _, emulate sh, ksh or csh sets it,
@@ -104,9 +106,11 @@ func fold(s string) string { return strings.ToLower(strings.ToUpper(s)) }
 // path it names. A variable it did not set stays as written ("$TMPDIR/v.txt" is not the bus). A write to a path only
 // the run shows is refused when the command names the bus folder.
 type walker struct {
-	cwd   string // "" before a cd, or after one it cannot follow
-	vars  map[string]string
-	named bool // the command names .crius/bus
+	cwd  string // "" before a cd, or after one it cannot follow
+	vars map[string]string
+	// exported: names an export gave to the commands after it (a plain X=1; reaches no program)
+	exported map[string]bool
+	named    bool // the command names .crius/bus
 	// anyVar: a computed word named the variable a command set (export $(...), read "$N"), so any variable is unknown
 	anyVar bool
 	// globSubst: zsh's glob_subst may be on, so ${=x} globs its value: the command names it or emulate, or this is a
@@ -234,6 +238,9 @@ func (w *walker) stmt(s *syntax.Stmt) {
 		}
 		for _, a := range c.Args {
 			w.assign(a)
+			if c.Variant.Value == "export" && a.Name != nil {
+				w.exported[a.Name.Value] = true
+			}
 			// export D={/tmp,~/.crius/bus}: bash expands braces in a declaration's word and the last one wins (review
 			// round 15); a plain D={a,b} keeps its text.
 			if a.Name != nil && !a.Naked && a.Value != nil && slices.ContainsFunc(a.Value.Parts, braces) {
@@ -306,10 +313,19 @@ func (w *walker) call(c *syntax.CallExpr, redirs []*syntax.Redirect) {
 		w.refuseUnknown()
 		return
 	}
+	given := map[string]bool{} // the variables this command's program gets from VAR=v cmd and env VAR=v
+	if len(c.Args) > 0 {
+		for _, a := range c.Assigns {
+			if a.Name != nil {
+				given[a.Name.Value] = true
+			}
+		}
+	}
 	for _, e := range envs {
 		if k, v, ok := strings.Cut(w.resolve(e), "="); ok && nameRe.MatchString(k) {
 			keep(k)
 			w.vars[k] = v
+			given[k] = true
 		}
 	}
 	if len(args) == 0 {
@@ -370,7 +386,8 @@ func (w *walker) call(c *syntax.CallExpr, redirs []*syntax.Redirect) {
 			w.why = unslotted
 		}
 	case "bun", "node":
-		if job := heavyJob(args); len(job) > 0 && w.vars["HEAVY_SLOTS"] != "1" && builds(job) {
+		alone := w.vars["HEAVY_SLOTS"] == "1" && (given["HEAVY_SLOTS"] || w.exported["HEAVY_SLOTS"])
+		if job := heavyJob(args); len(job) > 0 && !alone && builds(job) {
 			w.why = unslotted
 		}
 	case "tee":
@@ -530,8 +547,8 @@ func (w *walker) script(text string) {
 	case strings.Contains(text, unknown): // a computed part may be any command
 		w.refuseUnknown()
 	default:
-		w.why = (&walker{cwd: w.cwd, vars: maps.Clone(w.vars), named: w.named || namesBus(text), anyVar: w.anyVar,
-			globSubst: true}).check(text)
+		w.why = (&walker{cwd: w.cwd, vars: maps.Clone(w.vars), exported: maps.Clone(w.exported),
+			named: w.named || namesBus(text), anyVar: w.anyVar, globSubst: true}).check(text)
 	}
 }
 
@@ -962,8 +979,9 @@ const (
 	unslotted = "a docker image build (docker build, buildx build or bake, compose build, compose up, run or create " +
 		"with --build) runs alone in a heavy slot: run it as HEAVY_SLOTS=1 bun " +
 		"~/Projects/Appxite/svc_quote/channels/poc/ui-app/scripts/heavy.ts run -- <command>. HEAVY_SLOTS=1 waits until " +
-		"no heavy job holds a slot, so two builds never run at once; use compose up -d, as the slot is held while the " +
-		"command runs (10-30 20:22: a compose build of the AXI stack held " +
+		"no heavy job holds a slot, so two builds never run at once. Build in the slot (compose build or up -d --build), " +
+		"then start the stack outside it: the slot is held while the command runs, and a job past HEAVY_MAX_S (3600 s) " +
+		"is stopped (10-30 20:22: a compose build of the AXI stack held " +
 		"the Docker VM at 11 cores and docker and az stopped answering)."
 	untargeted = "cmux send and send-key need --workspace <ref> and --surface <ref> written as separate literal words: " +
 		"without them the text goes to this session's own tab, and zsh does not split $S into several words."
@@ -1026,55 +1044,82 @@ var (
 	dockerValued = map[string]bool{"-c": true, "--context": true, "--config": true, "-H": true, "--host": true, "-l": true,
 		"--log-level": true, "--tlscacert": true, "--tlscert": true, "--tlskey": true}
 	composeValued = map[string]bool{"-f": true, "--file": true, "-p": true, "--project-name": true, "--profile": true,
-		"--env-file": true, "--project-directory": true, "--ansi": true, "--progress": true, "--parallel": true}
-	buildxValued = map[string]bool{"--builder": true}
+		"--env-file": true, "--project-directory": true, "--workdir": true, "--ansi": true, "--progress": true,
+		"--parallel": true}
+	// docker-compose (v1) also takes docker's connection options: -H, --context, --log-level, --tls*
+	composeV1Valued = merge(composeValued, dockerValued)
+	buildxValued    = map[string]bool{"--builder": true}
+	// runValued: compose run options with a value, read before its service (-e A=1 is no service)
+	runValued = map[string]bool{"-e": true, "--env": true, "-l": true, "--label": true, "-p": true, "--publish": true,
+		"-v": true, "--volume": true, "-w": true, "--workdir": true, "-u": true, "--user": true, "--name": true,
+		"--entrypoint": true, "--env-from-file": true, "--cap-add": true, "--cap-drop": true, "--pull": true}
+	// computed stands for a word only the run shows (-f "$F"): it is read as a value, never as a subcommand
+	computed = "\x00computed\x00"
 )
+
+func merge(a, b map[string]bool) map[string]bool {
+	m := maps.Clone(a)
+	maps.Copy(m, b)
+	return m
+}
 
 // builds says whether a docker or docker-compose command (args[0] is the program, after its wrappers) builds images:
 // docker build, docker buildx, image or builder build (and bake), docker compose build, and compose up, create or run
-// with --build before its service. A word only the run shows ends the reading: such a command passes.
+// with --build before its service. --help, -h and --dry-run build nothing, nor does bake --print. A word only the run
+// shows is no subcommand.
 func builds(args []*syntax.Word) bool {
 	args, _, _, _, _ = unwrap(args)
 	if len(args) == 0 {
+		return false
+	}
+	prog := base(args[0])
+	if prog != "docker" && prog != "docker-compose" {
 		return false
 	}
 	var words []string
 	for _, a := range args[1:] {
 		v, ok := literal(a)
 		if !ok {
-			break
+			v = computed
+		}
+		if v == "--help" || v == "-h" || v == "--dry-run" || v == "--print" {
+			return false
 		}
 		words = append(words, v)
 	}
-	if base(args[0]) == "docker-compose" {
-		return composeBuilds(words)
+	if prog == "docker-compose" {
+		return composeBuilds(words, composeV1Valued)
 	}
 	sub, rest := subcommand(words, dockerValued)
 	switch sub {
 	case "build":
 		return true
 	case "compose":
-		return composeBuilds(rest)
+		return composeBuilds(rest, composeValued)
 	case "buildx", "image", "builder":
 		sub, _ = subcommand(rest, buildxValued)
-		return sub == "build" || sub == "bake"
+		return sub == "build" || sub == "b" || sub == "bake"
 	}
 	return false
 }
 
-// composeBuilds reads the words after docker compose (or docker-compose).
-func composeBuilds(words []string) bool {
-	sub, rest := subcommand(words, composeValued)
+// composeBuilds reads the words after docker compose (or docker-compose), whose global options with a value are valued.
+func composeBuilds(words []string, valued map[string]bool) bool {
+	sub, rest := subcommand(words, valued)
 	switch sub {
 	case "build":
 		return true
-	case "up", "create", "run":
-		for _, o := range rest {
-			if o == "--" || !strings.HasPrefix(o, "-") && sub == "run" { // run's service, then the container's command
-				return false
-			}
-			if o == "--build" {
+	case "up", "create":
+		return slices.Contains(rest, "--build")
+	case "run": // its options, then the service and the container's own command
+		for i := 0; i < len(rest); i++ {
+			switch o := rest[i]; {
+			case o == "--build":
 				return true
+			case o == "--" || !strings.HasPrefix(o, "-"):
+				return false
+			case runValued[o]:
+				i++
 			}
 		}
 	}
@@ -1094,6 +1139,7 @@ func subcommand(words []string, valued map[string]bool) (string, []string) {
 			if valued[o] {
 				i++
 			}
+		case o == computed:
 		default:
 			return o, words[i+1:]
 		}

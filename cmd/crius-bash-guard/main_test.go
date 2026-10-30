@@ -765,6 +765,10 @@ func TestADockerBuildOutsideOneHeavySlotIsRefused(t *testing.T) {
 		`docker builder build .`, `sudo docker build .`, `timeout 900 docker compose build`, `/usr/local/bin/docker build .`,
 		`bash -c 'docker build .'`, `for s in a b; do docker build -t $s .; done`,
 		heavy + `docker build .`, `HEAVY_SLOTS=2 ` + heavy + `docker compose up --build`,
+		// review of cc9ab86: a HEAVY_SLOTS=1 no export gives reaches no program; values and forms read wrongly
+		`HEAVY_SLOTS=1; ` + heavy + `docker build .`, `HEAVY_SLOTS=1 && ` + heavy + `docker build .`,
+		`docker compose -f "$F" up -d --build`, `docker compose run -e A=1 --build api`, `docker buildx b .`,
+		`docker-compose -H tcp://h build`, `docker-compose --log-level INFO build`,
 	} {
 		if why := check(cmd); !strings.Contains(why, "HEAVY_SLOTS=1") {
 			t.Errorf("%q: %q", cmd, why)
@@ -778,6 +782,11 @@ func TestADockerBuildOutsideOneHeavySlotIsRefused(t *testing.T) {
 		`docker logs build`, `docker run img build`, `docker exec c npm run build`, `docker ps`, `docker images`,
 		`docker buildx ls`, `docker image ls`, `docker compose down`, `echo docker build .`, `grep -n "docker build" x.md`,
 		heavy + `npm test`,
+		// review of cc9ab86: other programs' builds in a slot, help and dry runs, an option's value
+		heavy + `dotnet build -c Release`, heavy + `go build ./...`, heavy + `cargo build`, heavy + `make build`,
+		heavy + `bun build ./src`, `docker build --help`, `docker image build --help`, `docker compose build --help`,
+		`docker buildx bake --print`, `docker compose up --build --dry-run`, `docker compose --workdir build ps`,
+		`HEAVY_SLOTS=1; export HEAVY_SLOTS; ` + heavy + `docker build .`, `docker compose run api make --build`,
 	} {
 		if why := check(cmd); why != "" {
 			t.Errorf("%q refused: %s", cmd, why)
