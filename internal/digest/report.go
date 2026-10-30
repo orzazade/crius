@@ -6,9 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"os/exec"
 	"regexp"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -45,6 +48,7 @@ type Input struct {
 	Since  time.Time     // the last report's time; zero: none
 	Quota  *quota.Report // built for now
 	Health *recall.Health
+	Digest string // the combined waiter's digest file of routine bus lines; "": not counted
 }
 
 // Build makes the goal report (RULES 3.4, Crius 10-17 02:29): what needs the owner on top, the first marked; then per
@@ -534,6 +538,9 @@ func storeSections(db *sql.DB, in Input, now time.Time, maxItems int) ([]string,
 		return nil, err
 	}
 	bad = " · lines not read (malformed): " + bad // on the health line: no line of the 60 for it
+	if in.Digest != "" {
+		bad += " · routine bus lines (no wake): " + routine(in.Digest, since)
+	}
 
 	q := in.Quota
 	out = append(out, "", "## Quota and health")
@@ -640,4 +647,54 @@ func malformed(db *sql.DB, since time.Time) (string, error) {
 		return "none", nil
 	}
 	return fmt.Sprintf("%d (%s)", total, strings.Join(per, ", ")), nil
+}
+
+// digestStamp is a bus line's own time: "[- ]YYYY-MM-DD[T ]HH:MM", local like the bus.
+var digestStamp = regexp.MustCompile(`^(?:- )?(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})`)
+
+// routine counts the distinct lines of the combined waiter's digest file ("<log>\t<bus line>") stamped at or after
+// since, by project, most first. A file that cannot be read says NOT READ: never "none" for a look that failed.
+func routine(path string, since time.Time) string {
+	b, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return "NOT READ (no digest file; the combined waiter has not run)"
+	}
+	if err != nil {
+		return "NOT READ (" + err.Error() + ")"
+	}
+	seen := map[string]bool{}
+	per := map[string]int{}
+	total := 0
+	for _, l := range strings.Split(string(b), "\n") {
+		log, line, ok := strings.Cut(l, "\t")
+		m := digestStamp.FindStringSubmatch(line)
+		if !ok || m == nil || seen[l] {
+			continue
+		}
+		t, err := time.ParseInLocation("2006-01-02 15:04", m[1]+" "+m[2], time.Local)
+		if err != nil || t.Before(since) {
+			continue
+		}
+		seen[l] = true
+		per[strings.TrimSuffix(log, ".log")]++
+		total++
+	}
+	if total == 0 {
+		return "none"
+	}
+	names := make([]string, 0, len(per))
+	for p := range per {
+		names = append(names, p)
+	}
+	sort.Slice(names, func(i, j int) bool {
+		if per[names[i]] != per[names[j]] {
+			return per[names[i]] > per[names[j]]
+		}
+		return names[i] < names[j]
+	})
+	parts := make([]string, len(names))
+	for i, p := range names {
+		parts[i] = fmt.Sprintf("%s %d", p, per[p])
+	}
+	return fmt.Sprintf("%d (%s)", total, strings.Join(parts, ", "))
 }

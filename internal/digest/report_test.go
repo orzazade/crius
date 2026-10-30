@@ -791,3 +791,41 @@ func TestALabelBeforeNumberedQuestionsKeepsThemApart(t *testing.T) {
 		t.Errorf("lead entry lacks the note:\n%s", rest)
 	}
 }
+
+// Owner 10-30 ("too much noise"): Crius's combined waiter wakes only for DONE, NEED, BLOCKED, S1 and owner lines and
+// writes every other line that would have woken it to a digest file, "<log>\t<bus line>". The report counts the
+// distinct lines since the last report by project; a line written twice (a waiter killed mid-poll) counts once, and a
+// missing digest file is said, never a quiet "none".
+func TestBuildCountsTheRoutineBusLines(t *testing.T) {
+	dir := t.TempDir()
+	d := filepath.Join(dir, "bus-digest.log")
+	D := "—"
+	lines := []string{
+		"cortex.log\t2026-10-16T23:00 START cortex:lead -> crius:lead " + D + " before the last report",
+		"cortex.log\t2026-10-17T01:00 START cortex:lead -> crius:lead " + D + " F-12",
+		"cortex.log\t2026-10-17T01:00 START cortex:lead -> crius:lead " + D + " F-12",
+		"cortex.log\t2026-10-17 02:00 INFO cortex:lead -> crius:lead " + D + " probe started",
+		"quotes.log\t- 2026-10-17T03:00 INFO quotes:lead -> crius:lead " + D + " ok",
+	}
+	if err := os.WriteFile(d, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	in := input(nil, nil)
+	in.Since = time.Date(2026, 10, 17, 0, 0, 0, 0, time.Local)
+	in.Digest = d
+	r, err := Build(open(t), in, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(r.Text, " · routine bus lines (no wake): 3 (cortex 2, quotes 1)\n") {
+		t.Fatal(r.Text)
+	}
+	in.Digest = filepath.Join(dir, "none.log")
+	r, err = Build(open(t), in, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(r.Text, " · routine bus lines (no wake): NOT READ (no digest file; the combined waiter has not run)\n") {
+		t.Fatal(r.Text)
+	}
+}

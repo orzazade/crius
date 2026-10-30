@@ -732,7 +732,7 @@ func digestCmd(home string, now time.Time, write, printPath bool, stdout, stderr
 	}
 	defer db.Close()
 	dir := filepath.Join(home, "state", "digest")
-	in := digest.Input{Leads: leads}
+	in := digest.Input{Leads: leads, Digest: filepath.Join(home, "state", "crius", "bus-digest.log")}
 	in.Prev, in.Since, err = lastSnapshot(dir)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)

@@ -34,6 +34,7 @@ for dir in "$repo"/cmd/*/; do
 done
 install -m 755 "$repo/bin/crius-digest-run" "$bin/crius-digest-run"
 install -m 755 "$repo/bin/crius-weekly-run" "$bin/crius-weekly-run"
+install -m 755 "$repo/bin/crius-wait" "$bin/crius-wait"
 dest="$HOME/Library/LaunchAgents"
 mkdir -p "$dest"
 for job in ingest watchdog wakewatch after-boot digest weekly; do
