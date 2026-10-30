@@ -364,6 +364,9 @@ func TestAScriptNamedThroughAVariableSetInTheCommandIsRead(t *testing.T) {
 		}
 	}
 	write("lead/say.sh", string(body))
+	if err := os.Symlink(filepath.Join(dir, "lead/say.sh"), filepath.Join(dir, "link.txt")); err != nil {
+		t.Fatal(err)
+	}
 	rig, err := os.ReadFile("testdata/rig-say.sh")
 	if err != nil {
 		t.Fatal(err)
@@ -423,6 +426,10 @@ func TestAScriptNamedThroughAVariableSetInTheCommandIsRead(t *testing.T) {
 		`cd /tmp && S=` + dir + ` && bash $S/lead/say.sh INFO x 'az blob list ok'`,
 		s + `bash $S/lead/say.sh INFO x 'HOME=/tmp az blob list ok'`,
 		s + `bash -x -- $S/lead/say.sh INFO x 'az blob list ok'`,
+		// review of 516ec50: a dot after cd, a code variable's name in notes text, a bare glob
+		s + `cd ~/Projects && git status --short . && bash $S/lead/say.sh INFO crius:lead 'az blob list ok'`,
+		s + `echo '- 10-30 lead: fixed PATH in rig' >> /tmp/TRIAGE.md && bash $S/lead/say.sh INFO crius:lead 'az blob list ok'`,
+		s + `cd ~/Projects && ls *; grep -rn foo . ; bash $S/lead/say.sh INFO x 'az blob list ok'`,
 	} {
 		if why := check(bash(cmd, dir)); why != "" {
 			t.Errorf("%q asked: %s", cmd, why)
@@ -488,6 +495,22 @@ func TestAScriptNamedThroughAVariableSetInTheCommandIsRead(t *testing.T) {
 		s + `cp -R /tmp/x/. ` + dir + `/lead/./; bash $S/lead/say.sh INFO x 'az login'`,
 		s + `cp /tmp/evil ~/.crius/bin/; bash $S/lead/say.sh INFO x 'az login'`,
 		s + `bash $S/co.sh 'az login'`, // bash -co with no text after it (it crashed the guard)
+		// review of 516ec50: a code variable set by ${X:=}, a loop or -vNAME with set -a; a write at or above home or into
+		// the command's own folder; a redirect into bus-post's folder, through a link, or to a {fd} named PATH
+		s + `echo 'az boards work-item update --id 1' > /tmp/e.sh; set -a; : ${BASH_ENV:=/tmp/e.sh}; bash $S/lead/say.sh INFO x hi`,
+		s + `echo 'az boards work-item update --id 1' > /tmp/e.sh; bash $S/lead/say.sh INFO x "${BASH_ENV:=/tmp/e.sh}"`,
+		s + `set -a; for PS4 in '$(az boards work-item update --id 1)'; do :; done; bash -x $S/lead/say.sh INFO x hi`,
+		s + `set -a; printf -vPS4 '%s' '$(az boards work-item update --id 1)'; bash -x $S/lead/say.sh INFO x hi`,
+		s + `tar -C ~ -xf /tmp/evil.tar; bash $S/lead/say.sh INFO x 'az login'`,
+		s + `rsync -a /tmp/evil/ $HOME/; bash $S/lead/say.sh INFO x 'az login'`,
+		s + `tar -xf /tmp/evil.tar; bash $S/lead/say.sh INFO x 'az login'`,
+		s + `echo x > ~/.crius/bin/bus-post; bash $S/lead/say.sh INFO x 'az login'`,
+		s + `echo x >> ` + dir + `/lead/say.sh; bash $S/lead/say.sh INFO x 'az login'`,
+		s + `echo x > ` + dir + `/link.txt; bash $S/lead/say.sh INFO x 'az login'`,
+		s + `exec {PATH}>/tmp/x; bash $S/lead/say.sh INFO x 'az login'`,
+		s + `(( PATH=1 )); bash $S/lead/say.sh INFO x 'az login'`,
+		s + `for PATH in /tmp/az-bin; do :; done; bash $S/lead/say.sh INFO x 'az login'`, // PATH is exported already
+		s + `cd ` + dir + `/lead && echo x > say.sh; bash $S/lead/say.sh INFO x 'az login'`,
 	} {
 		if why := check(bash(cmd, dir)); !strings.Contains(why, "owner's click") {
 			t.Errorf("%q: %q", cmd, why)

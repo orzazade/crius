@@ -18,8 +18,8 @@
 // It looks through env prefixes (GH_TOKEN=... az), wrappers (env, env -S, timeout, sudo, xargs, find -exec, watch,
 // op run, ...), bash -c, eval, a shell reading its script from stdin, ; && | chains, $(...), line continuations, quotes
 // and $'...'. A script file a shell runs passes when the guard can read it and every command in it only prints, tests or
-// reads, or is bus-post (S=/x; bash $S/say.sh), and the command around it sets nothing the script would run (PS4,
-// BASH_ENV, an exported function) and touches no path at or above the script or bus-post; any other script is checked
+// reads, or is bus-post (S=/x; bash $S/say.sh), and every command around it is on a list too, setting nothing the
+// script would run (PS4, BASH_ENV, PATH) and writing nothing into its folder or bus-post's; any other script is checked
 // like a command and asks when it or the command names az or Azure DevOps. az takes the last copy of an option and reads a value from @file; the guard does the same. When it
 // cannot tell (a method, resource or fields value from a variable or @file, eval or bash -c text it cannot read, a
 // command the bash parser cannot read that names az or an ADO host) it asks. Unreadable hook input also asks: a guard
@@ -29,7 +29,6 @@
 // update with --title only; a command name from a variable or a function ($AZ, f() { az "$@"; }); a script run by its
 // own name ($S/x.sh, ./x.sh); the code a script runs through source or an interpreter (python) when neither names
 // az or Azure DevOps; a script's arguments used in arithmetic or [[ ]] (bash runs a $(...) found in the value); a
-// script, its folder or bus-post rewritten under a path the command spells another way (a brace list, $(pwd)/..); a
 // script that hides az (a'z', a PS4 prompt) when neither it nor the command names az, as for a command itself (and
 // PS4='$(az ...)' bash -xc : with no script); a script past the 16th one a call reads or 4 levels down;
 // python -m azure.cli; ssh or kubectl exec to another machine; code in a script file (inline -c/-e
@@ -121,9 +120,7 @@ type setVar struct {
 // runs is a parsed command and the words in it that name a script a shell runs.
 type runs struct {
 	file    *syntax.File
-	text    string                          // the text file was parsed from
-	scripts map[*syntax.Word]bool           // the words that name a script a shell runs
-	args    map[*syntax.Word][]*syntax.Word // each such word's arguments: the words after it in its call
+	scripts map[*syntax.Word]bool // the words that name a script a shell runs
 }
 
 func check(in input) string {
@@ -157,7 +154,7 @@ func checkBash(command string, c ctx) string {
 		}
 		return ""
 	}
-	c = c.scan(f, command)
+	c = c.scan(f)
 	piped := map[*syntax.CallExpr]bool{}
 	why := ""
 	syntax.Walk(f, func(n syntax.Node) bool {
@@ -439,11 +436,11 @@ func shellOpts(args []word) (i int, sawC, sawS bool) {
 // checkScript judges the script file a shell runs. Its name is read as written or through variables the command set to a
 // literal at its top level before it (Crius 10-30 20:27: S=...; bash $S/lead/say.sh INFO "... az blob list ..." asked
 // the owner, as the name came from $S and the bus text named az). The file is read only to show that it cannot post:
-// a script whose every command is on a list (safeScript) passes. Any other script is checked like a command; it, one
-// whose name or variables the command also uses elsewhere (it may write the file first), one the guard cannot find, and
-// one the command names relative to a folder it left ask when the script or the command names az or Azure DevOps. A
-// script is not passed on its list either when the shell takes options that run other code (plain: no --rcfile or -i;
-// zsh and ksh read a start-up file always) or the command sets up code for it (noCodeVars; review of a4106c1).
+// a script whose every command is on a list (safeScript) passes when the command around it is held to a list too
+// (safeAround). Any other script is checked like a command; it, one the guard cannot find, and one the command names
+// relative to a folder it left ask when the script or the command names az or Azure DevOps. A script is not passed on
+// its list either when the shell takes options that run other code (plain: no --rcfile or -i; zsh and ksh read a
+// start-up file always).
 func checkScript(a word, c ctx, plain bool) string {
 	name, ok := a.text, a.ok
 	if !ok && a.node != nil {
@@ -454,9 +451,6 @@ func checkScript(a word, c ctx, plain bool) string {
 	}
 	if !filepath.IsAbs(name) {
 		name = filepath.Join(c.cwd, name)
-	}
-	if a.node == nil || c.touched(a.node, filepath.Clean(name)) {
-		return unsure(c, "a shell script this command also names elsewhere")
 	}
 	fi, err := os.Stat(name)
 	if err != nil || !fi.Mode().IsRegular() || fi.Size() > 1<<20 {
@@ -471,7 +465,7 @@ func checkScript(a word, c ctx, plain bool) string {
 	if err != nil {
 		return unsure(c, "a shell script")
 	}
-	if plain && c.noCodeVars() && safeScript(string(body)) {
+	if plain && c.safeAround(name) && safeScript(string(body)) {
 		return ""
 	}
 	// any other script gets the command check ("az" in quotes, review of ace0c14) and asks when unsure
@@ -484,38 +478,46 @@ func checkScript(a word, c ctx, plain bool) string {
 	return unsure(ctx{whole: string(body) + "\n" + c.whole}, "a shell script")
 }
 
-// noCodeVars says whether the command around a script run leaves the script nothing that runs code: a script on the list
-// runs only listed commands, so what the command passes in through the shell's state is all that could post (PS4 with
-// set -x, BASH_ENV, an exported function named echo). It holds when no word outside the arguments of a script run names
-// a codeNameRe variable once quotes are taken out (read PS4, printf -v PS4, declare -x "P"S4=; review of a4106c1: a
-// list of ways to set NAME= was never complete), no command sets a variable whose name it computes (read "$v"), and
-// none exports a function, evals or sources. az text elsewhere in the command is checked as that command's own.
-func (c ctx) noCodeVars() bool {
-	inner := map[string]bool{}
+// safeAround says whether the command around a script run leaves the script nothing that runs code. A script on the
+// list runs only listed commands, so only what reaches it from the shell that starts it could post: an exported or
+// already-exported variable that runs code (PS4 with set -x, BASH_ENV, PATH, an exported function) or a file it or
+// bus-post is read from. Proving that by banned spellings failed five reviews (read PS4, printf -vPS4, for PS4 in,
+// ${BASH_ENV:=x} with set -a, tar -C ~), so the command around is held to a list as the script is: every command in it
+// is one safeCall passes, cd, ls, or a shell running a script (read on its own); eval, source, read and printf -v are
+// not on it, and declare and export take no option (export -f). With the commands listed, a variable is set only by
+// the bash forms read here, each checked against codeNameRe: an assignment, a loop name, ${X:=}, a {fd}> redirect, and
+// no arithmetic or [[ ]] (bash runs a $(...) in a value they read). A file is written only by a redirect, which must
+// name a path the guard reads outside the script's folder and bus-post's, and no link.
+func (c ctx) safeAround(script string) bool {
+	home, _ := os.UserHomeDir()
+	keep := []string{realDir(filepath.Dir(script)), filepath.Dir(realDir(script)), realDir(home + "/.crius/bin")}
 	for _, r := range c.files {
-		inner[r.text] = true
-	}
-	for _, r := range c.files {
-		skip := map[*syntax.Word]bool{}
-		for _, ws := range r.args {
-			for _, w := range ws {
-				skip[w] = true
+		funcs := map[string]bool{}
+		syntax.Walk(r.file, func(n syntax.Node) bool {
+			if fd, ok := n.(*syntax.FuncDecl); ok {
+				funcs[fd.Name.Value] = true
 			}
-		}
+			return true
+		})
 		safe := true
 		syntax.Walk(r.file, func(n syntax.Node) bool {
 			switch n := n.(type) {
 			case *syntax.Assign:
 				safe = safe && (n.Name == nil || !codeNameRe.MatchString(n.Name.Value))
-			case *syntax.Word:
-				if l := literal(n); skip[n] || l.ok && inner[l.text] {
-					return false // a script's own arguments, or bash -c text read as a file of its own
-				}
-				safe = safe && !codeNameRe.MatchString(litText(n))
+			case *syntax.WordIter:
+				safe = safe && !codeNameRe.MatchString(n.Name.Value)
+			case *syntax.ParamExp:
+				safe = safe && (n.Exp == nil || n.Exp.Op != syntax.AssignUnset && n.Exp.Op != syntax.AssignUnsetOrNull)
+			case *syntax.ArithmExp, *syntax.ArithmCmd, *syntax.LetClause, *syntax.TestClause, *syntax.CoprocClause:
+				safe = false
 			case *syntax.DeclClause:
-				safe = safe && setsLiteral(n.Args)
+				for _, a := range n.Args {
+					safe = safe && a.Name != nil // no option (export -f, -n)
+				}
+			case *syntax.Redirect:
+				safe = safe && (n.N == nil || !codeNameRe.MatchString(strings.Trim(n.N.Value, "{}"))) && c.safeWrite(n, keep)
 			case *syntax.CallExpr:
-				safe = safe && callSetsLiteral(n.Args)
+				safe = safe && aroundCall(n.Args, r, funcs)
 			}
 			return safe
 		})
@@ -526,73 +528,87 @@ func (c ctx) noCodeVars() bool {
 	return true
 }
 
-// codeNameRe finds a variable name among codeVarRe's, or ZDOTDIR, as a word of its own.
-var codeNameRe = regexp.MustCompile(`(^|[^A-Za-z0-9_])(PS[0-4]|BASH_ENV|ENV|ZDOTDIR|PATH|HOME|IFS|CDPATH|GLOBIGNORE|` +
-	`SHELLOPTS|BASHOPTS|PROMPT_COMMAND|(GIT|BASH|LD|DYLD)_[A-Za-z0-9_]*)([^A-Za-z0-9_]|$)`)
+// codeNameRe is a variable that runs code or finds commands for a shell or git started later (codeVarRe's, and ZDOTDIR).
+var codeNameRe = regexp.MustCompile(`^(PS[0-4]|BASH_ENV|ENV|ZDOTDIR|PATH|HOME|IFS|CDPATH|GLOBIGNORE|SHELLOPTS|BASHOPTS|` +
+	`PROMPT_COMMAND|(GIT|BASH|LD|DYLD)_[A-Za-z0-9_]*)$`)
 
-// litText gives a word's literal text with quotes and escapes taken out ("P"S4, P\S4); an expansion splits it.
-func litText(w *syntax.Word) string {
-	var b strings.Builder
-	var parts func(ps []syntax.WordPart)
-	parts = func(ps []syntax.WordPart) {
-		for _, p := range ps {
-			switch p := p.(type) {
-			case *syntax.Lit:
-				b.WriteString(unescape(p.Value, ""))
-			case *syntax.SglQuoted:
-				b.WriteString(p.Value)
-			case *syntax.DblQuoted:
-				parts(p.Parts)
-			default:
-				b.WriteByte(' ')
-			}
-		}
-	}
-	parts(w.Parts)
-	return b.String()
-}
-
-// setsLiteral says whether declare, typeset, local, export or readonly sets only names written out, and no function.
-func setsLiteral(args []*syntax.Assign) bool {
-	for _, a := range args {
-		if a.Naked && a.Value != nil && a.Name == nil {
-			w := literal(a.Value)
-			if !w.ok || strings.HasPrefix(w.text, "-") && strings.Contains(w.text, "f") {
-				return false
-			}
-		}
-	}
-	return true
-}
-
-// callSetsLiteral says whether a command that sets variables by name (read, printf -v, mapfile, getopts) names them as
-// literal words, and the command is no eval or source.
-func callSetsLiteral(args []*syntax.Word) bool {
+// aroundCall says whether one command around a script run may pass: a shell running a script (that script is judged
+// on its own), cd, ls, printf with no option (-v sets a variable), or one safeCall passes.
+func aroundCall(args []*syntax.Word, r runs, funcs map[string]bool) bool {
 	k := 0
 	for k < len(args)-1 && (literal(args[k]).text == "builtin" || literal(args[k]).text == "command") {
 		k++
 	}
-	if len(args) == 0 {
-		return true
+	if k >= len(args) {
+		return true // only assignments
 	}
-	switch name := literal(args[k]).text; name {
-	case "eval", "source", ".":
+	words := make([]word, len(args)-k)
+	for i, w := range args[k:] {
+		words[i] = literal(w)
+	}
+	name := path.Base(words[0].text)
+	switch {
+	case !words[0].ok:
 		return false
-	case "read", "mapfile", "readarray", "getopts", "unset":
+	case shells[name]:
 		for _, w := range args[k+1:] {
-			if !literal(w).ok {
-				return false
+			if r.scripts[w] {
+				return true
 			}
 		}
-	case "printf":
-		for i, w := range args[k+1:] {
-			a := literal(w)
-			if !a.ok && i == 0 || a.ok && a.text == "-v" && k+i+2 < len(args) && !literal(args[k+i+2]).ok {
-				return false
-			}
+	case name == "cd" || name == "pushd" || name == "popd" || name == "ls":
+		return !strings.Contains(words[0].text, "/")
+	case name == "printf":
+		if len(words) > 1 && (!words[1].ok || strings.HasPrefix(words[1].text, "-")) {
+			return false
+		}
+	}
+	return safeCall(words, funcs)
+}
+
+// safeWrite says whether a redirect writes nowhere a script run or bus-post is read from: input and copies of a numbered
+// descriptor pass; a file must be a path the guard reads, absolute or from the command's own folder, no link, and not
+// in the script's folder or bus-post's.
+func (c ctx) safeWrite(rd *syntax.Redirect, keep []string) bool {
+	switch rd.Op {
+	case syntax.RdrOut, syntax.AppOut, syntax.RdrAll, syntax.AppAll, syntax.ClbOut, syntax.RdrInOut, syntax.DplOut:
+	default:
+		return true
+	}
+	p, ok := c.resolve(rd.Word)
+	if !ok {
+		return false
+	}
+	if rd.Op == syntax.DplOut && (p == "-" || p != "" && strings.Trim(p, "0123456789") == "") {
+		return true
+	}
+	if !filepath.IsAbs(p) {
+		if c.moved || c.cwd == "" {
+			return false
+		}
+		p = filepath.Join(c.cwd, p)
+	}
+	if devFiles[p] {
+		return true
+	}
+	if fi, err := os.Lstat(p); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		return false
+	}
+	dir := realDir(filepath.Dir(p))
+	for _, k := range keep {
+		if dir == k || strings.HasPrefix(dir, k+"/") {
+			return false
 		}
 	}
 	return true
+}
+
+// realDir gives a folder with its links followed, or cleaned when it does not exist.
+func realDir(d string) string {
+	if r, err := filepath.EvalSymlinks(d); err == nil {
+		return r
+	}
+	return filepath.Clean(d)
 }
 
 // safeCmds are the commands a script may run and still pass: they print, test or read, and run no command their
@@ -780,9 +796,9 @@ func safeGit(args []word) bool {
 // scan reads what a command sets up for the scripts it runs: the variables it sets once, to a literal value, as a
 // statement of its own at its top level (a shell a script starts is a new process, so they are this command's own), the
 // words that name a script a shell runs, and whether it changes folder.
-func (c ctx) scan(f *syntax.File, text string) ctx {
+func (c ctx) scan(f *syntax.File) ctx {
 	c.vars = map[string]setVar{}
-	r := runs{file: f, text: text, scripts: map[*syntax.Word]bool{}, args: map[*syntax.Word][]*syntax.Word{}}
+	r := runs{file: f, scripts: map[*syntax.Word]bool{}}
 	count := map[string]int{}
 	all := false // eval or source may set any variable
 	syntax.Walk(f, func(n syntax.Node) bool {
@@ -822,7 +838,6 @@ func (c ctx) scan(f *syntax.File, text string) ctx {
 			case shells[name]:
 				if i, sawC, sawS := shellOpts(args[k:]); !sawC && !sawS && k+i < len(args) {
 					r.scripts[n.Args[k+i]] = true
-					r.args[n.Args[k+i]] = n.Args[k+i+1:]
 				}
 			}
 		}
@@ -889,84 +904,6 @@ func assignOnly(st *syntax.Stmt) bool {
 		return true
 	}
 	return false
-}
-
-// touched says whether the command, or a command around it, names the script outside the words that run it: by its file
-// name anywhere in a word (saf""e.sh with quotes taken out; cat > "$F" <<EOF ... EOF), by a variable its name is made of
-// (git -C $S pull; bash $S/x.sh), or by a path that, once cleaned, is the script, bus-post or a folder above either, or
-// a glob that matches one (ln -sfn evil $D/lead, cp x/* $D/lead/., tar -C $D/., $D/lea[d]; review of a4106c1). A
-// relative path counts from the command's folder; after a cd, by its last part. Text inside quotes and here-documents
-// counts.
-func (c ctx) touched(run *syntax.Word, name string) bool {
-	base := path.Base(name)
-	home, _ := os.UserHomeDir()
-	near := map[string]bool{}
-	for _, t := range []string{name, home + "/.crius/bin/bus-post"} {
-		for p := path.Clean(t); p != "/" && p != "." && p != home; p = path.Dir(p) {
-			near[p] = true
-		}
-	}
-	vars := map[string]bool{}
-	syntax.Walk(run, func(n syntax.Node) bool {
-		if pe, ok := n.(*syntax.ParamExp); ok && pe.Param != nil {
-			vars[pe.Param.Value] = true
-		}
-		return true
-	})
-	// isNear says whether a cleaned path is one of near or a glob matching one; byBase compares last parts only
-	isNear := func(p string, byBase bool) bool {
-		for n := range near {
-			if byBase {
-				n, p = path.Base(n), path.Base(p)
-			}
-			if m, _ := path.Match(p, n); m || p == n {
-				return true
-			}
-		}
-		return false
-	}
-	names := func(n *syntax.Word, printed string) bool {
-		if strings.Contains(printed, base) {
-			return true
-		}
-		p, ok := c.resolve(n)
-		if !ok || p == "" {
-			// a word the guard cannot read names a folder by its last part ($(pwd)/lead)
-			segs := strings.Split(strings.TrimRight(printed, "/"), "/")
-			return isNear(segs[len(segs)-1], true)
-		}
-		if path.IsAbs(p) {
-			return isNear(path.Clean(p), false)
-		}
-		if c.moved || c.cwd == "" {
-			return p == "." || p == ".." || strings.HasSuffix(p, "/.") || isNear(path.Clean(p), true)
-		}
-		return isNear(path.Join(c.cwd, p), false)
-	}
-	hit := false
-	for _, r := range c.files {
-		syntax.Walk(r.file, func(n syntax.Node) bool {
-			switch n := n.(type) {
-			case *syntax.Assign:
-				if n.Name != nil && vars[n.Name.Value] {
-					if _, set := c.vars[n.Name.Value]; set {
-						return false // the one literal assignment the name was read through
-					}
-				}
-			case *syntax.Word:
-				if r.scripts[n] {
-					return false
-				}
-				var b bytes.Buffer
-				syntax.NewPrinter().Print(&b, n)
-				hit = hit || names(n, b.String())
-			case *syntax.ParamExp:
-				hit = hit || n.Param != nil && vars[n.Param.Value]
-			}
-			return !hit
-		})
-	}
-	return hit
 }
 
 // resolve gives a word's value when its only expansions are plain $X or ${X} of variables the command set before it.
