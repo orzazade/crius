@@ -125,7 +125,7 @@ async function answer($: EngineInterface, id: string, text: string, later = fals
   }
   const t = text.trim()
   if (t === '') {
-    return 'Type an answer first.'
+    return say('Type an answer first.')
   }
   if ((await read($, busy)) !== null) {
     return say('An answer is being sent; try again in a moment.')
@@ -189,7 +189,7 @@ function listText(v: View | null, err: string | null): string {
 // surface Crius's role file names (crius-hook keeps ~/.crius/roles/crius.lead.json). A role file it cannot read is said
 // in the status line, never a quiet "off".
 let active = false
-// the row ids in the order /waiting printed them last: what "/waiting N" means
+// the row ids in the order /waiting printed them last (null: none printed)
 let printed: string[] | null = null
 
 async function turnOn($: EngineInterface): Promise<void> {
@@ -242,12 +242,18 @@ export const register: Register = on => {
       return { text: 'Answer as "/waiting <number> <text>", for example "/waiting 2 yes".' }
     }
     const [, n = '', text = ''] = m
-    // a number is the place in the list /waiting printed last (the list refreshes every 5 s), sent as that row's id: a
-    // row that closed or came in since cannot move another under the number
-    if (/^\d+$/.test(n) && printed === null) {
-      return { text: 'Type /waiting first: the numbers are those of the list it prints.' }
+    // a number is the place in the list drawn now (the pane numbers its cards from it), sent as that row's id. The
+    // list refreshes every 5 s: when the list /waiting printed is no longer the one drawn, the number may mean another
+    // row, so nothing is recorded and the list is printed again
+    const v = await read($, view)
+    const live = v?.open.map(r => r.id) ?? []
+    if (/^\d+$/.test(n) && printed !== null && printed.join(' ') !== live.join(' ')) {
+      printed = live
+      return {
+        text: `The list changed since it was shown; nothing was recorded. Answer again by the number here:\n${listText(v, await read($, error))}`,
+      }
     }
-    const id = /^\d+$/.test(n) ? printed?.[Number(n) - 1] : n
+    const id = /^\d+$/.test(n) ? live[Number(n) - 1] : n
     if (id === undefined) {
       return { text: `No item ${n} in the list; /waiting shows it.` }
     }

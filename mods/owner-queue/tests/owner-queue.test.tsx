@@ -231,21 +231,30 @@ test('in any tab but Crius\'s the mod stays off: no pane, status, band or /waiti
   await band.unmount()
 })
 
-// review of c898a43: the list refreshes every 5 s, so a number typed after a row closed meant the next row
-test('"/waiting N" answers row N of the list /waiting printed, not of the list as it is now', async ($, on) => {
+// reviews of c898a43 and e2e362d: the list refreshes every 5 s and the pane numbers its cards from it, so a number is
+// taken only while the list /waiting printed is still the one the pane shows; else the list is printed again
+test('"/waiting N" answers row N only while the printed list is still the one drawn', async ($, on) => {
   let now: object = TWO
   const seen = engine(on, () => now)
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
-  const before = await $.command.run({ command: 'waiting', args: '1 yes' })
-  expect(before.text).toBe('Type /waiting first: the numbers are those of the list it prints.')
   await $.command.run({ command: 'waiting', args: '' }) // prints 1 = q3, 2 = q2
-  now = { ...TWO, open: [TWO.open[1], row('q4', 'Pick a name', '1m')] } // q3 closed: q2 is first now
+  now = { ...TWO, open: [TWO.open[1], row('q4', 'Pick a name', '1m')] } // q3 closed: the pane shows 1 = q2, 2 = q4
   for (let i = 0; i < 5; i++) {
     await seen.tick()
   }
-  const sent = await $.command.run({ command: 'waiting', args: '2 yes' })
-  expect(sent.text).toBe('Recorded; sending to Crius: [queue q2] yes')
-  expect(seen.calls).toContainEqual(['answer', 'q2', '--by', 'owner', 'yes'])
+  const changed = await $.command.run({ command: 'waiting', args: '2 yes' })
+  expect(changed.text).toMatch(/^The list changed since it was shown; nothing was recorded\. Answer again by the number here:\nWaiting on you \(2\), oldest first\n1 Start a build lead/)
+  expect(seen.calls.filter(c => c[0] === 'answer')).toEqual([])
+  const sent = await $.command.run({ command: 'waiting', args: '2 yes' }) // 2 = q4 in the list printed and drawn
+  expect(sent.text).toBe('Recorded; sending to Crius: [queue q4] yes')
+})
+
+test('"/waiting N" before any list answers row N of the list the pane draws', async ($, on) => {
+  const seen = engine(on, () => TWO)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  const sent = await $.command.run({ command: 'waiting', args: '2 ok' })
+  expect(sent.text).toBe('Recorded; sending to Crius: [queue q2] ok')
+  expect(seen.calls).toContainEqual(['answer', 'q2', '--by', 'owner', 'ok'])
 })
 
 // review of c898a43: crius-hook writes Crius's tab into the role file in its own start hook; a mod that looked first
@@ -270,4 +279,15 @@ test('a refused answer typed in /waiting is said once, in the reply', async ($, 
   const r = await $.command.run({ command: 'waiting', args: 'q9 yes' })
   expect(r.text).toBe('Not sent: crius-queue: q9 is already answered')
   expect(seen.toasts).toEqual([])
+})
+
+test('an empty answer sent from the pane is said', async ($, on) => {
+  const seen = engine(on, () => TWO)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.input({ key: 'q3:own', text: '   ' })
+  await new Promise(r => setTimeout(r, 50))
+  expect(seen.toasts).toEqual(['Type an answer first.'])
+  expect(seen.calls.filter(c => c[0] === 'answer')).toEqual([])
+  await ui.unmount()
 })

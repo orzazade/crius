@@ -15,7 +15,7 @@ An off mod looks again every 5 s, since crius-hook may write the role file after
 | Pane beside the chat (`Waiting on you`) | head with count, cards oldest first, "Answered today" at the bottom |
 | Status line | `⚑ N waiting on you`; `✓ nothing waits on you` at 0; `⚑ owner queue FAILED: …` when the read fails |
 | Band above the prompt | `⚑ N waiting on you · oldest: <title> (<age>) · /waiting`; nothing at 0 |
-| `/waiting` | the list as text; `/waiting 2 <any text>` answers item 2 of the list `/waiting` printed last (sent by its id; before any list it asks for `/waiting` first). A refused answer is said in the reply, not again as a toast |
+| `/waiting` | the list as text; `/waiting 2 <any text>` answers item 2 of the list drawn now (sent by its id). When the list `/waiting` printed is no longer the one drawn, nothing is recorded and the list is printed again. A refused answer is said in the reply, not again as a toast |
 
 The pane opens by itself where the terminal docks it (fullscreen, from about 110-144 columns). Below that it waits,
 and the band and `/waiting` carry everything.

@@ -105,3 +105,53 @@ func nullable(s string) any {
 	}
 	return s
 }
+
+// Review of ec1ff36: a row with no date (an undated bus line) fell out of every review, a row answered with no
+// answer stamp was shown as still open, and an OWNER line that relays a queue answer was counted as decided outside it.
+func TestReviewShowsUndatedRowsAndTrustsTheState(t *testing.T) {
+	db := open(t)
+	exec(t, db, "insert into coverage (source, resource, offset, last_ok) values ('owner-queue', '/q', 1, '2026-10-30T17:00:00Z')")
+	exec(t, db, "insert into owner_decision (id, asked, asked_by, title, state, answer, answered_at) values"+
+		" ('q1', ?, 'cortex', 'Approve F-12', 'answered', 'yes', null),"+
+		" ('q2', null, 'falcon', 'Restart Chrome', 'open', null, null),"+
+		" ('q3', null, 'axi', 'Pick a seller', 'answered', 'b', null)", utc("2026-10-29T10:00"))
+	exec(t, db, "insert into event (ts, project, kind, actor, text, source_key) values (?, 'crius', 'owner', 'lead', '[queue q1] yes', 'k1')",
+		utc("2026-10-29T10:05"))
+	got, err := Review(db, now.AddDate(0, 0, -7), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"Asked 1 · answered 1 · still open 0\n",
+		"Decided outside the queue (OWNER lines on the bus): 0\n",
+		"  10-29 10:00 cortex · Approve F-12 → yes (no answer time)\n",
+		"Undated (the bus line had no date; not in the counts above): 2\n  falcon · Restart Chrome (open)\n  axi · Pick a seller → b\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "Still open") {
+		t.Errorf("an answered row is shown as open:\n%s", got)
+	}
+}
+
+// Review of ec1ff36: a row asked before the week and answered in it was in no review, so the long waits fell out.
+func TestReviewShowsAWaitThatCrossedTheWeeklyRun(t *testing.T) {
+	db := open(t)
+	exec(t, db, "insert into coverage (source, resource, offset, last_ok) values ('owner-queue', '/q', 1, '2026-10-30T17:00:00Z')")
+	exec(t, db, "insert into owner_decision (id, asked, asked_by, title, state, answer, answered_at) values"+
+		" ('q1', ?, 'cortex', 'Approve F-12', 'answered', 'yes', ?)", utc("2026-10-23T12:00"), utc("2026-10-24T10:00"))
+	got, err := Review(db, now.AddDate(0, 0, -7), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"Asked 0 · answered 1 (1 asked before the week) · still open 0 · median wait 22h00m · longest 22h00m: Approve F-12 (cortex)\n",
+		"  10-23 12:00 cortex · Approve F-12 → yes (22h00m)\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in\n%s", want, got)
+		}
+	}
+}

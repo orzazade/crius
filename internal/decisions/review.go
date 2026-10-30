@@ -21,8 +21,8 @@ const (
 )
 
 type row struct {
-	id, by, title, answer string
-	asked, answered       time.Time
+	id, by, title, answer, state string
+	asked, answered              time.Time // answered: zero when the answer had no stamp
 }
 
 // Review gives the review of the questions asked in [since, now) as text.
@@ -37,47 +37,54 @@ func Review(db *sql.DB, since, now time.Time) (string, error) {
 		return strings.Join(append(out, "NOT READ: the store never read the owner queue (~/.crius/state/owner-queue.jsonl;"+
 			" run crius-queue init, then the ingest copies it)"), "\n") + "\n", nil
 	}
-	rows, err := db.Query("select id, asked, coalesce(asked_by, ''), coalesce(title, ''), coalesce(answer, ''),"+
-		" coalesce(answered_at, '') from owner_decision where asked >= ? and asked < ? order by asked, id",
-		since.UTC().Format(time.RFC3339), now.UTC().Format(time.RFC3339))
+	// the row's state says open or answered; the stamps only time it. A row with no date (an undated bus line) has no
+	// week and is listed apart, never dropped. A row asked before the week and answered in it is in this review: the
+	// long waits are the ones that cross a weekly run
+	from, to := since.UTC().Format(time.RFC3339), now.UTC().Format(time.RFC3339)
+	rs, err := query(db, "(asked >= ? and asked < ?) or (answered_at >= ? and answered_at < ?) order by asked, id",
+		from, to, from, to)
 	if err != nil {
 		return "", err
 	}
-	defer rows.Close()
-	var all, answered, open []row
-	for rows.Next() {
-		var r row
-		var asked, at string
-		if err := rows.Scan(&r.id, &asked, &r.by, &r.title, &r.answer, &at); err != nil {
-			return "", err
+	var all []row // asked in the week
+	before := 0
+	for _, r := range rs {
+		if r.asked.Before(since) {
+			before++
+		} else {
+			all = append(all, r)
 		}
-		if r.asked, err = time.Parse(time.RFC3339, asked); err != nil {
-			return "", fmt.Errorf("%s: asked %q: %w", r.id, asked, err)
-		}
-		all = append(all, r)
-		if at == "" {
+	}
+	undated, err := query(db, "coalesce(asked, '') = '' order by id")
+	if err != nil {
+		return "", err
+	}
+	var answered, open, timed []row
+	for _, r := range rs {
+		if r.state == "open" {
 			open = append(open, r)
 			continue
 		}
-		if r.answered, err = time.Parse(time.RFC3339, at); err != nil {
-			return "", fmt.Errorf("%s: answered %q: %w", r.id, at, err)
-		}
 		answered = append(answered, r)
+		if !r.answered.IsZero() {
+			timed = append(timed, r)
+		}
 	}
-	if err := rows.Err(); err != nil {
-		return "", err
-	}
-	var outside int
-	if err := db.QueryRow("select count(*) from event where kind = 'owner' and ts >= ? and ts < ?",
+	var outside int // OWNER lines but those that relay a queue answer ("[queue qN] …"), which the queue counts
+	if err := db.QueryRow("select count(*) from event where kind = 'owner' and ts >= ? and ts < ? and text not like '[queue q%'",
 		since.UTC().Format(time.RFC3339), now.UTC().Format(time.RFC3339)).Scan(&outside); err != nil {
 		return "", err
 	}
 
-	head := fmt.Sprintf("Asked %d · answered %d · still open %d", len(all), len(answered), len(open))
-	if len(answered) > 0 {
-		waits := make([]time.Duration, len(answered))
-		longest := answered[0]
-		for i, r := range answered {
+	head := fmt.Sprintf("Asked %d · answered %d", len(all), len(answered))
+	if before > 0 {
+		head += fmt.Sprintf(" (%d asked before the week)", before)
+	}
+	head += fmt.Sprintf(" · still open %d", len(open))
+	if len(timed) > 0 {
+		waits := make([]time.Duration, len(timed))
+		longest := timed[0]
+		for i, r := range timed {
 			waits[i] = r.answered.Sub(r.asked)
 			if waits[i] > longest.answered.Sub(longest.asked) {
 				longest = r
@@ -102,8 +109,12 @@ func Review(db *sql.DB, since, now time.Time) (string, error) {
 	}
 	out = append(out, "Answers, oldest first")
 	for _, r := range answered {
+		wait := "no answer time"
+		if !r.answered.IsZero() {
+			wait = dur(r.answered.Sub(r.asked))
+		}
 		out = append(out, fmt.Sprintf("  %s %s · %s → %s (%s)", r.asked.Local().Format("01-02 15:04"), r.by, r.title,
-			r.answer, dur(r.answered.Sub(r.asked))))
+			r.answer, wait))
 	}
 	if len(answered) == 0 {
 		out = append(out, "  none")
@@ -115,7 +126,47 @@ func Review(db *sql.DB, since, now time.Time) (string, error) {
 				dur(now.Sub(r.asked))))
 		}
 	}
+	if len(undated) > 0 {
+		out = append(out, fmt.Sprintf("Undated (the bus line had no date; not in the counts above): %d", len(undated)))
+		for _, r := range undated {
+			if r.state == "open" {
+				out = append(out, fmt.Sprintf("  %s · %s (open)", r.by, r.title))
+			} else {
+				out = append(out, fmt.Sprintf("  %s · %s → %s", r.by, r.title, r.answer))
+			}
+		}
+	}
 	return strings.Join(out, "\n") + "\n", nil
+}
+
+// query gives the owner_decision rows matching where (an SQL condition with its order).
+func query(db *sql.DB, where string, args ...any) ([]row, error) {
+	rows, err := db.Query("select id, coalesce(asked, ''), coalesce(asked_by, ''), coalesce(title, ''),"+
+		" coalesce(answer, ''), state, coalesce(answered_at, '') from owner_decision where "+where, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []row
+	for rows.Next() {
+		var r row
+		var asked, at string
+		if err := rows.Scan(&r.id, &asked, &r.by, &r.title, &r.answer, &r.state, &at); err != nil {
+			return nil, err
+		}
+		if asked != "" {
+			if r.asked, err = time.Parse(time.RFC3339, asked); err != nil {
+				return nil, fmt.Errorf("%s: asked %q: %w", r.id, asked, err)
+			}
+		}
+		if at != "" {
+			if r.answered, err = time.Parse(time.RFC3339, at); err != nil {
+				return nil, fmt.Errorf("%s: answered %q: %w", r.id, at, err)
+			}
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 func askers(rs []row) string {
