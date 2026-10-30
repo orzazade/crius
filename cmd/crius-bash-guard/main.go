@@ -6,8 +6,8 @@
 // send or send-key without --workspace and --surface as literal words (it types into the caller's own tab; 10-23
 // twice), and a docker image build outside a lone heavy slot (HEAVY_SLOTS=1 bun .../heavy.ts run --: 10-30 a compose
 // build of the AXI stack held the Docker VM at 11 cores), and a cmux send with no cmux send-key Enter to the same
-// surface after it in the same command (10-30: axi's text sat unsent 18:16 to 21:45). Exit 2 refuses, with the reason on
-// stderr; anything else passes.
+// workspace and surface after it in the same command, unless the text ends in \n or \r (10-30: axi's text sat unsent
+// 18:16 to 21:45). Exit 2 refuses, with the reason on stderr; anything else passes.
 //
 // It catches habits, not intent: fifteen review rounds showed a list of shell forms is never complete, and the full
 // check is the digest's count of lines it cannot read. Known gaps: function bodies run later, source and ., a script
@@ -25,7 +25,7 @@
 // heavy.ts job runs (heavy.ts run -- sh -c '...'), a heavy.ts path from a variable, an export in a subshell or pipe
 // part or undone by unset, sudo's clean environment, and docker build -h (help, refused). The Enter rule reads the
 // command in order, not by branch (a send-key in an if that does not run counts), and a surface written two ways ("$S"
-// and $S) is two surfaces.
+// and $S) is two surfaces; a loop, ctrl+m and a key from a variable are not read as Enter.
 package main
 
 import (
@@ -1084,16 +1084,23 @@ func cmuxSend(args []*syntax.Word) (string, sendArgs) {
 	return "", sendArgs{}
 }
 
-// sendArgs is what follows a send or send-key: the target flags given a value, the --surface value as written, the
-// first word that is no option (send-key's key), and whether it asks for help (which types nothing).
+// sendArgs is what follows a send or send-key: the target flags given a value, the --workspace and --surface values
+// (unquoted when literal, else as written), the first word that is no option (send's text, send-key's key), and
+// whether it asks for help (which types nothing).
 type sendArgs struct {
-	has           map[string]bool
-	surface, word string
-	help          bool
+	has                      map[string]bool
+	workspace, surface, word string
+	help                     bool
 }
 
 func readSend(rest []*syntax.Word) sendArgs {
 	a := sendArgs{has: map[string]bool{}}
+	value := func(w *syntax.Word) string {
+		if v, ok := literal(w); ok {
+			return v
+		}
+		return print(w)
+	}
 	for j := 0; j < len(rest); j++ {
 		f, _ := literal(rest[j])
 		if f == "--" {
@@ -1107,8 +1114,11 @@ func readSend(rest []*syntax.Word) sendArgs {
 		case (f == "--workspace" || f == "--surface" || f == "--window") && j+1 < len(rest):
 			if v, ok := literal(rest[j+1]); !ok || !strings.HasPrefix(v, "-") {
 				a.has[f] = true
-				if f == "--surface" {
-					a.surface = print(rest[j+1])
+				switch f {
+				case "--workspace":
+					a.workspace = value(rest[j+1])
+				case "--surface":
+					a.surface = value(rest[j+1])
 				}
 				j++
 			}
@@ -1119,15 +1129,21 @@ func readSend(rest []*syntax.Word) sendArgs {
 	return a
 }
 
-// unenter notes a cmux send's surface in unsent, and takes it off at a send-key Enter (or Return) to the same surface.
+// unenter notes a cmux send's workspace and surface in unsent, and takes them off at a send-key Enter (or Return) to the
+// same pair. A send whose text ends in Enter (\n or \r, written or real; cmux send --help: "\n and \r send Enter")
+// leaves nothing unsent.
 func (w *walker) unenter(args []*syntax.Word) {
 	sub, a := cmuxSend(args)
+	to := a.workspace + " " + a.surface
 	switch {
 	case sub == "" || a.help:
 	case sub == "send":
-		w.unsent[a.surface] = true
+		if !strings.HasSuffix(a.word, `\n`) && !strings.HasSuffix(a.word, `\r`) &&
+			!strings.HasSuffix(a.word, "\n") && !strings.HasSuffix(a.word, "\r") {
+			w.unsent[to] = true
+		}
 	case strings.EqualFold(a.word, "enter") || strings.EqualFold(a.word, "return"):
-		delete(w.unsent, a.surface)
+		delete(w.unsent, to)
 	}
 }
 

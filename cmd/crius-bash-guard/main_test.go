@@ -695,15 +695,15 @@ func TestACmuxSendWithoutALiteralTargetIsRefused(t *testing.T) {
 			t.Errorf("%q: %q", cmd, why)
 		}
 	}
-	enter := func(s string) string { return `; cmux send-key --workspace w --surface ` + s + ` Enter` }
+	enter := func(w, s string) string { return `; cmux send-key --workspace ` + w + ` --surface ` + s + ` Enter` }
 	for _, cmd := range []string{
-		`cmux send --workspace workspace:2 --surface surface:5 "ORDER: do it"` + enter("surface:5"),
-		`cmux send --workspace "$W" --surface "$S" "text"` + enter(`"$S"`),
-		`cmux send --surface $S --workspace $W --paste -- "text"` + enter("$S"),
+		`cmux send --workspace workspace:2 --surface surface:5 "ORDER: do it"` + enter("workspace:2", "surface:5"),
+		`cmux send --workspace "$W" --surface "$S" "text"` + enter(`"$W"`, `"$S"`),
+		`cmux send --surface $S --workspace $W --paste -- "text"` + enter("$W", "$S"),
 		`cmux send-key --workspace workspace:2 --surface surface:5 enter`,
 		`cmux read-screen --surface surface:5`, `cmux list-panels`, `cmux send-panel --panel 3 hi`,
 		`echo cmux send 3 hi`, `grep -n "cmux send" notes.md`,
-		`cmux --socket /tmp/cmux.sock send --workspace w --surface s hi` + enter("s"), `cmux --id-format refs notify --title send`,
+		`cmux --socket /tmp/cmux.sock send --workspace w --surface s hi` + enter("w", "s"), `cmux --id-format refs notify --title send`,
 		`cmux notify --title send --body x`,
 		// review of 84c4a2e: a global option that takes no value ends no scan early
 		`cmux --json rename-workspace send`, `cmux --json notify --title send --body x`,
@@ -726,6 +726,9 @@ func TestACmuxSendWithNoEnterToTheSameSurfaceIsRefused(t *testing.T) {
 		`cmux send` + to("surface:5") + `a; cmux send` + to("surface:6") + `b; cmux send-key` + to("surface:5") + `Enter`,
 		`bash -c 'cmux send` + to("surface:5") + `hi'`,
 		`cmux --socket /tmp/c.sock send` + to("surface:5") + `hi`,
+		// review of a45a137: the Enter goes to the same surface in another workspace; an Enter in the middle of the text
+		`cmux send` + to("surface:5") + `hi; cmux send-key --workspace workspace:3 --surface surface:5 Enter`,
+		`cmux send` + to("surface:5") + `'hi\nthere'`,
 	} {
 		if why := check(cmd); !strings.Contains(why, "send-key") || !strings.Contains(why, "unsent") {
 			t.Errorf("%q: %q", cmd, why)
@@ -739,6 +742,12 @@ func TestACmuxSendWithNoEnterToTheSameSurfaceIsRefused(t *testing.T) {
 		`bash -c 'cmux send` + to("surface:5") + `hi' && cmux send-key` + to("surface:5") + `Enter`,
 		`cmux send` + to("surface:5") + `a; cmux send` + to("surface:6") + `b; cmux send-key` + to("surface:6") +
 			`Enter; cmux send-key` + to("surface:5") + `Enter`,
+		// review of a45a137: text that ends in Enter (cmux: "\n and \r send Enter"); the same surface quoted one way and
+		// written plain the other
+		`cmux send` + to("surface:5") + `'hi\n'`, `cmux send` + to("surface:5") + `$'hi\n'`,
+		`cmux send` + to("surface:5") + `'hi\r'`, `cmux send` + to("surface:5") + `"hi` + "\n" + `"`,
+		`cmux send` + to(`"surface:5"`) + `hi; cmux send-key` + to("surface:5") + `Enter`,
+		`cmux send --workspace 'workspace:2' --surface surface:5 hi; cmux send-key` + to("surface:5") + `Enter`,
 		// help types nothing (it was refused as an untargeted send)
 		`cmux send --help`, `cmux send-key --help`, `cmux send -h`,
 	} {
