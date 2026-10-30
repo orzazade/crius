@@ -7,7 +7,9 @@
 //	crius-queue answer <id|number> [--by who] <text…>   number = place in the list, as /waiting shows it
 //
 // Every NEED-OWNER bus line is a row without a call; a Crius DECISION/INFO/OWNER/ANSWER line whose text opens with
-// "[queue qN]" answers row qN (the tag further on answers nothing). Exit codes: 0 done, 1 failed, 2 bad arguments.
+// "[queue qN]" answers row qN (the tag further on answers nothing). list also reads every lead's
+// GOAL block (projects.toml): what its "Needs owner" asks that the bus has not answered, as the goal report lists it,
+// is one row per lead. Exit codes: 0 done, 1 failed, 2 bad arguments.
 package main
 
 import (
@@ -21,6 +23,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/orzazade/crius/internal/digest"
+	"github.com/orzazade/crius/internal/ingest"
 	"github.com/orzazade/crius/internal/ownerqueue"
 	"github.com/orzazade/crius/internal/store"
 )
@@ -46,9 +50,11 @@ const help = "usage: crius-queue init [--since T] | list [--json] | add --title 
 
 // View is what list --json prints: the mod draws it.
 type View struct {
-	Open     []Item `json:"open"`
-	Answered []Item `json:"answered"`
-	Now      string `json:"now"`
+	Open     []Item   `json:"open"`
+	Answered []Item   `json:"answered"`
+	Now      string   `json:"now"`
+	Unread   []string `json:"unread,omitempty"` // leads whose GOAL block cannot be read: what they ask is not here
+	Held     []string `json:"held,omitempty"`   // GOAL asks held back: the owner may have answered them already
 }
 
 // Item is a row with its age, as the pane shows it.
@@ -79,11 +85,12 @@ func run(home string, now time.Time, args []string, out io.Writer) error {
 		if err := fs.Parse(args[1:]); err != nil || fs.NArg() > 0 {
 			return usage(help)
 		}
-		q, err := ownerqueue.List(home, now)
+		q, unread, held, err := list(home, now)
 		if err != nil {
 			return err
 		}
-		v := View{Open: items(q.OpenRows(), now), Answered: items(q.AnsweredOn(now), now), Now: now.Format("2006-01-02T15:04")}
+		v := View{Open: items(q.OpenRows(), now), Answered: items(q.AnsweredOn(now), now), Now: now.Format("2006-01-02T15:04"),
+			Unread: unread, Held: held}
 		if *asJSON {
 			return json.NewEncoder(out).Encode(v)
 		}
@@ -122,6 +129,8 @@ func run(home string, now time.Time, args []string, out io.Writer) error {
 		}
 		id := args[1]
 		if n, err := strconv.Atoi(id); err == nil {
+			// the list last printed: GOAL blocks are not read again here, so a rewritten one moves no number (review
+			// round 3 of the queue gap)
 			q, err := ownerqueue.List(home, now)
 			if err != nil {
 				return err
@@ -140,6 +149,41 @@ func run(home string, now time.Time, args []string, out io.Writer) error {
 		return nil
 	}
 	return usage(help)
+}
+
+// list reads every lead's GOAL block into the queue, then the queue. unread names each lead whose block cannot be
+// read, held each ask held back (ownerqueue.SyncGoals).
+func list(home string, now time.Time) (q *ownerqueue.Queue, unread, held []string, err error) {
+	leads, err := ingest.Leads(home)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	db, err := store.Open(home)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	defer db.Close()
+	held, err = ownerqueue.SyncGoals(home, now, func() ([]ownerqueue.GoalNeed, error) {
+		needs, err := digest.OwnerNeeds(db, leads)
+		if err != nil {
+			return nil, err
+		}
+		goals := make([]ownerqueue.GoalNeed, 0, len(needs))
+		for _, n := range needs {
+			g := ownerqueue.GoalNeed{Lead: n.Lead, Text: strings.Join(n.Items, "; "), Stamp: n.Updated.Format("2006-01-02T15:04")}
+			if n.Err != nil {
+				g.Unread = n.Err.Error()
+				unread = append(unread, n.Lead+": "+g.Unread)
+			}
+			goals = append(goals, g)
+		}
+		return goals, nil
+	})
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	q, err = ownerqueue.List(home, now)
+	return q, unread, held, err
 }
 
 func items(rows []ownerqueue.Row, now time.Time) []Item {
@@ -183,6 +227,18 @@ func printList(out io.Writer, v View) {
 			}
 		}
 		fmt.Fprintln(out, `Answer by number: "2 yes", or any text: "2 not before Monday".`)
+	}
+	if len(v.Unread) > 0 {
+		fmt.Fprintf(out, "GOAL block cannot be read, so what these leads ask is not listed (%d):\n", len(v.Unread))
+		for _, u := range v.Unread {
+			fmt.Fprintln(out, "  ! "+u)
+		}
+	}
+	if len(v.Held) > 0 {
+		fmt.Fprintf(out, "Held, as you may have answered them already (%d):\n", len(v.Held))
+		for _, h := range v.Held {
+			fmt.Fprintln(out, "  · "+h)
+		}
 	}
 	if len(v.Answered) > 0 {
 		fmt.Fprintln(out, "Answered today")

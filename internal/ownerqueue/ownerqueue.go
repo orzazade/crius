@@ -5,7 +5,7 @@
 // Every NEED-OWNER line on a bus log (home/bus/*.log) is a row by itself: each read of the queue first reads what the
 // logs gained since the last read (sync), so an empty list means nothing waits on the owner, never that Crius forgot to
 // write a row. A line from Crius (DECISION, INFO, OWNER or ANSWER) whose text opens with "[queue qN]" answers row qN (a
-// tag further on is a quote and answers nothing); a NEED-OWNER line with the tag is the row Crius already added. Lines
+// tag further on is a quote and answers nothing), also a GOAL row its lead withdrew; a NEED-OWNER line with the tag is the row Crius already added. Lines
 // dated before the queue's start (init) are history.
 //
 // A NEED-OWNER text may carry its parts as "why: …", "unblocks: …" and "options: A | B"; the rest is what to do, and
@@ -36,9 +36,10 @@ import (
 )
 
 const (
-	Open     = "open"
-	Answered = "answered"
-	stamp    = "2006-01-02T15:04"
+	Open      = "open"
+	Answered  = "answered"
+	Withdrawn = "withdrawn" // a GOAL row whose lead no longer asks it: no owner decision
+	stamp     = "2006-01-02T15:04"
 )
 
 var (
@@ -51,7 +52,8 @@ var (
 	answerType = map[string]bool{"DECISION": true, "INFO": true, "OWNER": true, "ANSWER": true}
 )
 
-// Row is one item. Log and Line name the bus line it came from ("" for a row Crius added with Add).
+// Row is one item. Log and Line name the bus line it came from ("" for a row Crius added with Add); a row from a
+// lead's GOAL block has Goal set to the lead and Line to the text it asked.
 type Row struct {
 	ID         string   `json:"id"`
 	Title      string   `json:"title"`
@@ -67,6 +69,102 @@ type Row struct {
 	AnsweredBy string   `json:"answeredBy,omitempty"`
 	Log        string   `json:"log,omitempty"`
 	Line       string   `json:"line,omitempty"`
+	Goal       string   `json:"goal,omitempty"`
+}
+
+// GoalNeed is what one lead's GOAL block asks of the owner ("Needs owner:", RULES 3.1) that the bus has not answered;
+// Text is "" when nothing waits, Stamp the block's heading (local, 2006-01-02T15:04). Unread says why the block could
+// not be read.
+type GoalNeed struct{ Lead, Text, Stamp, Unread string }
+
+// noLongerAsked is the answer of a withdrawn GOAL row.
+const noLongerAsked = "the GOAL block no longer asks this"
+
+// SyncGoals keeps one row per lead whose GOAL block asks something of the owner (Crius 10-30 16:03: the pane said
+// nothing waits while the goal report listed 9). read gives every lead's need; it runs under the queue's lock, so two
+// reads never undo each other's rows. A row holds the text it was opened with: when the lead's text changes, or it
+// asks nothing, or it is no lead any more, the open row is withdrawn by the lead, and a new text opens a new row. A row
+// the owner answered with the text the block still asks stays answered. A lead whose block cannot be read keeps its
+// rows as they are, and so does every lead when read gives no lead at all (a projects.toml read mid-write).
+//
+// A lead's ask is held, not opened, while the queue has an open bus row from its project (the ask is on show
+// already), or the owner answered one after the block was written (it may be what was answered; review of the queue
+// gap, P1): held names each, and the row opens once the lead writes its block again.
+func SyncGoals(home string, now time.Time, read func() ([]GoalNeed, error)) (held []string, err error) {
+	err = locked(home, func() error {
+		q, err := syncLocked(home)
+		if err != nil {
+			return err
+		}
+		needs, err := read()
+		if err != nil || len(needs) == 0 {
+			return err
+		}
+		asks, unread := map[string]string{}, map[string]bool{}
+		for _, n := range needs {
+			asks[n.Lead], unread[n.Lead] = n.Text, n.Unread != ""
+		}
+		changed := false
+		// a lead's text already on show (open), or answered at a time (an answer covers the ask until the lead writes
+		// its block again)
+		open, answered := map[[2]string]bool{}, map[[2]string]string{}
+		for i := range q.Rows {
+			r := &q.Rows[i]
+			if r.Goal == "" {
+				continue
+			}
+			if r.State == Open && !unread[r.Goal] && asks[r.Goal] != r.Line {
+				r.State, r.Answer, r.AnsweredAt, r.AnsweredBy = Withdrawn, noLongerAsked, now.Format(stamp), r.Goal
+				changed = true
+			}
+			k := [2]string{r.Goal, r.Line}
+			switch r.State {
+			case Open:
+				open[k] = true
+			case Answered:
+				answered[k] = max(answered[k], r.AnsweredAt)
+			}
+		}
+		for _, n := range needs {
+			k := [2]string{n.Lead, n.Text}
+			if n.Text == "" || n.Unread != "" || open[k] || answered[k] >= n.Stamp {
+				continue
+			}
+			if by := shown(q, from(n.Lead), n.Stamp); by != "" {
+				held = append(held, n.Lead+": "+by)
+				continue
+			}
+			r := parse(n.Text)
+			r.ID, r.State, r.Opened, r.From, r.Goal, r.Line = next(q), Open, now.Format(stamp), from(n.Lead), n.Lead, n.Text
+			q.Rows = append(q.Rows, r)
+			changed = true
+		}
+		if !changed {
+			return nil
+		}
+		return save(home, q)
+	})
+	return held, err
+}
+
+// shown names a bus row of project that holds a GOAL ask back: one still open, or one the owner answered at or after
+// the block's stamp (a row Crius closed itself holds nothing). "" when there is none.
+// byOwner says the owner answered r: from the pane or the CLI (by owner), or relayed by Crius as "[queue qN] owner: …".
+func byOwner(r Row) bool {
+	return r.AnsweredBy == "owner" || strings.HasPrefix(strings.ToLower(r.Answer), "owner")
+}
+
+func shown(q *Queue, project, stamp string) string {
+	for _, r := range q.Rows {
+		switch {
+		case r.Goal != "" || r.From != project:
+		case r.State == Open:
+			return "its ask " + r.ID + " is open in the queue"
+		case r.State == Answered && r.AnsweredAt >= stamp && byOwner(r):
+			return "the owner answered " + r.ID + " at " + r.AnsweredAt + ", after its GOAL block (" + stamp + ")"
+		}
+	}
+	return ""
 }
 
 // Queue is every row, in the order they were added.
@@ -146,8 +244,8 @@ func Answer(home string, now time.Time, id, text, by string) error {
 		if i < 0 {
 			return fmt.Errorf("no row %s", id)
 		}
-		if q.Rows[i].State == Answered {
-			return fmt.Errorf("%s is already answered (%q at %s)", id, q.Rows[i].Answer, q.Rows[i].AnsweredAt)
+		if r := q.Rows[i]; r.State != Open {
+			return fmt.Errorf("%s is already %s (%q at %s)", id, r.State, r.Answer, r.AnsweredAt)
 		}
 		answer(&q.Rows[i], text, now.Format(stamp), by)
 		return save(home, q)
@@ -282,7 +380,8 @@ func syncLocked(home string) (*Queue, error) {
 	}
 	for _, a := range answers {
 		for i := range q.Rows {
-			if q.Rows[i].ID == a.id && q.Rows[i].State == Open {
+			// a row its lead withdrew keeps the answer too: the owner decided it (review round 2 of the queue gap)
+			if q.Rows[i].ID == a.id && (q.Rows[i].State == Open || q.Rows[i].State == Withdrawn) {
 				answer(&q.Rows[i], a.text, a.at, a.by)
 				changed = true
 			}

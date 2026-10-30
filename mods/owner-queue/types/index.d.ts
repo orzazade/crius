@@ -14,7 +14,9 @@ export type Item = {
   age: string
 }
 
-export type View = { open: Item[]; answered: Item[]; now: string }
+// unread: each lead whose GOAL block crius-queue could not read, as "<lead>: <why>"; held: each GOAL ask held back,
+// as "<lead>: <why>" (the owner may have answered it already)
+export type View = { open: Item[]; answered: Item[]; now: string; unread?: string[]; held?: string[] }
 
 declare module 'claude-code' {
   interface PluginState {

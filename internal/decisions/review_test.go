@@ -63,6 +63,12 @@ func TestReviewShowsWaitsAskersAndRepeats(t *testing.T) {
 	add("q4", "2026-10-29T10:00", "cortex", "approve merge F-14", "yes", utc("2026-10-29T12:00"))
 	add("q5", "2026-10-29T11:00", "falcon", "Restart Chrome", "done", utc("2026-10-29T17:00"))
 	add("q6", "2026-10-30T09:00", "Crius", "Pick a name for the queue", "", "")
+	// GOAL rows their lead stopped asking are no owner decision: not asked, not answered, no repeat (review of the queue gap).
+	for _, id := range []string{"q7", "q8", "q9"} {
+		exec(t, db, "insert into owner_decision (id, asked, asked_by, title, state, answer, answered_at, answered_by) values"+
+			" (?,?,?,?,?,?,?,?)", id, utc("2026-10-30T10:00"), "falcon", "Q1 CI as a source", "withdrawn",
+			"the GOAL block no longer asks this", utc("2026-10-30T11:00"), "falcon:lead")
+	}
 	exec(t, db, "insert into event (ts, project, kind, actor, text, source_key) values (?, 'crius', 'owner', 'lead', 'owner: no Telegram', 'k1'),"+
 		" (?, 'crius', 'owner', 'lead', 'old', 'k2')", utc("2026-10-29T15:00"), utc("2026-10-01T15:00"))
 

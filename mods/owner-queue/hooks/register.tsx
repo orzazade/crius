@@ -80,14 +80,19 @@ async function tick($: EngineInterface): Promise<void> {
 // The CLI from Crius's own bin folder, through sh so $HOME is the host's.
 const cli = (...args: string[]) => ['/bin/sh', '-c', 'exec "$HOME/.crius/bin/crius-queue" "$@"', 'crius-queue', ...args]
 
+// the leads whose GOAL block crius-queue could not read: what they ask is not in the list
+const unreadLeads = (v: View) => (v.unread ?? []).map(u => u.split(': ')[0])
+const heldLeads = (v: View) => (v.held ?? []).map(u => u.split(': ')[0])
+const HELD = 'Held, as you may have answered them already'
+
 const status = (v: View | null, err: string | null) =>
   err !== null
     ? `⚑ owner queue FAILED: ${err.slice(0, 120)}`
     : v === null
       ? '⚑ owner queue: reading…'
-      : v.open.length === 0
-        ? '✓ nothing waits on you'
-        : `⚑ ${v.open.length} waiting on you`
+      : (v.open.length === 0 ? '✓ nothing waits on you' : `⚑ ${v.open.length} waiting on you`) +
+        (heldLeads(v).length > 0 ? ` · ${heldLeads(v).length} held (maybe answered): ${heldLeads(v).join(', ')}` : '') +
+        (unreadLeads(v).length > 0 ? ` · ${unreadLeads(v).length} GOAL blocks not read: ${unreadLeads(v).join(', ')}` : '')
 
 async function refresh($: EngineInterface): Promise<void> {
   let next: View | null = null
@@ -175,6 +180,18 @@ function listText(v: View | null, err: string | null): string {
       }
     })
     out.push('Answer by number, any text: "/waiting 2 yes", "/waiting 1 not before Monday".')
+  }
+  if (v.held?.length) {
+    out.push(`${HELD} (${v.held.length}):`)
+    for (const h of v.held) {
+      out.push(`  ${h}`)
+    }
+  }
+  if (v.unread?.length) {
+    out.push(`⚑ ${v.unread.length} GOAL blocks cannot be read, so what they ask is not here:`)
+    for (const u of v.unread) {
+      out.push(`  ${u}`)
+    }
   }
   if (v.answered.length > 0) {
     out.push('Answered today')
@@ -379,6 +396,16 @@ export const register: Register = on => {
             </Text>
             <Text color={C.dim}>Crius adds a row here when a lead needs your call.</Text>
           </Box>
+        )}
+        {v !== null && (v.held?.length ?? 0) > 0 && (
+          <Text color={C.soft}>
+            {HELD} ({v.held?.length}): {v.held?.join('; ')}
+          </Text>
+        )}
+        {v !== null && unreadLeads(v).length > 0 && (
+          <Text color={C.accentFg} bold>
+            ⚑ {unreadLeads(v).length} GOAL blocks cannot be read, so what they ask is not here: {unreadLeads(v).join(', ')}
+          </Text>
         )}
         {open.map((r, i) => card(r, i + 1))}
         {(v?.answered.length ?? 0) > 0 && (

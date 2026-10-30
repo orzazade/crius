@@ -41,7 +41,9 @@ func Review(db *sql.DB, since, now time.Time) (string, error) {
 	// week and is listed apart, never dropped. A row asked before the week and answered in it is in this review: the
 	// long waits are the ones that cross a weekly run
 	from, to := since.UTC().Format(time.RFC3339), now.UTC().Format(time.RFC3339)
-	rs, err := query(db, "(asked >= ? and asked < ?) or (answered_at >= ? and answered_at < ?) order by asked, id",
+	// A withdrawn row (a GOAL ask its lead stopped asking) is no owner decision and is left out.
+	rs, err := query(db, "state != 'withdrawn' and ((asked >= ? and asked < ?) or (answered_at >= ? and answered_at < ?))"+
+		" order by asked, id",
 		from, to, from, to)
 	if err != nil {
 		return "", err
@@ -55,7 +57,7 @@ func Review(db *sql.DB, since, now time.Time) (string, error) {
 			all = append(all, r)
 		}
 	}
-	undated, err := query(db, "coalesce(asked, '') = '' order by id")
+	undated, err := query(db, "state != 'withdrawn' and coalesce(asked, '') = '' order by id")
 	if err != nil {
 		return "", err
 	}

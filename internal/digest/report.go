@@ -160,12 +160,9 @@ func Build(db *sql.DB, in Input, now time.Time) (*Report, error) {
 		if err != nil {
 			return nil, err
 		}
-		var open []string
-		var answered string
-		if n := strings.Trim(strings.TrimSpace(g.NeedsOwner), `".`); !strings.EqualFold(n, "nothing") {
-			if open, answered, err = ownerAnswers(db, g); err != nil {
-				return nil, err
-			}
+		open, answered, err := openNeeds(db, g)
+		if err != nil {
+			return nil, err
 		}
 		entries = append(entries, entry{
 			line: fmt.Sprintf("%s: %s%d%% claimed · %s · %s%s%s", l.Name, stale, g.Done, counted, change(prev, l.Name, snap),
@@ -246,6 +243,42 @@ func Build(db *sql.DB, in Input, now time.Time) (*Report, error) {
 	}
 	r.Text = strings.Join(append(append(head, body...), tail...), "\n") + "\n"
 	return r, nil
+}
+
+// Need is what one lead's GOAL block asks of the owner that the bus has not answered, as the report's "Needs the
+// owner" lists it. Err says why the block could not be read (LOST, UNREADABLE or ERROR in the report).
+type Need struct {
+	Lead    string
+	Items   []string // empty: nothing waits on the owner
+	Updated time.Time
+	Err     error
+}
+
+// OwnerNeeds reads every lead's GOAL block and gives what it asks of the owner, item for item as the report lists it:
+// the owner queue shows the same (Crius 10-30 16:03: the pane said nothing waits while the report listed 9).
+func OwnerNeeds(db *sql.DB, leads []ingest.Lead) ([]Need, error) {
+	out := make([]Need, 0, len(leads))
+	for _, l := range leads {
+		g, err := readGoal(l)
+		if err != nil {
+			out = append(out, Need{Lead: l.Name, Err: err})
+			continue
+		}
+		open, _, err := openNeeds(db, g)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, Need{Lead: l.Name, Items: open, Updated: g.Updated})
+	}
+	return out, nil
+}
+
+// openNeeds is a GOAL's "Needs owner" items the bus has not answered (ownerAnswers); none when it says nothing.
+func openNeeds(db *sql.DB, g *Goal) (open []string, note string, err error) {
+	if n := strings.Trim(strings.TrimSpace(g.NeedsOwner), `".`); strings.EqualFold(n, "nothing") {
+		return nil, "", nil
+	}
+	return ownerAnswers(db, g)
 }
 
 // readGoal reads a lead's GOAL block from its status file, or from the git object when the lead names one (its

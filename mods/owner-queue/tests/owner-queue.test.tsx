@@ -291,3 +291,40 @@ test('an empty answer sent from the pane is said', async ($, on) => {
   expect(seen.calls.filter(c => c[0] === 'answer')).toEqual([])
   await ui.unmount()
 })
+
+// Review of the queue gap, P2: a lead whose GOAL block cannot be read may ask something the queue cannot see, so an
+// empty list with unread blocks is never a plain "nothing waits": the status line, the pane and /waiting say it.
+test('GOAL blocks that cannot be read are said with the list, never shown as nothing waits', async ($, on) => {
+  const unread = [
+    'trading:lead: /x/STATUS.md: GOAL block unreadable: line 3: heading needs (YYYY-MM-DD HH:MM)',
+    'cortex:lead: /y/STATUS.md: GOAL block unreadable: line 9: want Next:',
+  ]
+  const seen = engine(on, () => ({ ...EMPTY, unread }))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  expect(seen.status.at(-1)).toBe('✓ nothing waits on you · 2 GOAL blocks not read: trading:lead, cortex:lead')
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect((await ui.find({ type: 'Text', text: /cannot be read/ }))?.text).toBe(
+    '⚑ 2 GOAL blocks cannot be read, so what they ask is not here: trading:lead, cortex:lead',
+  )
+  await ui.unmount()
+  const list = await $.command.run({ command: 'waiting', args: '' })
+  expect(list.text).toContain(
+    '⚑ 2 GOAL blocks cannot be read, so what they ask is not here:\n  trading:lead: /x/STATUS.md: GOAL block unreadable: line 3',
+  )
+})
+
+// Review round 2 of the queue gap, P1: a GOAL ask held back (the owner may have answered it already) is never hidden:
+// the status line counts it, and the pane and /waiting say what is held and why.
+test('held GOAL asks are said with the list, never hidden', async ($, on) => {
+  const held = ['marketplace:lead: the owner answered q5 at 2026-10-30T15:18, after its GOAL block (2026-10-30T13:37)']
+  const seen = engine(on, () => ({ ...EMPTY, held }))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  expect(seen.status.at(-1)).toBe('✓ nothing waits on you · 1 held (maybe answered): marketplace:lead')
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect((await ui.find({ type: 'Text', text: /^Held/ }))?.text).toBe(
+    'Held, as you may have answered them already (1): marketplace:lead: the owner answered q5 at 2026-10-30T15:18, after its GOAL block (2026-10-30T13:37)',
+  )
+  await ui.unmount()
+  const list = await $.command.run({ command: 'waiting', args: '' })
+  expect(list.text).toContain('Held, as you may have answered them already (1):\n  marketplace:lead: the owner answered q5')
+})
