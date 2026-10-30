@@ -417,10 +417,14 @@ func TestAScriptNamedThroughAVariableSetInTheCommandIsRead(t *testing.T) {
 		`a=xyz; echo "${a:N}"`, `[[ 'N' -gt 0 ]]`, `bash -c '(( N > 0 ))'`, `r=N; echo "${!r}"`, `declare -n r=N; echo "$r"`} {
 		write("n"+strconv.Itoa(i+1)+".sh", "#!/bin/bash\n"+b+"\necho \"$1\"\n")
 	}
+	write("argar.sh", "#!/bin/bash\nn=${1:-5}\n(( n > 0 )) && echo \"$1\"\n")
 	for _, d := range []string{"other/x/y", "lead/sub"} {
 		if err := os.MkdirAll(filepath.Join(dir, d), 0o755); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := os.Link(filepath.Join(dir, "lead", "say.sh"), filepath.Join(dir, "other", "hl")); err != nil {
+		t.Fatal(err)
 	}
 	for l, to := range map[string]string{"other/lk": "other/x/y", "other/ln": "lead/sub", "other/ln2": "lead"} {
 		if err := os.Symlink(filepath.Join(dir, to), filepath.Join(dir, l)); err != nil {
@@ -462,9 +466,9 @@ func TestAScriptNamedThroughAVariableSetInTheCommandIsRead(t *testing.T) {
 		s + `bash $S/lead/say.sh DONE x "az fix $(git -C /tmp rev-parse --short HEAD)"`,
 		s + `cd ~/Projects && git status --short . && bash $S/lead/say.sh INFO crius:lead 'az blob list ok'`,
 		// review of fd71df9: a name none of the n scripts reads; a write through a link to a folder of no script
-		s + `Q='a[$(az boards work-item update --id 1)]'; bash $S/n1.sh 'az login'`,
-		s + `Q='a[$(az boards work-item update --id 1)]'; bash $S/n4.sh 'az login'`,
-		s + `Q='a[$(az boards work-item update --id 1)]'; bash $S/n7.sh 'az login'`,
+		s + `Q=30; bash $S/n1.sh 'az login'`,
+		s + `Q=30; bash $S/n4.sh 'az login'`,
+		s + `Q=30; bash $S/n7.sh 'az login'`,
 		`bash ` + dir + `/n8.sh 'az login'`, // no name set around it
 		s + `printf x > ` + dir + `/other/lk/new.txt; bash $S/lead/say.sh INFO x 'az login'`,
 	} {
@@ -582,13 +586,22 @@ func TestAScriptNamedThroughAVariableSetInTheCommandIsRead(t *testing.T) {
 		s + `printf x > ` + dir + `/other/ln/x; bash $S/lead/say.sh INFO x 'az login'`,
 		s + `printf x > ` + dir + `/other/ln2/x; bash $S/lead/say.sh INFO x 'az login'`,
 		s + `printf x > /tmp/../tmp/x; bash $S/lead/say.sh INFO x 'az login'`,
+		s + `printf x > ` + dir + `/other/hl; bash $S/lead/say.sh INFO x 'az login'`, // a hard link to say.sh
+		// review of 1a40027: bash runs a $(...) in quoted text it reads as a number or a name, in the command or in a
+		// script that passes (argar.sh: (( n > 0 )) on its $1)
+		`(( 'a[$(az boards work-item update --id 1)]' ))`, `[[ 'a[$(az boards work-item update --id 1)]' -eq 0 ]]`,
+		`[ -v 'a[$(az boards work-item update --id 1)]' ]`, `printf -v 'a[$(az boards work-item update --id 1)]' x`,
+		"(( 'a[`az boards work-item update --id 1`]' ))", `(( 'a[$(a""z boards x)]' )); echo az`,
+		s + `bash $S/argar.sh 'a[$(az boards work-item update --id 1)]'`,
+		s + `bash $S/argar.sh "a[\$(az boards work-item update --id 1)]"`,
+		s + `N='a[$(az boards work-item update --id 1)]'; bash $S/n1.sh 'az login'`,
 	} {
 		if why := check(bash(cmd, dir)); !strings.Contains(why, "owner's click") {
 			t.Errorf("%q: %q", cmd, why)
 		}
 	}
 	for i := 1; i <= 9; i++ {
-		cmd := s + `N='a[$(az boards work-item update --id 1)]'; bash $S/n` + strconv.Itoa(i) + `.sh 'az login'`
+		cmd := s + `N=30; bash $S/n` + strconv.Itoa(i) + `.sh 'az login'`
 		if i > 7 {
 			cmd = s + `N=x; bash $S/n` + strconv.Itoa(i) + `.sh 'az login'` // a computed read: any name set asks
 		}

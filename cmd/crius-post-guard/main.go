@@ -49,6 +49,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"mvdan.cc/sh/v3/syntax"
 )
@@ -154,6 +155,9 @@ func checkBash(command string, c ctx) string {
 		}
 		return ""
 	}
+	if adoRe.MatchString(command) && quotedCode(f) {
+		return asked("quoted text with $ or ` in it, which bash may run as code")
+	}
 	c = c.scan(f)
 	piped := map[*syntax.CallExpr]bool{}
 	why := ""
@@ -189,6 +193,25 @@ func checkBash(command string, c ctx) string {
 		return true
 	})
 	return why
+}
+
+// quotedCode says whether a command holds literal text with $ or ` in it. Bash runs a $(...) in such text wherever it
+// reads it as a number or a name: (( 'a[$(…)]' )), [[ '…' -eq 0 ]], [ -v '…' ], printf -v '…', a script's (( n > 0 ))
+// on its $1, or a name set for a script that reads it so. Ten reviews found such places one by one (review of
+// 1a40027), so the text is judged, not where it goes: only $ and ` start code, and a command that names Azure DevOps
+// with either in literal text asks.
+func quotedCode(f *syntax.File) bool {
+	found := false
+	syntax.Walk(f, func(n syntax.Node) bool {
+		switch n := n.(type) {
+		case *syntax.SglQuoted:
+			found = found || strings.ContainsAny(n.Value, "$`")
+		case *syntax.Lit:
+			found = found || strings.ContainsAny(n.Value, "$`")
+		}
+		return !found
+	})
+	return found
 }
 
 // word is one shell word: its text, the word as written (src), whether the text is all literal (ok), and the word.
@@ -699,8 +722,11 @@ func (c ctx) safeWrite(rd *syntax.Redirect, keep []string) bool {
 	if devFiles[p] {
 		return true
 	}
-	if fi, err := os.Lstat(p); err == nil && fi.Mode()&os.ModeSymlink != 0 {
-		return false
+	if fi, err := os.Lstat(p); err == nil {
+		// a link, or a file with a second name, may be the script or bus-post (review of 1a40027: other/hl is lead/say.sh)
+		if st, ok := fi.Sys().(*syscall.Stat_t); fi.Mode()&os.ModeSymlink != 0 || !ok || st.Nlink > 1 && !fi.IsDir() {
+			return false
+		}
 	}
 	// the folders the disk uses: the nearest one that is there with its links followed, then the parts not made yet,
 	// which hold no link (review of fd71df9: other/ln -> lead/sub, > other/ln/x is in lead)
