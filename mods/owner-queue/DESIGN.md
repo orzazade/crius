@@ -37,7 +37,9 @@ and the band and `/waiting` carry everything.
 - Buttons: the row's options; the first is the primary one (accent). A row with no options has none.
 - The free-text field is always there, under the buttons.
 - Pressing a button or Enter in the field records the answer (`crius-queue answer`) and submits one line into the
-  Crius chat: `[queue q2] <answer>`. A second answer to the same row is refused by the queue and shown as a toast. An answer the chat does
+  Crius chat: `[queue q2] <answer>`. A typed answer that asks back (ends in "?" or opens with what/why/how) keeps the
+  card open, with a "You asked <question> (time)" line in the accent colour under Unblocks; a button always answers.
+  A second answer to the same row is refused by the queue and shown as a toast. An answer the chat does
   not take is a toast too: recorded, with the line to type by hand.
 
 Empty: a box (round border, the box colour) with `✓ Nothing waits on you.` (in the ok colour) and, dim, "Crius adds a row here when a lead

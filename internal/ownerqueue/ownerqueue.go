@@ -108,8 +108,8 @@ func SyncGoals(home string, now time.Time, read func() ([]GoalNeed, error)) (hel
 		}
 		changed := false
 		// a lead's text already on show (open), or answered at a time (an answer covers the ask until the lead writes
-		// its block again)
-		open, answered := map[[2]string]bool{}, map[[2]string]string{}
+		// its block again); the owner's question on a row withdrawn now goes to the lead's new row (review of 8cdefa3)
+		open, answered, asked := map[[2]string]bool{}, map[[2]string]string{}, map[string][2]string{}
 		for i := range q.Rows {
 			r := &q.Rows[i]
 			if r.Goal == "" {
@@ -117,6 +117,9 @@ func SyncGoals(home string, now time.Time, read func() ([]GoalNeed, error)) (hel
 			}
 			if r.State == Open && !unread[r.Goal] && asks[r.Goal] != r.Line {
 				r.State, r.Answer, r.AnsweredAt, r.AnsweredBy = Withdrawn, noLongerAsked, now.Format(stamp), r.Goal
+				if r.Asked != "" {
+					asked[r.Goal] = [2]string{r.Asked, r.AskedAt}
+				}
 				changed = true
 			}
 			k := [2]string{r.Goal, r.Line}
@@ -138,6 +141,7 @@ func SyncGoals(home string, now time.Time, read func() ([]GoalNeed, error)) (hel
 			}
 			r := parse(n.Text)
 			r.ID, r.State, r.Opened, r.From, r.Goal, r.Line = next(q), Open, now.Format(stamp), from(n.Lead), n.Lead, n.Text
+			r.Asked, r.AskedAt = asked[n.Lead][0], asked[n.Lead][1]
 			q.Rows = append(q.Rows, r)
 			changed = true
 		}
@@ -250,8 +254,8 @@ func Answer(home string, now time.Time, id, text, by string) error {
 		if r := q.Rows[i]; r.State != Open {
 			return fmt.Errorf("%s is already %s (%q at %s)", id, r.State, r.Answer, r.AnsweredAt)
 		}
-		if by == "owner" && asksBack(text) {
-			q.Rows[i].Asked, q.Rows[i].AskedAt = strings.TrimSpace(text), now.Format(stamp)
+		if r := &q.Rows[i]; by == "owner" && asksBack(text) && !slices.Contains(r.Options, strings.TrimSpace(text)) {
+			r.Asked, r.AskedAt = strings.TrimSpace(text), now.Format(stamp)
 		} else {
 			answer(&q.Rows[i], text, now.Format(stamp), by)
 		}
@@ -260,10 +264,12 @@ func Answer(home string, now time.Time, id, text, by string) error {
 }
 
 // asksBackRe is an answer that asks a question back instead of deciding (Crius 10-30 16:58: "what you need?" closed
-// q13): it ends in "?" or opens with what, why or how.
-var asksBackRe = regexp.MustCompile(`(?i)\?\s*$|^\s*(?:what|why|how)\b`)
+// q13): it ends in "?" (closing quotes, brackets or "!" may follow) or opens with what, why or how.
+var asksBackRe = regexp.MustCompile(`(?i)\?[\s"'”’)\]!.]*$|^\s*(?:what|why|how)\b`)
 
-// asksBack says an owner's answer asks back: the row stays open, marked with the question.
+// asksBack says an answer asks back: the row stays open, marked with the question. A button the owner pressed is the
+// row's own option and never asks back; a Crius line that forwards the question ("[queue q13] owner asks: …?") asks
+// back too (review of 8cdefa3, P1), while its relayed decision ("[queue q13] owner: go") answers.
 func asksBack(text string) bool { return asksBackRe.MatchString(text) }
 
 // OpenRows are the rows still open, oldest first (undated ones first: they are the oldest).
@@ -395,8 +401,15 @@ func syncLocked(home string) (*Queue, error) {
 	for _, a := range answers {
 		for i := range q.Rows {
 			// a row its lead withdrew keeps the answer too: the owner decided it (review round 2 of the queue gap)
-			if q.Rows[i].ID == a.id && (q.Rows[i].State == Open || q.Rows[i].State == Withdrawn) {
-				answer(&q.Rows[i], a.text, a.at, a.by)
+			switch r := &q.Rows[i]; {
+			case r.ID != a.id || r.State != Open && r.State != Withdrawn:
+			case asksBack(a.text):
+				if r.State == Open {
+					r.Asked, r.AskedAt = a.text, a.at
+					changed = true
+				}
+			default:
+				answer(r, a.text, a.at, a.by)
 				changed = true
 			}
 		}

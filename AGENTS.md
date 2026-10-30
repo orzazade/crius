@@ -31,7 +31,9 @@ Rules: [docs/RULES.md](docs/RULES.md) (definition of done, bugs, goals and repor
 - **A "report"** is goal, % done, done parts, remaining (docs/RULES.md §3.2), never a ticket log.
 - **Owner queue** ("Waiting on you" pane, `crius-queue`): every NEED-OWNER bus line is a row. To close row qN, post a
   DECISION or INFO whose text opens with `[queue qN]` (`DECISION crius:lead -> x:lead — [queue q3] owner: go`); a tag
-  further on answers nothing. The owner's answers arrive in the chat as `[queue qN] <text>`.
+  further on answers nothing. The owner's answers arrive in the chat as `[queue qN] <text>`. An answer that asks back
+  (ends in "?" or opens with what/why/how) keeps the row open as "You asked …", from the owner or in your tagged line
+  (`[queue q13] owner asks: what you need?`); so a closing line never ends in "?".
 - **Record and scorecard design:** when unsure whether to count an event, count it and show it. An event
   that shows on no score is silent success. Ask only when the choice changes cost or privacy.
 - Cortex: until it is fully ready, Crius approves its merges and deploys (small PRs, each checked); no owner wait

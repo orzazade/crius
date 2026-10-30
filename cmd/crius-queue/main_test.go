@@ -436,3 +436,62 @@ func TestAnAnswerThatAsksBackKeepsTheCardOpen(t *testing.T) {
 		t.Errorf("an answered card takes no question: %v", err)
 	}
 }
+
+// Review of 8cdefa3: P1, Crius forwarding the owner's question as "[queue qN] owner asks: …?" closed the card again;
+// P2, an option button never asks back, a "?" before a closing bracket or quote still asks, and a GOAL row the lead
+// rewrites after the owner asked back carries the question to its new row.
+func TestAQuestionBackSurvivesCriusForwardingItAndALeadRewrite(t *testing.T) {
+	h := setup(t, "")
+	cli(t, h, "add", "--title", "Falcon: 3 choices", "--from", "falcon")
+	cli(t, h, "add", "--title", "Release the tag", "--from", "aitch", "--options", "Ship it?|Not now")
+	cli(t, h, "add", "--title", "Order shadow", "--from", "axi")
+	cli(t, h, "answer", "q1", "what you need?")
+	cli(t, h, "answer", "q2", "Ship it?")
+	cli(t, h, "answer", "q3", "we have post order that works in v2 (isnt it correct?)")
+	bus := "2026-10-30T14:05 INFO crius:lead -> falcon:lead — [queue q1] owner asks: what you need?\n"
+	if err := os.WriteFile(filepath.Join(h, "bus", "crius.log"), []byte(bus), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cli(t, h, "list")
+	got := rows(t, h)
+	if got["q1"] != "open " || got["q2"] != "answered Ship it?" || got["q3"] != "open " {
+		t.Fatalf("want q1 open after the forward, q2 answered by its button, q3 open: %v", got)
+	}
+	bus += "2026-10-30T14:20 DECISION crius:lead -> falcon:lead — [queue q1] owner: Q1 a, Q2 a\n"
+	if err := os.WriteFile(filepath.Join(h, "bus", "crius.log"), []byte(bus), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cli(t, h, "list")
+	if got := rows(t, h)["q1"]; got != "answered owner: Q1 a, Q2 a" {
+		t.Errorf("q1: Crius's relayed decision closes it, got %q", got)
+	}
+
+	status := filepath.Join(h, "angular.md")
+	goal := func(stamp, needs string) {
+		t.Helper()
+		if err := os.WriteFile(status, []byte("## GOAL ("+stamp+")\nGoal: g\n- [x] one · abc1234\nDone: 100% (1 of 1 milestones)\n"+
+			"Next: none\nNeeds owner: "+needs+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(h, "projects.toml"), []byte(fmt.Sprintf("[projects.angular-91260]\nleads = { lead = %q }\n", status)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	goal("2026-10-30 13:00", "the 3 questions in STATUS-2026-10-28.md section 6")
+	cli(t, h, "list") // q4
+	cli(t, h, "answer", "q4", "so what should i answer?")
+	goal("2026-10-30 14:30", "Q1 start now or after the release; Q2 fix the tests first")
+	var v View
+	if err := json.Unmarshal([]byte(cli(t, h, "list", "--json")), &v); err != nil {
+		t.Fatal(err)
+	}
+	var q5 *Item
+	for i := range v.Open {
+		if v.Open[i].ID == "q5" {
+			q5 = &v.Open[i]
+		}
+	}
+	if q5 == nil || q5.Asked != "so what should i answer?" || q5.AskedAt != "2026-10-30T14:00" {
+		t.Errorf("the rewritten ask's row carries no question: %+v", q5)
+	}
+}

@@ -23,7 +23,7 @@ const C = {
 }
 
 // Change the tag when View's fields change: it declines what an earlier version stored, which outlives a reload.
-const view = atom({ plugin: 'owner-queue', key: 'view' } as const, null, { shape: 'view-1' })
+const view = atom({ plugin: 'owner-queue', key: 'view' } as const, null, { shape: 'view-2' })
 const error = atom({ plugin: 'owner-queue', key: 'error' } as const, null)
 const busy = atom({ plugin: 'owner-queue', key: 'busy' } as const, null)
 const outbox = atom({ plugin: 'owner-queue', key: 'outbox' } as const, [])
