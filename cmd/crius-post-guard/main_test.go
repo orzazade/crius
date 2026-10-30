@@ -388,7 +388,18 @@ func TestAScriptNamedThroughAVariableSetInTheCommandIsRead(t *testing.T) {
 	write("ind5.sh", "#!/bin/bash\nawk \"BEGIN{system(ARGV[1])}\" \"$1\"\n")
 	write("ind6.sh", "#!/bin/bash\nPATH=$1:$PATH; grep x y\n")
 	write("ind7.sh", "#!/bin/bash\ngit -c \"alias.x=!$1\" x\n")
-	write("quiet.sh", "#!/bin/bash\nexec >>/tmp/quiet.log 2>&1\necho usage: bash x.sh \"$1\"\n")
+	write("quiet.sh", "#!/bin/bash\nexec 2>/dev/null\necho usage: bash x.sh \"$1\" >&2\n")
+	// review of 377cc0a: code run through a shell or git setting, a file the script writes, a shell's start-up file
+	write("ps4.sh", "#!/bin/bash\nPS4='$(a'z' boards work-item update --id 1 --discussion \"$1\")'\nset -x\necho \"$1\"\n")
+	write("benv.sh", "#!/bin/bash\nBASH_ENV=/tmp/p.sh bash -c :\n")
+	write("rc.sh", "#!/bin/bash\nbash --rcfile /tmp/p.sh -ic :\n")
+	write("gitenv.sh", "#!/bin/bash\nGIT_EXTERNAL_DIFF=/tmp/p.sh git diff\n")
+	write("decl.sh", "#!/bin/bash\ndeclare \"$1\"; grep x y\n")
+	write("over.sh", "#!/bin/bash\nprintf x > \"$HOME/.crius/bin/bus-post\"; \"$HOME/.crius/bin/bus-post\"\n")
+	write("home.sh", "#!/bin/bash\nHOME=/tmp/evil; \"$HOME/.crius/bin/bus-post\"\n")
+	write("log.sh", "#!/bin/bash\necho \"$1\" >> /tmp/x.log\n")
+	self := "#!/bin/bash\n" + strings.Repeat("bash "+filepath.Join(dir, "self.sh")+"\n", 15)
+	write("self.sh", self)
 	s := `S=` + dir + `; `
 	run := ` az boards work-item update --id 1 --discussion hi`
 	say2027 := s + `cd /tmp && echo "- 10-30 $(date +%H:%M) lead: rig-scan-tag died 20:25 LOUD (az blob list to Azurite :10000 read timed out at 60 s; machine load 197)." >> /tmp/TRIAGE.md && bash $S/lead/say.sh INFO "crius:lead,quotes:qa1" "Lead $(date +%H:%M): rig-scan-tag died 20:25 (Azurite read timeout, machine load 197); restarted pid 9819."; echo rc=$?`
@@ -402,6 +413,11 @@ func TestAScriptNamedThroughAVariableSetInTheCommandIsRead(t *testing.T) {
 		// review of ace0c14: S set in an && chain, a shell after command, a wrapper body that only logs and prints
 		`S=` + dir + ` && bash $S/lead/say.sh INFO x 'az login'`, s + `command bash $S/lead/say.sh INFO x 'az login'`,
 		s + `bash $S/quiet.sh 'az login'`, s + `bash $S/rig.sh INFO crius:lead 'az blob list timed out'`,
+		// review of 377cc0a: a glob or a folder of the same name elsewhere in the command is no copy of the script
+		s + `tail -3 ~/.crius/runs/* ; bash $S/lead/say.sh INFO x 'az blob list ok'`,
+		s + `ls /tmp/*; bash $S/lead/say.sh INFO x 'az blob list ok'`,
+		s + `tail -3 ~/Projects/other/lead/STATUS.md; bash $S/lead/say.sh INFO x 'az blob list ok'`,
+		s + `bash -e $S/lead/say.sh INFO x 'az blob list ok'`,
 	} {
 		if why := check(bash(cmd, dir)); why != "" {
 			t.Errorf("%q asked: %s", cmd, why)
@@ -441,6 +457,16 @@ func TestAScriptNamedThroughAVariableSetInTheCommandIsRead(t *testing.T) {
 		s + `cp q.sh ` + dir + `/saf[e].sh; bash $S/safe.sh 'az login'`,
 		s + `cp q.sh ` + dir + `/saf""e.sh; bash $S/safe.sh 'az login'`,
 		s + `ln -sfn ` + dir + `/evil ` + dir + `/lead; bash $S/lead/say.sh INFO x 'az login'`,
+		// review of 377cc0a
+		`bash ` + dir + `/ps4.sh 'az ok'`, s + `bash $S/ps4.sh 'az ok'`, s + `bash $S/benv.sh 'az login'`,
+		s + `bash $S/rc.sh 'az login'`, s + `bash $S/gitenv.sh 'az login'`, s + `bash $S/decl.sh PA""TH=/tmp/az-bin 'az login'`,
+		s + `bash $S/over.sh 'az login'`, s + `bash $S/home.sh 'az login'`, s + `bash $S/log.sh 'az login'`,
+		s + `bash $S/self.sh 'az login'`,
+		s + `PS4='$(az boards work-item update --id 1)' bash -x $S/lead/say.sh INFO x hi`,
+		s + `BASH_ENV=/tmp/p.sh bash $S/lead/say.sh INFO x 'az login'`,
+		s + `export BASH_ENV=/tmp/p.sh; bash $S/lead/say.sh INFO x 'az login'`,
+		s + `bash --rcfile /tmp/p.sh -i $S/lead/say.sh INFO x 'az login'`,
+		`false && S=` + dir + `; bash $S/safe.sh 'az login'`, // S is not set when false fails
 	} {
 		if why := check(bash(cmd, dir)); !strings.Contains(why, "owner's click") {
 			t.Errorf("%q: %q", cmd, why)
