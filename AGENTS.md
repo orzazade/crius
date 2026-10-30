@@ -29,6 +29,9 @@ Rules: [docs/RULES.md](docs/RULES.md) (definition of done, bugs, goals and repor
 - **Owner alerts** go as Claude Code push notifications from the Crius session. The watchdog (wakewatch) wakes
   Crius through cmux, by a `WAKEWATCH:` line typed into Crius's tab; no Telegram (owner, 2026-10-21).
 - **A "report"** is goal, % done, done parts, remaining (docs/RULES.md §3.2), never a ticket log.
+- **Owner queue** ("Waiting on you" pane, `crius-queue`): every NEED-OWNER bus line is a row. To close row qN, post a
+  DECISION or INFO whose text opens with `[queue qN]` (`DECISION crius:lead -> x:lead — [queue q3] owner: go`); a tag
+  further on answers nothing. The owner's answers arrive in the chat as `[queue qN] <text>`.
 - **Record and scorecard design:** when unsure whether to count an event, count it and show it. An event
   that shows on no score is silent success. Ask only when the choice changes cost or privacy.
 - Cortex: until it is fully ready, Crius approves its merges and deploys (small PRs, each checked); no owner wait

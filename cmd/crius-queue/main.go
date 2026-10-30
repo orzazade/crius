@@ -6,8 +6,8 @@
 //	crius-queue add --title T --from F [--do D] [--why W] [--unblocks U] [--options "A|B"]   prints the new id
 //	crius-queue answer <id|number> [--by who] <text…>   number = place in the list, as /waiting shows it
 //
-// Every NEED-OWNER bus line is a row without a call; a Crius DECISION/INFO/OWNER/ANSWER line tagged "[queue qN]" answers
-// row qN. Exit codes: 0 done, 1 failed, 2 bad arguments.
+// Every NEED-OWNER bus line is a row without a call; a Crius DECISION/INFO/OWNER/ANSWER line whose text opens with
+// "[queue qN]" answers row qN (the tag further on answers nothing). Exit codes: 0 done, 1 failed, 2 bad arguments.
 package main
 
 import (

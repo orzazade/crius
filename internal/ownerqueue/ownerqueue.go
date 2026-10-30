@@ -4,8 +4,9 @@
 //
 // Every NEED-OWNER line on a bus log (home/bus/*.log) is a row by itself: each read of the queue first reads what the
 // logs gained since the last read (sync), so an empty list means nothing waits on the owner, never that Crius forgot to
-// write a row. A line from Crius (DECISION, INFO, OWNER or ANSWER) tagged "[queue qN]" answers row qN; a NEED-OWNER
-// line with the tag is the row Crius already added. Lines dated before the queue's start (init) are history.
+// write a row. A line from Crius (DECISION, INFO, OWNER or ANSWER) whose text opens with "[queue qN]" answers row qN (a
+// tag further on is a quote and answers nothing); a NEED-OWNER line with the tag is the row Crius already added. Lines
+// dated before the queue's start (init) are history.
 //
 // A NEED-OWNER text may carry its parts as "why: …", "unblocks: …" and "options: A | B"; the rest is what to do, and
 // its first clause the title.

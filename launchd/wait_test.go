@@ -77,3 +77,35 @@ func TestCriusWaitStartsWhereTheOldCursorsStopped(t *testing.T) {
 		t.Fatalf("a later run did not keep its cursor:\n%s", out)
 	}
 }
+
+// Review of c898a43: with no old crius cursors the first run wrote no cursor, so a log born before the first wake was
+// lost when that waiter restarted (a cursor file that does not name a log is what makes team-wait read it from line 1).
+func TestCriusWaitWithNoOldCursorsWritesEveryLogAtItsEnd(t *testing.T) {
+	home := t.TempDir()
+	c := filepath.Join(home, ".crius")
+	tw := filepath.Join(home, ".claude", "skills", "cmux-team", "scripts")
+	for _, d := range []string{filepath.Join(c, "bus"), tw} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bus, err := filepath.EvalSymlinks(filepath.Join(c, "bus"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bus, "aitch.log"), []byte("x\nx\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tw, "team-wait.sh"), []byte("exit 0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("bash", "../bin/crius-wait")
+	cmd.Env = []string{"HOME=" + home, "PATH=/usr/bin:/bin"}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatal(err, string(out))
+	}
+	got, err := os.ReadFile(filepath.Join(c, "wait-cursor-all"))
+	if err != nil || string(got) != "2\t"+bus+"/aitch.log\n" {
+		t.Fatalf("want the cursor %q, got %q (%v)", "2\t"+bus+"/aitch.log\n", got, err)
+	}
+}

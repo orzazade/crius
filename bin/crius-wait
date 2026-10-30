@@ -17,20 +17,19 @@ if [ ! -e "$cur" ]; then
     case $f in *.flock | *.holder | *.role | *.asks | *.lock | *.seen | *.tmp.* | "$cur") continue ;; esac
     [ -f "$f" ] && [ "$(cat "$f.role" 2>/dev/null)" = crius ] && olds+=("$f")
   done
-  if [ ${#olds[@]} -gt 0 ]; then
-    # a log no old cursor names starts at its end, written down: a log this cursor does not name is read from line 1
-    for l in "$bus"/*.log; do [ -f "$l" ] && printf 'END\t%s\t%s\n' "$(wc -l < "$l" | tr -d ' ')" "$l"; done |
-      awk -F'\t' '$1 == "END" && NF == 3 { e[$3] = $2 + 0; next }
-        NF == 2 && $1 ~ /^[0-9]+$/ && ($2 in e) { if (!($2 in m) || $1 + 0 > m[$2]) m[$2] = $1 + 0 }
-        END { for (p in e) print ((p in m) ? m[p] : e[p]) "\t" p }' - "${olds[@]}" > "$cur.tmp" || exit 4
-    asks=()
-    for f in "${olds[@]}"; do [ -f "$f.asks" ] && asks+=("$f.asks"); done
-    if [ ${#asks[@]} -gt 0 ]; then
-      awk -F'\t' 'NF == 2 { if (!($1 in m) || $2 + 0 > m[$1]) m[$1] = $2 + 0 } END { for (s in m) print s "\t" m[s] }' \
-        "${asks[@]}" > "$cur.asks" || exit 4
-    fi
-    mv "$cur.tmp" "$cur" || exit 4
+  # every log is written down, at the furthest old cursor or at its end: a log this cursor does not name is then read
+  # from line 1 (one born later), also when there was no old cursor
+  for l in "$bus"/*.log; do [ -f "$l" ] && printf 'END\t%s\t%s\n' "$(wc -l < "$l" | tr -d ' ')" "$l"; done |
+    awk -F'\t' '$1 == "END" && NF == 3 { e[$3] = $2 + 0; next }
+      NF == 2 && $1 ~ /^[0-9]+$/ && ($2 in e) { if (!($2 in m) || $1 + 0 > m[$2]) m[$2] = $1 + 0 }
+      END { for (p in e) print ((p in m) ? m[p] : e[p]) "\t" p }' - ${olds[@]+"${olds[@]}"} > "$cur.tmp" || exit 4
+  asks=()
+  for f in ${olds[@]+"${olds[@]}"}; do [ -f "$f.asks" ] && asks+=("$f.asks"); done
+  if [ ${#asks[@]} -gt 0 ]; then
+    awk -F'\t' 'NF == 2 { if (!($1 in m) || $2 + 0 > m[$1]) m[$1] = $2 + 0 } END { for (s in m) print s "\t" m[s] }' \
+      "${asks[@]}" > "$cur.asks" || exit 4
   fi
+  mv "$cur.tmp" "$cur" || exit 4
 fi
 exec bash "$HOME/.claude/skills/cmux-team/scripts/team-wait.sh" --mode crius --role crius --alias crius:lead \
   --digest "$c/state/crius/bus-digest.log" --cursor "$cur" --watch-dir "$bus" "$@"

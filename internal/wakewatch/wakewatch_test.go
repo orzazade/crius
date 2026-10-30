@@ -2142,3 +2142,29 @@ func TestAnIdleLeadWhoseGoalIsDoneDoesNotAlert(t *testing.T) {
 		}
 	}
 }
+
+// Review of c898a43: crius-wait names the bus by its real path (pwd -P), the check by Home; reached through a link, every
+// log looked uncovered and the check said so every 10 min.
+func TestAWaiterOnTheRealPathOfTheBusCoversItsLogs(t *testing.T) {
+	home := setup(t, map[string]string{"cortex.log": ""})
+	real, err := filepath.EvalSymlinks(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "home-link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	f := &fake{waiters: []string{filepath.Join(real, "bus", "crius.log"), filepath.Join(real, "bus", "cortex.log")}}
+	for _, min := range []int{0, 15} {
+		f.sent = nil
+		if err := Run(f.deps(link, t0.Add(time.Duration(min)*time.Minute))); err != nil {
+			t.Fatal(err)
+		}
+		for _, s := range f.sent {
+			if strings.Contains(s, "waiter") {
+				t.Fatalf("min %d: a covered log was said uncovered: %q", min, s)
+			}
+		}
+	}
+}

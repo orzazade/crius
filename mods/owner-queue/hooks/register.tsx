@@ -45,7 +45,8 @@ async function send($: EngineInterface, line: string): Promise<boolean> {
   return false
 }
 
-// tick runs every second from session.start: it submits the answers /waiting recorded, and reads the queue every 5 s.
+// tick runs every second from session.start: it submits the answers /waiting recorded, and reads the queue every 5 s;
+// while the mod is off it looks every 5 s whether this is Crius's tab now.
 // A line leaves the outbox before it is sent, so a slow submit is never sent twice; one that fails says so (send).
 let ticks = 0
 let ticking = false
@@ -55,6 +56,12 @@ async function tick($: EngineInterface): Promise<void> {
   }
   ticking = true
   try {
+    if (!active) {
+      if (++ticks % (POLL_MS / 1000) === 0 && (await inCriusTab($))) {
+        await turnOn($)
+      }
+      return
+    }
     const lines = await read($, outbox)
     if (lines.length > 0) {
       await update($, outbox, list => list.slice(lines.length))
@@ -107,23 +114,28 @@ async function refresh($: EngineInterface): Promise<void> {
 }
 
 // answer records text as row id's answer, then submits it to Crius. A refused answer (already answered, unknown row)
-// is a toast and submits nothing.
+// is said and submits nothing: in the reply to /waiting (later), or as a toast for a press in the pane, which has no
+// reply.
 async function answer($: EngineInterface, id: string, text: string, later = false): Promise<string> {
+  const say = (s: string) => {
+    if (!later) {
+      $.ui.toast(s)
+    }
+    return s
+  }
   const t = text.trim()
   if (t === '') {
     return 'Type an answer first.'
   }
   if ((await read($, busy)) !== null) {
-    $.ui.toast('An answer is being sent; try again in a moment.')
-    return 'An answer is being sent; try again in a moment.'
+    return say('An answer is being sent; try again in a moment.')
   }
   await update($, busy, () => id)
   try {
     const r = await $.process.run(cli('answer', id, '--by', 'owner', t), { timeoutMs: 10000 })
     if (r.exitCode !== 0) {
       const why = (r.stderr || r.stdout).trim()
-      $.ui.toast(`Not sent: ${why}`)
-      return `Not sent: ${why}`
+      return say(`Not sent: ${why}`)
     }
     const line = r.stdout.trim() // "[queue q2] <answer>", the id resolved from a number
     if (later) {
@@ -177,6 +189,18 @@ function listText(v: View | null, err: string | null): string {
 // surface Crius's role file names (crius-hook keeps ~/.crius/roles/crius.lead.json). A role file it cannot read is said
 // in the status line, never a quiet "off".
 let active = false
+// the row ids in the order /waiting printed them last: what "/waiting N" means
+let printed: string[] | null = null
+
+async function turnOn($: EngineInterface): Promise<void> {
+  active = true
+  await $.command.register({
+    name: 'waiting',
+    description: 'What waits on you; "/waiting 2 yes" answers item 2',
+  })
+  await refresh($)
+  void $.ui.open({ id: PANE, title: TITLE, backgroundColor: C.pane })
+}
 async function inCriusTab($: EngineInterface): Promise<boolean> {
   const tab = await $.env.get('CMUX_SURFACE_ID')
   const home = await $.env.get('HOME')
@@ -194,17 +218,12 @@ async function inCriusTab($: EngineInterface): Promise<boolean> {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    active = await inCriusTab($)
-    if (!active) {
-      return next(e)
+    if (await inCriusTab($)) {
+      await turnOn($)
     }
-    await $.command.register({
-      name: 'waiting',
-      description: 'What waits on you; "/waiting 2 yes" answers item 2',
-    })
-    await refresh($)
+    // off, the tick looks again every 5 s: crius-hook writes Crius's tab into the role file in its own start hook,
+    // which may run after this one
     $.clock.every(1000, () => void tick($).catch(e => $.ui.toast(`owner queue: ${e instanceof Error ? e.message : String(e)}`)))
-    void $.ui.open({ id: PANE, title: TITLE, backgroundColor: C.pane })
 
     return next(e)
   })
@@ -214,20 +233,25 @@ export const register: Register = on => {
     if (args === '') {
       await refresh($)
       await $.ui.open({ id: PANE, title: TITLE, backgroundColor: C.pane })
-      return { text: listText(await read($, view), await read($, error)) }
+      const v = await read($, view)
+      printed = v?.open.map(r => r.id) ?? null
+      return { text: listText(v, await read($, error)) }
     }
     const m = /^(\d+|q\d+)\s+([\s\S]+)$/.exec(args)
     if (m === null) {
       return { text: 'Answer as "/waiting <number> <text>", for example "/waiting 2 yes".' }
     }
     const [, n = '', text = ''] = m
-    // a number is the place in the list the owner sees, so it is sent as that row's id: a row that closed or came in
-    // since cannot move another under the number
-    const r = /^\d+$/.test(n) ? (await read($, view))?.open[Number(n) - 1] : undefined
-    if (/^\d+$/.test(n) && r === undefined) {
+    // a number is the place in the list /waiting printed last (the list refreshes every 5 s), sent as that row's id: a
+    // row that closed or came in since cannot move another under the number
+    if (/^\d+$/.test(n) && printed === null) {
+      return { text: 'Type /waiting first: the numbers are those of the list it prints.' }
+    }
+    const id = /^\d+$/.test(n) ? printed?.[Number(n) - 1] : n
+    if (id === undefined) {
       return { text: `No item ${n} in the list; /waiting shows it.` }
     }
-    return { text: await answer($, r?.id ?? n, text, true) }
+    return { text: await answer($, id, text, true) }
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {

@@ -652,14 +652,14 @@ func unwaited(d Deps, st *state, watch projects) [][2]string {
 	}
 	covered := map[string]bool{}
 	for _, l := range logs {
-		covered[filepath.Clean(l)] = true
+		covered[samePath(l)] = true // crius-wait names the bus by its real path
 	}
 	buses, _ := filepath.Glob(filepath.Join(d.Home, "bus", "*.log")) // sorted; the pattern is fixed
 	gaps := map[string]waitGap{}
 	var due []string
 	for _, b := range buses {
 		name := strings.TrimSuffix(filepath.Base(b), ".log")
-		if name == "waits" || !watch.has(name) || covered[filepath.Clean(b)] {
+		if name == "waits" || !watch.has(name) || covered[samePath(b)] {
 			continue
 		}
 		g, ok := st.Unwaited[name]

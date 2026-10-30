@@ -8,13 +8,14 @@ Owner update 10-30 ~14:00: all four places at once, and every item has its own f
 
 All four read the same queue (`crius-queue list --json`, every 5 s) and say the same count. They show in Crius's tab
 alone (the cmux surface `~/.crius/roles/crius.lead.json` names); other sessions in the folder load the mod and stay off.
+An off mod looks again every 5 s, since crius-hook may write the role file after the mod started.
 
 | Place | What it shows |
 | --- | --- |
 | Pane beside the chat (`Waiting on you`) | head with count, cards oldest first, "Answered today" at the bottom |
 | Status line | `⚑ N waiting on you`; `✓ nothing waits on you` at 0; `⚑ owner queue FAILED: …` when the read fails |
 | Band above the prompt | `⚑ N waiting on you · oldest: <title> (<age>) · /waiting`; nothing at 0 |
-| `/waiting` | the list as text; `/waiting 2 <any text>` answers item 2 of the list shown (sent by its id) |
+| `/waiting` | the list as text; `/waiting 2 <any text>` answers item 2 of the list `/waiting` printed last (sent by its id; before any list it asks for `/waiting` first). A refused answer is said in the reply, not again as a toast |
 
 The pane opens by itself where the terminal docks it (fullscreen, from about 110-144 columns). Below that it waits,
 and the band and `/waiting` carry everything.

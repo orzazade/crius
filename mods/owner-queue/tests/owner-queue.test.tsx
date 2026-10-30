@@ -39,7 +39,13 @@ const ran = (stdout: string, exitCode = 0, stderr = '') => ({
 })
 
 // The engine beneath the mod: crius-queue answers from `list`, and every call is kept.
-function engine(on: Parameters<Parameters<typeof test>[1]>[1], list: () => object | 'fail', tab = 'S-CRIUS', drop = '') {
+function engine(
+  on: Parameters<Parameters<typeof test>[1]>[1],
+  list: () => object | 'fail',
+  tab = 'S-CRIUS',
+  drop = '',
+  roleTab = () => 'S-CRIUS',
+) {
   const calls: string[][] = []
   const submitted: string[] = []
   const status: (string | undefined)[] = []
@@ -49,7 +55,7 @@ function engine(on: Parameters<Parameters<typeof test>[1]>[1], list: () => objec
   // this tab, and Crius's role file naming Crius's tab
   on('env.get', (_, e) => ({ value: e.name === 'CMUX_SURFACE_ID' ? tab : e.name === 'HOME' ? '/h' : undefined }))
   on('fs.read', (_, e) =>
-    e.path === '/h/.crius/roles/crius.lead.json' ? { value: JSON.stringify({ name: 'crius · lead', surface: 'S-CRIUS' }) } : { value: '' },
+    e.path === '/h/.crius/roles/crius.lead.json' ? { value: JSON.stringify({ name: 'crius · lead', surface: roleTab() }) } : { value: '' },
   )
   on('process.run', (_, e) => {
     const args = e.argv.slice(4)
@@ -223,4 +229,45 @@ test('in any tab but Crius\'s the mod stays off: no pane, status, band or /waiti
   const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
   expect(await band.find({ type: 'Text', text: /waiting on you/ })).toBeUndefined()
   await band.unmount()
+})
+
+// review of c898a43: the list refreshes every 5 s, so a number typed after a row closed meant the next row
+test('"/waiting N" answers row N of the list /waiting printed, not of the list as it is now', async ($, on) => {
+  let now: object = TWO
+  const seen = engine(on, () => now)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  const before = await $.command.run({ command: 'waiting', args: '1 yes' })
+  expect(before.text).toBe('Type /waiting first: the numbers are those of the list it prints.')
+  await $.command.run({ command: 'waiting', args: '' }) // prints 1 = q3, 2 = q2
+  now = { ...TWO, open: [TWO.open[1], row('q4', 'Pick a name', '1m')] } // q3 closed: q2 is first now
+  for (let i = 0; i < 5; i++) {
+    await seen.tick()
+  }
+  const sent = await $.command.run({ command: 'waiting', args: '2 yes' })
+  expect(sent.text).toBe('Recorded; sending to Crius: [queue q2] yes')
+  expect(seen.calls).toContainEqual(['answer', 'q2', '--by', 'owner', 'yes'])
+})
+
+// review of c898a43: crius-hook writes Crius's tab into the role file in its own start hook; a mod that looked first
+// stayed off in Crius's own tab, saying nothing
+test('the mod turns on once the role file names this tab', async ($, on) => {
+  let role = 'S-OLD'
+  const seen = engine(on, () => TWO, 'S-CRIUS', '', () => role)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  expect(seen.commands).toEqual([])
+  role = 'S-CRIUS'
+  for (let i = 0; i < 6; i++) {
+    await seen.tick()
+  }
+  expect(seen.commands).toEqual(['waiting'])
+  expect(seen.opened).toEqual(['owner-queue'])
+  expect(seen.status.at(-1)).toBe('⚑ 2 waiting on you')
+})
+
+test('a refused answer typed in /waiting is said once, in the reply', async ($, on) => {
+  const seen = engine(on, () => TWO)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  const r = await $.command.run({ command: 'waiting', args: 'q9 yes' })
+  expect(r.text).toBe('Not sent: crius-queue: q9 is already answered')
+  expect(seen.toasts).toEqual([])
 })
