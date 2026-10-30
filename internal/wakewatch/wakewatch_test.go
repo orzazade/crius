@@ -2198,21 +2198,46 @@ func TestAParkedTeamNeedsNoWaiterUntilItAsksTheOwner(t *testing.T) {
 		t.Fatalf("sent %q, want the NEED-OWNER of the gap's first minute to wake Crius", f.sent)
 	}
 	// Review of d848ec9: a one-shot waiter exits on a line at 22:00, the lead asks the owner at 22:02, and the next run
-	// sees the gap at 22:05: the gap counts from the run before it. Any NEED, and any line from another role, wakes
-	// Crius too, and the alert names it; a line of Crius's own does not.
-	for _, c := range []struct{ line, want string }{
-		{"NEED-OWNER axi:leader -> crius:lead — owner: log in to the F3 look", "NEED-OWNER axi:leader"},
-		{"NEED axi:leader -> crius:lead — the F3 host is down", "NEED axi:leader"},
-		{"DONE axi:qa -> crius:lead — B101 qa a1b2c3d go test 12 ok", "DONE axi:qa"},
-		{"INFO crius:lead -> axi:leader — parked: hold until the owner is back", ""},
-		{"INFO axi:leader -> crius:lead — parked, holding", ""},
+	// sees the gap at 22:05: the gap counts from the run before it. Any NEED, and any line from a role that is not a
+	// parked lead of axi, wakes Crius too, and the alert names it; a line of Crius's own does not, nor one by a short
+	// name of a parked lead. Review of 650a615: the gap is found by the log's place, so old lines whose stamps do not
+	// parse (the real axi.log has 12, from 10-16) stay out of it, and a lost state file counts the whole log.
+	old := "23:15 NEED crius:lead -> axi:leader — owner rule (23:15): every lead keeps a GOAL block\n" +
+		"2026-10-17 02:24 CORRECTED axi -> crius — the 1.6 count was wrong\n" +
+		stamp(t0.Add(-48*time.Hour)) + " NEED-OWNER axi:leader -> crius:lead — owner: env004 login\n"
+	for _, c := range []struct {
+		line, want string
+		reset      bool
+	}{
+		{"NEED-OWNER axi:leader -> crius:lead — owner: log in to the F3 look", "NEED-OWNER axi:leader", false},
+		{"NEED-OWNER axi:leader -> crius:lead — owner: log in to the F3 look", "NEED-OWNER axi:leader", true},
+		{"NEED axi:leader -> crius:lead — the F3 host is down", "NEED axi:leader", false},
+		{"DONE axi:qa -> crius:lead — B101 qa a1b2c3d go test 12 ok", "DONE axi:qa", false},
+		{"DONE falcon:lead -> axi:leader — F2 is yours, can you take it?", "DONE falcon:lead", false},
+		{"INFO crius:lead -> axi:leader — parked: hold until the owner is back", "", false},
+		{"NEED crius:lead -> axi:leader — hold B101 until the owner is back", "", false},
+		{"INFO crius -> axi:leader — hold", "", false},
+		{"INFO axi:leader -> crius:lead — parked, holding", "", false},
+		{"INFO Leader -> crius:lead — parked, holding", "", false},
+		{"INFO axi:Leader -> crius:lead — parked, holding", "", false},
+		{"owner?", "owner?", false},
+		{"", "", false},
 	} {
-		home = setup(t, map[string]string{"axi.log": ""})
-		testutil.Write(t, filepath.Join(home, "projects.toml"), "[projects.axi]\nleads = { leader = \""+home+"/axi.md\" }\n")
+		home = setup(t, map[string]string{"axi.log": old})
+		testutil.Write(t, filepath.Join(home, "projects.toml"), "[projects.axi]\nleads = { leader = \""+home+"/axi.md\" }\n"+
+			"[projects.falcon]\nleads = { lead = \""+home+"/falcon.md\" }\n")
 		testutil.Write(t, filepath.Join(home, "axi.md"), goalWith("PARKED by owner (2026-10-30 22:02)."))
+		testutil.Write(t, filepath.Join(home, "falcon.md"), goalWith("PARKED by owner (2026-10-30 22:02)."))
 		f = &fake{waiters: []string{filepath.Join(home, "bus", "axi.log")}}
 		runAt(t, home, f, func(time.Time) []Screen { return nil }, 0)
-		testutil.Write(t, filepath.Join(home, "bus", "axi.log"), stamp(t0.Add(2*time.Minute))+" "+c.line+"\n")
+		if c.reset {
+			if err := os.Remove(filepath.Join(home, "state", "wakewatch.json")); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if c.line != "" {
+			testutil.Write(t, filepath.Join(home, "bus", "axi.log"), old+stamp(t0.Add(2*time.Minute))+" "+c.line+"\n")
+		}
 		f.waiters = []string{filepath.Join(home, "bus", "crius.log")}
 		runAt(t, home, f, func(time.Time) []Screen { return nil }, 5, 10, 15, 20)
 		if c.want == "" {

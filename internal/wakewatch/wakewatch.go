@@ -135,14 +135,15 @@ type state struct {
 	HookLog     int64                // how much of crius-hook.log was already reported
 	Disk        diskAlarm            // the last disk alarm sent; zero once disk is back over the line
 	Unwaited    map[string]waitGap   // project -> its bus log's gap with no waiter, while it lasts
-	Looked      time.Time            // when the waiter check last looked: a gap seen now began after it
+	BusSizes    map[string]int64     // project -> its bus log's size when the waiter check last looked: a gap seen now began after it
 }
 
-// waitGap is when a bus log was first seen with no waiter, and whether that gap was said to Crius. From is the run before
-// it, the last that saw a waiter there or did not look (zero: none): the waiter may have left at any time after it.
+// waitGap is when a bus log was first seen with no waiter, and whether that gap was said to Crius. From is the log's size
+// at the run before it (0: not known, the whole log): the waiter may have left at any time after that run.
 type waitGap struct {
-	Since, From time.Time
-	Said        bool
+	Since time.Time
+	From  int64
+	Said  bool
 }
 
 // diskAlarm is when the last disk alarm went out and how much disk was free then.
@@ -861,17 +862,19 @@ func handedBack(home, who string, lead bool) (bool, error) {
 // cortex.log; Falcon missed two lines the same way on 10-29 16:23). Each gap is said once; a project leaves st.Unwaited
 // once a waiter covers it again, so a later gap alerts again. A check that cannot look is its own alert, and every gap
 // stays as it was. A project whose every lead is parked (finishedLeads) needs no waiter until a line lands in its log
-// during the gap that is a NEED or NEED-OWNER, or comes from neither a parked lead nor Crius (Crius 10-30 23:19); the
-// gap is counted from the run before it was seen, as a one-shot waiter exits on a line and the lead may ask the owner
-// next (review of d848ec9). A log that cannot be read alerts as any gap does.
+// during the gap that is a NEED or NEED-OWNER, or comes from neither a parked lead of it nor Crius (Crius 10-30 23:19).
+// The gap is counted by the log's place, not its stamps (old lines carry none that parse): from its size at the run
+// before the gap was seen, as a one-shot waiter exits on a line and the lead may ask the owner next, or from its start
+// when that size is not known (review of d848ec9 and 650a615). A log that cannot be read alerts as any gap does.
 func unwaited(d Deps, st *state, watch projects) [][2]string {
 	logs, err := d.Waiters()
 	if err != nil {
 		return [][2]string{{"waiters-failed", "the waiter check failed to look: " + err.Error()}}
 	}
 	_, parked, _, leads, _ := finishedLeads(d.Home) // projects.toml unread: no lead is parked, every gap alerts
-	// quiet says whether the gap of a parked team holds nothing for Crius; else the line that does ("" when not parked).
-	quiet := func(name, log string, from time.Time) (bool, string) {
+	// quiet says whether the gap of a parked team holds nothing for Crius; else why, naming its newest such line ("" when
+	// not parked).
+	quiet := func(name, log string, from int64) (bool, string) {
 		n := 0
 		for l := range leads {
 			if strings.HasPrefix(l, name+":") {
@@ -888,18 +891,26 @@ func unwaited(d Deps, st *state, watch projects) [][2]string {
 		if err != nil {
 			return false, "its bus log could not be read: " + err.Error()
 		}
-		for _, line := range strings.Split(string(b), "\n") {
+		if from > int64(len(b)) { // cut short since: read it all
+			from = 0
+		}
+		last := "" // the newest line for Crius, the one to name
+		for _, line := range strings.Split(string(b[from:]), "\n") {
 			f := strings.Fields(line)
 			if len(f) == 0 {
 				continue
 			}
-			t, err := lineTime(f[0], d.Now)
-			if err == nil && t.Before(from.Truncate(time.Minute)) { // stamps are to the minute
+			if len(f) < 3 {
+				last = line
 				continue
 			}
-			if err != nil || len(f) < 3 || strings.HasPrefix(f[1], "NEED") || !parked[f[2]] && f[2] != "crius:lead" {
-				return false, line
+			who := strings.ToLower(busName(name, f[2]))
+			if who != "crius:lead" && (strings.HasPrefix(f[1], "NEED") || !strings.HasPrefix(who, name+":") || !parked[who]) {
+				last = line
 			}
+		}
+		if last != "" {
+			return false, "its bus has: " + last
 		}
 		return true, ""
 	}
@@ -908,32 +919,35 @@ func unwaited(d Deps, st *state, watch projects) [][2]string {
 		covered[samePath(l)] = true // crius-wait names the bus by its real path
 	}
 	buses, _ := filepath.Glob(filepath.Join(d.Home, "bus", "*.log")) // sorted; the pattern is fixed
-	gaps := map[string]waitGap{}
+	gaps, sizes := map[string]waitGap{}, map[string]int64{}
 	var due, why []string
 	for _, b := range buses {
 		name := strings.TrimSuffix(filepath.Base(b), ".log")
-		if name == "waits" || !watch.has(name) || covered[samePath(b)] {
+		if name == "waits" || !watch.has(name) {
+			continue
+		}
+		if fi, err := os.Stat(b); err == nil { // not known: the next gap reads the whole log
+			sizes[name] = fi.Size()
+		}
+		if covered[samePath(b)] {
 			continue
 		}
 		g, ok := st.Unwaited[name]
 		if !ok {
-			g.Since, g.From = d.Now, st.Looked
-			if g.From.IsZero() {
-				g.From = d.Now
-			}
+			g.Since, g.From = d.Now, st.BusSizes[name]
 		}
 		if !g.Said && d.Now.Sub(g.Since) >= waiterAfter {
-			if q, line := quiet(name, b, g.From); !q {
+			if q, w := quiet(name, b, g.From); !q {
 				g.Said = true
 				due = append(due, name)
-				if line != "" {
-					why = append(why, name+" has every lead parked, and its bus has: "+line)
+				if w != "" {
+					why = append(why, name+" has every lead parked, and "+w)
 				}
 			}
 		}
 		gaps[name] = g
 	}
-	st.Unwaited, st.Looked = gaps, d.Now
+	st.Unwaited, st.BusSizes = gaps, sizes
 	if len(due) == 0 {
 		return nil
 	}
