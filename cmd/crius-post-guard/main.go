@@ -17,17 +17,19 @@
 //
 // It looks through env prefixes (GH_TOKEN=... az), wrappers (env, env -S, timeout, sudo, xargs, find -exec, watch,
 // op run, ...), bash -c, eval, a shell reading its script from stdin, ; && | chains, $(...), line continuations, quotes
-// and $'...'. A script file a shell runs passes when the guard can read it and shows it cannot post (no az, Azure DevOps
-// host or HTTP tool, no other code run: S=/x; bash $S/say.sh); otherwise it asks when the script or the command names
-// az or Azure DevOps. az takes the last copy of an option and reads a value from @file; the guard does the same. When it
+// and $'...'. A script file a shell runs passes when the guard can read it and every command in it only prints, tests or
+// reads, or is bus-post (S=/x; bash $S/say.sh); any other script is checked like a command and asks when it or the
+// command names az or Azure DevOps. az takes the last copy of an option and reads a value from @file; the guard does the same. When it
 // cannot tell (a method, resource or fields value from a variable or @file, eval or bash -c text it cannot read, a
 // command the bash parser cannot read that names az or an ADO host) it asks. Unreadable hook input also asks: a guard
 // on an outward-facing write never lets one through silently.
 //
 // Known gaps: field-only work-item updates (state, title, description) pass by design for now; az repos pr create or
 // update with --title only; a command name from a variable or a function ($AZ, f() { az "$@"; }); a script run by its
-// own name ($S/x.sh, ./x.sh); the code a script runs in turn (another script, source, python) when neither names az
-// or Azure DevOps; python -m azure.cli; ssh or kubectl exec to another machine; code in a script file (inline -c/-e
+// own name ($S/x.sh, ./x.sh); the code a script runs through source or an interpreter (python) when neither names
+// az or Azure DevOps; a script's arguments used in arithmetic or [[ ]] (bash runs a $(...) found in the value); a
+// script or its folder rewritten under a name the command spells another way (a brace list, a folder above it);
+// python -m azure.cli; ssh or kubectl exec to another machine; code in a script file (inline -c/-e
 // code in python, node, bun, ruby, perl or pwsh asks when it names Azure DevOps and a write method); a curl config file
 // (-K); an in-file written by a script; Azure DevOps MCP tools (they are not Bash calls).
 // Output: nothing (the call goes on) or one JSON line with permissionDecision "ask".
@@ -100,6 +102,7 @@ type ctx struct {
 	vars       map[string]setVar // variables the command sets to a literal value at its top level, before a script runs
 	files      []runs            // this command's parse and those of the commands around it (bash -c text)
 	moved      bool              // the command changes folder, so a relative script name is not known
+	depth      int               // scripts read to get here (a script that runs itself stops at 4)
 }
 
 // setVar is a variable's literal value and where its assignment ends; lost: also set elsewhere, computed, read, a loop's
@@ -426,10 +429,9 @@ func shellOpts(args []word) (i int, sawC, sawS bool) {
 // checkScript judges the script file a shell runs. Its name is read as written or through variables the command set to a
 // literal at its top level before it (Crius 10-30 20:27: S=...; bash $S/lead/say.sh INFO "... az blob list ..." asked
 // the owner, as the name came from $S and the bus text named az). The file is read only to show that it cannot post:
-// a script that names no az, Azure DevOps host or HTTP tool and runs no other code (safeScript) passes. Any other
-// script, one whose name or variables the command also uses elsewhere (it may write the file first), one the guard
-// cannot find, and one the command names relative to a folder it left are judged as before: they ask when the script or
-// the command names az or Azure DevOps.
+// a script whose every command is on a list (safeScript) passes. Any other script is checked like a command; it, one
+// whose name or variables the command also uses elsewhere (it may write the file first), one the guard cannot find, and
+// one the command names relative to a folder it left ask when the script or the command names az or Azure DevOps.
 func checkScript(a word, c ctx) string {
 	name, ok := a.text, a.ok
 	if !ok && a.node != nil {
@@ -455,58 +457,164 @@ func checkScript(a word, c ctx) string {
 	if safeScript(string(body)) {
 		return ""
 	}
+	// any other script gets the command check ("az" in quotes, review of ace0c14) and asks when unsure
+	if c.depth >= 4 {
+		return unsure(c, "a shell script four levels down")
+	}
+	if why := checkBash(string(body), ctx{whole: string(body), depth: c.depth + 1}); why != "" {
+		return why
+	}
 	return unsure(ctx{whole: string(body) + "\n" + c.whole}, "a shell script")
 }
 
-// positionalRe finds a word that expands the script's own arguments: $1, ${2}, $@, $*.
-var positionalRe = regexp.MustCompile(`\$(\{?[0-9@*])`)
+// safeCmds are the commands a script may run and still pass: they print, test or read, and run no command their
+// arguments name.
+var safeCmds = map[string]bool{":": true, "true": true, "false": true, "echo": true, "printf": true, "return": true,
+	"exit": true, "continue": true, "break": true, "shift": true, "test": true, "[": true, "wc": true, "tr": true,
+	"date": true, "grep": true, "df": true, "basename": true, "dirname": true, "cat": true, "head": true, "tail": true,
+	"cut": true, "sleep": true, "mkdir": true, "set": true}
 
-// safeScript says whether a script cannot post to Azure DevOps whatever its arguments: it parses as bash, names no az,
-// Azure DevOps host or HTTP tool, and runs no other code: no source or ., eval, interpreter, shell script file, command
-// named by its arguments, or wrapper whose command is not literal. The text of a bash -c in it is held to the same.
+// sysDirs are the folders a safeCmds name may be written with (/usr/bin/grep).
+var sysDirs = map[string]bool{"/bin": true, "/usr/bin": true, "/sbin": true, "/usr/sbin": true}
+
+// busPostRe is the bus-post binary as a script names it: "$HOME/.crius/bin/bus-post".
+var busPostRe = regexp.MustCompile(`^"?\$\{?HOME\}?/\.crius/bin/bus-post"?$`)
+
+// gitReads are the git subcommands a script may run: they read.
+var gitReads = map[string]bool{"cat-file": true, "grep": true, "rev-parse": true, "log": true, "show": true,
+	"status": true, "diff": true, "ls-files": true}
+
+// safeScript says whether a script cannot post to Azure DevOps whatever its arguments. A list of banned words cannot
+// show that (review of ace0c14: "az" in quotes, c=$1; "$c", trap "$1"), so every command it runs must be on a list: it
+// parses as bash, names no az or Azure DevOps host, sets no PATH, and each command is a literal name that safeCall lets
+// pass.
 func safeScript(body string) bool {
 	f, err := syntax.NewParser(syntax.Variant(syntax.LangBash)).Parse(strings.NewReader(body), "")
 	if err != nil || adoRe.MatchString(body) {
 		return false
 	}
-	safe := true
+	funcs := map[string]bool{}
 	syntax.Walk(f, func(n syntax.Node) bool {
-		ce, ok := n.(*syntax.CallExpr)
-		if !safe || !ok || len(ce.Args) == 0 {
-			return safe
-		}
-		args := make([]word, len(ce.Args))
-		for i, w := range ce.Args {
-			args[i] = literal(w)
-		}
-		if !args[0].ok && positionalRe.MatchString(args[0].src) {
-			safe = false
-			return false
-		}
-		for i, a := range args {
-			name := path.Base(a.text)
-			switch {
-			case !a.ok:
-			case i == 0 && (name == "source" || name == "." || name == "eval" || name == "exec"):
-				safe = false
-			case httpTools[name] || interpreters[name] || feeders[name] || lineRunners[name]:
-				safe = false
-			case i == 0 && wrappers[name]:
-				for _, b := range args[1:] {
-					safe = safe && b.ok
-				}
-			case shells[name]:
-				// a shell anywhere in the words (lockf f bash -c '...'): only a -c with literal text, held to this rule
-				j, sawC, _ := shellOpts(args[i:])
-				safe = sawC && i+j < len(args) && args[i+j].ok && safeScript(args[i+j].text)
-			}
-			if !safe {
-				return false
-			}
+		if fd, ok := n.(*syntax.FuncDecl); ok {
+			funcs[fd.Name.Value] = true
 		}
 		return true
 	})
+	safe := true
+	syntax.Walk(f, func(n syntax.Node) bool {
+		switch n := n.(type) {
+		case *syntax.Assign:
+			safe = safe && (n.Name == nil || n.Name.Value != "PATH")
+		case *syntax.CallExpr:
+			if len(n.Args) > 0 {
+				args := make([]word, len(n.Args))
+				for i, w := range n.Args {
+					args[i] = literal(w)
+				}
+				safe = safe && safeCall(args, funcs)
+			}
+		}
+		return safe
+	})
 	return safe
+}
+
+// safeCall says whether one command of a script may pass: bus-post; one of safeCmds, bare or in a system folder; a
+// function the script defines (its body is read too); exec with only redirects or of a command that may pass; a shell
+// -c whose literal text is a
+// safeScript; lockf running a command that may pass; awk and git on their own rules.
+func safeCall(args []word, funcs map[string]bool) bool {
+	a := args[0]
+	home, _ := os.UserHomeDir()
+	if busPostRe.MatchString(a.src) || a.ok && a.text == home+"/.crius/bin/bus-post" {
+		return true
+	}
+	if !a.ok || strings.Contains(a.text, "/") && !sysDirs[path.Dir(a.text)] {
+		return false
+	}
+	name := path.Base(a.text)
+	switch {
+	case !strings.Contains(a.text, "/") && funcs[name]:
+		return true
+	case name == "exec":
+		i := 1
+		for i < len(args) && args[i].ok && strings.HasPrefix(args[i].text, "-") {
+			if args[i].text == "-a" {
+				i++
+			}
+			i++
+		}
+		return i >= len(args) || safeCall(args[i:], funcs)
+	case shells[name]:
+		i, sawC, _ := shellOpts(args)
+		return sawC && i < len(args) && args[i].ok && safeScript(args[i].text)
+	case name == "lockf":
+		i := 1
+		for i < len(args) && args[i].ok && strings.HasPrefix(args[i].text, "-") {
+			if args[i].text == "-t" {
+				i++
+			}
+			i++
+		}
+		return i+1 < len(args) && safeCall(args[i+1:], funcs)
+	case name == "awk":
+		return safeAwk(args[1:])
+	case name == "git":
+		return safeGit(args[1:])
+	}
+	return safeCmds[name]
+}
+
+// safeAwk passes an awk whose program is literal and runs no command: no system(), no pipe to or from one, no -f file.
+func safeAwk(args []word) bool {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case !a.ok:
+			return false
+		case a.text == "-F" || a.text == "-v":
+			i++
+		case strings.HasPrefix(a.text, "-F") || strings.HasPrefix(a.text, "-v"):
+		case strings.HasPrefix(a.text, "-"):
+			return false
+		default:
+			p := strings.ReplaceAll(a.text, "||", "")
+			return !strings.Contains(p, "|") && !strings.Contains(p, "system")
+		}
+	}
+	return false
+}
+
+// safeGit passes a git that reads: no -c, --config-env or --exec-path, a literal subcommand from gitReads, and no option
+// that starts a program (grep -O, diff --ext-diff).
+func safeGit(args []word) bool {
+	i := 0
+	for ; i < len(args); i++ {
+		a := args[i]
+		if !a.ok {
+			return false
+		}
+		if !strings.HasPrefix(a.text, "-") {
+			break
+		}
+		if strings.HasPrefix(a.text, "-c") || strings.HasPrefix(a.text, "--config-env") ||
+			strings.HasPrefix(a.text, "--exec-path") {
+			return false
+		}
+		if a.text == "-C" || a.text == "--git-dir" || a.text == "--work-tree" || a.text == "--namespace" {
+			i++
+		}
+	}
+	if i >= len(args) || !args[i].ok || !gitReads[args[i].text] {
+		return false
+	}
+	for _, a := range args[i+1:] {
+		if a.ok && (strings.HasPrefix(a.text, "-O") || strings.HasPrefix(a.text, "--open-files-in-pager") ||
+			a.text == "--ext-diff") {
+			return false
+		}
+	}
+	return true
 }
 
 // scan reads what a command sets up for the scripts it runs: the variables it sets once, to a literal value, as a
@@ -552,14 +660,18 @@ func (c ctx) scan(f *syntax.File) ctx {
 					}
 				}
 			case shells[name]:
-				if i, sawC, sawS := shellOpts(args); !sawC && !sawS && i < len(args) {
-					r.scripts[n.Args[i]] = true
+				if i, sawC, sawS := shellOpts(args[k:]); !sawC && !sawS && k+i < len(args) {
+					r.scripts[n.Args[k+i]] = true
 				}
 			}
 		}
 		return true
 	})
+	var top []*syntax.Stmt
 	for _, st := range f.Stmts {
+		top = append(top, andChain(st)...)
+	}
+	for _, st := range top {
 		var as []*syntax.Assign
 		switch x := st.Cmd.(type) {
 		case *syntax.CallExpr:
@@ -586,9 +698,23 @@ func (c ctx) scan(f *syntax.File) ctx {
 	return c
 }
 
+// andChain gives the statements of a top-level a && b && c, each of which runs in this shell before the next (S=x &&
+// bash $S/say.sh, review of ace0c14); nothing for one run in the background, where an assignment stays in a subshell.
+func andChain(st *syntax.Stmt) []*syntax.Stmt {
+	if st.Background || st.Coprocess {
+		return nil
+	}
+	if b, ok := st.Cmd.(*syntax.BinaryCmd); ok && b.Op == syntax.AndStmt && !st.Negated {
+		return append(andChain(b.X), andChain(b.Y)...)
+	}
+	return []*syntax.Stmt{st}
+}
+
 // touched says whether the command, or a command around it, names the script outside the words that run it: by its last
 // path part, or by a variable its name is made of (cat > "$F" <<EOF ... EOF; bash "$F" runs what this command wrote;
-// git -C $S pull; bash $S/x.sh). Text inside quotes and here-documents counts.
+// git -C $S pull; bash $S/x.sh), with quotes taken out (saf""e.sh), as a path part a glob matches (saf[e].sh), or by a
+// folder the run word names after the variable or the variable's last folder (ln -sfn evil $DIR/lead; review of
+// ace0c14). Text inside quotes and here-documents counts.
 func (c ctx) touched(run *syntax.Word, base string) bool {
 	vars := map[string]bool{}
 	syntax.Walk(run, func(n syntax.Node) bool {
@@ -597,17 +723,47 @@ func (c ctx) touched(run *syntax.Word, base string) bool {
 		}
 		return true
 	})
+	parts := []string{base}
+	for _, p := range strings.Split(literal(run).text, "/") {
+		if p != "" && p != "." && p != ".." {
+			parts = append(parts, p)
+		}
+	}
+	for v := range vars {
+		if s, ok := c.vars[v]; ok && path.Base(s.text) != "/" {
+			parts = append(parts, path.Base(s.text))
+		}
+	}
+	names := func(text string) bool {
+		if strings.Contains(text, base) {
+			return true
+		}
+		for _, seg := range strings.Split(text, "/") {
+			for _, p := range parts {
+				if m, _ := path.Match(seg, p); seg == p || strings.ContainsAny(seg, "*?[") && m {
+					return true
+				}
+			}
+		}
+		return false
+	}
 	hit := false
 	for _, r := range c.files {
 		syntax.Walk(r.file, func(n syntax.Node) bool {
 			switch n := n.(type) {
+			case *syntax.Assign:
+				if n.Name != nil && vars[n.Name.Value] {
+					if _, set := c.vars[n.Name.Value]; set {
+						return false // the one literal assignment the name was read through
+					}
+				}
 			case *syntax.Word:
 				if r.scripts[n] {
 					return false
 				}
 				var b bytes.Buffer
 				syntax.NewPrinter().Print(&b, n)
-				hit = hit || strings.Contains(b.String(), base)
+				hit = hit || names(b.String()) || names(literal(n).text)
 			case *syntax.ParamExp:
 				hit = hit || n.Param != nil && vars[n.Param.Value]
 			}

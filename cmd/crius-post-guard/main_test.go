@@ -364,6 +364,11 @@ func TestAScriptNamedThroughAVariableSetInTheCommandIsRead(t *testing.T) {
 		}
 	}
 	write("lead/say.sh", string(body))
+	rig, err := os.ReadFile("testdata/rig-say.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	write("rig.sh", string(rig))
 	write("post.sh", "#!/bin/bash\n"+lead94205+"\n")
 	write("relay.sh", "#!/bin/bash\naz devops invoke --area wit --resource comments --http-method \"$1\" --in-file x.json\n")
 	write("chain.sh", "#!/bin/bash\nbash \""+dir+"/post.sh\"\n")
@@ -374,7 +379,18 @@ func TestAScriptNamedThroughAVariableSetInTheCommandIsRead(t *testing.T) {
 	write("wrap.sh", "#!/bin/bash\ntimeout 60 \"$@\"\n")
 	write("py.sh", "#!/bin/bash\npython3 post.py\n")
 	write("z2.sh", "#!/bin/zsh\nprint ${(j:,:)arr}\n")
+	// review of ace0c14: az quoted, and a script that runs its arguments one step removed
+	write("q.sh", "#!/bin/bash\n\"az\" boards work-item update --id 1 --discussion \"$1\"\n")
+	write("ind1.sh", "#!/bin/bash\nc=$1; shift; \"$c\" \"$@\"\n")
+	write("ind2.sh", "#!/bin/bash\ncmd=(\"$@\"); \"${cmd[@]}\"\n")
+	write("ind3.sh", "#!/bin/bash\n$SHELL -c \"$1\"\n")
+	write("ind4.sh", "#!/bin/bash\ntrap \"$1\" EXIT\n")
+	write("ind5.sh", "#!/bin/bash\nawk \"BEGIN{system(ARGV[1])}\" \"$1\"\n")
+	write("ind6.sh", "#!/bin/bash\nPATH=$1:$PATH; grep x y\n")
+	write("ind7.sh", "#!/bin/bash\ngit -c \"alias.x=!$1\" x\n")
+	write("quiet.sh", "#!/bin/bash\nexec >>/tmp/quiet.log 2>&1\necho usage: bash x.sh \"$1\"\n")
 	s := `S=` + dir + `; `
+	run := ` az boards work-item update --id 1 --discussion hi`
 	say2027 := s + `cd /tmp && echo "- 10-30 $(date +%H:%M) lead: rig-scan-tag died 20:25 LOUD (az blob list to Azurite :10000 read timed out at 60 s; machine load 197)." >> /tmp/TRIAGE.md && bash $S/lead/say.sh INFO "crius:lead,quotes:qa1" "Lead $(date +%H:%M): rig-scan-tag died 20:25 (Azurite read timeout, machine load 197); restarted pid 9819."; echo rc=$?`
 	for _, cmd := range []string{
 		say2027,
@@ -383,8 +399,9 @@ func TestAScriptNamedThroughAVariableSetInTheCommandIsRead(t *testing.T) {
 		`export S=` + dir + `; bash $S/lead/say.sh INFO crius:lead "az ok"`,
 		`bash ` + dir + `/lead/say.sh INFO crius:lead "az ok"`,
 		s + `cd /tmp && bash $S/lead/say.sh INFO crius:lead "az login ok"`, s + `bash $S/safe.sh 'az login'`,
-		s + `bash $S/chain.sh`, // known gap: a script that runs another one, with az named in neither, passes as before
-
+		// review of ace0c14: S set in an && chain, a shell after command, a wrapper body that only logs and prints
+		`S=` + dir + ` && bash $S/lead/say.sh INFO x 'az login'`, s + `command bash $S/lead/say.sh INFO x 'az login'`,
+		s + `bash $S/quiet.sh 'az login'`, s + `bash $S/rig.sh INFO crius:lead 'az blob list timed out'`,
 	} {
 		if why := check(bash(cmd, dir)); why != "" {
 			t.Errorf("%q asked: %s", cmd, why)
@@ -413,8 +430,17 @@ func TestAScriptNamedThroughAVariableSetInTheCommandIsRead(t *testing.T) {
 		s + `bash $S/src.sh 1 'see https://dev.azure.com/o/p'`, s + `bash $S/fn.sh az boards work-item update --discussion x`,
 		s + `bash $S/args.sh az boards x`, s + `bash $S/wrap.sh az boards x`, s + `bash $S/py.sh 'az login'`,
 		s + `zsh $S/z2.sh POST https://dev.azure.com/o/p/_apis/wit/workItems/1/comments`,
-		`S=/elsewhere; eval 'S=` + dir + `'; bash $S/post.sh 'az login'`,
+		s + `eval 'S=/elsewhere'; bash $S/safe.sh 'az login'`,
 		s + `f() { local S; bash $S/safe.sh 'az login'; }; f`, s + `if true; then S=/x; fi; bash $S/safe.sh 'az login'`,
+		`cd /tmp && bash safe.sh 'az login'`, // a relative name after cd is not the file the guard can read
+		// review of ace0c14
+		s + `bash $S/chain.sh`, // a script that runs one that posts
+		s + `bash $S/q.sh hello`, s + `bash $S/ind1.sh` + run, s + `bash $S/ind2.sh` + run, s + `bash $S/ind3.sh '` + run + `'`,
+		s + `bash $S/ind4.sh '` + run + `'`, s + `bash $S/ind5.sh '` + run + `'`, s + `bash $S/ind6.sh /tmp/az-bin 'az login'`,
+		s + `bash $S/ind7.sh '` + run + `'`,
+		s + `cp q.sh ` + dir + `/saf[e].sh; bash $S/safe.sh 'az login'`,
+		s + `cp q.sh ` + dir + `/saf""e.sh; bash $S/safe.sh 'az login'`,
+		s + `ln -sfn ` + dir + `/evil ` + dir + `/lead; bash $S/lead/say.sh INFO x 'az login'`,
 	} {
 		if why := check(bash(cmd, dir)); !strings.Contains(why, "owner's click") {
 			t.Errorf("%q: %q", cmd, why)
