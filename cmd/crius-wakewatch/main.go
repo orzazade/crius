@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -57,7 +58,7 @@ func main() {
 			return wakewatch.LiveSessions(home)
 		}, States: func() ([]sessionstate.State, error) {
 			return sessionstate.List(filepath.Join(store.Home(), "sessions"))
-		}, Restore: restore})
+		}, Restore: restore, Waiters: waiters})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, time.Now().Format(time.RFC3339), "crius-wakewatch:", err)
 		os.Exit(1)
@@ -147,6 +148,55 @@ func restoreFolders(b []byte) ([]string, error) {
 		}
 	}
 	return out, nil
+}
+
+// waiters gives the bus logs Crius's live waiters cover (waiterLogs), from every process's command line.
+func waiters() ([]string, error) {
+	out, err := exec.Command("ps", "-axww", "-o", "command=").Output()
+	if err != nil {
+		return nil, fmt.Errorf("ps -axww -o command=: %v", err)
+	}
+	return waiterLogs(string(out)), nil
+}
+
+// waiterValue: team-wait.sh options that take a value; --slot and --classify take none. Every other word that is not an
+// option is a log it waits on.
+var waiterValue = map[string]bool{"--mode": true, "--role": true, "--alias": true, "--boss": true, "--quiet": true,
+	"--cursor": true, "--from": true, "--max-hours": true, "--digest": true}
+
+// waiterLogs reads ps lines (one command each) and gives the logs named by each team-wait.sh process run with --mode
+// crius. Only a process that runs the script counts: its first word, or the second after an interpreter (/bin/bash
+// team-wait.sh). A shell that runs it with -c shows the same words, quoted, and is not the waiter. A path with a space
+// is split as ps prints it, so it matches no bus log and that log stays uncovered (loud, not silent).
+func waiterLogs(ps string) []string {
+	var out []string
+	for _, line := range strings.Split(ps, "\n") {
+		w := strings.Fields(line)
+		at := slices.IndexFunc(w, func(s string) bool { return filepath.Base(s) == "team-wait.sh" })
+		if at < 0 || at > 1 {
+			continue
+		}
+		var mode string
+		var logs []string
+		for i := at + 1; i < len(w); i++ {
+			opt, val, eq := strings.Cut(w[i], "=")
+			switch {
+			case !strings.HasPrefix(opt, "--"):
+				logs = append(logs, w[i])
+			case !waiterValue[opt] || eq:
+			case i+1 < len(w):
+				i++
+				val = w[i]
+			}
+			if opt == "--mode" {
+				mode = val
+			}
+		}
+		if mode == "crius" {
+			out = append(out, logs...)
+		}
+	}
+	return out
 }
 
 // screens reads the last 30 lines of every terminal tab in cmux. A tab whose read fails comes back with Err set.

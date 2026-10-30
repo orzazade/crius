@@ -1,4 +1,4 @@
-package digest
+package goal
 
 import (
 	"errors"
