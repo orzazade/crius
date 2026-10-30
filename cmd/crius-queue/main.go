@@ -157,7 +157,7 @@ func run(home string, now time.Time, args []string, out io.Writer) error {
 }
 
 // list reads every lead's GOAL block into the queue, then the queue. unread names each lead whose block cannot be
-// read, held each ask held back (ownerqueue.SyncGoals).
+// read, held each ask held back (ownerqueue.SyncGoals, and the screen asks wakewatch held on its last run).
 func list(home string, now time.Time) (q *ownerqueue.Queue, unread, held []string, err error) {
 	leads, err := ingest.Leads(home)
 	if err != nil {
@@ -194,8 +194,12 @@ func list(home string, now time.Time) (q *ownerqueue.Queue, unread, held []strin
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	onScreen, err := ownerqueue.ScreenHeld(home)
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	q, err = ownerqueue.List(home, now)
-	return q, unread, held, err
+	return q, unread, append(held, onScreen...), err
 }
 
 // readIn reads in what a lead's ask points to (needref). A git-object status file's labels and the files its ask names

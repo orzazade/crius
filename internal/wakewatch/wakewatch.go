@@ -643,42 +643,31 @@ func waiting(st *state, d Deps, watch projects, park parked, screens []Screen, h
 }
 
 // screenAsks is what lead tabs ask the owner on screen this run (Crius 10-30 17:15: marketplace asked A1, A2 and "go"
-// in its own tab, more than once, with no NEED-OWNER line): asks for each screen unchanged for screenAfter whose last
-// reply asks (ownerqueue.Asks), quiet for each lead whose last reply asks nothing. A tab with no reply in sight is
-// neither.
-type screenAsks struct {
-	asks  []ownerqueue.ScreenAsk
-	quiet []string
-}
+// in its own tab, more than once, with no NEED-OWNER line): each screen unchanged for screenAfter whose last reply asks
+// (ownerqueue.Asks).
+type screenAsks struct{ asks []ownerqueue.ScreenAsk }
 
 func (sa *screenAsks) note(d Deps, lead, key, body string, since time.Time) {
-	reply := lastReply(body)
-	switch {
-	case reply == "":
-	case !ownerqueue.Asks(reply):
-		sa.quiet = append(sa.quiet, lead)
-	case d.Now.Sub(since) >= screenAfter:
+	if reply := lastReply(body); reply != "" && ownerqueue.Asks(reply) && d.Now.Sub(since) >= screenAfter {
 		sa.asks = append(sa.asks, ownerqueue.ScreenAsk{Lead: lead, Key: key, Text: reply, Since: since,
 			Project: plainName(d.Home, project(lead))})
 	}
 }
 
-// queueAsks puts the screen asks in the owner queue (ownerqueue.SyncScreens). A queue never set up has no screen row to
-// withdraw, so quiet leads alone need none; an ask it cannot hold is said, as any other failure to look.
+// queueAsks puts the screen asks in the owner queue (ownerqueue.SyncScreens); a queue that cannot take them is said, as
+// any other failure to look. It runs on every run, so the asks it holds back are always the current ones.
 func queueAsks(d Deps, sa screenAsks) [][2]string {
-	if len(sa.asks) == 0 && len(sa.quiet) == 0 {
-		return nil
-	}
-	if _, err := ownerqueue.SyncScreens(d.Home, d.Now, sa.asks, sa.quiet); err != nil && (len(sa.asks) > 0 || !errors.Is(err, ownerqueue.ErrNotSetUp)) {
+	if _, err := ownerqueue.SyncScreens(d.Home, d.Now, sa.asks); err != nil && (len(sa.asks) > 0 || !errors.Is(err, ownerqueue.ErrNotSetUp)) {
 		return [][2]string{{"queue-failed", "wakewatch could not put a lead's on-screen ask in the owner queue: " + err.Error()}}
 	}
 	return nil
 }
 
 // lastReply gives a screen's last reply: the "⏺" block nearest the bottom that is no notice, with that mark and the
-// 2-cell indent taken off, up to the next "⏺" or "✻" line. "" when that block is a tool call (the turn did not end on
-// text) or no reply is in sight. A notice after the reply ("Background shell command didn't finish …") is passed over:
-// the upload-central lead's ❓ sat above one (live tabs, 10-30 18:00).
+// 2-cell indent taken off, up to the next "⏺" or "✻" line; with no "⏺" line in sight, a reply whose head has scrolled
+// off, all of what is seen (review round 1 of 2bca850: a long ask was never seen). "" when that block is a tool call
+// (the turn did not end on text). A notice after the reply ("Background shell command didn't finish …") is passed
+// over: the upload-central lead's ❓ sat above one (live tabs, 10-30 17:44).
 func lastReply(body string) string {
 	lines := strings.Split(body, "\n")
 	end := len(lines)
@@ -697,13 +686,21 @@ func lastReply(body string) string {
 		case toolRe.MatchString(t):
 			return ""
 		}
-		out := []string{t}
-		for _, l := range lines[i+1 : max(i+1, end)] {
-			out = append(out, strings.TrimPrefix(strings.TrimRight(l, " "), "  "))
-		}
-		return strings.TrimSpace(strings.Join(out, "\n"))
+		return unindent(append([]string{t}, lines[i+1:max(i+1, end)]...))
+	}
+	if end == len(lines) && !slices.ContainsFunc(lines, func(l string) bool { return strings.HasPrefix(strings.TrimSpace(l), "⏺") }) {
+		return unindent(lines)
 	}
 	return ""
+}
+
+// unindent joins a reply's lines with the 2-cell indent under its "⏺" taken off.
+func unindent(lines []string) string {
+	out := make([]string, 0, len(lines))
+	for _, l := range lines {
+		out = append(out, strings.TrimPrefix(strings.TrimRight(l, " "), "  "))
+	}
+	return strings.TrimSpace(strings.Join(out, "\n"))
 }
 
 var (

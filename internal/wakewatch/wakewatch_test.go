@@ -2310,6 +2310,7 @@ func TestALeadThatAsksOnItsScreenBecomesAQueueRow(t *testing.T) {
 	noticed := func(time.Time) string {
 		return string(asked[:box]) + "\n✻ Worked for 27s · done 1:57 PM\n\n⏺ Background shell command didn't finish before the previous session ended\n" + string(asked[box:])
 	}
+	headless := func(time.Time) string { return string(asked[strings.Index(string(asked), "  Three things"):]) }
 	unseen := func(time.Time) string {
 		return "⏺ Compacted while idle, before the prompt cache expired\n" + string(asked[box:])
 	}
@@ -2329,8 +2330,11 @@ func TestALeadThatAsksOnItsScreenBecomesAQueueRow(t *testing.T) {
 			idle("Build plan committed. Nothing needs you here. ✅")}, ""},
 		{"a notice under the ask", "", "marketplace · lead", []func(time.Time) string{noticed, noticed, noticed, noticed}, ownerqueue.Open},
 		{"no reply in sight", "", "marketplace · lead", []func(time.Time) string{still, still, still, unseen}, ownerqueue.Open},
-		{"the lead moved on", "", "marketplace · lead", []func(time.Time) string{still, still, still,
-			idle("Started the build on A1 and A2 as proposed. Waiting on you: nothing.")}, ownerqueue.Withdrawn},
+		// review round 1 of 2bca850 (P1): a reply that asks nothing does not mean the owner answered; the row stays
+		{"a reply that asks nothing later", "", "marketplace · lead", []func(time.Time) string{still, still, still,
+			idle("Holding until the owner answers A1. ⏳")}, ownerqueue.Open},
+		// review round 1 of 2bca850 (P2): a long ask whose "⏺" line has scrolled off
+		{"the head scrolled off", "", "marketplace · lead", []func(time.Time) string{headless, headless, headless, headless}, ownerqueue.Open},
 		{"a dialog", "", "marketplace · lead", []func(time.Time) string{dialog, dialog, dialog, dialog}, ""},
 	} {
 		home := setup(t, map[string]string{"marketplace.log": busFrom("marketplace:lead", t0.Add(-time.Hour)) + c.bus})

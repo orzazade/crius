@@ -32,6 +32,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -169,49 +170,52 @@ func SyncGoals(home string, now time.Time, read func() ([]GoalNeed, error)) (hel
 }
 
 // ScreenAsk is what a lead asks the owner in its own tab, with no NEED-OWNER line (Crius 10-30 17:15: marketplace asked
-// A1, A2 and "go" there more than once): Key names the screen it was read from, Since when that screen was first seen
-// (local, 2006-01-02T15:04), Project the project's plain name.
+// A1, A2 and "go" there more than once): Key names the screen it was read from ("surface:N:<hash>"), Since when that
+// screen was first seen, Project the project's plain name.
 type ScreenAsk struct {
 	Lead, Key, Text, Project string
 	Since                    time.Time // when its screen was first seen as it is now
 }
 
-// noLongerOnScreen is the answer of a withdrawn screen row.
-const noLongerOnScreen = "the lead's screen no longer asks this"
-
-// SyncScreens opens a row for each screen ask, once per Key. An ask is held while its project has a row open (the ask
-// may be on show already, and a lead that asks again in other words makes no second row), or when a NEED-OWNER line
-// of the project or an owner answer came in since its screen was first seen, less screenSlack (the turn that wrote
-// the screen may have posted the line). An open screen row is withdrawn when its lead is one of quiet: its tab was read
-// idle and asks nothing, so the lead has moved on. held names each ask held back.
-func SyncScreens(home string, now time.Time, asks []ScreenAsk, quiet []string) (held []string, err error) {
+// SyncScreens puts the screen asks in the queue. A screen read before makes nothing new. A newer ask from the tab of an
+// open screen row rewrites that row (the lead's newest words, one row). Else the ask is held when the bus or the owner
+// has it (heldBy), or it opens a row. Nothing closes a screen row but the owner, Crius or that rewrite: a reply that
+// asks nothing ("holding until the owner answers ⏳") does not mean the question was answered (review round 1 of
+// 2bca850, P1). Crius's own team asks Crius, not the owner. held names each ask held back; it is also kept for list.
+func SyncScreens(home string, now time.Time, asks []ScreenAsk) (held []string, err error) {
 	err = locked(home, func() error {
 		q, err := syncLocked(home)
 		if err != nil {
 			return err
 		}
 		changed := false
-		for i := range q.Rows {
-			if r := &q.Rows[i]; r.Screen != "" && r.State == Open && slices.Contains(quiet, r.Screen) {
-				r.State, r.Answer, r.AnsweredAt, r.AnsweredBy = Withdrawn, noLongerOnScreen, now.Format(stamp), r.Screen
-				changed = true
-			}
-		}
 		for _, a := range asks {
-			if slices.ContainsFunc(q.Rows, func(r Row) bool { return r.Screen == a.Lead && r.Line == a.Key }) {
+			if from(a.Lead) == "Crius" || slices.ContainsFunc(q.Rows, func(r Row) bool { return r.Line == a.Key }) {
 				continue
 			}
-			if by := onShow(q, from(a.Lead), a.Since); by != "" {
-				held = append(held, a.Lead+": "+by)
-				continue
-			}
-			r := Row{Do: a.Text, Title: title(firstAsk(a.Text))}
+			title := title(firstAsk(a.Text))
 			if a.Project != "" {
-				r.Title = a.Project + ": " + r.Title
+				title = a.Project + ": " + title
 			}
+			surface := a.Key[:strings.LastIndex(a.Key, ":")+1]
+			if i := slices.IndexFunc(q.Rows, func(r Row) bool {
+				return r.State == Open && r.Screen == a.Lead && strings.HasPrefix(r.Line, surface)
+			}); i >= 0 {
+				q.Rows[i].Title, q.Rows[i].Do, q.Rows[i].Line = title, a.Text, a.Key
+				changed = true
+				continue
+			}
+			if by := heldBy(q, a); by != "" {
+				held = append(held, a.Lead+" asks on screen ("+firstAsk(a.Text)+"), held: "+by)
+				continue
+			}
+			r := Row{Do: a.Text, Title: title}
 			r.ID, r.State, r.Opened, r.From, r.Screen, r.Line = next(q), Open, now.Format(stamp), from(a.Lead), a.Lead, a.Key
 			q.Rows = append(q.Rows, r)
 			changed = true
+		}
+		if err := writeJSON(heldPath(home), held); err != nil {
+			return err
 		}
 		if !changed {
 			return nil
@@ -221,68 +225,173 @@ func SyncScreens(home string, now time.Time, asks []ScreenAsk, quiet []string) (
 	return held, err
 }
 
+// ScreenHeld gives the screen asks the last SyncScreens held back (wakewatch's last run), for list to show.
+func ScreenHeld(home string) ([]string, error) {
+	b, err := os.ReadFile(heldPath(home))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var held []string
+	return held, json.Unmarshal(b, &held)
+}
+
+func heldPath(home string) string {
+	return filepath.Join(home, "state", "owner-queue.screen-held.json")
+}
+
 // screenSlack is how long before its screen was first seen a lead's turn may have posted the NEED-OWNER line that
 // asks the same: wakewatch reads each tab every 5 min.
 const screenSlack = 15 * time.Minute
 
-// onShow names a row of project that holds a screen ask back: any row of it still open, or a bus row or owner answer
-// since the screen was first seen, less screenSlack. "" when there is none.
-func onShow(q *Queue, project string, t time.Time) string {
-	since, from := t.Format(stamp), t.Add(-screenSlack).Format(stamp)
+// heldBy names the row of the ask's project that has it already, "" when none does: a NEED-OWNER the same turn may
+// have posted (since the screen was first seen, less screenSlack), or an open row, or one the owner answered since
+// then, that asks the same (sameAsk). An open row about something else holds nothing (review round 1 of 2bca850, P1:
+// upload-central's old q14 would hide every new question).
+func heldBy(q *Queue, a ScreenAsk) string {
+	project, since := from(a.Lead), a.Since.Format(stamp)
+	slack := a.Since.Add(-screenSlack).Format(stamp)
 	for _, r := range q.Rows {
 		switch {
-		case r.From != project:
-		case r.State == Open:
-			return "its ask " + r.ID + " is open in the queue"
-		case r.Goal == "" && r.Screen == "" && r.Opened >= from:
-			return "its NEED-OWNER " + r.ID + " came at " + r.Opened + ", after the screen began (" + since + ")"
-		case r.State == Answered && r.AnsweredAt >= from && byOwner(r):
-			return "the owner answered " + r.ID + " at " + r.AnsweredAt + ", after the screen began (" + since + ")"
+		case r.From != project || r.Screen != "":
+		case r.Goal == "" && r.Opened >= slack:
+			return "its NEED-OWNER " + r.ID + " came at " + r.Opened + ", as the screen began (" + since + ")"
+		case r.State == Open && sameAsk(r, a.Text):
+			return "its ask " + r.ID + " is open in the queue and asks the same"
+		case r.State == Answered && r.AnsweredAt >= slack && byOwner(r) && sameAsk(r, a.Text):
+			return "the owner answered " + r.ID + " at " + r.AnsweredAt + ", which asked the same"
 		}
 	}
 	return ""
 }
 
-// firstAsk is the line of a screen ask that asks: the text after its label ("Needs you: …"), the label itself when
-// nothing follows it, else its last line.
+var (
+	// refRe is an id an ask names: A1, B4, q14, BD10.3, AB#94489, F-118
+	refRe  = regexp.MustCompile(`\b(?:[A-Z]{1,3}#?-?\d{1,6}(?:\.\d+)?|q\d{1,4})\b`)
+	wordRe = regexp.MustCompile(`\p{L}{5,}`)
+	// common words that say nothing of what is asked
+	plain = map[string]bool{"about": true, "after": true, "before": true, "could": true, "decide": true, "needs": true,
+		"owner": true, "should": true, "still": true, "their": true, "there": true, "these": true, "those": true,
+		"which": true, "would": true, "answer": true, "waiting": true, "question": true, "questions": true}
+)
+
+// sameAsk says row r asks what text asks: they name a common id (A1, B4), or share 3 words of 5 letters or more.
+func sameAsk(r Row, text string) bool {
+	rowText := r.Title + "\n" + r.Do + "\n" + r.Detail
+	for _, id := range refRe.FindAllString(rowText, -1) {
+		if slices.Contains(refRe.FindAllString(text, -1), id) {
+			return true
+		}
+	}
+	words := map[string]bool{}
+	for _, w := range wordRe.FindAllString(strings.ToLower(rowText), -1) {
+		if !plain[w] {
+			words[w] = true
+		}
+	}
+	n := 0
+	for w := range set(wordRe.FindAllString(strings.ToLower(text), -1)) {
+		if words[w] {
+			n++
+		}
+	}
+	return n >= 3
+}
+
+func set(ws []string) map[string]bool {
+	m := map[string]bool{}
+	for _, w := range ws {
+		m[w] = true
+	}
+	return m
+}
+
+// firstAsk is the line of a screen ask that asks: the text after its label ("Needs you: …", not "Needs owner:
+// nothing"), the label itself when nothing follows it, else its last line that ends on "?", else its last line with a
+// word, status emoji taken off (review round 1 of 2bca850: a reply ending on "❓" alone was titled "❓").
 func firstAsk(text string) string {
-	lines := strings.Split(strings.TrimSpace(text), "\n")
+	lines := said(text)
 	for _, l := range lines {
-		if m := AskLabelRe.FindStringSubmatch(l); m != nil {
+		if m := AskLabelRe.FindStringSubmatch(l); m != nil && !nothing(m[1]) {
 			if rest := strings.TrimSpace(m[1]); rest != "" {
 				return rest
 			}
 			return strings.Trim(strings.TrimSpace(l), "*:")
 		}
 	}
-	return lines[len(lines)-1]
+	last := ""
+	for i := len(lines) - 1; i >= 0; i-- {
+		l := strings.TrimSpace(strings.Trim(lines[i], "❓✅⏳ \t"))
+		if strings.HasSuffix(l, "?") {
+			return l
+		}
+		if last == "" && strings.IndexFunc(l, unicode.IsLetter) >= 0 {
+			last = l
+		}
+	}
+	return last
 }
 
-// Asks says a lead's last reply asks the owner something (Crius 10-30 17:15): its newest status emoji is ❓, a line
-// opens with an ask label ("Needs you: …") that is not "nothing", or, with no status emoji, its last line is a
-// question. Turn ends of 10-30: leads that write no status emoji ask with a label or end on a question; "Nothing needs
-// you here" and "Waiting on you: nothing" ask nothing.
+// said gives the lines of a reply the lead says itself: lines quoted ("> …") or inside a code block are left out (a
+// lead quoting a brief's "Needs you: …" asks nothing).
+func said(text string) []string {
+	var out []string
+	fence := false
+	for _, l := range strings.Split(strings.TrimSpace(text), "\n") {
+		t := strings.TrimSpace(l)
+		if strings.HasPrefix(t, "```") {
+			fence = !fence
+			continue
+		}
+		if !fence && !strings.HasPrefix(t, ">") {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// Asks says a lead's last reply asks the owner something (Crius 10-30 17:15): its last status emoji is ❓; or a line
+// opens with an ask label ("Needs you: …") that is not "nothing"; or, with no status emoji, its last line is a question.
+// An emoji on a checklist or table line ("- [x] tests ✅") is no status (review round 1 of 2bca850). Turn ends of 10-30:
+// leads that write no status emoji ask with a label or end on a question.
 func Asks(reply string) bool {
+	lines := said(reply)
 	emoji := ""
-	for _, r := range reply {
-		if r == '❓' || r == '✅' || r == '⏳' {
-			emoji = string(r)
+	for _, l := range lines {
+		if t := strings.TrimSpace(l); !strings.HasPrefix(t, "|") && !checkRe.MatchString(t) {
+			for _, r := range t {
+				if r == '❓' || r == '✅' || r == '⏳' {
+					emoji = string(r)
+				}
+			}
 		}
 	}
 	if emoji == "❓" {
 		return true
 	}
-	for _, l := range strings.Split(reply, "\n") {
-		if m := AskLabelRe.FindStringSubmatch(l); m != nil && !nothingRe.MatchString(m[1]) {
+	for _, l := range lines {
+		if m := AskLabelRe.FindStringSubmatch(l); m != nil && !nothing(m[1]) {
 			return true
 		}
 	}
-	lines := strings.Fields(strings.ReplaceAll(strings.TrimSpace(reply), "**", ""))
-	return emoji == "" && len(lines) > 0 && strings.HasSuffix(lines[len(lines)-1], "?")
+	if len(lines) == 0 {
+		return false
+	}
+	words := strings.Fields(strings.ReplaceAll(lines[len(lines)-1], "**", ""))
+	return emoji == "" && len(words) > 0 && strings.HasSuffix(words[len(words)-1], "?")
 }
 
-// nothingRe opens a label's text that asks nothing: "Needs you: nothing", "Waiting on you: none".
-var nothingRe = regexp.MustCompile(`(?i)^\W*(?:nothing|none|no\b)`)
+// checkRe opens a checklist line: "- [x] …", "* [ ] …", "[~] …".
+var checkRe = regexp.MustCompile(`^(?:[-*+]\s+)?\[[ xX~]\]`)
+
+// nothingRe is a label's text that asks nothing: "Needs you: nothing", "Waiting on you: none", "—", "n/a", "not
+// now", the GOAL template's "<what, or "nothing">" (review round 1 of 2bca850).
+var nothingRe = regexp.MustCompile(`(?i)^\W*(?:nothing|none|no\b|n/?a\b|not (?:now|yet)\b|<what\b|$)`)
+
+// nothing says a label's text asks nothing; a label with no text on its line asks with the lines under it.
+func nothing(text string) bool { return strings.TrimSpace(text) != "" && nothingRe.MatchString(text) }
 
 // AskLabelRe opens a line that asks the owner, as leads write it: "**Needs you:** …", "What I need from you: …",
 // "Still open from you: A1, A2 and go", "Three things still need you before the build starts:" (turn ends of 10-30).

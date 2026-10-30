@@ -30,7 +30,8 @@ Rules: [docs/RULES.md](docs/RULES.md) (definition of done, bugs, goals and repor
   Crius through cmux, by a `WAKEWATCH:` line typed into Crius's tab; no Telegram (owner, 2026-10-21).
 - **A "report"** is goal, % done, done parts, remaining (docs/RULES.md §3.2), never a ticket log.
 - **Owner queue** ("Waiting on you" pane, `crius-queue`): every NEED-OWNER bus line is a row, and so is a lead tab
-  idle 10 min whose last reply asks the owner with no NEED-OWNER since (wakewatch; withdrawn when its reply moves on). To close row qN, post a
+  idle 10 min whose last reply asks the owner, unless a row asks the same (wakewatch; `crius-queue list` names the
+  ones held). Only the owner or a closing Crius line ends such a row; the tab's next ask rewrites it. To close row qN, post a
   DECISION or INFO whose text opens with `[queue qN]` (`DECISION crius:lead -> x:lead — [queue q3] owner: go`); a tag
   further on answers nothing. The owner's answers arrive in the chat as `[queue qN] <text>`. An owner answer that asks
   back (ends in "?" or opens with what/why/how) keeps the row open as "You asked …". To pass such a question on, write
