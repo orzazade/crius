@@ -28,18 +28,45 @@ const error = atom({ plugin: 'owner-queue', key: 'error' } as const, null)
 const busy = atom({ plugin: 'owner-queue', key: 'busy' } as const, null)
 const outbox = atom({ plugin: 'owner-queue', key: 'outbox' } as const, [])
 
-// tick runs every second from session.start: it submits the answers /waiting recorded, and reads the queue every 5 s.
-let ticks = 0
-async function tick($: EngineInterface): Promise<void> {
-  const lines = await read($, outbox)
-  if (lines.length > 0) {
-    await update($, outbox, list => list.slice(lines.length))
-    for (const line of lines) {
-      await $.prompt.submit({ text: line, asUser: true })
+// send submits an answer line into the Crius chat and says whether it went. One that did not (a hook or the engine
+// dropped it, or the call failed) is a toast: the answer is recorded, so the owner types the line themselves.
+async function send($: EngineInterface, line: string): Promise<boolean> {
+  let why: string
+  try {
+    const r = await $.prompt.submit({ text: line, asUser: true })
+    if (r.drop === undefined) {
+      return true
     }
+    why = r.drop
+  } catch (e) {
+    why = e instanceof Error ? e.message : String(e)
   }
-  if (++ticks % (POLL_MS / 1000) === 0) {
-    await refresh($)
+  $.ui.toast(`Recorded, but not sent to Crius (${why}). Type it yourself: ${line}`)
+  return false
+}
+
+// tick runs every second from session.start: it submits the answers /waiting recorded, and reads the queue every 5 s.
+// A line leaves the outbox before it is sent, so a slow submit is never sent twice; one that fails says so (send).
+let ticks = 0
+let ticking = false
+async function tick($: EngineInterface): Promise<void> {
+  if (ticking) {
+    return
+  }
+  ticking = true
+  try {
+    const lines = await read($, outbox)
+    if (lines.length > 0) {
+      await update($, outbox, list => list.slice(lines.length))
+      for (const line of lines) {
+        await send($, line)
+      }
+    }
+    if (++ticks % (POLL_MS / 1000) === 0) {
+      await refresh($)
+    }
+  } finally {
+    ticking = false
   }
 }
 
@@ -87,6 +114,7 @@ async function answer($: EngineInterface, id: string, text: string, later = fals
     return 'Type an answer first.'
   }
   if ((await read($, busy)) !== null) {
+    $.ui.toast('An answer is being sent; try again in a moment.')
     return 'An answer is being sent; try again in a moment.'
   }
   await update($, busy, () => id)
@@ -104,8 +132,7 @@ async function answer($: EngineInterface, id: string, text: string, later = fals
       await update($, outbox, list => [...list, line])
       return `Recorded; sending to Crius: ${line}`
     }
-    await $.prompt.submit({ text: line, asUser: true })
-    return `Sent to Crius: ${line}`
+    return (await send($, line)) ? `Sent to Crius: ${line}` : `Recorded, but not sent to Crius. Type it yourself: ${line}`
   } finally {
     await update($, busy, () => null)
     await refresh($)
@@ -146,14 +173,37 @@ function listText(v: View | null, err: string | null): string {
   return out.join('\n')
 }
 
+// The mod is installed for Crius's folder, where other sessions run too: it turns on in Crius's tab alone, the cmux
+// surface Crius's role file names (crius-hook keeps ~/.crius/roles/crius.lead.json). A role file it cannot read is said
+// in the status line, never a quiet "off".
+let active = false
+async function inCriusTab($: EngineInterface): Promise<boolean> {
+  const tab = await $.env.get('CMUX_SURFACE_ID')
+  const home = await $.env.get('HOME')
+  if (!tab || !home) {
+    return false
+  }
+  try {
+    const role = JSON.parse(await $.fs.read(`${home}/.crius/roles/crius.lead.json`)) as { surface?: string }
+    return role.surface === tab
+  } catch (e) {
+    $.ui.status(`⚑ owner queue off: Crius's role file unreadable (${e instanceof Error ? e.message : String(e)})`)
+    return false
+  }
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
+    active = await inCriusTab($)
+    if (!active) {
+      return next(e)
+    }
     await $.command.register({
       name: 'waiting',
       description: 'What waits on you; "/waiting 2 yes" answers item 2',
     })
     await refresh($)
-    $.clock.every(1000, () => void tick($))
+    $.clock.every(1000, () => void tick($).catch(e => $.ui.toast(`owner queue: ${e instanceof Error ? e.message : String(e)}`)))
     void $.ui.open({ id: PANE, title: TITLE, backgroundColor: C.pane })
 
     return next(e)
@@ -171,13 +221,19 @@ export const register: Register = on => {
       return { text: 'Answer as "/waiting <number> <text>", for example "/waiting 2 yes".' }
     }
     const [, n = '', text = ''] = m
-    return { text: await answer($, n, text, true) }
+    // a number is the place in the list the owner sees, so it is sent as that row's id: a row that closed or came in
+    // since cannot move another under the number
+    const r = /^\d+$/.test(n) ? (await read($, view))?.open[Number(n) - 1] : undefined
+    if (/^\d+$/.test(n) && r === undefined) {
+      return { text: `No item ${n} in the list; /waiting shows it.` }
+    }
+    return { text: await answer($, r?.id ?? n, text, true) }
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const v = await read($, view)
     const err = await read($, error)
-    if (e.props.hasSurvey || (err === null && (v === null || v.open.length === 0))) {
+    if (!active || e.props.hasSurvey || (err === null && (v === null || v.open.length === 0))) {
       return next(e)
     }
     const { Box, Text } = $.ui.resolve(e)

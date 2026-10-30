@@ -6,14 +6,15 @@ Owner update 10-30 ~14:00: all four places at once, and every item has its own f
 
 ## Where it shows
 
-All four read the same queue (`crius-queue list --json`, every 5 s) and say the same count.
+All four read the same queue (`crius-queue list --json`, every 5 s) and say the same count. They show in Crius's tab
+alone (the cmux surface `~/.crius/roles/crius.lead.json` names); other sessions in the folder load the mod and stay off.
 
 | Place | What it shows |
 | --- | --- |
 | Pane beside the chat (`Waiting on you`) | head with count, cards oldest first, "Answered today" at the bottom |
 | Status line | `⚑ N waiting on you`; `✓ nothing waits on you` at 0; `⚑ owner queue FAILED: …` when the read fails |
 | Band above the prompt | `⚑ N waiting on you · oldest: <title> (<age>) · /waiting`; nothing at 0 |
-| `/waiting` | the list as text; `/waiting 2 <any text>` answers item 2 |
+| `/waiting` | the list as text; `/waiting 2 <any text>` answers item 2 of the list shown (sent by its id) |
 
 The pane opens by itself where the terminal docks it (fullscreen, from about 110-144 columns). Below that it waits,
 and the band and `/waiting` carry everything.
@@ -35,7 +36,8 @@ and the band and `/waiting` carry everything.
 - Buttons: the row's options; the first is the primary one (accent). A row with no options has none.
 - The free-text field is always there, under the buttons.
 - Pressing a button or Enter in the field records the answer (`crius-queue answer`) and submits one line into the
-  Crius chat: `[queue q2] <answer>`. A second answer to the same row is refused by the queue and shown as a toast.
+  Crius chat: `[queue q2] <answer>`. A second answer to the same row is refused by the queue and shown as a toast. An answer the chat does
+  not take is a toast too: recorded, with the line to type by hand.
 
 Empty: a box (round border, the box colour) with `✓ Nothing waits on you.` (in the ok colour) and, dim, "Crius adds a row here when a lead
 needs your call."

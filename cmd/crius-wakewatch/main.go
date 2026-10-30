@@ -162,10 +162,10 @@ func waiters() ([]string, error) {
 // waiterValue: team-wait.sh options that take a value; --slot and --classify take none. Every other word that is not an
 // option is a log it waits on.
 var waiterValue = map[string]bool{"--mode": true, "--role": true, "--alias": true, "--boss": true, "--quiet": true,
-	"--cursor": true, "--from": true, "--max-hours": true, "--digest": true}
+	"--cursor": true, "--from": true, "--max-hours": true, "--digest": true, "--watch-dir": true}
 
 // waiterLogs reads ps lines (one command each) and gives the logs named by each team-wait.sh process run with --mode
-// crius. Only a process that runs the script counts: its first word, or the second after an interpreter (/bin/bash
+// crius, and every *.log now in the folder of its --watch-dir. Only a process that runs the script counts: its first word, or the second after an interpreter (/bin/bash
 // team-wait.sh). A shell that runs it with -c shows the same words, quoted, and is not the waiter. A path with a space
 // is split as ps prints it, so it matches no bus log and that log stays uncovered (loud, not silent).
 func waiterLogs(ps string) []string {
@@ -188,8 +188,12 @@ func waiterLogs(ps string) []string {
 				i++
 				val = w[i]
 			}
-			if opt == "--mode" {
+			switch opt {
+			case "--mode":
 				mode = val
+			case "--watch-dir": // it reads every *.log there on each poll
+				all, _ := filepath.Glob(filepath.Join(val, "*.log")) // the pattern is fixed: no error
+				logs = append(logs, all...)
 			}
 		}
 		if mode == "crius" {

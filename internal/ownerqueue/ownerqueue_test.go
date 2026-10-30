@@ -260,3 +260,55 @@ func TestTitleIsTheFirstClauseNotALabel(t *testing.T) {
 		}
 	}
 }
+
+// Review of 9bdb6c8: only a line that opens with the tag answers a row; one that names it in passing ("still waiting
+// on the owner for [queue q1]") leaves it open.
+func TestATagInPassingAnswersNothing(t *testing.T) {
+	h := home(t, map[string]string{"falcon.log": "2026-10-30T10:00 NEED-OWNER falcon:lead -> crius — k3s change OK?\n"})
+	if err := Init(h, "2026-10-30T00:00"); err != nil {
+		t.Fatal(err)
+	}
+	appendTo(t, h, "falcon.log", "2026-10-30T10:05 INFO crius:lead -> falcon:lead — still waiting on the owner for [queue q1]\n")
+	q, err := List(h, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(open(t, q)) != 1 {
+		t.Fatalf("a tag in passing closed the row: %+v", q.Rows)
+	}
+}
+
+// Review of 9bdb6c8: a bus stamp in UTC ("10:00Z") is that time in UTC, so a NEED-OWNER at 23:30Z the day before is
+// after a local since of 00:00 wherever local time is ahead of UTC, and its row opens at the local time.
+func TestAUTCStampIsReadAsUTC(t *testing.T) {
+	at := time.Date(2026, 10, 30, 8, 0, 0, 0, time.Local).UTC()
+	h := home(t, map[string]string{"falcon.log": at.Format("2006-01-02T15:04") + "Z NEED-OWNER falcon:lead -> crius — k3s change OK?\n"})
+	if err := Init(h, "2026-10-30T08:00"); err != nil {
+		t.Fatal(err)
+	}
+	q, err := List(h, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(q.Rows) != 1 || q.Rows[0].Opened != "2026-10-30T08:00" {
+		t.Fatalf("want one row opened 2026-10-30T08:00 local, got %+v", q.Rows)
+	}
+}
+
+// Review of 9bdb6c8: with the rows file gone but the bus already read, ids would start again at q1 and old
+// "[queue q1]" lines would close new rows; the queue says the rows are lost instead.
+func TestLostRowsAreAnErrorNotAFreshQueue(t *testing.T) {
+	h := home(t, map[string]string{"falcon.log": "2026-10-30T10:00 NEED-OWNER falcon:lead -> crius — k3s change OK?\n"})
+	if err := Init(h, "2026-10-30T00:00"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := List(h, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(h, "state", "owner-queue.jsonl")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := List(h, now); err == nil || !strings.Contains(err.Error(), "rows are lost") {
+		t.Fatalf("want a rows-lost error, got %v", err)
+	}
+}

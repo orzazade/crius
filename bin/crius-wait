@@ -1,22 +1,28 @@
 #!/bin/bash
 # Crius's one bus waiter (owner 10-30, "too much noise"): one team-wait over every bus log in place of one per project.
-# It wakes Crius only for DONE, NEED and NEED-*, BLOCKED, S1, owner lines and the watch channels (ALERT, ASK,
-# CLEAR-READY, waits:*); every other line that would have woken it goes to the digest file the 09:00/18:00 report
-# counts. Arm it again after each wake, like any waiter. Extra arguments go to team-wait (e.g. --max-hours 12).
+# It wakes Crius only for DONE, NEED and NEED-*, BLOCKED, S1, owner lines, the first answer to what Crius wrote and
+# the watch channels (ALERT, ASK, CLEAR-READY, waits:*); every other line that would have woken it goes to the digest
+# file the 09:00/18:00 report counts. --watch-dir reads every bus log, a log born while it waits from line 1. Arm it
+# again after each wake, like any waiter. Extra arguments go to team-wait (e.g. --max-hours 12).
 # The first run starts each log where the old crius-role cursors (~/.crius/wait-cursor-<p>) stopped, the furthest one
-# of them, and joins their asks (who Crius waits on, the latest per sender); other roles' cursors are not Crius's.
+# of them, and every other bus log at its end; it joins their asks (who Crius waits on, the latest per sender). Other
+# roles' cursors are not Crius's.
 set -u
 c=$HOME/.crius
 cur=$c/wait-cursor-all
+bus=$(cd "$c/bus" && pwd -P) || { echo "WAIT-ERROR no bus folder $c/bus"; exit 2; }
 if [ ! -e "$cur" ]; then
   olds=()
   for f in "$c"/wait-cursor-*; do
-    case $f in *.flock | *.holder | *.role | *.asks | *.lock | "$cur") continue ;; esac
+    case $f in *.flock | *.holder | *.role | *.asks | *.lock | *.seen | *.tmp.* | "$cur") continue ;; esac
     [ -f "$f" ] && [ "$(cat "$f.role" 2>/dev/null)" = crius ] && olds+=("$f")
   done
   if [ ${#olds[@]} -gt 0 ]; then
-    awk -F'\t' 'NF == 2 && $1 ~ /^[0-9]+$/ { if (!($2 in m) || $1 + 0 > m[$2]) m[$2] = $1 + 0 }
-      END { for (p in m) print m[p] "\t" p }' "${olds[@]}" > "$cur.tmp" || exit 4
+    # a log no old cursor names starts at its end, written down: a log this cursor does not name is read from line 1
+    for l in "$bus"/*.log; do [ -f "$l" ] && printf 'END\t%s\t%s\n' "$(wc -l < "$l" | tr -d ' ')" "$l"; done |
+      awk -F'\t' '$1 == "END" && NF == 3 { e[$3] = $2 + 0; next }
+        NF == 2 && $1 ~ /^[0-9]+$/ && ($2 in e) { if (!($2 in m) || $1 + 0 > m[$2]) m[$2] = $1 + 0 }
+        END { for (p in e) print ((p in m) ? m[p] : e[p]) "\t" p }' - "${olds[@]}" > "$cur.tmp" || exit 4
     asks=()
     for f in "${olds[@]}"; do [ -f "$f.asks" ] && asks+=("$f.asks"); done
     if [ ${#asks[@]} -gt 0 ]; then
@@ -27,4 +33,4 @@ if [ ! -e "$cur" ]; then
   fi
 fi
 exec bash "$HOME/.claude/skills/cmux-team/scripts/team-wait.sh" --mode crius --role crius --alias crius:lead \
-  --digest "$c/state/crius/bus-digest.log" --cursor "$cur" "$@" "$c"/bus/*.log
+  --digest "$c/state/crius/bus-digest.log" --cursor "$cur" --watch-dir "$bus" "$@"

@@ -43,7 +43,7 @@ const (
 var (
 	tagRe = regexp.MustCompile(`\[queue (q\d+)\]`)
 	// "[- ]2026-10-30T13:40 TYPE sender -> to — text": an optional list mark and date (T or space), then HH:MM.
-	headRe = regexp.MustCompile(`^(?:[-*] )?(?:(\d{4}-\d\d-\d\d)[T ])?(\d\d:\d\d)Z? ([A-Z][A-Z-]*) (\S+)(?: (?:->|→) ([^—]*?))?(?: — (.*))?$`)
+	headRe = regexp.MustCompile(`^(?:[-*] )?(?:(\d{4}-\d\d-\d\d)[T ])?(\d\d:\d\d)(Z?) ([A-Z][A-Z-]*) (\S+)(?: (?:->|→) ([^—]*?))?(?: — (.*))?$`)
 	partRe = regexp.MustCompile(`(?i)(?:^|[\s.;,])(why|unblocks|options):\s*`)
 	// Crius's own senders: a line from them may answer a row.
 	crius      = map[string]bool{"crius": true, "crius:lead": true}
@@ -210,6 +210,14 @@ func syncLocked(home string) (*Queue, error) {
 	if cur.Logs == nil {
 		cur.Logs = map[string]logCursor{}
 	}
+	if _, err := os.Stat(rowsPath); errors.Is(err, os.ErrNotExist) {
+		for _, c := range cur.Logs {
+			if c.Offset > 0 { // the bus was read, so rows were saved: new ids would start again at q1
+				return nil, fmt.Errorf("%s is missing but the bus was read already: the rows are lost; restore the file"+
+					" (crius-queue init starts ids again at q1, and old [queue qN] lines would close new rows)", rowsPath)
+			}
+		}
+	}
 	q, err := load(rowsPath)
 	if err != nil {
 		return nil, err
@@ -241,10 +249,15 @@ func syncLocked(home string) (*Queue, error) {
 			if m == nil {
 				continue
 			}
-			date, hm, typ, sender, text := m[1], m[2], m[3], m[4], m[6]
+			date, hm, utc, typ, sender, text := m[1], m[2], m[3], m[4], m[5], m[7]
 			at := ""
 			if date != "" {
 				at = date + "T" + hm
+			}
+			if at != "" && utc == "Z" { // a UTC stamp: the queue keeps local time, like the bus
+				if t, err := time.ParseInLocation(stamp, at, time.UTC); err == nil {
+					at = t.In(time.Local).Format(stamp)
+				}
 			}
 			tag := tagRe.FindStringSubmatch(text)
 			switch {
@@ -257,8 +270,8 @@ func syncLocked(home string) (*Queue, error) {
 				r.ID, r.State, r.Opened, r.From, r.Log, r.Line = next(q), Open, at, from(sender), name, line
 				q.Rows = append(q.Rows, r)
 				changed = true
-			case tag != nil && crius[sender] && answerType[typ]:
-				rest := strings.TrimLeft(strings.Replace(text, tag[0], "", 1), " :·—-")
+			case tag != nil && strings.HasPrefix(text, tag[0]) && crius[sender] && answerType[typ]: // the tag opens the line
+				rest := strings.TrimLeft(text[len(tag[0]):], " :·—-")
 				if rest == "" {
 					rest = typ
 				}

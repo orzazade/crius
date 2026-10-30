@@ -650,8 +650,8 @@ func malformed(db *sql.DB, since time.Time) (string, error) {
 	return fmt.Sprintf("%d (%s)", total, strings.Join(per, ", ")), nil
 }
 
-// digestStamp is a bus line's own time: "[- ]YYYY-MM-DD[T ]HH:MM", local like the bus.
-var digestStamp = regexp.MustCompile(`^(?:- )?(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})`)
+// digestStamp is a bus line's own time: "[- ]YYYY-MM-DD[T ]HH:MM", local like the bus, or UTC with a Z.
+var digestStamp = regexp.MustCompile(`^(?:- )?(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})(Z?)`)
 
 // routine counts the distinct lines of the combined waiter's digest file ("<log>\t<bus line>") stamped at or after
 // since, by project, most first. A file that cannot be read says NOT READ: never "none" for a look that failed.
@@ -672,7 +672,11 @@ func routine(path string, since time.Time) string {
 		if !ok || m == nil || seen[l] {
 			continue
 		}
-		t, err := time.ParseInLocation("2006-01-02 15:04", m[1]+" "+m[2], time.Local)
+		zone := time.Local
+		if m[3] == "Z" {
+			zone = time.UTC
+		}
+		t, err := time.ParseInLocation("2006-01-02 15:04", m[1]+" "+m[2], zone)
 		if err != nil || t.Before(since) {
 			continue
 		}

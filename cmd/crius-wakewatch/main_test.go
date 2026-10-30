@@ -766,3 +766,21 @@ func TestWaiterLogsAreTheLogsOfCriusModeWaiters(t *testing.T) {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 }
+
+// Review of 9bdb6c8 (P1): Crius's one waiter names no log but --watch-dir <bus>, and reads every *.log there on each
+// poll, so it covers each log in that folder now, one born after it started too.
+func TestWaiterLogsOfAWatchDirWaiterAreEveryLogThere(t *testing.T) {
+	const script = "/Users/x/.claude/skills/cmux-team/scripts/team-wait.sh"
+	dir := t.TempDir()
+	for _, f := range []string{"a.log", "b.log", "notes.txt"} {
+		if err := os.WriteFile(filepath.Join(dir, f), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := waiterLogs("/bin/bash " + script + " --mode crius --role crius --alias crius:lead --digest /d --cursor /c --watch-dir " +
+		dir + " --max-hours 12\n/bin/bash " + script + " --mode lead --role LEADER --cursor /c2 --watch-dir /elsewhere\n")
+	want := []string{filepath.Join(dir, "a.log"), filepath.Join(dir, "b.log")}
+	if !slices.Equal(got, want) {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}

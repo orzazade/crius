@@ -39,11 +39,18 @@ const ran = (stdout: string, exitCode = 0, stderr = '') => ({
 })
 
 // The engine beneath the mod: crius-queue answers from `list`, and every call is kept.
-function engine(on: Parameters<Parameters<typeof test>[1]>[1], list: () => object | 'fail') {
+function engine(on: Parameters<Parameters<typeof test>[1]>[1], list: () => object | 'fail', tab = 'S-CRIUS', drop = '') {
   const calls: string[][] = []
   const submitted: string[] = []
   const status: (string | undefined)[] = []
   const toasts: string[] = []
+  const opened: string[] = []
+  const commands: string[] = []
+  // this tab, and Crius's role file naming Crius's tab
+  on('env.get', (_, e) => ({ value: e.name === 'CMUX_SURFACE_ID' ? tab : e.name === 'HOME' ? '/h' : undefined }))
+  on('fs.read', (_, e) =>
+    e.path === '/h/.crius/roles/crius.lead.json' ? { value: JSON.stringify({ name: 'crius · lead', surface: 'S-CRIUS' }) } : { value: '' },
+  )
   on('process.run', (_, e) => {
     const args = e.argv.slice(4)
     calls.push(args)
@@ -57,6 +64,9 @@ function engine(on: Parameters<Parameters<typeof test>[1]>[1], list: () => objec
     return ran(`[queue ${args[1]}] ${args.slice(4).join(' ')}\n`)
   })
   on('prompt.submit', (_, e) => {
+    if (drop !== '') {
+      return { drop }
+    }
     submitted.push(e.text)
     return { text: e.text }
   })
@@ -68,8 +78,14 @@ function engine(on: Parameters<Parameters<typeof test>[1]>[1], list: () => objec
     toasts.push(e.text)
     return { value: undefined }
   })
-  on('command.register', () => ({ value: { command: 'waiting' } }))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('command.register', (_, e) => {
+    commands.push(e.name)
+    return { value: { command: e.name } }
+  })
+  on('ui.open', (_, e) => {
+    opened.push(e.id)
+    return { value: { isPlaced: true } }
+  })
   // the session's tick runs only when the test fires it
   const ticks: (() => void)[] = []
   on('clock.every', () => new Promise(r => ticks.push(() => r({ value: undefined }))))
@@ -83,7 +99,7 @@ function engine(on: Parameters<Parameters<typeof test>[1]>[1], list: () => objec
     ticks.shift()?.()
     await new Promise(r => setTimeout(r, 50))
   }
-  return { calls, submitted, status, toasts, tick }
+  return { calls, submitted, status, toasts, opened, commands, tick }
 }
 
 test('the pane lists what waits, oldest first, with count, parts, buttons and an own-answer field', async ($, on) => {
@@ -175,10 +191,36 @@ test('/waiting prints the list, and "/waiting 2 any text" answers item 2', async
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   const list = await $.command.run({ command: 'waiting', args: '' })
   expect(list.text).toMatch(/^Waiting on you \(2\), oldest first\n1 Restart Chrome · Mac · 4h\n/)
+  // the number is the place in the list drawn: item 2 is q2, sent by its id
   const sent = await $.command.run({ command: 'waiting', args: '2 not before Monday' })
-  expect(sent.text).toBe('Recorded; sending to Crius: [queue 2] not before Monday')
+  expect(sent.text).toBe('Recorded; sending to Crius: [queue q2] not before Monday')
   expect(seen.submitted).toEqual([])
   await seen.tick()
-  expect(seen.calls).toContainEqual(['answer', '2', '--by', 'owner', 'not before Monday'])
-  expect(seen.submitted).toEqual(['[queue 2] not before Monday'])
+  expect(seen.calls).toContainEqual(['answer', 'q2', '--by', 'owner', 'not before Monday'])
+  expect(seen.submitted).toEqual(['[queue q2] not before Monday'])
+  const none = await $.command.run({ command: 'waiting', args: '9 yes' })
+  expect(none.text).toBe('No item 9 in the list; /waiting shows it.')
+})
+
+test('an answer the chat does not take is said: recorded, and the line to type', async ($, on) => {
+  const seen = engine(on, () => TWO, 'S-CRIUS', 'a Stop hook stands')
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'q2:0' })
+  await new Promise(r => setTimeout(r, 50))
+  expect(seen.calls).toContainEqual(['answer', 'q2', '--by', 'owner', 'Yes, start it'])
+  expect(seen.toasts).toEqual(['Recorded, but not sent to Crius (a Stop hook stands). Type it yourself: [queue q2] Yes, start it'])
+  await ui.unmount()
+})
+
+test('in any tab but Crius\'s the mod stays off: no pane, status, band or /waiting', async ($, on) => {
+  const seen = engine(on, () => TWO, 'S-OTHER')
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  expect(seen.status).toEqual([])
+  expect(seen.opened).toEqual([])
+  expect(seen.commands).toEqual([])
+  expect(seen.calls).toEqual([])
+  const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await band.find({ type: 'Text', text: /waiting on you/ })).toBeUndefined()
+  await band.unmount()
 })

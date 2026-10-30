@@ -806,6 +806,8 @@ func TestBuildCountsTheRoutineBusLines(t *testing.T) {
 		"cortex.log\t2026-10-17T01:00 START cortex:lead -> crius:lead " + D + " F-12",
 		"cortex.log\t2026-10-17 02:00 INFO cortex:lead -> crius:lead " + D + " probe started",
 		"quotes.log\t- 2026-10-17T03:00 INFO quotes:lead -> crius:lead " + D + " ok",
+		// a UTC stamp is UTC: 01:00 local, after the last report, whatever the zone
+		"axi.log\t" + time.Date(2026, 10, 17, 1, 0, 0, 0, time.Local).UTC().Format("2006-01-02T15:04") + "Z START axi:lead -> crius:lead " + D + " F-1",
 	}
 	if err := os.WriteFile(d, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -817,7 +819,7 @@ func TestBuildCountsTheRoutineBusLines(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(r.Text, " · routine bus lines (no wake): 3 (cortex 2, quotes 1)\n") {
+	if !strings.Contains(r.Text, " · routine bus lines (no wake): 4 (cortex 2, axi 1, quotes 1)\n") {
 		t.Fatal(r.Text)
 	}
 	in.Digest = filepath.Join(dir, "none.log")

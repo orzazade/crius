@@ -100,7 +100,7 @@ type Deps struct {
 	// its restore record), the config folder it restores in, "" when it sets none; none when the tab keeps no Claude.
 	Restore func(surface string) (configs []string, err error)
 	// Waiters gives the bus logs (absolute paths) that Crius's live bus waiters cover: each team-wait.sh process run
-	// with --mode crius, by the logs it names.
+	// with --mode crius, by the logs it names and every *.log in its --watch-dir.
 	Waiters func() (logs []string, err error)
 }
 
