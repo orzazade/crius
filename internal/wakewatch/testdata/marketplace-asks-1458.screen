@@ -1,0 +1,20 @@
+
+  Read 1 file, ran 2 shell commands 
+
+⏺ Done: the demo reseller on the local rig is now the prototype ISV. I logged your OK as BD9 amendment 3, committed it, and told Crius to drop the request to the quotes
+  lead. The rule stays the same: we write only our own rows on the rig and restart nothing.
+
+  Three things still need you before the build starts:
+  1. A1, the sign-in app for the landing page. Microsoft buyers must sign in with their Microsoft account on our landing page. My pick is one multi-tenant app used only
+  for that sign-in.
+  2. A2, where the listing fields live. These are the summary, description, logo and so on that Microsoft needs. My pick is to keep them in the marketplace service for the
+  prototype.
+  3. "Go" on docs/build/BUILD-PLAN.md: 37 dev-days, about 23-28 with AI help.
+
+  If my two picks are fine, "go, A1 and A2 as proposed" is enough.
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── marketplace · lead ─
+❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Opus 5.5 MAX │ wip/baseline │ $24.59 │ ░░░░░░░░░░ ctx 8% │ quota max2: 5h 44% · 7d 39% (resets Sun 07:00)
+  ⏵⏵ bypass permissions on (shift+tab to cycle)

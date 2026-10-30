@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/orzazade/crius/internal/ownerqueue"
 	"github.com/orzazade/crius/internal/sessionstate"
 	"github.com/orzazade/crius/internal/testutil"
 )
@@ -2286,6 +2287,100 @@ func TestALeadWhoseGoalCannotBeReadSaysWhy(t *testing.T) {
 		}
 		if c.idle && !strings.Contains(f.sent[0], "GOAL block unreadable: line 1: heading needs (YYYY-MM-DD HH:MM)") {
 			t.Errorf("%s: %q does not say why its goal is not seen as done", c.name, f.sent[0])
+		}
+	}
+}
+
+// Crius 10-30 17:15: the marketplace lead asked the owner for A1, A2 and "go" in its own tab, more than once, with no
+// NEED-OWNER line, and the questions waited unseen. A lead tab idle 10 min whose last reply asks becomes a queue row;
+// the screen is the one captured at 14:58, cleaned.
+func TestALeadThatAsksOnItsScreenBecomesAQueueRow(t *testing.T) {
+	asked, err := os.ReadFile(filepath.Join("testdata", "marketplace-asks-1458.screen"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	idle := func(reply string) func(time.Time) string {
+		return func(at time.Time) string {
+			return tab("marketplace · lead", reply, "  ⏵⏵ bypass permissions on\n", at)
+		}
+	}
+	still := func(time.Time) string { return string(asked) }
+	// the upload-central lead's shape (live tabs, 10-30 18:00): a harness notice under the reply that asks
+	box := strings.Index(string(asked), "\n───")
+	noticed := func(time.Time) string {
+		return string(asked[:box]) + "\n✻ Worked for 27s · done 1:57 PM\n\n⏺ Background shell command didn't finish before the previous session ended\n" + string(asked[box:])
+	}
+	unseen := func(time.Time) string {
+		return "⏺ Compacted while idle, before the prompt cache expired\n" + string(asked[box:])
+	}
+	dialog := func(time.Time) string { return string(asked) + "\n ❯ 1. Yes\n   2. No\n" }
+	for _, c := range []struct {
+		name  string
+		bus   string
+		tab   string
+		draw  []func(time.Time) string // the screen at 0, 5, 11 and 16 min
+		state string                   // the screen row's state after the last run; "" for none
+	}{
+		{"the captured ask", "", "marketplace · lead", []func(time.Time) string{still, still, still, still}, ownerqueue.Open},
+		{"asked on the bus too", stamp(t0) + " NEED-OWNER marketplace:lead -> crius:lead — A1, A2 and go on BUILD-PLAN.md\n",
+			"marketplace · lead", []func(time.Time) string{still, still, still, still}, ""},
+		{"nothing asked", "", "marketplace · lead", []func(time.Time) string{idle("Build plan committed. Nothing needs you here. ✅"),
+			idle("Build plan committed. Nothing needs you here. ✅"), idle("Build plan committed. Nothing needs you here. ✅"),
+			idle("Build plan committed. Nothing needs you here. ✅")}, ""},
+		{"a notice under the ask", "", "marketplace · lead", []func(time.Time) string{noticed, noticed, noticed, noticed}, ownerqueue.Open},
+		{"no reply in sight", "", "marketplace · lead", []func(time.Time) string{still, still, still, unseen}, ownerqueue.Open},
+		{"the lead moved on", "", "marketplace · lead", []func(time.Time) string{still, still, still,
+			idle("Started the build on A1 and A2 as proposed. Waiting on you: nothing.")}, ownerqueue.Withdrawn},
+		{"a dialog", "", "marketplace · lead", []func(time.Time) string{dialog, dialog, dialog, dialog}, ""},
+	} {
+		home := setup(t, map[string]string{"marketplace.log": busFrom("marketplace:lead", t0.Add(-time.Hour)) + c.bus})
+		status := filepath.Join(home, "marketplace-STATUS.md")
+		testutil.Write(t, filepath.Join(home, "projects.toml"), "[projects.marketplace]\nname = \"Azure Marketplace listing\"\n"+
+			"persona = \"work\"\ncwd = [\"/x\"]\nleads = { lead = \""+status+"\" }\n")
+		testutil.Write(t, status, "# Marketplace\n\n## GOAL (2026-10-30 09:00)\nGoal: list the product on the Azure Marketplace.\n"+
+			"- [ ] Build · plan\nDone: 10% (0 of 1 milestones)\nNext: build\nNeeds owner: nothing\n")
+		if err := ownerqueue.Init(home, stamp(t0.Add(-2*time.Hour))); err != nil {
+			t.Fatal(err)
+		}
+		f := &fake{}
+		var rows []ownerqueue.Row
+		for i, m := range []int{0, 5, 11, 16}[:len(c.draw)] {
+			runAt(t, home, f, func(at time.Time) []Screen {
+				return []Screen{{Surface: "surface:7", Title: "marketplace", Text: c.draw[i](at)}}
+			}, m)
+			q, err := ownerqueue.List(home, t0.Add(time.Duration(m)*time.Minute))
+			if err != nil {
+				t.Fatal(err)
+			}
+			rows = nil
+			for _, r := range q.Rows {
+				if r.Screen != "" {
+					rows = append(rows, r)
+				}
+			}
+			if m < 11 && len(rows) != 0 {
+				t.Fatalf("%s: a row at %d min, before the screen waited 10 min: %+v", c.name, m, rows)
+			}
+		}
+		if c.state == "" {
+			if len(rows) != 0 {
+				t.Errorf("%s: want no screen row, got %+v", c.name, rows)
+			}
+			continue
+		}
+		if len(rows) != 1 || rows[0].State != c.state {
+			t.Fatalf("%s: want one %s screen row, got %+v", c.name, c.state, rows)
+		}
+		r := rows[0]
+		if r.From != "marketplace" || r.Screen != "marketplace:lead" ||
+			r.Title != "Azure Marketplace listing: Three things still need you before the build starts" {
+			t.Errorf("%s: row %+v", c.name, r)
+		}
+		for _, want := range []string{"1. A1, the sign-in app", "2. A2, where the listing fields live", `3. "Go" on docs/build/BUILD-PLAN.md`,
+			`"go, A1 and A2 as proposed" is enough`} {
+			if !strings.Contains(r.Do, want) {
+				t.Errorf("%s: the row does not carry %q:\n%s", c.name, want, r.Do)
+			}
 		}
 	}
 }

@@ -38,7 +38,7 @@ import (
 const (
 	Open      = "open"
 	Answered  = "answered"
-	Withdrawn = "withdrawn" // a GOAL row whose lead no longer asks it: no owner decision
+	Withdrawn = "withdrawn" // a GOAL or screen row whose lead no longer asks it: no owner decision
 	stamp     = "2006-01-02T15:04"
 )
 
@@ -53,7 +53,8 @@ var (
 )
 
 // Row is one item. Log and Line name the bus line it came from ("" for a row Crius added with Add); a row from a
-// lead's GOAL block has Goal set to the lead and Line to the text it asked.
+// lead's GOAL block has Goal set to the lead and Line to the text it asked; a row from a lead's screen has Screen set
+// to the lead and Line to the screen it was read from (SyncScreens).
 type Row struct {
 	ID         string   `json:"id"`
 	Title      string   `json:"title"`
@@ -74,6 +75,7 @@ type Row struct {
 	Log        string   `json:"log,omitempty"`
 	Line       string   `json:"line,omitempty"`
 	Goal       string   `json:"goal,omitempty"`
+	Screen     string   `json:"screen,omitempty"`
 }
 
 // GoalNeed is what one lead's GOAL block asks of the owner ("Needs owner:", RULES 3.1) that the bus has not answered;
@@ -166,6 +168,127 @@ func SyncGoals(home string, now time.Time, read func() ([]GoalNeed, error)) (hel
 	return held, err
 }
 
+// ScreenAsk is what a lead asks the owner in its own tab, with no NEED-OWNER line (Crius 10-30 17:15: marketplace asked
+// A1, A2 and "go" there more than once): Key names the screen it was read from, Since when that screen was first seen
+// (local, 2006-01-02T15:04), Project the project's plain name.
+type ScreenAsk struct {
+	Lead, Key, Text, Project string
+	Since                    time.Time // when its screen was first seen as it is now
+}
+
+// noLongerOnScreen is the answer of a withdrawn screen row.
+const noLongerOnScreen = "the lead's screen no longer asks this"
+
+// SyncScreens opens a row for each screen ask, once per Key. An ask is held while its project has a row open (the ask
+// may be on show already, and a lead that asks again in other words makes no second row), or when a NEED-OWNER line
+// of the project or an owner answer came in since its screen was first seen, less screenSlack (the turn that wrote
+// the screen may have posted the line). An open screen row is withdrawn when its lead is one of quiet: its tab was read
+// idle and asks nothing, so the lead has moved on. held names each ask held back.
+func SyncScreens(home string, now time.Time, asks []ScreenAsk, quiet []string) (held []string, err error) {
+	err = locked(home, func() error {
+		q, err := syncLocked(home)
+		if err != nil {
+			return err
+		}
+		changed := false
+		for i := range q.Rows {
+			if r := &q.Rows[i]; r.Screen != "" && r.State == Open && slices.Contains(quiet, r.Screen) {
+				r.State, r.Answer, r.AnsweredAt, r.AnsweredBy = Withdrawn, noLongerOnScreen, now.Format(stamp), r.Screen
+				changed = true
+			}
+		}
+		for _, a := range asks {
+			if slices.ContainsFunc(q.Rows, func(r Row) bool { return r.Screen == a.Lead && r.Line == a.Key }) {
+				continue
+			}
+			if by := onShow(q, from(a.Lead), a.Since); by != "" {
+				held = append(held, a.Lead+": "+by)
+				continue
+			}
+			r := Row{Do: a.Text, Title: title(firstAsk(a.Text))}
+			if a.Project != "" {
+				r.Title = a.Project + ": " + r.Title
+			}
+			r.ID, r.State, r.Opened, r.From, r.Screen, r.Line = next(q), Open, now.Format(stamp), from(a.Lead), a.Lead, a.Key
+			q.Rows = append(q.Rows, r)
+			changed = true
+		}
+		if !changed {
+			return nil
+		}
+		return save(home, q)
+	})
+	return held, err
+}
+
+// screenSlack is how long before its screen was first seen a lead's turn may have posted the NEED-OWNER line that
+// asks the same: wakewatch reads each tab every 5 min.
+const screenSlack = 15 * time.Minute
+
+// onShow names a row of project that holds a screen ask back: any row of it still open, or a bus row or owner answer
+// since the screen was first seen, less screenSlack. "" when there is none.
+func onShow(q *Queue, project string, t time.Time) string {
+	since, from := t.Format(stamp), t.Add(-screenSlack).Format(stamp)
+	for _, r := range q.Rows {
+		switch {
+		case r.From != project:
+		case r.State == Open:
+			return "its ask " + r.ID + " is open in the queue"
+		case r.Goal == "" && r.Screen == "" && r.Opened >= from:
+			return "its NEED-OWNER " + r.ID + " came at " + r.Opened + ", after the screen began (" + since + ")"
+		case r.State == Answered && r.AnsweredAt >= from && byOwner(r):
+			return "the owner answered " + r.ID + " at " + r.AnsweredAt + ", after the screen began (" + since + ")"
+		}
+	}
+	return ""
+}
+
+// firstAsk is the line of a screen ask that asks: the text after its label ("Needs you: …"), the label itself when
+// nothing follows it, else its last line.
+func firstAsk(text string) string {
+	lines := strings.Split(strings.TrimSpace(text), "\n")
+	for _, l := range lines {
+		if m := AskLabelRe.FindStringSubmatch(l); m != nil {
+			if rest := strings.TrimSpace(m[1]); rest != "" {
+				return rest
+			}
+			return strings.Trim(strings.TrimSpace(l), "*:")
+		}
+	}
+	return lines[len(lines)-1]
+}
+
+// Asks says a lead's last reply asks the owner something (Crius 10-30 17:15): its newest status emoji is ❓, a line
+// opens with an ask label ("Needs you: …") that is not "nothing", or, with no status emoji, its last line is a
+// question. Turn ends of 10-30: leads that write no status emoji ask with a label or end on a question; "Nothing needs
+// you here" and "Waiting on you: nothing" ask nothing.
+func Asks(reply string) bool {
+	emoji := ""
+	for _, r := range reply {
+		if r == '❓' || r == '✅' || r == '⏳' {
+			emoji = string(r)
+		}
+	}
+	if emoji == "❓" {
+		return true
+	}
+	for _, l := range strings.Split(reply, "\n") {
+		if m := AskLabelRe.FindStringSubmatch(l); m != nil && !nothingRe.MatchString(m[1]) {
+			return true
+		}
+	}
+	lines := strings.Fields(strings.ReplaceAll(strings.TrimSpace(reply), "**", ""))
+	return emoji == "" && len(lines) > 0 && strings.HasSuffix(lines[len(lines)-1], "?")
+}
+
+// nothingRe opens a label's text that asks nothing: "Needs you: nothing", "Waiting on you: none".
+var nothingRe = regexp.MustCompile(`(?i)^\W*(?:nothing|none|no\b)`)
+
+// AskLabelRe opens a line that asks the owner, as leads write it: "**Needs you:** …", "What I need from you: …",
+// "Still open from you: A1, A2 and go", "Three things still need you before the build starts:" (turn ends of 10-30).
+// Group 1 is what follows the label.
+var AskLabelRe = regexp.MustCompile(`(?i)^[-*>#\d.)\s]*(?:\*\*)?(?:what i need from you|(?:\w+ (?:things?|questions?) )?(?:still )?needs? you|(?:still )?(?:open|waiting) (?:for|from|on) you|needs owner|questions? for you)\b[^:\n]{0,60}:(?:\*\*)?[ \t]*(.*)$`)
+
 // askedOn gives the owner's question on the lead's newest GOAL row, when that row was withdrawn with it: the lead's
 // next row carries it once, also when that row opens later, after a hold (reviews of de39210, rounds 1 and 2). A
 // question settled on a later row is not carried again (round 3, P2).
@@ -216,6 +339,9 @@ type logCursor struct {
 	Offset int64  `json:"offset"`
 	Ino    uint64 `json:"ino"`
 }
+
+// ErrNotSetUp is the error of a queue that crius-queue init never made.
+var ErrNotSetUp = errors.New("the owner queue was never set up")
 
 func paths(home string) (rows, cursor, lock string) {
 	d := filepath.Join(home, "state")
@@ -350,7 +476,7 @@ func syncLocked(home string) (*Queue, error) {
 	var cur syncState
 	b, err := os.ReadFile(curPath)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Errorf("the owner queue was never set up (%s is missing): run crius-queue init", curPath)
+		return nil, fmt.Errorf("%w (%s is missing): run crius-queue init", ErrNotSetUp, curPath)
 	}
 	if err != nil {
 		return nil, err
