@@ -1,0 +1,6 @@
+{
+  "name": "owner-queue",
+  "version": "0.1.0",
+  "description": "What waits on the owner, beside the Crius chat: pane, status line, band and /waiting",
+  "types": "./types/index.d.ts"
+}
