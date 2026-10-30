@@ -1051,6 +1051,8 @@ func TestAMoveStartsTheRoleInItsFolderOnAnotherAccountAndClosesTheOldTab(t *test
 		{&fake{trees: []string{tree}, picked: func(string, string) (string, string, error) { return "", "", nil }}, s, "no signed-in folder"},
 		{&fake{trees: []string{tree}, picked: func(string, string) (string, string, error) { return "max1", "/Users/o/.claude-work-max", nil }}, s, "on max1 already"},
 		{&fake{trees: []string{tree}, picked: to}, Spawn{Project: "quotes", Role: "lead", Prompt: "go", Move: &Moved{Cwd: "rel/dir", From: "max1"}}, "bad folder"},
+		// review of 9c52394: enterprise is picked now, and a move goes to another Max account only
+		{&fake{trees: []string{tree}, picked: to}, Spawn{Project: "quotes", Role: "lead", Prompt: "go", Account: "enterprise", Move: s.Move}, "goes to another Max account"},
 		{&fake{trees: []string{treeWith("quotes · lead · max1")}, picked: to, front: "claude"}, s, "left alone"},
 	} {
 		_, _, _, err := Run(c.s, c.f.deps())

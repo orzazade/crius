@@ -183,6 +183,8 @@ func Run(s Spawn, d Deps) (ws, surface, tag string, err error) {
 // old tab and its terminal ("" when there is none). Anything wrong is refused before a tab is touched.
 func move(d Deps, s Spawn, acct, name string) (cwd, ws, surface, tty string, err error) {
 	switch {
+	case s.Account == "enterprise":
+		return "", "", "", "", fmt.Errorf("%s %s: a move goes to another Max account, not enterprise", s.Project, s.Role)
 	case !safeDir(s.Move.Cwd):
 		return "", "", "", "", fmt.Errorf("bad folder %q: want an absolute path with no quote, backslash or control character", s.Move.Cwd)
 	case acct == "":
