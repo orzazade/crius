@@ -146,6 +146,19 @@ func TestPickReadsTheAccountsTheStoreAndTheProject(t *testing.T) {
 	if name, dir, why, err := pick(home, "quotes", "max"); err != nil || name != "max2" || dir != m2 || !strings.Contains(why, "max2: quota not measured") {
 		t.Errorf("max: %q %q %q %v, want max2 in %s, not measured", name, dir, why, err, m2)
 	}
+	// Crius 10-30 22:44: -account enterprise started quotes sessions with no folder, and aitch's Appxite route put them on
+	// Max under an enterprise tag; enterprise now starts in the signed-in enterprise folder of the project's persona
+	ent := filepath.Join(d, ".claude-work")
+	testutil.Write(t, filepath.Join(ent, ".claude.json"), `{"oauthAccount":{"accountUuid":"acct-ent"}}`)
+	testutil.Write(t, filepath.Join(home, "accounts.toml"), "[[account]]\nname = \"max2\"\nplan = \"max\"\ndirs = [\""+m2+
+		"\"]\n[[account]]\nname = \"work\"\nplan = \"enterprise\"\ndirs = [\""+ent+"\"]\n")
+	if name, dir, _, err := pick(home, "quotes", "enterprise"); err != nil || name != "work" || dir != ent {
+		t.Errorf("enterprise: %q %q %v, want work in %s", name, dir, err, ent)
+	}
+	testutil.Write(t, filepath.Join(home, "accounts.toml"), "[[account]]\nname = \"max2\"\nplan = \"max\"\ndirs = [\""+m2+"\"]\n")
+	if _, _, _, err := pick(home, "quotes", "enterprise"); err == nil || !strings.Contains(err.Error(), "no signed-in enterprise") {
+		t.Errorf("no enterprise row: %v, want a refusal", err)
+	}
 	if _, _, _, err := pick(home, "quotes", "max9"); err == nil || !strings.Contains(err.Error(), "no Max account max9") {
 		t.Errorf("max9: %v, want no such account", err)
 	}
@@ -163,7 +176,9 @@ func TestResumeKeepsTheSessionsMaxAccount(t *testing.T) {
 	testutil.Write(t, filepath.Join(ent, ".claude.json"), `{"oauthAccount":{"accountUuid":"acct-ent"}}`)
 	testutil.Write(t, filepath.Join(home, "accounts.toml"), "[[account]]\nname = \"max2\"\nplan = \"max\"\ndirs = [\""+m2+
 		"\"]\n[[account]]\nname = \"ent\"\nplan = \"enterprise\"\ndirs = [\""+ent+"\"]\n")
-	for config, want := range map[string][2]string{m2: {"max2", m2}, ent: {}, other: {}} {
+	// Crius 10-30 22:44: an enterprise session resumed through aitch's route ran on Max (Appxite's route starts on
+	// .claude-work-max), so it resumes in its own folder too
+	for config, want := range map[string][2]string{m2: {"max2", m2}, ent: {"ent", ent}, other: {}} {
 		if acct, dir, err := sessionAccount(home, config); err != nil || acct != want[0] || dir != want[1] {
 			t.Errorf("%s: %q %q %v, want %q", config, acct, dir, err, want)
 		}

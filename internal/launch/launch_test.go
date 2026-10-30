@@ -902,26 +902,40 @@ func TestAPickedAccountStartsInItsFolderAndIsNotInTheTitle(t *testing.T) {
 		t.Errorf("tag %q", tag)
 	}
 
-	// A named row is asked for by name; enterprise is never picked; no pick launches as before.
-	for _, c := range []struct{ account, asked, suffix string }{
-		{"max3", "quotes max3", "-n 'quotes · lead'"},
-		{"enterprise", "", "-n 'quotes · lead'"},
+	// A named row is asked for by name, and enterprise too: Crius 10-30 22:44, -account enterprise launched with no
+	// folder, aitch's Appxite route started the quotes sessions on Max, and their tags said enterprise. Every launch
+	// starts in the folder of the account its tag names.
+	byName := func(project, want string) (string, string, error) {
+		asked = append(asked, project+" "+want)
+		if want == "enterprise" {
+			return "work", "/Users/o/.claude-work", nil
+		}
+		return want, "/Users/o/.claude-" + want, nil
+	}
+	for _, c := range []struct{ account, asked, primary, tag string }{
+		{"max3", "quotes max3", "/Users/o/.claude-max3", "max"},
+		{"enterprise", "quotes enterprise", "/Users/o/.claude-work", "enterprise"},
 	} {
 		asked = nil
-		f := &fake{trees: []string{tree}, picked: f.picked}
-		if _, _, _, err := Run(Spawn{Project: "quotes", Role: "lead", Account: c.account, Prompt: "go"}, f.deps()); err != nil {
+		f := &fake{trees: []string{tree}, picked: byName}
+		_, _, tag, err := Run(Spawn{Project: "quotes", Role: "lead", Account: c.account, Prompt: "go"}, f.deps())
+		if err != nil {
 			t.Fatal(c.account, err)
 		}
-		if strings.Join(asked, ",") != c.asked || !strings.HasSuffix(f.called("new-surface")[0], c.suffix+exitLine) {
-			t.Errorf("%s: asked %q, new-surface %s", c.account, asked, f.called("new-surface")[0])
+		if ns := f.called("new-surface")[0]; strings.Join(asked, ",") != c.asked || !strings.Contains(ns, "--primary '"+c.primary+"'") {
+			t.Errorf("%s: asked %q, new-surface %s", c.account, asked, ns)
+		}
+		if !strings.HasPrefix(tag, "[crius account="+c.tag+" ") {
+			t.Errorf("%s: tag %q", c.account, tag)
 		}
 	}
-	f = &fake{trees: []string{tree}, picked: func(string, string) (string, string, error) { return "", "", nil }}
-	if _, _, _, err := Run(Spawn{Project: "quotes", Role: "lead", Prompt: "go"}, f.deps()); err != nil {
-		t.Fatal(err)
-	}
-	if ns := f.called("new-surface")[0]; !strings.Contains(ns, "aitch launch claude -- --model") || !strings.HasSuffix(ns, "-n 'quotes · lead'"+exitLine) {
-		t.Errorf("no pick: %s", ns)
+	// no folder for the account: refused, as a launch on aitch's route could run on another account than its tag says
+	for _, account := range []string{"", "enterprise"} {
+		f = &fake{trees: []string{tree}, picked: func(string, string) (string, string, error) { return "", "", nil }}
+		_, _, _, err := Run(Spawn{Project: "quotes", Role: "lead", Account: account, Prompt: "go"}, f.deps())
+		if err == nil || !strings.Contains(err.Error(), "no signed-in folder") || len(f.called("new-surface")) != 0 {
+			t.Errorf("no pick for %q: %v, want a refusal before a tab opens", account, err)
+		}
 	}
 }
 
@@ -1034,7 +1048,7 @@ func TestAMoveStartsTheRoleInItsFolderOnAnotherAccountAndClosesTheOldTab(t *test
 		s    Spawn
 		want string
 	}{
-		{&fake{trees: []string{tree}, picked: func(string, string) (string, string, error) { return "", "", nil }}, s, "no Max account"},
+		{&fake{trees: []string{tree}, picked: func(string, string) (string, string, error) { return "", "", nil }}, s, "no signed-in folder"},
 		{&fake{trees: []string{tree}, picked: func(string, string) (string, string, error) { return "max1", "/Users/o/.claude-work-max", nil }}, s, "on max1 already"},
 		{&fake{trees: []string{tree}, picked: to}, Spawn{Project: "quotes", Role: "lead", Prompt: "go", Move: &Moved{Cwd: "rel/dir", From: "max1"}}, "bad folder"},
 		{&fake{trees: []string{treeWith("quotes · lead · max1")}, picked: to, front: "claude"}, s, "left alone"},

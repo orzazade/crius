@@ -234,8 +234,9 @@ func runCmux(args ...string) (string, error) {
 	return string(out), nil
 }
 
-// pick is the Max account a session of project starts on, its folder and why (quota.Pick): want is "max" for the one
-// whose week resets soonest, or a row's name. The figures are the record store's, as crius-rec quota reads them.
+// pick is the account a session of project starts on, its folder and why: want is "max" for the Max one whose week
+// resets soonest, a Max row's name (quota.Pick), or "enterprise" (quota.Enterprise). The figures are the record
+// store's, as crius-rec quota reads them.
 func pick(home, project, want string) (name, dir, why string, err error) {
 	root, pauseAt, err := ingest.ForSpawn(home, project)
 	if err != nil {
@@ -244,6 +245,10 @@ func pick(home, project, want string) (name, dir, why string, err error) {
 	projects, err := ingest.QuotaProjects(home)
 	if err != nil {
 		return "", "", "", err
+	}
+	if want == "enterprise" {
+		name, dir, err = quota.Enterprise(projects.Accounts, root)
+		return name, dir, "", err
 	}
 	db, err := store.Open(home)
 	if err != nil {
@@ -257,8 +262,8 @@ func pick(home, project, want string) (name, dir, why string, err error) {
 	return quota.Pick(r, projects.Accounts, root, want, pauseAt)
 }
 
-// sessionAccount is the Max row of accounts.toml that lists config, the folder a session ran in, and that folder; ""
-// when no Max row lists it.
+// sessionAccount is the row of accounts.toml that lists config, the folder a session ran in, and that folder; ""
+// when no row lists it.
 func sessionAccount(home, config string) (acct, dir string, err error) {
 	as, err := quota.LoadAccounts(home)
 	if err != nil {
@@ -268,9 +273,10 @@ func sessionAccount(home, config string) (acct, dir string, err error) {
 	return acct, dir, nil
 }
 
-// maxRow is the Max row of accounts.toml that lists config folder, and that folder; "" when none does.
+// maxRow is the row of accounts.toml that lists config folder, and that folder; "" when none does. An enterprise
+// row counts too: resumed through aitch's route, an enterprise session ran on Max (Crius 10-30 22:44).
 func maxRow(as *quota.Accounts, config string) (acct, dir string) {
-	if a := as.Dir(config); a != nil && a.Plan == "max" {
+	if a := as.Dir(config); a != nil {
 		return a.Name, config
 	}
 	return "", ""

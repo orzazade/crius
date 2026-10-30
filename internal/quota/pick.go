@@ -18,7 +18,7 @@ const Limit = 95
 // crius files the session. A week that ended with no sample since is a new one at 0% that resets a week after the old
 // reset, so it goes last. A row no line measured has no known reset: it is picked only when no measured row has room,
 // and why says so. One full (Room) or at the limit is passed over, and when every row is, Pick says which and at what
-// share. With no row that has such a folder and want "max", Pick returns "" and the launch goes as before.
+// share. With no row that has such a folder and want "max", Pick returns "", and the launch is refused (launch.Run).
 func Pick(r *Report, as *Accounts, root, want string, pauseAt int) (name, dir, why string, err error) {
 	if as == nil {
 		as = &Accounts{}
@@ -131,6 +131,27 @@ func Pick(r *Report, as *Accounts, root, want string, pauseAt int) (name, dir, w
 		return "", "", "", fmt.Errorf("every Max account is at its limit: %s", strings.Join(full, ", "))
 	}
 	return "", "", "", nil
+}
+
+// Enterprise is the enterprise row a session of the persona whose transcript folder is root starts on, and its folder:
+// the first plan enterprise row with a folder linked to root (as in Pick). None is an error: a launch with no folder
+// goes through aitch's route, which may start it on Max under an enterprise tag (Crius 10-30 22:44).
+func Enterprise(as *Accounts, root string) (name, dir string, err error) {
+	if as != nil {
+		for _, a := range as.Rows {
+			if a.Plan != "enterprise" {
+				continue
+			}
+			d, err := linked(a, root)
+			if err != nil {
+				return "", "", err
+			}
+			if d != "" {
+				return a.Name, d, nil
+			}
+		}
+	}
+	return "", "", fmt.Errorf("accounts.toml has no signed-in enterprise folder whose projects/ is %s", root)
 }
 
 // linked is the first of the row's folders that is signed into the row's login and whose projects/ is root; "" if
