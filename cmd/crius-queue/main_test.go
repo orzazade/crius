@@ -574,3 +574,34 @@ func TestOnlyAnOwnerAsksForwardAsksBackAndTheCarryOutlivesAHold(t *testing.T) {
 		}
 	}
 }
+
+// A question carried to the lead's next row and settled there does not come back on a later ask (review round 3 of
+// de39210, P2: askedOn took the newest withdrawn row, so q1's "why?" came back on q3).
+func TestASettledQuestionIsNotCarriedAgain(t *testing.T) {
+	h := setup(t, "")
+	status := filepath.Join(h, "axi.md")
+	goal := func(stamp, needs string) {
+		t.Helper()
+		if err := os.WriteFile(status, []byte("## GOAL ("+stamp+")\nGoal: g\n- [x] one · abc1234\nDone: 100% (1 of 1 milestones)\n"+
+			"Next: none\nNeeds owner: "+needs+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(h, "projects.toml"), []byte(fmt.Sprintf("[projects.axi]\nleads = { lead = %q }\n", status)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	goal("2026-10-30 12:00", "OK to merge A")
+	cli(t, h, "list") // q1
+	cli(t, h, "answer", "q1", "why?")
+	goal("2026-10-30 12:30", "OK to merge A: it fixes the 5 failing tests")
+	cli(t, h, "list") // q1 withdrawn, q2 carries "why?"
+	cli(t, h, "answer", "q2", "yes")
+	goal("2026-10-30 13:00", "OK to deploy B")
+	var v View
+	if err := json.Unmarshal([]byte(cli(t, h, "list", "--json")), &v); err != nil {
+		t.Fatal(err)
+	}
+	if len(v.Open) != 1 || v.Open[0].Title != "OK to deploy B" || v.Open[0].Asked != "" {
+		t.Errorf("q3 carries the question settled on q2: %+v", v.Open)
+	}
+}

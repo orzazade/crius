@@ -152,16 +152,17 @@ func SyncGoals(home string, now time.Time, read func() ([]GoalNeed, error)) (hel
 	return held, err
 }
 
-// askedOn gives the owner's question on the lead's GOAL row withdrawn last, when it was asked on that row: the lead's
-// next row carries it once, also when that row opens passes later, after a hold (reviews of de39210, rounds 1 and 2).
+// askedOn gives the owner's question on the lead's newest GOAL row, when that row was withdrawn with it: the lead's
+// next row carries it once, also when that row opens later, after a hold (reviews of de39210, rounds 1 and 2). A
+// question settled on a later row is not carried again (round 3, P2).
 func askedOn(q *Queue, lead string) (asked, at string) {
 	var last *Row
 	for i := range q.Rows {
-		if r := &q.Rows[i]; r.Goal == lead && r.State == Withdrawn && (last == nil || r.AnsweredAt >= last.AnsweredAt) {
+		if r := &q.Rows[i]; r.Goal == lead {
 			last = r
 		}
 	}
-	if last == nil || last.Asked == "" || last.Carried {
+	if last == nil || last.State != Withdrawn || last.Asked == "" || last.Carried {
 		return "", ""
 	}
 	return last.Asked, last.AskedAt
