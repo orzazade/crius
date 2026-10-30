@@ -1,0 +1,347 @@
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func bash(cmd, cwd string) input {
+	in := input{ToolName: "Bash", Cwd: cwd}
+	in.ToolInput.Command = cmd
+	return in
+}
+
+// 10-30: a lead session posted a QA-notes comment and a reply to a colleague on AB#94205 under the owner's name, with
+// this exact command shape, and the owner had both deleted. These must wait for the owner's click.
+const lead94205 = `az devops invoke --area wit --resource comments --route-parameters project="AppXite Platform" workItemId=94205 --http-method POST --in-file x.json --api-version 7.1-preview --org https://dev.azure.com/appxite`
+
+func TestAzureDevOpsTextWritesAsk(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "history.json"), []byte(`[{"op":"add","path":"/fields/System.History","value":"hi"}]`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, cmd := range []string{
+		lead94205,
+		// wrappers, chains and spellings
+		`GH_TOKEN=x AZURE_DEVOPS_EXT_PAT=y ` + lead94205,
+		`env AZURE_DEVOPS_EXT_PAT=y ` + lead94205,
+		`cd /tmp && cat > x.json <<'EOF'
+{"text":"QA notes"}
+EOF
+` + lead94205,
+		`true; ` + lead94205 + ` | jq .id`,
+		`bash -c "` + strings.ReplaceAll(lead94205, `"`, `\"`) + `"`,
+		`bash -lc '` + lead94205 + `'`,
+		`timeout 60 az devops invoke --area wit --resource comments --http-method=post --in-file x.json`,
+		"az devops invoke \\\n  --area wit \\\n  --resource comments \\\n  --http-method Post \\\n  --in-file x.json",
+		`az devops invoke --area=wit --resource=Comments --http-method=PATCH --in-file x.json`,
+		`az devops invoke --area wit --resource commentsReactions --http-method PUT`,
+		`/opt/homebrew/bin/az devops invoke --area wit --resource comments --http-method POST --in-file x.json`,
+		`out=$(az devops invoke --area wit --resource comments --http-method POST --in-file x.json)`,
+		`az devops invoke --area wit --resource comments --http-method "$M" --in-file x.json`, // method unknown
+		`az devops invoke --area wit --resource "$R" --http-method POST --in-file x.json`,     // resource unknown
+		`az devops invoke --area wit --resource workitems --http-method PATCH --in-file history.json`,
+		`az devops invoke --area wit --resource workitems --http-method PATCH --in-file missing.json`, // cannot tell
+		// PR threads and comments
+		`az devops invoke --area git --resource threads --route-parameters project=P repositoryId=R pullRequestId=7 --http-method POST --in-file t.json`,
+		`az devops invoke --area git --resource pullRequestThreads --http-method POST --in-file t.json`,
+		`az devops invoke --area git --resource pullRequestThreadComments --http-method POST --in-file t.json`,
+		`az devops invoke --area wiki --resource pages --http-method PUT --in-file p.json`,
+		// boards
+		`az boards work-item update --id 94205 --discussion "QA notes: all green"`,
+		`az boards work-item update --id 94205 --discussion="QA notes"`,
+		`az boards work-item create --title T --type Bug --discussion "first note"`,
+		`az boards work-item update --id 94205 --fields "System.History=QA notes"`,
+		`az boards work-item update --id 94205 -f System.State=Done "System.History=done"`,
+		`az boards work-item update --id 94205 --fields "$F"`, // cannot tell
+		// repos
+		`az repos pr create --title T --description "Fixes the bug" --source-branch b`,
+		`az repos pr create --title T -d "Fixes the bug"`,
+		`az repos pr update --id 7 --description "new text"`,
+		`az repos pr comment create --id 7 --text hi`, // a comment-like subcommand
+		`az devops wiki page update --path /a --wiki W --content hi --version v`,
+		// REST through an HTTP tool or az rest
+		`curl -X POST -H "Content-Type: application/json" -d @c.json "https://dev.azure.com/appxite/AppXite%20Platform/_apis/wit/workItems/94205/comments?api-version=7.1-preview"`,
+		`curl -sS -d '{"text":"hi"}' https://dev.azure.com/appxite/_apis/wit/workItems/1/comments`,
+		`curl --request=PATCH https://appxite.visualstudio.com/_apis/wit/workItems/1`,
+		`curl -XPOST https://dev.azure.com/appxite/_apis/x`,
+		`curl -sSdX https://dev.azure.com/appxite/_apis/x`, // -d takes "X" as its data, not -X
+		`curl -sSXPATCH -d @c.json https://dev.azure.com/appxite/_apis/x`,
+		`curl --json '{"a":1}' https://dev.azure.com/appxite/_apis/x`,
+		`curl -X POST "https://dev.azure.com/$ORG/_apis/wit/workItems/1/comments"`,
+		`wget --method=POST --body-data='{"a":1}' https://dev.azure.com/appxite/_apis/x`,
+		`wget --post-data='a=1' https://dev.azure.com/appxite/_apis/x`,
+		`http POST https://dev.azure.com/appxite/_apis/x text=hi`,
+		`xh https://dev.azure.com/appxite/_apis/x text=hi`,
+		`az rest --method post --url "https://dev.azure.com/appxite/_apis/wit/workItems/1/comments?api-version=7.1" --body @c.json`,
+		`az rest -m PATCH -u https://dev.azure.com/appxite/_apis/x --body '{}'`,
+	} {
+		if why := check(bash(cmd, dir)); !strings.HasPrefix(why, reason) {
+			t.Errorf("not asked: %q: %q", cmd, why)
+		}
+	}
+}
+
+func TestReadsAndOtherWritesPass(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "state.json"), []byte(`[{"op":"add","path":"/fields/System.State","value":"Done"}]`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, cmd := range []string{
+		`az devops invoke --area wit --resource comments --route-parameters project="AppXite Platform" workItemId=94205 --api-version 7.1-preview --org https://dev.azure.com/appxite`,
+		`az devops invoke --area wit --resource comments --http-method GET --route-parameters workItemId=94205`,
+		`az devops invoke --area git --resource pullRequestThreads --http-method get`,
+		`az boards work-item show --id 94205 --org https://dev.azure.com/appxite`,
+		`az boards query --wiql "SELECT [System.Id] FROM workitems"`,
+		`az repos pr list --status active`,
+		`az repos pr show --id 7`,
+		`az account show`,
+		`az devops invoke --area wit --resource workitems --http-method PATCH --in-file state.json`, // a field-only update (known gap)
+		`az boards work-item update --id 94205 --state Done`,                                        // field-only (known gap)
+		`az boards work-item update --id 94205 --title T --description D`,                           // field-only (known gap)
+		`az boards work-item update --id 94205 --fields System.State=Done`,
+		`az repos pr update --id 7 --status completed`,
+		`curl -s https://dev.azure.com/appxite/_apis/wit/workItems/94205/comments`,
+		`curl -G -d api-version=7.1 https://dev.azure.com/appxite/_apis/x`,
+		`curl -X POST https://example.com/api -d x=1`,
+		`wget https://dev.azure.com/appxite/_apis/x`,
+		`http GET https://dev.azure.com/appxite/_apis/x`,
+		`az rest --url https://dev.azure.com/appxite/_apis/x`,
+		`echo az devops invoke --area wit --resource comments --http-method POST`,
+		`git commit -m "az boards work-item update --discussion x"`,
+		`grep -rn "http-method POST" docs/`,
+		`gh pr create --title T --body B`,
+	} {
+		if why := check(bash(cmd, dir)); why != "" {
+			t.Errorf("asked: %q: %s", cmd, why)
+		}
+	}
+}
+
+// Review round 1 (Opus, Codex out of quota): shapes that slipped through, each now asked.
+func TestReviewRound1BypassesAsk(t *testing.T) {
+	dir := t.TempDir()
+	for f, body := range map[string]string{
+		"state.json":     `[{"op":"add","path":"/fields/System.State","value":"Done"}]`, // field-only on disk
+		"sub/state.json": `[{"op":"add","path":"/fields/System.State","value":"Done"}]`,
+	} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, f)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, f), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	post := `az devops invoke --area wit --resource comments --http-method POST --in-file x.json`
+	for _, cmd := range []string{
+		// an in-file that is not a regular file, written by the same command, or moved by a cd
+		"az devops invoke --area wit --resource workitems --http-method PATCH --in-file /dev/stdin <<'X'\n[{\"op\":\"add\",\"path\":\"/fields/System.History\",\"value\":\"QA\"}]\nX",
+		"cat > state.json <<'X'\n[{\"op\":\"add\",\"path\":\"/fields/System.History\",\"value\":\"QA\"}]\nX\naz devops invoke --area wit --resource workitems --http-method PATCH --in-file state.json",
+		`cd sub && az devops invoke --area wit --resource workitems --http-method PATCH --in-file state.json`,
+		`az devops invoke --area wit --resource workitems --http-method PATCH --in-file sub`, // a folder
+		// the host in a variable
+		`ORG=https://dev.azure.com/appxite; curl -u ` + `":$PAT" -X POST -d @c.json "$ORG/P/_apis/wit/workItems/94205/comments?api-version=7.1-preview"`,
+		`curl -X POST -d @c.json "$SYSTEM_COLLECTIONURI/P/_apis/wit/workItems/1/comments"`,
+		`az rest -m post --resource 499b84ac-1321-427f-aa17-267ca6975798 --url "$ADO/x" --body @c.json`,
+		// az takes the last copy of an option, and reads a value from @file
+		`az devops invoke --area wit --resource comments --http-method GET --http-method POST --in-file x.json`,
+		`az devops invoke --area wit --resource workitems --http-method POST --resource comments --in-file x.json`,
+		`az boards work-item update --id 1 --fields @f.txt`,
+		`az devops invoke --area wit --resource @r.txt --http-method POST --in-file x.json`,
+		// a shell reading its script from stdin, text in a variable, eval of unreadable text
+		"bash <<'X'\n" + post + "\nX",
+		`echo '` + post + `' | bash`,
+		`cmd='` + post + `'; eval "$cmd"`,
+		`c='` + post + `'; bash -c "$c"`,
+		`eval az devops invoke --area wit --resource comments --http-method "$M" --in-file x.json`,
+		`bash -c $'cd /tmp\n` + post + `'`,
+		// wrappers
+		`gtimeout 60 ` + post,
+		`op run -- ` + post,
+		`watch -n5 '` + post + `'`,
+		`env -S '` + post + `'`,
+		`sudo -u me ` + post,
+		`ls *.json | xargs -I{} ` + post,
+		// httpie and xh
+		`http https://dev.azure.com/o/_apis/wit/workItems/1/comments text='see https://dev.azure.com/o/p/_git/r/pullrequest/7'`,
+		`http https://dev.azure.com/o/_apis/wit/workItems/1/comments < c.json`,
+		`cat c.json | xh https://dev.azure.com/o/_apis/wit/workItems/1/comments`,
+		// parsing
+		`az boards work-item update --id 1 --fi "System.History=x"`,
+		`az boards work-item update --id 1 --fields "History=QA notes"`,
+		`az repos pr create --title T -d"Fixes the bug"`,
+		`'az' 'devops' 'invoke' '--area' 'wit' '--resource' 'comments' '--http-method' 'POST'`,
+		`curl -X"$M" -d x https://dev.azure.com/appxite/_apis/x`,
+		`curl --request="$M" https://dev.azure.com/appxite/_apis/x`,
+		`curl --expand-data '{{x}}' https://dev.azure.com/appxite/_apis/x`,
+		`wget --method="$M" --body-data=x https://dev.azure.com/appxite/_apis/x`,
+	} {
+		if why := check(bash(cmd, dir)); !strings.HasPrefix(why, reason) {
+			t.Errorf("not asked: %q: %q", cmd, why)
+		}
+	}
+}
+
+// Review round 1: reads that asked.
+func TestReviewRound1ReadsPass(t *testing.T) {
+	for _, cmd := range []string{
+		`az rest --method post --url "https://dev.azure.com/appxite/P/_apis/wit/wiql?api-version=7.1" --body '{"query":"SELECT"}'`,
+		`curl -d '{"ids":[1,2]}' "https://dev.azure.com/appxite/_apis/wit/workitemsbatch?api-version=7.1"`,
+		`curl -sS -H "Authorization: Basic $T" -d '{"searchText":"foo"}' https://almsearch.dev.azure.com/appxite/_apis/search/codesearchresults`,
+		`http https://dev.azure.com/appxite/_apis/x "Authorization:Basic OjEyMzQ="`,
+		`http -a me@x.com:pat https://dev.azure.com/appxite/_apis/x`,
+		`xh https://dev.azure.com/appxite/_apis/x api-version==7.1`,
+		`curl -u ` + `":$PAT" https://dev.azure.com/appxite/_apis/x`, // split: the repo holds no token shape
+		`wget -qO- https://dev.azure.com/appxite/_apis/x`,
+		`curl -s "$ORG/_apis/wit/workItems/1/comments"`,
+		`echo '{"a":1}' | az devops invoke --area wit --resource comments --route-parameters workItemId=1`,
+	} {
+		if why := check(bash(cmd, t.TempDir())); why != "" {
+			t.Errorf("asked: %q: %s", cmd, why)
+		}
+	}
+}
+
+// Review round 2.
+func TestReviewRound2(t *testing.T) {
+	post := `az devops invoke --area wit --resource comments --http-method POST --in-file x.json`
+	for _, cmd := range []string{
+		`bash -euo pipefail -c '` + post + `'`,
+		`bash -euxo pipefail -c '` + post + `'`,
+		`sh -eo pipefail -c '` + post + `'`,
+		`bash +o posix -c '` + post + `'`,
+		`bash -O extglob -c '` + post + `'`,
+		`echo '` + post + `' | bash -`,
+		"bash - <<'X'\n" + post + "\nX",
+		`echo '` + post + `' | bash -s -- a`,
+		`bash -c -- '` + post + `'`,
+		`U="$ORG/P/_apis/wit/workItems/1/comments?api-version=7.1-preview"; curl -X POST -d @c.json "$U"`,
+		`curl -X POST -H "Authorization: Bearer $AZURE_DEVOPS_EXT_PAT" -d @c.json "$URL"`,
+		`direnv exec . ` + post,
+		`mise exec -- ` + post,
+		`arch -arm64 ` + post,
+		`setsid ` + post,
+		`su me -c '` + post + `'`,
+		`curl -X POST -d @c.json 'https://dev.azure.com/o/_apis/wit/workItems/1/comments?x=/_apis/wit/wiql'`,
+		`xh --bearer abc POST https://dev.azure.com/o/_apis/wit/workItems/1/comments text=hi`,
+		`echo POST | xargs az devops invoke --area wit --resource comments --in-file x.json --http-method`,
+		`echo https://dev.azure.com/o/_apis/wit/workItems/1/comments | xargs curl -X POST -d @c.json`,
+		`az devops invoke --area git --resource statuses --http-method POST --in-file s.json`,
+		`az -o json devops invoke --area wit --resource comments --http-method POST --in-file x.json`,
+		`python3 -c 'import requests; requests.post("https://dev.azure.com/o/_apis/wit/workItems/1/comments", json={})'`,
+		`bun -e 'await fetch("https://dev.azure.com/o/_apis/x", {method: "PATCH"})'`,
+	} {
+		if why := check(bash(cmd, t.TempDir())); !strings.HasPrefix(why, reason) {
+			t.Errorf("not asked: %q: %q", cmd, why)
+		}
+	}
+	for _, cmd := range []string{
+		`timeout 30 rg 'az boards work-item update --discussion' docs/`,
+		`find . -name '*.md' -exec grep -l 'az devops invoke --http-method POST' {} +`,
+		`xargs -0 grep -n 'curl -X POST https://dev.azure.com/o/_apis/x'`,
+		`curl -X POST -d @q.json https://dev.azure.com/o/P/_apis/git/repositories/R/commitsbatch`,
+		`bash -euo pipefail -c 'az boards work-item show --id 1'`,
+		`python3 -c 'print("dev.azure.com")'`,
+		`ls | xargs -I{} az boards work-item show --id {}`,
+	} {
+		if why := check(bash(cmd, t.TempDir())); why != "" {
+			t.Errorf("asked: %q: %s", cmd, why)
+		}
+	}
+}
+
+// Review round 3 (P1 = 0); the cheap P2s.
+func TestReviewRound3(t *testing.T) {
+	post := `az devops invoke --area wit --resource comments --http-method POST --in-file x.json`
+	for _, cmd := range []string{
+		`uv run ` + post,
+		`poetry run ` + post,
+		`doppler run -- ` + post,
+		`dotenvx run -- curl -X POST -d @c.json https://dev.azure.com/o/_apis/wit/workItems/1/comments`,
+		`xh --http-version 1.1 POST https://dev.azure.com/o/_apis/wit/workItems/1/comments text=hi`,
+		`http --response-charset utf8 POST https://dev.azure.com/o/_apis/wit/workItems/1/comments text=hi`,
+		"python3 - <<'X'\nimport requests; requests.post('https://dev.azure.com/o/_apis/x')\nX",
+	} {
+		if why := check(bash(cmd, t.TempDir())); !strings.HasPrefix(why, reason) {
+			t.Errorf("not asked: %q: %q", cmd, why)
+		}
+	}
+	for _, cmd := range []string{
+		`curl -s -X POST -d '{"query":"SELECT [System.Id] FROM workitems"}' "https://dev.azure.com/o/P/_apis/wit/wiql?api-version=7.1" | python3 -m json.tool`,
+		`az rest --method post --url "https://dev.azure.com/o/P/_apis/wit/wiql?api-version=7.1" --body @q.json | python3 -m json.tool`,
+		`curl -s -X POST -d @q.json "https://dev.azure.com/o/P/_apis/wit/wiql" | python3 summarize.py`,
+	} {
+		if why := check(bash(cmd, t.TempDir())); why != "" {
+			t.Errorf("asked: %q: %s", cmd, why)
+		}
+	}
+}
+
+func TestOtherToolsPass(t *testing.T) {
+	in := input{ToolName: "Grep"}
+	in.ToolInput.Command = lead94205
+	if why := check(in); why != "" {
+		t.Errorf("a Grep call was asked: %s", why)
+	}
+}
+
+// decision runs the hook as Claude Code does and gives its permissionDecision ("" when it prints nothing).
+func decision(t *testing.T, stdin string) (string, string) {
+	t.Helper()
+	var out bytes.Buffer
+	if err := run(strings.NewReader(stdin), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Len() == 0 {
+		return "", ""
+	}
+	var got struct {
+		HookSpecificOutput struct {
+			HookEventName            string `json:"hookEventName"`
+			PermissionDecision       string `json:"permissionDecision"`
+			PermissionDecisionReason string `json:"permissionDecisionReason"`
+		} `json:"hookSpecificOutput"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("output is not JSON: %q", out.String())
+	}
+	if got.HookSpecificOutput.HookEventName != "PreToolUse" {
+		t.Fatalf("hookEventName: %q", got.HookSpecificOutput.HookEventName)
+	}
+	return got.HookSpecificOutput.PermissionDecision, got.HookSpecificOutput.PermissionDecisionReason
+}
+
+func TestTheHookPrintsAskForAWriteAndNothingForARead(t *testing.T) {
+	stdin, _ := json.Marshal(map[string]any{"tool_name": "Bash", "cwd": t.TempDir(), "tool_input": map[string]string{"command": lead94205}})
+	if d, why := decision(t, string(stdin)); d != "ask" || !strings.HasPrefix(why, reason) {
+		t.Errorf("write: %q %q", d, why)
+	}
+	stdin, _ = json.Marshal(map[string]any{"tool_name": "Bash", "tool_input": map[string]string{"command": "az boards work-item show --id 94205"}})
+	if d, why := decision(t, string(stdin)); d != "" {
+		t.Errorf("read: %q %q", d, why)
+	}
+}
+
+// Unreadable input never lets a write through silently: the owner is asked.
+func TestUnreadableInputAsks(t *testing.T) {
+	if d, why := decision(t, `{"tool_name":"Bash","tool_input":`); d != "ask" || !strings.Contains(why, "could not read") {
+		t.Errorf("%q %q", d, why)
+	}
+}
+
+// A command the shell parser cannot read asks when it names Azure DevOps, and passes otherwise.
+func TestUnparsableCommands(t *testing.T) {
+	if why := check(bash(`az devops invoke --area wit --resource comments --http-method POST "unclosed`, "")); !strings.HasPrefix(why, reason) {
+		t.Errorf("unparsable ADO command not asked: %q", why)
+	}
+	if why := check(bash(`echo "unclosed; az`, "")); !strings.HasPrefix(why, reason) {
+		t.Errorf("unparsable command ending in az not asked: %q", why)
+	}
+	if why := check(bash(`echo "unclosed`, "")); why != "" {
+		t.Errorf("unparsable other command asked: %q", why)
+	}
+}
