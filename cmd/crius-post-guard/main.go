@@ -492,6 +492,7 @@ func checkScript(a word, c ctx, plain bool) string {
 func (c ctx) safeAround(script, body string) bool {
 	home, _ := os.UserHomeDir()
 	keep := []string{realDir(filepath.Dir(script)), filepath.Dir(realDir(script)), realDir(home + "/.crius/bin")}
+	reads, readsAny := scriptReads(body)
 	for _, r := range c.files {
 		used := map[string]bool{} // the names the script words use
 		for w := range r.scripts {
@@ -504,10 +505,12 @@ func (c ctx) safeAround(script, body string) bool {
 		}
 		// an export reaches the script, so only a name its path uses; a plain assignment reaches it too when the session
 		// exported the name before, which the guard cannot see, so no name the script reads may be set (review of
-		// 3d38316: SAY_FREE_GB='x[$(…)]' runs in say.sh's (( free >= 25 ))); M='text'; bash $S/say.sh "$M" passes
+		// 3d38316: SAY_FREE_GB='x[$(…)]' runs in say.sh's (( free >= 25 ))), and bash reads one with no $ in (( N )),
+		// [[ N -gt 0 ]], ${a[N]} and ${!r} (review of fd71df9): none of scriptReads.
+		// M='text'; bash $S/say.sh "$M" passes
 		named := func(a *syntax.Assign, export bool) bool {
 			if a.Name == nil || codeNameRe.MatchString(a.Name.Value) ||
-				regexp.MustCompile(`\$\{?`+a.Name.Value+`([^A-Za-z0-9_]|$)`).MatchString(body) {
+				reads[a.Name.Value] || readsAny {
 				return false
 			}
 			return used[a.Name.Value] || !export
@@ -544,6 +547,74 @@ func (c ctx) safeAround(script, body string) bool {
 		}
 	}
 	return true
+}
+
+// scriptReads gives the names a script reads: each $NAME, and each word in arithmetic, [[ ]] and an array index or
+// slice, where bash reads a name with no $ and runs a $(...) in its value (review of fd71df9: (( N > 0 ))), also in the
+// text a shell in it runs; any, when it reads a name it computes (${!r}; safeScript refuses declare -n) or does not
+// parse.
+func scriptReads(body string) (map[string]bool, bool) {
+	names := map[string]bool{}
+	f, err := syntax.NewParser(syntax.Variant(syntax.LangBash)).Parse(strings.NewReader(body), "")
+	if err != nil {
+		return names, true
+	}
+	any := false
+	words := func(n syntax.Node) {
+		syntax.Walk(n, func(m syntax.Node) bool {
+			v := ""
+			switch m := m.(type) {
+			case *syntax.CmdSubst, *syntax.ProcSubst: // code it runs, walked as code: $(date +%M) reads no M
+				return false
+			case *syntax.Lit:
+				v = m.Value
+			case *syntax.SglQuoted: // [[ 'N' -gt 0 ]] reads N
+				v = m.Value
+			}
+			for _, w := range regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*`).FindAllString(v, -1) {
+				names[w] = true
+			}
+			return true
+		})
+	}
+	syntax.Walk(f, func(n syntax.Node) bool {
+		switch n := n.(type) {
+		case *syntax.ParamExp:
+			if n.Param != nil {
+				names[n.Param.Value] = true
+			}
+			any = any || n.Excl
+			if n.Index != nil {
+				words(n.Index)
+			}
+			if n.Slice != nil {
+				if n.Slice.Offset != nil {
+					words(n.Slice.Offset)
+				}
+				if n.Slice.Length != nil {
+					words(n.Slice.Length)
+				}
+			}
+		case *syntax.ArithmExp, *syntax.ArithmCmd, *syntax.LetClause, *syntax.TestClause:
+			words(n)
+		case *syntax.CallExpr:
+			if len(n.Args) > 1 && shells[path.Base(literal(n.Args[0]).text)] {
+				for _, w := range n.Args[1:] {
+					if t := literal(w); t.ok {
+						if inner, a := scriptReads(t.text); a && !strings.HasPrefix(t.text, "-") {
+							any = true
+						} else {
+							for k := range inner {
+								names[k] = true
+							}
+						}
+					}
+				}
+			}
+		}
+		return true
+	})
+	return names, any
 }
 
 // codeNameRe is a variable that runs code or finds commands for a shell or git started later (codeVarRe's, ZDOTDIR, and
@@ -591,8 +662,8 @@ func aroundCall(args []*syntax.Word, r runs) bool {
 }
 
 // safeWrite says whether a redirect writes nowhere a script run or bus-post is read from: input and copies of a numbered
-// descriptor pass; a file must be a path the guard reads, absolute or from the command's own folder, no link, and not
-// in the script's folder or bus-post's.
+// descriptor pass; a file must be a path the guard reads, absolute or from the command's own folder, with no .. part,
+// no link, and not in the script's folder or bus-post's, judged on the folders the disk will use.
 func (c ctx) safeWrite(rd *syntax.Redirect, keep []string) bool {
 	switch rd.Op {
 	case syntax.RdrOut, syntax.AppOut, syntax.RdrAll, syntax.AppAll, syntax.ClbOut, syntax.RdrInOut, syntax.DplOut:
@@ -615,14 +686,36 @@ func (c ctx) safeWrite(rd *syntax.Redirect, keep []string) bool {
 		if c.moved || c.cwd == "" {
 			return false
 		}
-		p = filepath.Join(c.cwd, p)
+		p = c.cwd + "/" + p
 	}
+	// the disk goes up from a link's target at a .., the text from the link (review of fd71df9: gen/../../.crius/bin);
+	// with none, cleaning the text keeps every folder the disk passes
+	for _, part := range strings.Split(p, "/") {
+		if part == ".." {
+			return false
+		}
+	}
+	p = filepath.Clean(p)
 	if devFiles[p] {
 		return true
 	}
 	if fi, err := os.Lstat(p); err == nil && fi.Mode()&os.ModeSymlink != 0 {
 		return false
 	}
+	// the folders the disk uses: the nearest one that is there with its links followed, then the parts not made yet,
+	// which hold no link (review of fd71df9: other/ln -> lead/sub, > other/ln/x is in lead)
+	e, rest := p, ""
+	for {
+		if _, err := os.Lstat(e); err == nil || e == filepath.Dir(e) {
+			break
+		}
+		e, rest = filepath.Dir(e), filepath.Join(filepath.Base(e), rest)
+	}
+	r, err := filepath.EvalSymlinks(e)
+	if err != nil {
+		return false
+	}
+	p = filepath.Join(r, rest)
 	// by file identity, not by text: the disk may fold case (review of 3d38316: > dir/LEAD/say.sh is lead/say.sh)
 	for d := filepath.Dir(p); ; d = filepath.Dir(d) {
 		if fi, err := os.Stat(d); err == nil {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -410,6 +411,22 @@ func TestAScriptNamedThroughAVariableSetInTheCommandIsRead(t *testing.T) {
 	write("g5.sh", "#!/bin/bash\nXDG_CONFIG_HOME=/tmp/y git -C /tmp show HEAD\n")
 	write("g7.sh", "#!/bin/bash\ngit -C /tmp grep -iOless -e hi\n")
 	write("g6.sh", "#!/bin/bash\ngit -C /tmp grep -q -e \"$1\" -- n.txt; git -C /tmp log -1 --oneline -- \"$2\"\n")
+	// review of fd71df9: bash reads N with no $ (and runs a $(...) in its value) in arithmetic, [[ ]], an index or slice,
+	// and through ${!r} or declare -n
+	for i, b := range []string{`(( N > 0 ))`, `echo $(( N + 1 ))`, `[[ N -gt 0 ]]`, `a=(x y); echo "${a[N]}"`,
+		`a=xyz; echo "${a:N}"`, `[[ 'N' -gt 0 ]]`, `bash -c '(( N > 0 ))'`, `r=N; echo "${!r}"`, `declare -n r=N; echo "$r"`} {
+		write("n"+strconv.Itoa(i+1)+".sh", "#!/bin/bash\n"+b+"\necho \"$1\"\n")
+	}
+	for _, d := range []string{"other/x/y", "lead/sub"} {
+		if err := os.MkdirAll(filepath.Join(dir, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for l, to := range map[string]string{"other/lk": "other/x/y", "other/ln": "lead/sub", "other/ln2": "lead"} {
+		if err := os.Symlink(filepath.Join(dir, to), filepath.Join(dir, l)); err != nil {
+			t.Fatal(err)
+		}
+	}
 	self := "#!/bin/bash\n" + strings.Repeat("bash "+filepath.Join(dir, "self.sh")+"\n", 15)
 	write("self.sh", self)
 	s := `S=` + dir + `; `
@@ -444,6 +461,12 @@ func TestAScriptNamedThroughAVariableSetInTheCommandIsRead(t *testing.T) {
 		s + `M='az blob list ok'; bash $S/lead/say.sh INFO x "$M"`,
 		s + `bash $S/lead/say.sh DONE x "az fix $(git -C /tmp rev-parse --short HEAD)"`,
 		s + `cd ~/Projects && git status --short . && bash $S/lead/say.sh INFO crius:lead 'az blob list ok'`,
+		// review of fd71df9: a name none of the n scripts reads; a write through a link to a folder of no script
+		s + `Q='a[$(az boards work-item update --id 1)]'; bash $S/n1.sh 'az login'`,
+		s + `Q='a[$(az boards work-item update --id 1)]'; bash $S/n4.sh 'az login'`,
+		s + `Q='a[$(az boards work-item update --id 1)]'; bash $S/n7.sh 'az login'`,
+		`bash ` + dir + `/n8.sh 'az login'`, // no name set around it
+		s + `printf x > ` + dir + `/other/lk/new.txt; bash $S/lead/say.sh INFO x 'az login'`,
 	} {
 		if why := check(bash(cmd, dir)); why != "" {
 			t.Errorf("%q asked: %s", cmd, why)
@@ -554,7 +577,21 @@ func TestAScriptNamedThroughAVariableSetInTheCommandIsRead(t *testing.T) {
 		s + `bash $S/lead/say.sh INFO x "${S:X} az login"`,                                    // X from the environment
 		s + `: {PATH}>/tmp/x; bash $S/lead/say.sh INFO x 'az login'`,
 		`XDG_CONFIG_HOME=` + dir + `; bash $XDG_CONFIG_HOME/lead/say.sh INFO x 'az login'`,
+		// review of fd71df9: the disk goes up from a link's target at a .., and a link may lead into the script's folder
+		s + `printf x > ` + dir + `/other/lk/../../../lead/say.sh; bash $S/lead/say.sh INFO x 'az login'`,
+		s + `printf x > ` + dir + `/other/ln/x; bash $S/lead/say.sh INFO x 'az login'`,
+		s + `printf x > ` + dir + `/other/ln2/x; bash $S/lead/say.sh INFO x 'az login'`,
+		s + `printf x > /tmp/../tmp/x; bash $S/lead/say.sh INFO x 'az login'`,
 	} {
+		if why := check(bash(cmd, dir)); !strings.Contains(why, "owner's click") {
+			t.Errorf("%q: %q", cmd, why)
+		}
+	}
+	for i := 1; i <= 9; i++ {
+		cmd := s + `N='a[$(az boards work-item update --id 1)]'; bash $S/n` + strconv.Itoa(i) + `.sh 'az login'`
+		if i > 7 {
+			cmd = s + `N=x; bash $S/n` + strconv.Itoa(i) + `.sh 'az login'` // a computed read: any name set asks
+		}
 		if why := check(bash(cmd, dir)); !strings.Contains(why, "owner's click") {
 			t.Errorf("%q: %q", cmd, why)
 		}
