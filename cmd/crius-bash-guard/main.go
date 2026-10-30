@@ -24,8 +24,8 @@
 // docker rule misses a compose up, run or watch with no --build that builds a missing image, a build inside a script the
 // heavy.ts job runs (heavy.ts run -- sh -c '...'), a heavy.ts path from a variable, an export in a subshell or pipe
 // part or undone by unset, sudo's clean environment, and docker build -h (help, refused). The Enter rule reads the
-// command in order, not by branch (a send-key in an if that does not run counts), and a surface written two ways ("$S"
-// and $S) is two surfaces; a loop, ctrl+m and a key from a variable are not read as Enter.
+// command in order, not by branch (a send-key in an if that does not run counts, and a function defined before the send
+// does not), and a loop, ctrl+m and a key from a variable are not read as Enter.
 package main
 
 import (
@@ -905,7 +905,8 @@ func checkText(text string, err error, globSubst bool) string {
 		if _, err := syntax.NewParser().Parse(strings.NewReader(b), ""); err == nil && same {
 			return check(b)
 		}
-		if why := check(b); why == dump || why == untargeted {
+		// the unsent text names the surfaces, so it is matched by its start (review of 65c6aab: it was dropped here)
+		if why := check(b); why == dump || why == untargeted || strings.HasPrefix(why, unsent[:strings.Index(unsent, "%")]) {
 			return why
 		}
 	}
@@ -1084,28 +1085,25 @@ func cmuxSend(args []*syntax.Word) (string, sendArgs) {
 	return "", sendArgs{}
 }
 
-// sendArgs is what follows a send or send-key: the target flags given a value, the --workspace and --surface values
-// (unquoted when literal, else as written), the first word that is no option (send's text, send-key's key), and
-// whether it asks for help (which types nothing).
+// sendArgs is what follows a send or send-key: the target flags given a value, the --workspace and --surface words, the
+// first word that is no option (send's text, send-key's key), and whether it only asks for help (--help or -h and no
+// other word, which types nothing; review of 65c6aab: cmux send hi -h was let through).
 type sendArgs struct {
-	has                      map[string]bool
-	workspace, surface, word string
-	help                     bool
+	has                map[string]bool
+	workspace, surface *syntax.Word
+	word               string
+	help               bool
 }
 
 func readSend(rest []*syntax.Word) sendArgs {
 	a := sendArgs{has: map[string]bool{}}
-	value := func(w *syntax.Word) string {
-		if v, ok := literal(w); ok {
-			return v
-		}
-		return print(w)
-	}
+	text := false
 	for j := 0; j < len(rest); j++ {
 		f, _ := literal(rest[j])
 		if f == "--" {
-			if j+1 < len(rest) && a.word == "" {
+			if j+1 < len(rest) && !text {
 				a.word, _ = literal(rest[j+1])
+				text = true
 			}
 			break
 		}
@@ -1116,25 +1114,38 @@ func readSend(rest []*syntax.Word) sendArgs {
 				a.has[f] = true
 				switch f {
 				case "--workspace":
-					a.workspace = value(rest[j+1])
+					a.workspace = rest[j+1]
 				case "--surface":
-					a.surface = value(rest[j+1])
+					a.surface = rest[j+1]
 				}
 				j++
 			}
-		case !strings.HasPrefix(f, "-") && a.word == "":
-			a.word = f
+		case !strings.HasPrefix(f, "-") && !text:
+			a.word, text = f, true
 		}
 	}
+	a.help = a.help && !text
 	return a
 }
 
+// sendTarget gives a --workspace or --surface word's value: resolved through the variables the command set, or as written
+// when part of it is computed (two $(...) would read alike).
+func (w *walker) sendTarget(word *syntax.Word) string {
+	if word == nil {
+		return ""
+	}
+	if v := w.resolve(word); !strings.Contains(v, unknown) {
+		return v
+	}
+	return print(word)
+}
+
 // unenter notes a cmux send's workspace and surface in unsent, and takes them off at a send-key Enter (or Return) to the
-// same pair. A send whose text ends in Enter (\n or \r, written or real; cmux send --help: "\n and \r send Enter")
-// leaves nothing unsent.
+// same pair, compared by value (W=workspace:2; ... --workspace $W is workspace:2; review of 65c6aab). A send whose text
+// ends in Enter (\n or \r, written or real; cmux send --help: "\n and \r send Enter") leaves nothing unsent.
 func (w *walker) unenter(args []*syntax.Word) {
 	sub, a := cmuxSend(args)
-	to := a.workspace + " " + a.surface
+	to := w.sendTarget(a.workspace) + " " + w.sendTarget(a.surface)
 	switch {
 	case sub == "" || a.help:
 	case sub == "send":

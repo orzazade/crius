@@ -729,6 +729,11 @@ func TestACmuxSendWithNoEnterToTheSameSurfaceIsRefused(t *testing.T) {
 		// review of a45a137: the Enter goes to the same surface in another workspace; an Enter in the middle of the text
 		`cmux send` + to("surface:5") + `hi; cmux send-key --workspace workspace:3 --surface surface:5 Enter`,
 		`cmux send` + to("surface:5") + `'hi\nthere'`,
+		// review of 65c6aab: a command bash cannot parse (zsh forms), a help word after the text
+		`cmux send` + to("surface:5") + `hi; echo ${(e)x}`, `setopt glob_subst; cmux send` + to("surface:5") + `hi; print ${=x}`,
+		`bash -c 'cmux send` + to("surface:5") + `${=x}'`,
+		`cmux send` + to("surface:5") + `hi -h`,
+		`cmux send` + to("$(a)") + `hi; cmux send-key` + to("$(b)") + `Enter`, // two computed surfaces are not one
 	} {
 		if why := check(cmd); !strings.Contains(why, "send-key") || !strings.Contains(why, "unsent") {
 			t.Errorf("%q: %q", cmd, why)
@@ -748,6 +753,9 @@ func TestACmuxSendWithNoEnterToTheSameSurfaceIsRefused(t *testing.T) {
 		`cmux send` + to("surface:5") + `'hi\r'`, `cmux send` + to("surface:5") + `"hi` + "\n" + `"`,
 		`cmux send` + to(`"surface:5"`) + `hi; cmux send-key` + to("surface:5") + `Enter`,
 		`cmux send --workspace 'workspace:2' --surface surface:5 hi; cmux send-key` + to("surface:5") + `Enter`,
+		// review of 65c6aab: a target from a variable the command set, quoted one way and plain the other
+		`W=workspace:2; S=surface:5; cmux send --workspace $W --surface $S hi; cmux send-key` + to("surface:5") + `Enter`,
+		`cmux send --workspace "$W" --surface "$S" hi; cmux send-key --workspace $W --surface $S Enter`,
 		// help types nothing (it was refused as an untargeted send)
 		`cmux send --help`, `cmux send-key --help`, `cmux send -h`,
 	} {
