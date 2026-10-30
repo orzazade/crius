@@ -1,11 +1,13 @@
-// Command crius-bash-guard is a Claude Code PreToolUse hook for Bash. It refuses five commands that broke the team:
+// Command crius-bash-guard is a Claude Code PreToolUse hook for Bash. It refuses six commands that broke the team:
 // team-wait.sh run detached with `&` (a detached waiter cannot wake the session; 10-21 22:44), and a line written
 // straight onto a bus log instead of through bus-post (10-20 and 10-21: UTC time slip, VERIFIED before the run; 10-22:
 // 332 quotes.log lines ingest cannot read), and a command that prints every variable with its value (env, set,
 // printenv, export -p, declare -p or a bare local: 10-22 a bare zsh local put a token into a transcript), and a cmux
 // send or send-key without --workspace and --surface as literal words (it types into the caller's own tab; 10-23
 // twice), and a docker image build outside a lone heavy slot (HEAVY_SLOTS=1 bun .../heavy.ts run --: 10-30 a compose
-// build of the AXI stack held the Docker VM at 11 cores). Exit 2 refuses, with the reason on stderr; anything else passes.
+// build of the AXI stack held the Docker VM at 11 cores), and a cmux send with no cmux send-key Enter to the same
+// surface after it in the same command (10-30: axi's text sat unsent 18:16 to 21:45). Exit 2 refuses, with the reason on
+// stderr; anything else passes.
 //
 // It catches habits, not intent: fifteen review rounds showed a list of shell forms is never complete, and the full
 // check is the digest's count of lines it cannot read. Known gaps: function bodies run later, source and ., a script
@@ -21,7 +23,9 @@
 // printenv --help, typeset +x and zsh text holding a *(...) with a quote in it, which bash reads as an extglob. The
 // docker rule misses a compose up, run or watch with no --build that builds a missing image, a build inside a script the
 // heavy.ts job runs (heavy.ts run -- sh -c '...'), a heavy.ts path from a variable, an export in a subshell or pipe
-// part or undone by unset, sudo's clean environment, and docker build -h (help, refused).
+// part or undone by unset, sudo's clean environment, and docker build -h (help, refused). The Enter rule reads the
+// command in order, not by branch (a send-key in an if that does not run counts), and a surface written two ways ("$S"
+// and $S) is two surfaces.
 package main
 
 import (
@@ -87,7 +91,11 @@ const tempName = "\x00name\x00"
 
 // check gives the reason to refuse command, or "".
 func check(command string) string {
-	return (&walker{vars: map[string]string{}, exported: map[string]bool{}, named: namesBus(command)}).check(command)
+	w := &walker{vars: map[string]string{}, exported: map[string]bool{}, named: namesBus(command), unsent: map[string]bool{}}
+	if why := w.check(command); why != "" || len(w.unsent) == 0 {
+		return why
+	}
+	return fmt.Sprintf(unsent, strings.Join(slices.Sorted(maps.Keys(w.unsent)), ", "))
 }
 
 // setsGlobSubst: the text may turn on zsh's glob_subst. Option names ignore case and _, emulate sh, ksh or csh sets it,
@@ -118,7 +126,9 @@ type walker struct {
 	// globSubst: zsh's glob_subst may be on, so ${=x} globs its value: the command names it or emulate, or this is a
 	// script a shell runs, which may start with any options (-o, ARGV0=sh: third review of the zsh fast path)
 	globSubst bool
-	why       string
+	// unsent: the surfaces a cmux send typed into with no send-key Enter to them after it; one map for the whole command
+	unsent map[string]bool
+	why    string
 }
 
 func (w *walker) check(command string) string {
@@ -418,6 +428,7 @@ func (w *walker) call(c *syntax.CallExpr, redirs []*syntax.Redirect) {
 		if !targeted(args[1:]) {
 			w.why = untargeted
 		}
+		w.unenter(args[1:])
 	case "docker", "docker-compose":
 		if builds(args) {
 			w.why = unslotted
@@ -588,7 +599,7 @@ func (w *walker) script(text string) {
 		w.refuseUnknown()
 	default:
 		w.why = (&walker{cwd: w.cwd, vars: maps.Clone(w.vars), exported: maps.Clone(w.exported), allExport: w.allExport,
-			named: w.named || namesBus(text), anyVar: w.anyVar, globSubst: true}).check(text)
+			named: w.named || namesBus(text), anyVar: w.anyVar, globSubst: true, unsent: w.unsent}).check(text)
 	}
 }
 
@@ -1025,6 +1036,9 @@ const (
 		"the Docker VM at 11 cores and docker and az stopped answering)."
 	untargeted = "cmux send and send-key need --workspace <ref> and --surface <ref> written as separate literal words: " +
 		"without them the text goes to this session's own tab, and zsh does not split $S into several words."
+	unsent = "cmux send typed text into %s with no cmux send-key --workspace <ref> --surface <same ref> Enter after it " +
+		"in this command, so the text sits unsent in that tab (axi 10-30: 18:16 to 21:45). Add the send-key Enter to " +
+		"the same surface after the send, in the same command."
 )
 
 // cmuxValued and cmuxFlags: cmux's global options that take a value, and those that take none (cmux --help).
@@ -1034,15 +1048,22 @@ var (
 )
 
 // targeted says whether cmux's arguments name both a workspace and a surface for send and send-key: the flags as literal
-// words, each followed by a value, before any --. Other subcommands, and one only the run shows, pass. A word after a
-// global option neither list names may be its value, so the words after it are read too (review of a648553:
+// words, each followed by a value, before any --. Other subcommands, one only the run shows, and --help pass. A word
+// after a global option neither list names may be its value, so the words after it are read too (review of a648553:
 // cmux --socket /path send-key enter).
 func targeted(args []*syntax.Word) bool {
+	sub, a := cmuxSend(args)
+	return sub == "" || a.help || a.has["--workspace"] && a.has["--surface"]
+}
+
+// cmuxSend finds a send or send-key among cmux's arguments: the subcommand ("" for any other, or one only the run
+// shows) and what follows it.
+func cmuxSend(args []*syntax.Word) (string, sendArgs) {
 	maybeValue := false
 	for i := 0; i < len(args); i++ {
 		sub, ok := literal(args[i])
 		if !ok || sub == "--" {
-			return true
+			return "", sendArgs{}
 		}
 		if strings.HasPrefix(sub, "-") {
 			if maybeValue = !strings.Contains(sub, "=") && !cmuxFlags[sub]; cmuxValued[sub] {
@@ -1056,26 +1077,58 @@ func targeted(args []*syntax.Word) bool {
 				maybeValue = false
 				continue
 			}
-			return true
+			return "", sendArgs{}
 		}
-		has := map[string]bool{}
-		rest := args[i+1:]
-		for j := 0; j < len(rest); j++ {
-			f, _ := literal(rest[j])
-			if f == "--" {
-				break
+		return sub, readSend(args[i+1:])
+	}
+	return "", sendArgs{}
+}
+
+// sendArgs is what follows a send or send-key: the target flags given a value, the --surface value as written, the
+// first word that is no option (send-key's key), and whether it asks for help (which types nothing).
+type sendArgs struct {
+	has           map[string]bool
+	surface, word string
+	help          bool
+}
+
+func readSend(rest []*syntax.Word) sendArgs {
+	a := sendArgs{has: map[string]bool{}}
+	for j := 0; j < len(rest); j++ {
+		f, _ := literal(rest[j])
+		if f == "--" {
+			if j+1 < len(rest) && a.word == "" {
+				a.word, _ = literal(rest[j+1])
 			}
-			if f != "--workspace" && f != "--surface" || j+1 == len(rest) {
-				continue
-			}
+			break
+		}
+		a.help = a.help || f == "--help" || f == "-h"
+		switch {
+		case (f == "--workspace" || f == "--surface" || f == "--window") && j+1 < len(rest):
 			if v, ok := literal(rest[j+1]); !ok || !strings.HasPrefix(v, "-") {
-				has[f] = true
+				a.has[f] = true
+				if f == "--surface" {
+					a.surface = print(rest[j+1])
+				}
 				j++
 			}
+		case !strings.HasPrefix(f, "-") && a.word == "":
+			a.word = f
 		}
-		return has["--workspace"] && has["--surface"]
 	}
-	return true
+	return a
+}
+
+// unenter notes a cmux send's surface in unsent, and takes it off at a send-key Enter (or Return) to the same surface.
+func (w *walker) unenter(args []*syntax.Word) {
+	sub, a := cmuxSend(args)
+	switch {
+	case sub == "" || a.help:
+	case sub == "send":
+		w.unsent[a.surface] = true
+	case strings.EqualFold(a.word, "enter") || strings.EqualFold(a.word, "return"):
+		delete(w.unsent, a.surface)
+	}
 }
 
 // dockerValued, composeValued and buildxValued: the options of docker, docker compose and docker buildx that take the

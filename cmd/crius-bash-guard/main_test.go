@@ -695,17 +695,52 @@ func TestACmuxSendWithoutALiteralTargetIsRefused(t *testing.T) {
 			t.Errorf("%q: %q", cmd, why)
 		}
 	}
+	enter := func(s string) string { return `; cmux send-key --workspace w --surface ` + s + ` Enter` }
 	for _, cmd := range []string{
-		`cmux send --workspace workspace:2 --surface surface:5 "ORDER: do it"`,
-		`cmux send --workspace "$W" --surface "$S" "text"`,
-		`cmux send --surface $S --workspace $W --paste -- "text"`,
+		`cmux send --workspace workspace:2 --surface surface:5 "ORDER: do it"` + enter("surface:5"),
+		`cmux send --workspace "$W" --surface "$S" "text"` + enter(`"$S"`),
+		`cmux send --surface $S --workspace $W --paste -- "text"` + enter("$S"),
 		`cmux send-key --workspace workspace:2 --surface surface:5 enter`,
 		`cmux read-screen --surface surface:5`, `cmux list-panels`, `cmux send-panel --panel 3 hi`,
 		`echo cmux send 3 hi`, `grep -n "cmux send" notes.md`,
-		`cmux --socket /tmp/cmux.sock send --workspace w --surface s hi`, `cmux --id-format refs notify --title send`,
+		`cmux --socket /tmp/cmux.sock send --workspace w --surface s hi` + enter("s"), `cmux --id-format refs notify --title send`,
 		`cmux notify --title send --body x`,
 		// review of 84c4a2e: a global option that takes no value ends no scan early
 		`cmux --json rename-workspace send`, `cmux --json notify --title send --body x`,
+	} {
+		if why := check(cmd); why != "" {
+			t.Errorf("%q refused: %s", cmd, why)
+		}
+	}
+}
+
+// axi:leader 10-30 21:49 (Crius NEED 22:10): text typed with cmux send and no Enter after it sat unsent in a tab from
+// 18:16 to 21:45. A send needs a cmux send-key ... Enter to the same surface after it, in the same command.
+func TestACmuxSendWithNoEnterToTheSameSurfaceIsRefused(t *testing.T) {
+	to := func(s string) string { return ` --workspace workspace:2 --surface ` + s + ` ` }
+	for _, cmd := range []string{
+		`cmux send` + to("surface:5") + `"ORDER: do it"`,
+		`cmux send` + to("surface:5") + `hi; cmux send-key` + to("surface:6") + `Enter`,
+		`cmux send-key` + to("surface:5") + `Enter; cmux send` + to("surface:5") + `hi`,
+		`cmux send` + to("surface:5") + `hi && cmux send-key` + to("surface:5") + `Escape`,
+		`cmux send` + to("surface:5") + `a; cmux send` + to("surface:6") + `b; cmux send-key` + to("surface:5") + `Enter`,
+		`bash -c 'cmux send` + to("surface:5") + `hi'`,
+		`cmux --socket /tmp/c.sock send` + to("surface:5") + `hi`,
+	} {
+		if why := check(cmd); !strings.Contains(why, "send-key") || !strings.Contains(why, "unsent") {
+			t.Errorf("%q: %q", cmd, why)
+		}
+	}
+	for _, cmd := range []string{
+		`cmux send` + to("surface:5") + `"ORDER: do it" && cmux send-key` + to("surface:5") + `Enter`,
+		`cmux send` + to("surface:5") + `hi; cmux send-key` + to("surface:5") + `enter`,
+		`cmux send` + to("surface:5") + `hi; cmux send-key` + to("surface:5") + `Return`,
+		`cmux send` + to(`"$S"`) + `hi; sleep 0.3; cmux send-key` + to(`"$S"`) + `Enter`,
+		`bash -c 'cmux send` + to("surface:5") + `hi' && cmux send-key` + to("surface:5") + `Enter`,
+		`cmux send` + to("surface:5") + `a; cmux send` + to("surface:6") + `b; cmux send-key` + to("surface:6") +
+			`Enter; cmux send-key` + to("surface:5") + `Enter`,
+		// help types nothing (it was refused as an untargeted send)
+		`cmux send --help`, `cmux send-key --help`, `cmux send -h`,
 	} {
 		if why := check(cmd); why != "" {
 			t.Errorf("%q refused: %s", cmd, why)
