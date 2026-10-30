@@ -263,7 +263,7 @@ func heldPath(home string) string {
 // asks the same: wakewatch reads each tab every 5 min.
 const screenSlack = 15 * time.Minute
 
-// heldBy names the row that has the ask already, "" when none does: an open NEED-OWNER bus line of the ask's project,
+// heldBy names the row that has the ask already, "" when none does: an open (or since answered) NEED-OWNER bus line of the ask's project,
 // or an open GOAL row of the same lead, that came no earlier than screenSlack before the screen was first seen (the
 // same turn wrote both). Nothing else holds: guessing whether two texts ask the same held unrelated questions, and an
 // older or answered row of the project said nothing of a new ask (reviews of 2bca850 round 1 P1 and round 2 P1, P2-1).
@@ -272,7 +272,9 @@ func heldBy(q *Queue, a ScreenAsk) string {
 	slack := a.Since.Add(-screenSlack).Format(stamp)
 	for _, r := range q.Rows {
 		switch {
-		case r.State != Open || r.Screen != "" || r.Opened < slack:
+		case r.Screen != "" || r.Opened < slack:
+		case r.State != Open && (r.State != Answered || r.AnsweredAt < since):
+			// answered after the screen began: the lead has not read the answer yet (review round 3 of 2bca850, P2-1)
 		case r.Goal == "" && r.Log != "" && r.From == project:
 			return "its NEED-OWNER " + r.ID + " came at " + r.Opened + ", as the screen began (" + since + ")"
 		case r.Goal == a.Lead:
@@ -361,12 +363,18 @@ func Asks(reply string) bool {
 var checkRe = regexp.MustCompile(`^(?:[-*+]\s+)?\[[ xX~]\]`)
 
 // nothingRe is a label's text that asks nothing: "Needs you: nothing", "Waiting on you: none", "—", "n/a", "not
-// now", each alone or with one note in brackets, and the GOAL template's "<what, or "nothing">" (review round 1 of
-// 2bca850). More words after it ask: "nothing new; A1 still open" (round 2, P3-2).
-var nothingRe = regexp.MustCompile(`(?i)^\W*(?:(?:nothing|none|no|n/?a|not (?:now|yet))\W*(?:\([^()]*\)\W*)?$|<what\b|$)`)
+// now", the GOAL template's "<what, or "nothing">" (review round 1 of 2bca850); the word may run on ("nothing right
+// now.", "nothing. Decided today: …", real turn ends; round 3, P2-2) unless the rest asks (askingRe).
+var (
+	nothingRe = regexp.MustCompile(`(?i)^\W*(?:(?:nothing|none|no|n/?a|not (?:now|yet))\b|<what\b|$)`)
+	// askingRe in the rest of a "nothing" asks after all: "nothing new, but A1 is still open" (round 2, P3-2)
+	askingRe = regexp.MustCompile(`(?i)\b(?:but|except|unless)\b|\?`)
+)
 
 // nothing says a label's text asks nothing; a label with no text on its line asks with the lines under it.
-func nothing(text string) bool { return strings.TrimSpace(text) != "" && nothingRe.MatchString(text) }
+func nothing(text string) bool {
+	return strings.TrimSpace(text) != "" && nothingRe.MatchString(text) && !askingRe.MatchString(text)
+}
 
 // AskLabelRe opens a line that asks the owner, as leads write it: "**Needs you:** …", "What I need from you: …",
 // "Still open from you: A1, A2 and go", "Three things still need you before the build starts:" (turn ends of 10-30).

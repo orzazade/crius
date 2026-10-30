@@ -34,7 +34,14 @@ func TestAReplyAsksByEmojiLabelOrClosingQuestion(t *testing.T) {
 		{"Needs owner: <what, or \"nothing\">", false},
 		{"The brief says:\n> Needs you: pick A or C\nI picked A as it says. ✅", false},
 		{"```\nNeeds you: example\n```\nDone.", false},
-		{"Needs you: nothing new; A1 still open", true},
+		{"Needs you: nothing new, but A1 is still open", true},
+		{"Tests pass.\n\n**Needs you:** nothing right now.\n\n⏳ CI running", false}, // review round 3 of 2bca850, P2-2
+		{"**Needs owner:** none at the moment ⏳", false},
+		{"Needs owner: nothing open.", false},
+		{"Needs owner: nothing. go test ./... 34 ok ✅", false},
+		{"Needs owner: nothing. Decided today: B92, B93 ✅", false},
+		{"Needs you: nothing yet, unless the review finds a P1 ⏳", true},
+		{"Needs you: nothing? A1 is open", true},
 		{"Needs you: no rush, but pick A or C", true},
 		{"Needs owner: nothing (parked) ✅", false},
 		{"Needs owner: none.", false},
@@ -135,7 +142,9 @@ func TestAScreenAskIsHeldOnlyByWhatTheSameTurnPosted(t *testing.T) {
 		held                         string
 	}{
 		{name: "an open need-owner as the screen began", bus: "2026-10-30T13:40 NEED-OWNER marketplace:lead -> crius — pick the landing page\n", held: "its NEED-OWNER q1 came at 2026-10-30T13:40"},
-		{name: "an answered need-owner as the screen began", bus: "2026-10-30T13:40 NEED-OWNER marketplace:lead -> crius — renew the test tenant licence\n", answer: "13:45"},
+		{name: "a need-owner answered before the screen began", bus: "2026-10-30T13:40 NEED-OWNER marketplace:lead -> crius — renew the test tenant licence\n", answer: "13:45"},
+		// review round 3 of 2bca850 (P2-1): the owner answered it after the screen began; the lead has not read it yet
+		{name: "a need-owner answered after the screen began", bus: "2026-10-30T13:40 NEED-OWNER marketplace:lead -> crius — pick the landing page\n", answer: "13:55", held: "its NEED-OWNER q1 came at 2026-10-30T13:40"},
 		{name: "a need-owner long before the screen", bus: "2026-10-30T13:20 NEED-OWNER marketplace:lead -> crius — pick the landing page\n"},
 		{name: "an old open row that asks the same", bus: "2026-10-30T09:00 NEED-OWNER marketplace:lead -> crius — A1, the sign-in app for the landing page\n"},
 		{name: "an old open row with the same words", bus: "2026-10-30T09:00 NEED-OWNER marketplace:lead -> crius — Marketplace: the landing page sign-in prototype, P1 A1\n"},
