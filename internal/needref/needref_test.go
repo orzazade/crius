@@ -2,6 +2,7 @@ package needref
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -288,5 +289,45 @@ func TestRoundTwoShapesReadTheRightTextOrSaySo(t *testing.T) {
 	}
 	if got := Read("../x.md", Status{}, nil); got != "Could not read ../x.md: no project folder to look in." {
 		t.Errorf("no roots: %q", got)
+	}
+}
+
+// Review round 3 of baf3a3e (P2): a walk cut short after the first of two files of a name read it with no word that
+// another may be there.
+func TestAFileFoundBeforeTheSearchStoppedSaysSo(t *testing.T) {
+	h := t.TempDir()
+	status := write(t, filepath.Join(h, "state/STATUS.md"), "")
+	write(t, filepath.Join(h, "repo/a/BUILD-DECISIONS.md"), "## B4 other project\nwrong\n")
+	for i := range 200 {
+		write(t, filepath.Join(h, "repo/m", strconv.Itoa(i)+".txt"), "")
+	}
+	write(t, filepath.Join(h, "repo/z/BUILD-DECISIONS.md"), "## B4 this project\nright\n")
+	defer func(c func() time.Time, b time.Duration) { clock, walkBudget = c, b }(clock, walkBudget)
+	t0 := time.Now()
+	n := 0
+	clock = func() time.Time { n++; return t0.Add(time.Duration(n) * time.Millisecond) }
+	walkBudget = 50 * time.Millisecond
+	got := Read("BUILD-DECISIONS B4", at(status), []string{filepath.Join(h, "repo")})
+	if !strings.HasSuffix(got, " section B4; the search stopped after 50ms, so another file of that name may be there)") {
+		t.Errorf("a file found by a cut-short search is read as if it were the only one:\n%s", got)
+	}
+}
+
+// Review round 3 of baf3a3e (P3): a git tree path with "é" is quoted by ls-tree without -z, and a missing file's text
+// named the revision with a stray "..".
+func TestATreeReadsEveryPathAndSaysWhatIsMissing(t *testing.T) {
+	repo := t.TempDir()
+	write(t, filepath.Join(repo, "café/NOTE.md"), "## 1. Ask\nship it?\n")
+	for _, args := range [][]string{{"init", "-q", "-b", "main"}, {"add", "."}, {"-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "n"}} {
+		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	st := Status{Path: repo + " main:STATUS.md", Git: &Tree{Repo: repo, Rev: "main", Dir: "."}}
+	if got, want := Read("NOTE.md 1", st, nil), "## 1. Ask\nship it?\n(from "+repo+" main:café/NOTE.md section 1)"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	if got, want := Read("GONE.md", st, nil), "Could not read GONE.md: no such file in main of "+repo+"."; got != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }

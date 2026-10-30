@@ -107,7 +107,7 @@ func Read(ask string, st Status, dirs []string) string {
 			parts = append(parts, fmt.Sprintf("Could not read%s in %s: %v.", where, h.path, err))
 			continue
 		}
-		parts = append(parts, clip(text)+"\n(from "+h.path+where+")")
+		parts = append(parts, clip(text)+"\n(from "+h.path+where+h.note+")")
 	}
 	for _, m := range labelRe.FindAllStringSubmatch(ask, -1) {
 		if text, err := labelled(st, m[1]); err != nil {
@@ -124,9 +124,9 @@ func Read(ask string, st Status, dirs []string) string {
 
 // hit is a named file found and read, or why not.
 type hit struct {
-	path string
-	text []byte
-	err  error
+	path, note string // note: what the card must say about how it was found
+	text       []byte
+	err        error
 }
 
 // rootsOf gives the folders to search, cleaned, once each, and without one inside another already listed.
@@ -243,8 +243,13 @@ func locate(names []string, roots []string, deadline time.Time) map[string]hit {
 			switch f := found[name]; {
 			case len(f) == 1:
 				out[name] = read(f[0], roots)
+				if late { // review round 3 of baf3a3e: a second file of the name may lie past where the walk stopped
+					h := out[name]
+					h.note = fmt.Sprintf("; %v after %s, so another file of that name may be there", errLate, walkBudget)
+					out[name] = h
+				}
 			case len(f) > 1:
-				out[name] = hit{err: several(f, r)}
+				out[name] = hit{err: several(f, r, r)}
 			case late:
 				out[name] = hit{err: fmt.Errorf("%w after %s, under %s", errLate, walkBudget, r)}
 			default:
@@ -301,8 +306,8 @@ func matches(p, name string) bool {
 	return filepath.Base(p) == filepath.Base(name) && (!strings.Contains(name, "/") || strings.HasSuffix(p, "/"+name))
 }
 
-// several is the error of a name more than one file under root has.
-func several(found []string, root string) error {
+// several is the error of a name more than one file under root has; at names root on the card.
+func several(found []string, root, at string) error {
 	sort.Strings(found)
 	n := len(found)
 	shown := make([]string, 0, 4)
@@ -313,7 +318,7 @@ func several(found []string, root string) error {
 	if n > 3 {
 		shown = append(shown, "…")
 	}
-	return fmt.Errorf("%d files of that name under %s (%s): the ask must name its path", n, root, strings.Join(shown, ", "))
+	return fmt.Errorf("%d files of that name under %s (%s): the ask must name its path", n, at, strings.Join(shown, ", "))
 }
 
 // read reads path when, links followed, it is still under a root (review round 2 of ee67b2e: a link inside a root read
@@ -337,18 +342,23 @@ func read(path string, roots []string) hit {
 // file of that name under the status file's folder, else under the top.
 func (t *Tree) locate(names []string) map[string]hit {
 	out := map[string]hit{}
-	files, err := t.git("ls-tree", "-r", "--name-only", "--end-of-options", t.Rev)
+	if len(names) == 0 {
+		return out
+	}
+	// -z: unquoted paths ("café/NOTE.md" is quoted without it); --full-tree: paths from the top, as cat-file reads them
+	files, err := t.git("ls-tree", "-r", "-z", "--full-tree", "--name-only", "--end-of-options", t.Rev)
 	if err != nil {
 		for _, n := range names {
 			out[n] = hit{err: err}
 		}
 		return out
 	}
-	all := strings.Split(strings.TrimSpace(string(files)), "\n")
+	all := strings.Split(strings.TrimSuffix(string(files), "\x00"), "\x00")
 	where := t.Repo + " " + t.Rev + ":"
+	at := t.Rev + " of " + t.Repo
 	for _, name := range names {
 		if strings.HasPrefix(name, "~/") || strings.HasPrefix(name, "../") || filepath.IsAbs(name) {
-			out[name] = hit{err: fmt.Errorf("outside %s%s", where, t.Dir)}
+			out[name] = hit{err: fmt.Errorf("outside %s", at)}
 			continue
 		}
 		var found []string
@@ -368,7 +378,7 @@ func (t *Tree) locate(names []string) map[string]hit {
 		}
 		switch len(found) {
 		case 0:
-			out[name] = hit{err: fmt.Errorf("%w in %s%s", errNone, where, t.Dir)}
+			out[name] = hit{err: fmt.Errorf("%w in %s", errNone, at)}
 		case 1:
 			b, err := t.git("cat-file", "blob", "--end-of-options", t.Rev+":"+found[0])
 			out[name] = hit{path: where + found[0], text: b, err: err}
@@ -376,7 +386,7 @@ func (t *Tree) locate(names []string) map[string]hit {
 			for i := range found {
 				found[i] = "/" + found[i]
 			}
-			out[name] = hit{err: several(found, "/")}
+			out[name] = hit{err: several(found, "/", at)}
 		}
 	}
 	return out
