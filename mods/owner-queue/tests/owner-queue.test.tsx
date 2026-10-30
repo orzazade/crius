@@ -328,3 +328,17 @@ test('held GOAL asks are said with the list, never hidden', async ($, on) => {
   const list = await $.command.run({ command: 'waiting', args: '' })
   expect(list.text).toContain('Held, as you may have answered them already (1):\n  marketplace:lead: the owner answered q5')
 })
+
+// Crius 10-30 16:58: an owner answer that asks back keeps the card open. The card and /waiting show the question, so
+// the owner sees it is still theirs and what they asked.
+test('a card the owner asked back on shows the question', async ($, on) => {
+  const asked = row('q13', 'Falcon: 3 choices', '20m', { from: 'falcon', asked: 'what you need?', askedAt: '2026-10-30T13:47' })
+  engine(on, () => ({ ...EMPTY, open: [asked] }))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect((await ui.find({ type: 'Text', text: /^You asked/ }))?.text).toBe('You asked')
+  expect((await ui.find({ type: 'Text', text: /^what you need\?/ }))?.text).toBe('what you need? (13:47)')
+  await ui.unmount()
+  const list = await $.command.run({ command: 'waiting', args: '' })
+  expect(list.text).toContain('1 Falcon: 3 choices · falcon · 20m\n    You asked what you need? (13:47)\n')
+})

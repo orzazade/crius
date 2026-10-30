@@ -11,6 +11,8 @@ export type Item = {
   state: 'open' | 'answered'
   answer?: string
   answeredAt?: string
+  asked?: string // the owner's last answer that asked back: the card stays open
+  askedAt?: string
   age: string
 }
 

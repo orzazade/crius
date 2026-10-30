@@ -67,6 +67,8 @@ type Row struct {
 	Answer     string   `json:"answer,omitempty"`
 	AnsweredAt string   `json:"answeredAt,omitempty"`
 	AnsweredBy string   `json:"answeredBy,omitempty"`
+	Asked      string   `json:"asked,omitempty"`   // the owner's last answer that asked back: the row stays open
+	AskedAt    string   `json:"askedAt,omitempty"` // when, as AnsweredAt
 	Log        string   `json:"log,omitempty"`
 	Line       string   `json:"line,omitempty"`
 	Goal       string   `json:"goal,omitempty"`
@@ -230,7 +232,8 @@ func Add(home string, now time.Time, r Row) (string, error) {
 	return id, err
 }
 
-// Answer records text as row id's answer. A row already answered is refused: two presses never answer twice.
+// Answer records text as row id's answer. A row already answered is refused: two presses never answer twice. An owner
+// answer that asks back (asksBack) keeps the row open, marked with the question.
 func Answer(home string, now time.Time, id, text, by string) error {
 	if strings.TrimSpace(text) == "" {
 		return errors.New("an answer needs text")
@@ -247,10 +250,21 @@ func Answer(home string, now time.Time, id, text, by string) error {
 		if r := q.Rows[i]; r.State != Open {
 			return fmt.Errorf("%s is already %s (%q at %s)", id, r.State, r.Answer, r.AnsweredAt)
 		}
-		answer(&q.Rows[i], text, now.Format(stamp), by)
+		if by == "owner" && asksBack(text) {
+			q.Rows[i].Asked, q.Rows[i].AskedAt = strings.TrimSpace(text), now.Format(stamp)
+		} else {
+			answer(&q.Rows[i], text, now.Format(stamp), by)
+		}
 		return save(home, q)
 	})
 }
+
+// asksBackRe is an answer that asks a question back instead of deciding (Crius 10-30 16:58: "what you need?" closed
+// q13): it ends in "?" or opens with what, why or how.
+var asksBackRe = regexp.MustCompile(`(?i)\?\s*$|^\s*(?:what|why|how)\b`)
+
+// asksBack says an owner's answer asks back: the row stays open, marked with the question.
+func asksBack(text string) bool { return asksBackRe.MatchString(text) }
 
 // OpenRows are the rows still open, oldest first (undated ones first: they are the oldest).
 func (q *Queue) OpenRows() []Row {

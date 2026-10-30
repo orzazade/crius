@@ -210,6 +210,17 @@ func age(opened string, now time.Time) string {
 	return fmt.Sprintf("%dd", int(d.Hours()/24))
 }
 
+// shortAt is a 2006-01-02T15:04 time as the list shows it: 15:04 on now's day, else 01-02 15:04.
+func shortAt(at, now string) string {
+	if len(at) < 16 || len(now) < 10 {
+		return at
+	}
+	if at[:10] == now[:10] {
+		return at[11:]
+	}
+	return at[5:10] + " " + at[11:]
+}
+
 func printList(out io.Writer, v View) {
 	if len(v.Open) == 0 {
 		fmt.Fprintln(out, "✓ Nothing waits on you.")
@@ -224,6 +235,9 @@ func printList(out io.Writer, v View) {
 			}
 			if len(r.Options) > 0 {
 				fmt.Fprintf(out, "    %-9s %s\n", "Options", strings.Join(r.Options, " | "))
+			}
+			if r.Asked != "" {
+				fmt.Fprintf(out, "    %-9s %s (%s)\n", "You asked", r.Asked, shortAt(r.AskedAt, v.Now))
 			}
 		}
 		fmt.Fprintln(out, `Answer by number: "2 yes", or any text: "2 not before Monday".`)

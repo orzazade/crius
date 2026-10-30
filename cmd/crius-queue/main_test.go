@@ -391,3 +391,48 @@ func TestNothingWithANoteOpensNoRowAndWithdrawsTheAsk(t *testing.T) {
 		t.Errorf("want only q1, withdrawn by the lead: %v", got)
 	}
 }
+
+// Crius 10-30 16:58: the owner answered three cards with a question back, and the queue closed them as answered (q8,
+// q13, q21). An owner answer that asks back (ends in "?", or opens with what/why/how) keeps the card open, marked with
+// the question; the line for Crius is printed as for any answer, and the next answer that does not ask back closes it.
+func TestAnAnswerThatAsksBackKeepsTheCardOpen(t *testing.T) {
+	h := setup(t, "")
+	asked := []string{ // the owner's three answers, 16:44-16:55
+		`i dont know what is this,the ui just says"1 the 3 questions in STATUS-2026-10-28.md section 6" so what should i answer?`,
+		"what you need?",
+		"what does this means, we ahve post order etc that works in v2, isnt it correct?",
+	}
+	for i, a := range asked {
+		id := cli(t, h, "add", "--title", fmt.Sprintf("card %d", i+1), "--from", "axi")
+		if got := cli(t, h, "answer", strings.TrimSpace(id), a); got != "[queue "+strings.TrimSpace(id)+"] "+a+"\n" {
+			t.Errorf("the line for Crius: got %q", got)
+		}
+	}
+	cli(t, h, "answer", "q1", "how should I read section 6")
+	var v View
+	if err := json.Unmarshal([]byte(cli(t, h, "list", "--json")), &v); err != nil {
+		t.Fatal(err)
+	}
+	if len(v.Open) != 3 || len(v.Answered) != 0 {
+		t.Fatalf("want 3 cards open, asked back: %+v", v)
+	}
+	for i, r := range v.Open {
+		want := asked[i]
+		if i == 0 {
+			want = "how should I read section 6"
+		}
+		if r.Asked != want || r.AskedAt != "2026-10-30T14:00" || r.Answer != "" {
+			t.Errorf("%s: asked %q at %q, answer %q; want the owner's last question", r.ID, r.Asked, r.AskedAt, r.Answer)
+		}
+	}
+	if out := cli(t, h, "list"); !strings.Contains(out, "1 card 1 · axi · 0m · q1\n    You asked how should I read section 6 (14:00)\n") {
+		t.Errorf("the list shows no question:\n%s", out)
+	}
+	cli(t, h, "answer", "q2", "Q1 yes, Q2 Inbox only")
+	if got := rows(t, h)["q2"]; got != "answered Q1 yes, Q2 Inbox only" {
+		t.Errorf("q2: an answer after the question closes it, got %q", got)
+	}
+	if err := run(h, now, []string{"answer", "q2", "why?"}, &strings.Builder{}); err == nil || !strings.Contains(err.Error(), "q2 is already answered") {
+		t.Errorf("an answered card takes no question: %v", err)
+	}
+}

@@ -85,6 +85,14 @@ const unreadLeads = (v: View) => (v.unread ?? []).map(u => u.split(': ')[0])
 const heldLeads = (v: View) => (v.held ?? []).map(u => u.split(': ')[0])
 const HELD = 'Held, as you may have answered them already'
 
+// shortAt is a 2006-01-02T15:04 time as the queue shows it: 15:04 on now's day, else 01-02 15:04 (crius-queue's own).
+function shortAt(at: string | undefined, now: string | undefined): string {
+  if (!at || at.length < 16 || !now || now.length < 10) {
+    return at ?? '?'
+  }
+  return at.slice(0, 10) === now.slice(0, 10) ? at.slice(11) : `${at.slice(5, 10)} ${at.slice(11)}`
+}
+
 const status = (v: View | null, err: string | null) =>
   err !== null
     ? `⚑ owner queue FAILED: ${err.slice(0, 120)}`
@@ -177,6 +185,9 @@ function listText(v: View | null, err: string | null): string {
       }
       if (r.options?.length) {
         out.push(`    ${'Options'.padEnd(9)} ${r.options.join(' | ')}`)
+      }
+      if (r.asked) {
+        out.push(`    ${'You asked'.padEnd(9)} ${r.asked} (${shortAt(r.askedAt, v.now)})`)
       }
     })
     out.push('Answer by number, any text: "/waiting 2 yes", "/waiting 1 not before Monday".')
@@ -347,6 +358,7 @@ export const register: Register = on => {
         {part('Do', r.do && r.do !== r.title ? r.do : undefined, C.fg)}
         {part('Why you', r.why, C.soft)}
         {part('Unblocks', r.unblocks, C.soft)}
+        {part('You asked', r.asked ? `${r.asked} (${shortAt(r.askedAt, v?.now)})` : undefined, C.accentFg)}
         {(r.options?.length ?? 0) > 0 && (
           <Box flexDirection="row" flexWrap="wrap" gap={1}>
             {(r.options ?? []).map((o, i) => (
