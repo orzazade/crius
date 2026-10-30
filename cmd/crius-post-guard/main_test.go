@@ -471,6 +471,8 @@ func TestAScriptNamedThroughAVariableSetInTheCommandIsRead(t *testing.T) {
 		s + `Q=30; bash $S/n7.sh 'az login'`,
 		`bash ` + dir + `/n8.sh 'az login'`, // no name set around it
 		s + `printf x > ` + dir + `/other/lk/new.txt; bash $S/lead/say.sh INFO x 'az login'`,
+		// review of f0e77a8: text with $ in a command that runs no script is the command check's (a rule for all asked)
+		`git -C /tmp commit -m 'fix: (( a[$(az x)] )) asks'`, `az pipelines list -o tsv | awk '{print $1}'`,
 	} {
 		if why := check(bash(cmd, dir)); why != "" {
 			t.Errorf("%q asked: %s", cmd, why)
@@ -587,12 +589,13 @@ func TestAScriptNamedThroughAVariableSetInTheCommandIsRead(t *testing.T) {
 		s + `printf x > ` + dir + `/other/ln2/x; bash $S/lead/say.sh INFO x 'az login'`,
 		s + `printf x > /tmp/../tmp/x; bash $S/lead/say.sh INFO x 'az login'`,
 		s + `printf x > ` + dir + `/other/hl; bash $S/lead/say.sh INFO x 'az login'`, // a hard link to say.sh
-		// review of 1a40027: bash runs a $(...) in quoted text it reads as a number or a name, in the command or in a
-		// script that passes (argar.sh: (( n > 0 )) on its $1)
-		`(( 'a[$(az boards work-item update --id 1)]' ))`, `[[ 'a[$(az boards work-item update --id 1)]' -eq 0 ]]`,
-		`[ -v 'a[$(az boards work-item update --id 1)]' ]`, `printf -v 'a[$(az boards work-item update --id 1)]' x`,
-		"(( 'a[`az boards work-item update --id 1`]' ))", `(( 'a[$(a""z boards x)]' )); echo az`,
+		// review of 1a40027: bash runs a $(...) in quoted text a script that passes reads as a number (argar.sh:
+		// (( n > 0 )) on its $1); review of f0e77a8: a \ makes the $ at run time
 		s + `bash $S/argar.sh 'a[$(az boards work-item update --id 1)]'`,
+		"S=" + dir + "; bash $S/argar.sh 'a[`az boards work-item update --id 1`]'",
+		s + `bash $S/argar.sh $'a[\x24(az boards work-item update --id 1)]'`,
+		s + `bash $S/argar.sh "$(printf 'a[\x24(az boards work-item update --id 1)]')"`,
+		s + `bash $S/argar.sh "$(echo -e 'a[\x24(az boards work-item update --id 1)]')"`,
 		s + `bash $S/argar.sh "a[\$(az boards work-item update --id 1)]"`,
 		s + `N='a[$(az boards work-item update --id 1)]'; bash $S/n1.sh 'az login'`,
 	} {

@@ -27,8 +27,10 @@
 //
 // Known gaps: field-only work-item updates (state, title, description) pass by design for now; az repos pr create or
 // update with --title only; a command name from a variable or a function ($AZ, f() { az "$@"; }); a script run by its
-// own name ($S/x.sh, ./x.sh); the code a script runs through source or an interpreter (python) when neither names
-// az or Azure DevOps; a script's arguments used in arithmetic or [[ ]] (bash runs a $(...) found in the value); a
+// own name ($S/x.sh, ./x.sh); a command that makes bash read quoted code as a number or a name ((( 'a[$(az …)]' )),
+// printf -v $'a[\x24(az …)]' x, (( $(printf …) ))): only a script run is held to text with no $, ` or \ (quotedCode);
+// a $ that reaches a script's arithmetic from a file or git output an earlier command wrote; the code a script runs through source or an interpreter (python) when neither names
+// az or Azure DevOps; a
 // script that hides az (a'z', a PS4 prompt) when neither it nor the command names az, as for a command itself (and
 // PS4='$(az ...)' bash -xc : with no script); a script past the 16th one a call reads or 4 levels down;
 // python -m azure.cli; ssh or kubectl exec to another machine; code in a script file (inline -c/-e
@@ -155,9 +157,6 @@ func checkBash(command string, c ctx) string {
 		}
 		return ""
 	}
-	if adoRe.MatchString(command) && quotedCode(f) {
-		return asked("quoted text with $ or ` in it, which bash may run as code")
-	}
 	c = c.scan(f)
 	piped := map[*syntax.CallExpr]bool{}
 	why := ""
@@ -195,19 +194,18 @@ func checkBash(command string, c ctx) string {
 	return why
 }
 
-// quotedCode says whether a command holds literal text with $ or ` in it. Bash runs a $(...) in such text wherever it
-// reads it as a number or a name: (( 'a[$(…)]' )), [[ '…' -eq 0 ]], [ -v '…' ], printf -v '…', a script's (( n > 0 ))
-// on its $1, or a name set for a script that reads it so. Ten reviews found such places one by one (review of
-// 1a40027), so the text is judged, not where it goes: only $ and ` start code, and a command that names Azure DevOps
-// with either in literal text asks.
+// quotedCode says whether a command holds literal text with $, ` or \ in it. Bash runs a $(...) in text it reads as a
+// number or a name ((( 'a[$(…)]' )), [[ … -eq 0 ]], a script's (( n > 0 )) on its $1), and a \ makes one at run time
+// ($'\x24', printf '\x24'); reviews 8-11 found such places one by one, so a script run passes only when the command's
+// own text can make no $ or ` at all (review of f0e77a8: a rule for every command asked on az … | awk '{print $1}').
 func quotedCode(f *syntax.File) bool {
 	found := false
 	syntax.Walk(f, func(n syntax.Node) bool {
 		switch n := n.(type) {
 		case *syntax.SglQuoted:
-			found = found || strings.ContainsAny(n.Value, "$`")
+			found = found || strings.ContainsAny(n.Value, "$`\\")
 		case *syntax.Lit:
-			found = found || strings.ContainsAny(n.Value, "$`")
+			found = found || strings.ContainsAny(n.Value, "$`\\")
 		}
 		return !found
 	})
@@ -517,6 +515,9 @@ func (c ctx) safeAround(script, body string) bool {
 	keep := []string{realDir(filepath.Dir(script)), filepath.Dir(realDir(script)), realDir(home + "/.crius/bin")}
 	reads, readsAny := scriptReads(body)
 	for _, r := range c.files {
+		if quotedCode(r.file) {
+			return false
+		}
 		used := map[string]bool{} // the names the script words use
 		for w := range r.scripts {
 			syntax.Walk(w, func(n syntax.Node) bool {
