@@ -1,9 +1,10 @@
 #!/bin/bash
 # The weekly job (launchd space.scifilab.crius.weekly, Thursday 04:00: after the Max reset at 02:00 and the 03:00
 # backup). Writes the scorecard of the week that ended last, writes every written week again (a late defect, revoke or
-# correction appends a revised line, design §7b), then runs the restore-after-expiry test (design §3c). One DONE to
-# crius:lead names the new scorecard and the test result. Any step that fails posts an ALERT instead, the later steps
-# still run, and the job exits 1. Exit 3 from scorecard (no Max sample in the week: partial) is a run.
+# correction appends a revised line, design §7b), writes the review of the owner's decisions, then runs the
+# restore-after-expiry test (design §3c). One DONE to crius:lead names the new scorecard, the review and the test
+# result. Any step that fails posts an ALERT instead, the later steps still run, and the job exits 1. Exit 3 from
+# scorecard (no Max sample in the week: partial) is a run.
 set -u
 export LC_ALL=en_US.UTF-8 # launchd sets no locale: in C, ${x:0:N} counts bytes and can split a character
 bin="$HOME/.crius/bin"
@@ -32,12 +33,17 @@ for f in "$HOME/.crius/state/scorecards/"*.json; do
     *) alert "weekly: crius-rec scorecard --write --week $week exit $rc: ${out//"$HOME"/$tilde}; see ~/.crius/logs/weekly.log" ;;
   esac
 done
+# The owner's decisions of the week (owner 10-30: how they decide, and what could become a standing rule).
+dec=$("$bin/crius-rec" decisions --write 2>&1)
+rc=$?
+dec=${dec//"$HOME"/$tilde}
+[ "$rc" = 0 ] || alert "weekly: crius-rec decisions --write exit $rc: $dec; see ~/.crius/logs/weekly.log"
 res=$("$bin/crius-rec" restore-test 2>&1)
 rc=$?
 res=${res%%$'\n'*}
 [ "$rc" = 0 ] || alert "weekly: restore test exit $rc: $res; see crius-rec health"
 if [ "$failed" = 0 ]; then
-  text="weekly: ${new//"$HOME"/$tilde} · $res"
+  text="weekly: ${new//"$HOME"/$tilde} · decisions: $dec · $res"
   text=${text:0:290}
   "$bin/crius-rec" record bus --project crius --role weekly --type DONE --to crius:lead --text "$text" ||
     { failed=1; echo "$(date +%FT%H:%M) cannot post DONE: $text" >&2; }

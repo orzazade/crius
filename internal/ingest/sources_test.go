@@ -851,3 +851,36 @@ func TestABareSenderIsRedactedAsWrittenAndNamedWithItsProject(t *testing.T) {
 		t.Fatal(rows)
 	}
 }
+
+// Owner 10-30 ("each of my decisions should be logged, to learn how I decide and reduce my involvement"): every row
+// of the owner queue, asked and answered, is copied into owner_decision, its times in UTC; a row answered later
+// updates its copy. Rows lost after the queue was set up make the run partial: never a quiet empty log.
+func TestTheOwnerQueueIsCopiedIntoOwnerDecision(t *testing.T) {
+	x := newIC(t, cfg{})
+	at := func(local string) string {
+		tm, err := time.ParseInLocation("2006-01-02T15:04", local, time.Local)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return tm.UTC().Format(time.RFC3339)
+	}
+	q := filepath.Join(x.home, "state", "owner-queue.jsonl")
+	testutil.Write(t, q, `{"id":"q1","title":"Approve the merge","from":"cortex","opened":"2026-10-30T10:00","state":"open","options":["Yes","No"]}`+"\n")
+	if st := x.run(); st.Status != "complete" {
+		t.Fatalf("status %s: %v", st.Status, st.Warnings)
+	}
+	eq(t, x.q("select id, asked, asked_by, title, options, state, coalesce(answer, '') from owner_decision"), [][]string{
+		{"q1", at("2026-10-30T10:00"), "cortex", "Approve the merge", `["Yes","No"]`, "open", ""}})
+	testutil.Write(t, q, `{"id":"q1","title":"Approve the merge","from":"cortex","opened":"2026-10-30T10:00","state":"answered",`+
+		`"answer":"Yes","answeredAt":"2026-10-30T10:12","answeredBy":"owner"}`+"\n")
+	x.run()
+	eq(t, x.q("select state, answer, answered_at, answered_by from owner_decision"), [][]string{
+		{"answered", "Yes", at("2026-10-30T10:12"), "owner"}})
+	if err := os.Remove(q); err != nil {
+		t.Fatal(err)
+	}
+	testutil.Write(t, filepath.Join(x.home, "state", "owner-queue.sync.json"), `{"since":"","logs":{"demo.log":{"offset":10,"ino":1}}}`)
+	if st := x.run(); st.Status != "partial" || !strings.Contains(strings.Join(st.Warnings, "\n"), "owner queue") {
+		t.Fatalf("lost rows gave status %s: %v", st.Status, st.Warnings)
+	}
+}

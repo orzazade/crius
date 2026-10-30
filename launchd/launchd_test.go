@@ -201,8 +201,11 @@ func TestWeeklyJobRunsThursdayAtFour(t *testing.T) {
 	}
 }
 
-// longOut is appended to the stub's `scorecard --write` output.
-var longOut string
+// longOut is appended to the stub's `scorecard --write` output; decisionsRC is the exit of its `decisions --write`.
+var (
+	longOut     string
+	decisionsRC = "0"
+)
 
 // weekly runs bin/crius-weekly-run with a stub crius-rec: `scorecard --write` exits with write[0] and prints
 // "wrote <path>", `scorecard --write --week W` exits with write[1] and prints "unchanged <path>", restore-test exits
@@ -229,6 +232,7 @@ case "$1 $2 $3" in
 "scorecard --write ") echo "wrote $HOME/.crius/state/scorecards/2026-10-22.md` + longOut + `"; exit ` + write[0] + `;;
 "scorecard --write --week") echo "unchanged $HOME/.crius/state/scorecards/$4.md"; exit ` + write[1] + `;;
 "restore-test  ") echo "restore test pass: 1 matured week same as its file (2026-10-08)"; echo "2026-10-08 same"; exit ` + restore + `;;
+"decisions --write ") echo "wrote $HOME/.crius/state/decisions/2026-10-23.md"; exit ` + decisionsRC + `;;
 "record bus --project") exit ` + record + `;;
 esac
 exit 9
@@ -254,8 +258,9 @@ exit 9
 // scorecard and the result. A step that fails posts an ALERT (and no DONE) and the job exits 1.
 func TestWeeklyRunWritesRestoresAndReports(t *testing.T) {
 	post := "crius-rec record bus --project crius --role weekly --type "
-	done := post + "DONE --to crius:lead --text weekly: wrote ~/.crius/state/scorecards/2026-10-22.md · restore test " +
-		"pass: 1 matured week same as its file (2026-10-08)"
+	done := post + "DONE --to crius:lead --text weekly: wrote ~/.crius/state/scorecards/2026-10-22.md · decisions: wrote " +
+		"~/.crius/state/decisions/2026-10-23.md · restore test pass: 1 matured week same as its file (2026-10-08)"
+	dec := "crius-rec decisions --write"
 	for _, c := range []struct {
 		name         string
 		write        [2]string
@@ -266,23 +271,30 @@ func TestWeeklyRunWritesRestoresAndReports(t *testing.T) {
 	}{
 		{"all run", [2]string{"0", "0"}, "0", "0", []string{"2026-10-08", "2026-10-15"}, 0, []string{
 			"crius-rec scorecard --write", "crius-rec scorecard --write --week 2026-10-08",
-			"crius-rec scorecard --write --week 2026-10-15", "crius-rec restore-test", done}},
+			"crius-rec scorecard --write --week 2026-10-15", dec, "crius-rec restore-test", done}},
 		{"no Max sample is a run", [2]string{"3", "3"}, "0", "0", nil, 0, []string{
-			"crius-rec scorecard --write", "crius-rec restore-test", done}},
+			"crius-rec scorecard --write", dec, "crius-rec restore-test", done}},
 		{"write fails", [2]string{"1", "0"}, "0", "0", nil, 1, []string{"crius-rec scorecard --write",
 			post + "ALERT --text weekly: crius-rec scorecard --write exit 1: wrote " +
-				"~/.crius/state/scorecards/2026-10-22.md; see ~/.crius/logs/weekly.log", "crius-rec restore-test"}},
+				"~/.crius/state/scorecards/2026-10-22.md; see ~/.crius/logs/weekly.log", dec, "crius-rec restore-test"}},
 		{"rewrite fails", [2]string{"0", "1"}, "0", "0", []string{"2026-10-08"}, 1, []string{
 			"crius-rec scorecard --write", "crius-rec scorecard --write --week 2026-10-08",
 			post + "ALERT --text weekly: crius-rec scorecard --write --week 2026-10-08 exit 1: unchanged " +
-				"~/.crius/state/scorecards/2026-10-08.md; see ~/.crius/logs/weekly.log", "crius-rec restore-test"}},
+				"~/.crius/state/scorecards/2026-10-08.md; see ~/.crius/logs/weekly.log", dec, "crius-rec restore-test"}},
 		{"restore fails", [2]string{"0", "0"}, "1", "0", nil, 1, []string{"crius-rec scorecard --write",
-			"crius-rec restore-test", post + "ALERT --text weekly: restore test exit 1: restore test pass: 1 matured " +
+			dec, "crius-rec restore-test", post + "ALERT --text weekly: restore test exit 1: restore test pass: 1 matured " +
 				"week same as its file (2026-10-08); see crius-rec health"}},
 		{"done cannot be posted", [2]string{"0", "0"}, "0", "2", nil, 1, []string{"crius-rec scorecard --write",
-			"crius-rec restore-test", done}},
+			dec, "crius-rec restore-test", done}},
+		{"decisions fails", [2]string{"0", "0"}, "0", "0", nil, 1, []string{"crius-rec scorecard --write", dec,
+			post + "ALERT --text weekly: crius-rec decisions --write exit 1: wrote ~/.crius/state/decisions/2026-10-23.md;" +
+				" see ~/.crius/logs/weekly.log", "crius-rec restore-test"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
+			decisionsRC = "0"
+			if c.name == "decisions fails" {
+				decisionsRC = "1"
+			}
 			rc, calls, out := weekly(t, c.write, c.restore, c.rec, c.weeks...)
 			if rc != c.rc || !reflect.DeepEqual(calls, c.calls) {
 				t.Fatalf("rc %d, calls\n%s\noutput\n%s", rc, strings.Join(calls, "\n"), out)

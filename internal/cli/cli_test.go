@@ -873,3 +873,32 @@ func TestStatelogLosesNoLinesWhenTheLogMovesBetweenOpens(t *testing.T) {
 		t.Errorf("rc %d", rc)
 	}
 }
+
+// Owner 10-30: "crius-rec decisions" prints the review of how the owner decided over the last --days (default 7), and
+// --write saves it under state/decisions/ and prints the path, for the weekly job's DONE line.
+func TestDecisionsPrintsAndWritesTheReview(t *testing.T) {
+	_, home := testutil.Temp(t)
+	if rc, out := run("init"); rc != 0 {
+		t.Fatal(rc, out)
+	}
+	db, err := store.Open(home) // the ingest makes the store
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	if rc, out := run("decisions"); rc != 0 || !strings.Contains(out, "# How the owner decided") ||
+		!strings.Contains(out, "NOT READ: the store never read the owner queue") {
+		t.Fatalf("rc %d: %s", rc, out)
+	}
+	rc, out := run("decisions", "--days", "30", "--write")
+	want := filepath.Join(home, "state", "decisions", time.Now().Format("2006-01-02")+".md")
+	if rc != 0 || out != "wrote "+want+"\n" {
+		t.Fatalf("rc %d: %s (want %s)", rc, out, want)
+	}
+	if b, err := os.ReadFile(want); err != nil || !strings.Contains(string(b), "# How the owner decided") {
+		t.Fatalf("%v: %s", err, b)
+	}
+	if rc, _ := run("decisions", "--days", "0"); rc != exitUsage {
+		t.Fatalf("--days 0 gave rc %d", rc)
+	}
+}

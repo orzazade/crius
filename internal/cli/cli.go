@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/orzazade/crius"
+	"github.com/orzazade/crius/internal/decisions"
 	"github.com/orzazade/crius/internal/digest"
 	"github.com/orzazade/crius/internal/drivers"
 	"github.com/orzazade/crius/internal/experiments"
@@ -63,6 +64,9 @@ const usage = `usage: crius-rec init
        crius-rec scorecard [--week YYYY-MM-DD] [--write]   (the quota week ending that UTC day, default the running one;
                  --write saves an ended week under state/scorecards/, default the one that ended last; a changed
                  one gets a revised line)
+       crius-rec decisions [--days N] [--write]   (how the owner decided over the last N days, default 7: waits,
+                 who asks, answers that repeat and could become a standing rule; --write saves it under
+                 state/decisions/ and prints the path)
        crius-rec restore-test   (the weekly restore-after-expiry test: the newest backup regenerates every matured
                  written week the same as its file; saved for health; exit 1 when it fails)
        crius-rec drivers --from YYYY-MM-DD|RFC3339 --to YYYY-MM-DD|RFC3339 [--json | --compare REF.jsonl]
@@ -161,6 +165,15 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			return exitUsage
 		}
 		return scorecardCmd(home, time.Now(), *day, *write, stdout, stderr)
+	case "decisions":
+		fs := flag.NewFlagSet("decisions", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		days := fs.Int("days", 7, "the days back from now")
+		write := fs.Bool("write", false, "save the review under state/decisions/")
+		if fs.Parse(args) != nil || fs.NArg() > 0 || *days < 1 {
+			return exitUsage
+		}
+		return decisionsCmd(home, time.Now(), *days, *write, stdout, stderr)
 	case "restore-test":
 		if len(args) > 0 {
 			return exitUsage
@@ -1107,5 +1120,36 @@ func statelogCmd(home string, stdout, stderr io.Writer) int {
 		return exitError
 	}
 	fmt.Fprint(stdout, statelog.Text(fs))
+	return 0
+}
+
+// decisionsCmd prints the review of the owner's decisions over the last days, or with write saves it as
+// state/decisions/<today>.md and prints the path.
+func decisionsCmd(home string, now time.Time, days int, write bool, stdout, stderr io.Writer) int {
+	db, rc := openStore(home, stderr)
+	if db == nil {
+		return rc
+	}
+	defer db.Close()
+	text, err := decisions.Review(db, now.AddDate(0, 0, -days), now)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return exitError
+	}
+	if !write {
+		fmt.Fprint(stdout, text)
+		return 0
+	}
+	dir := filepath.Join(home, "state", "decisions")
+	path := filepath.Join(dir, now.Format("2006-01-02")+".md")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return exitError
+	}
+	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return exitError
+	}
+	fmt.Fprintln(stdout, "wrote "+path)
 	return 0
 }

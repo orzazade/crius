@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/orzazade/crius/internal/ownerqueue"
 	"github.com/orzazade/crius/internal/store"
 )
 
@@ -50,6 +52,7 @@ func (r *runner) ingestFiles() {
 			}
 		}
 	}
+	r.ownerQueue()
 }
 
 func (r *runner) decisionsFile(path string, data []byte) error {
@@ -130,5 +133,74 @@ func (r *runner) artifactDir(tx *sql.Tx, slug, dir string) error {
 		}
 		c.state = stamp
 		return saveCursor(tx, "artifact", path, c, 1)
+	})
+}
+
+// ownerQueue copies the owner queue (internal/ownerqueue: one JSON row per line, the whole file replaced at each
+// change) into owner_decision when it changed: every question put to the owner and its answer, for the review of how
+// the owner decides (crius-rec decisions). A queue never set up has no file (the review says it has no rows); a file
+// gone after the queue was set up is lost rows, and the run is partial.
+func (r *runner) ownerQueue() {
+	path := filepath.Join(r.home, "state", "owner-queue.jsonl")
+	data, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		if _, serr := os.Stat(filepath.Join(r.home, "state", "owner-queue.sync.json")); serr == nil {
+			r.warn(true, "owner queue rows missing: %s (the queue was set up; restore the file)", path)
+		}
+		return
+	}
+	if err == nil {
+		err = r.ownerQueueFile(path, data)
+	}
+	if err != nil {
+		r.warn(true, "cannot ingest the owner queue %s: %v", path, err)
+	}
+}
+
+func (r *runner) ownerQueueFile(path string, data []byte) error {
+	sum := sha256.Sum256(data)
+	sha := hex.EncodeToString(sum[:])
+	utc := func(local string) any { // the queue keeps local "YYYY-MM-DDTHH:MM"
+		t, err := time.ParseInLocation("2006-01-02T15:04", local, time.Local)
+		if err != nil {
+			return nil
+		}
+		return t.UTC().Format(time.RFC3339)
+	}
+	return r.inTx(func(tx *sql.Tx) error {
+		c, err := getCursor(tx, "owner-queue", path)
+		if err != nil || c.sha == sha {
+			return err
+		}
+		n := 0
+		for i, line := range strings.Split(strings.TrimSuffix(string(data), "\n"), "\n") {
+			if line == "" {
+				continue
+			}
+			var row ownerqueue.Row
+			if err := json.Unmarshal([]byte(line), &row); err != nil {
+				return fmt.Errorf("line %d: %w", i+1, err)
+			}
+			options, err := json.Marshal(row.Options)
+			if err != nil {
+				return err
+			}
+			if len(row.Options) == 0 {
+				options = nil
+			}
+			if _, err := tx.Exec("insert into owner_decision (id, asked, asked_by, title, todo, why, unblocks, options, state,"+
+				" answer, answered_at, answered_by) values (?,?,?,?,?,?,?,?,?,?,?,?) on conflict(id) do update set"+
+				" asked=excluded.asked, asked_by=excluded.asked_by, title=excluded.title, todo=excluded.todo, why=excluded.why,"+
+				" unblocks=excluded.unblocks, options=excluded.options, state=excluded.state, answer=excluded.answer,"+
+				" answered_at=excluded.answered_at, answered_by=excluded.answered_by",
+				row.ID, utc(row.Opened), r.text(row.From), r.text(row.Title), nullable(r.text(row.Do)), nullable(r.text(row.Why)),
+				nullable(r.text(row.Unblocks)), nullable(r.text(string(options))), row.State, nullable(r.text(row.Answer)),
+				utc(row.AnsweredAt), nullable(r.text(row.AnsweredBy))); err != nil {
+				return err
+			}
+			n++
+		}
+		c.sha, c.offset = sha, int64(len(data))
+		return saveCursor(tx, "owner-queue", path, c, n)
 	})
 }

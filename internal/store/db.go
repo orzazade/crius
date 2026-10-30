@@ -40,6 +40,10 @@ create index if not exists event_session on event (session, kind);
 create table if not exists decision (
   id text primary key, project text, ts text, title text, decided_by text, supersedes text, file text, line integer,
   session text, taint integer not null default 0);
+-- every question put to the owner through the owner queue (internal/ownerqueue), and its answer once given; times UTC
+create table if not exists owner_decision (
+  id text primary key, asked text, asked_by text, title text, todo text, why text, unblocks text, options text,
+  state text not null, answer text, answered_at text, answered_by text);
 create table if not exists git_commit (
   sha text primary key, repo text, project text, ts text, session text, files text, is_revert integer not null default 0,
   reverts_sha text, ci text, subject text);
