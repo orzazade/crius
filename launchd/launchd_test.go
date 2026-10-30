@@ -435,3 +435,93 @@ func TestInstallBuildsEveryCommand(t *testing.T) {
 		t.Fatalf("built %v, want %v", built, want)
 	}
 }
+
+// Crius 10-31 00:12: the Chrome copy cleanup runs once a day at 04:30, not at load, and logs to tidy.log.
+func TestTidyJobRunsDailyAtFourThirty(t *testing.T) {
+	in, err := os.ReadFile("space.scifilab.crius.tidy.plist.in")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plist := filepath.Join(t.TempDir(), "tidy.plist")
+	if err := os.WriteFile(plist, []byte(strings.ReplaceAll(string(in), "@HOME@", "/Users/x")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command("plutil", "-convert", "json", "-o", "-", plist).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var job struct {
+		Label             string
+		ProgramArguments  []string
+		RunAtLoad         bool
+		Calendar          map[string]int `json:"StartCalendarInterval"`
+		StandardOutPath   string
+		StandardErrorPath string
+	}
+	if err := json.Unmarshal(out, &job); err != nil {
+		t.Fatal(err)
+	}
+	if job.Label != "space.scifilab.crius.tidy" || job.RunAtLoad ||
+		!reflect.DeepEqual(job.Calendar, map[string]int{"Hour": 4, "Minute": 30}) ||
+		!reflect.DeepEqual(job.ProgramArguments, []string{"/Users/x/.crius/bin/crius-tidy"}) ||
+		job.StandardOutPath != "/Users/x/.crius/logs/tidy.log" || job.StandardErrorPath != job.StandardOutPath {
+		t.Fatalf("%+v", job)
+	}
+}
+
+// The installer loaded a typed list of jobs, the same kind of list that missed crius-spawn under cmd/ (10-22): a new
+// template (tidy) would be built but never loaded. It loads every template under launchd/.
+func TestInstallLoadsEveryTemplate(t *testing.T) {
+	repo, home, fakes := t.TempDir(), t.TempDir(), t.TempDir()
+	script, err := os.ReadFile("../bin/crius-install-launchd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{"bin/crius-install-launchd": string(script), "bin/crius-digest-run": "", "bin/crius-weekly-run": "",
+		"bin/crius-wait": ""}
+	for _, job := range []string{"alpha", "beta"} {
+		files["launchd/space.scifilab.crius."+job+".plist.in"] = `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>Label</key><string>space.scifilab.crius.` + job + `</string></dict></plist>
+`
+	}
+	for f, body := range files {
+		if err := os.MkdirAll(filepath.Join(repo, filepath.Dir(f)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(repo, f), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, args := range [][]string{{"init", "-q"}, {"add", "."}, {"-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "one"},
+		{"update-ref", "refs/remotes/origin/main", "HEAD"}} {
+		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".crius", "state"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// launchctl records each bootstrap and answers print, go builds nothing; nothing reaches the real launchd.
+	log := filepath.Join(fakes, "loads")
+	fake := `case "$1" in bootstrap) echo "$3" >> ` + log + `;; print) echo "	state = waiting";; esac`
+	for name, body := range map[string]string{"launchctl": fake, "go": "exit 0"} {
+		if err := os.WriteFile(filepath.Join(fakes, name), []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cmd := exec.Command(filepath.Join(repo, "bin", "crius-install-launchd"))
+	cmd.Env = append(os.Environ(), "HOME="+home, "PATH="+fakes+":"+os.Getenv("PATH"))
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%v %s", err, out)
+	}
+	loads, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err, string(out))
+	}
+	agents := filepath.Join(home, "Library", "LaunchAgents")
+	want := filepath.Join(agents, "space.scifilab.crius.alpha.plist") + "\n" + filepath.Join(agents, "space.scifilab.crius.beta.plist") + "\n"
+	if string(loads) != want {
+		t.Fatalf("loaded %q, want %q", loads, want)
+	}
+}

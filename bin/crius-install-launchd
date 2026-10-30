@@ -1,8 +1,9 @@
 #!/bin/bash
-# Install (or reinstall) the six Crius launchd jobs: the ingest every 10 min, the watchdog and the missed-wake watch
-# (wakewatch) every 5 min, the helper check once per login (after-boot, ~/.crius/helpers.toml), the goal report at 09:00
-# and 18:00, and the weekly job (scorecards and the restore test, Thursday 04:00). Builds every command under cmd/ from this checkout into ~/.crius/bin with the run scripts, then
-# prints each installed plist and the job state, so the owner sees exactly what was installed.
+# Install (or reinstall) every Crius launchd job under launchd/: the ingest every 10 min, the watchdog and the missed-wake
+# watch (wakewatch) every 5 min, the helper check once per login (after-boot, ~/.crius/helpers.toml), the goal report at
+# 09:00 and 18:00, the weekly job (scorecards and the restore test, Thursday 04:00), and the disk cleanup (tidy, 04:30).
+# Builds every command under cmd/ from this checkout into ~/.crius/bin with the run scripts, then prints each installed
+# plist and the job state, so the owner sees exactly what was installed.
 set -euo pipefail
 repo="$(cd "$(dirname "$(realpath "$0")")/.." && pwd -P)"
 bin="$HOME/.crius/bin"
@@ -37,10 +38,11 @@ install -m 755 "$repo/bin/crius-weekly-run" "$bin/crius-weekly-run"
 install -m 755 "$repo/bin/crius-wait" "$bin/crius-wait"
 dest="$HOME/Library/LaunchAgents"
 mkdir -p "$dest"
-for job in ingest watchdog wakewatch after-boot digest weekly; do
-  label="space.scifilab.crius.$job"
+# Every template under launchd/, not a typed list (the same kind of list missed crius-spawn under cmd/).
+for tmpl in "$repo"/launchd/space.scifilab.crius.*.plist.in; do
+  label="$(basename "$tmpl" .plist.in)"
   plist="$dest/$label.plist"
-  sed -e "s#@REPO@#$repo#g" -e "s#@HOME@#$HOME#g" "$repo/launchd/$label.plist.in" > "$plist.tmp"
+  sed -e "s#@REPO@#$repo#g" -e "s#@HOME@#$HOME#g" "$tmpl" > "$plist.tmp"
   plutil -lint "$plist.tmp" > /dev/null
   mv "$plist.tmp" "$plist"
   launchctl bootout "gui/$(id -u)/$label" 2> /dev/null || true
