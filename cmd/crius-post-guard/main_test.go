@@ -345,3 +345,56 @@ func TestUnparsableCommands(t *testing.T) {
 		t.Errorf("unparsable other command asked: %q", why)
 	}
 }
+
+// Crius 10-30 20:27: the quotes lead's bus post asked the owner as an Azure DevOps write. The script's name came from
+// $S, so the guard could not read it, and the bus text named az ("az blob list"). S is set to a literal earlier in the
+// same command: the guard reads the script and checks its own commands.
+func TestAScriptNamedThroughAVariableSetInTheCommandIsRead(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "lead"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile("testdata/say.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	write := func(name, text string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(text), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("lead/say.sh", string(body))
+	write("post.sh", "#!/bin/bash\n"+lead94205+"\n")
+	write("relay.sh", "#!/bin/bash\naz devops invoke --area wit --resource comments --http-method \"$1\" --in-file x.json\n")
+	write("chain.sh", "#!/bin/bash\nbash \""+dir+"/post.sh\"\n")
+	s := `S=` + dir + `; `
+	say2027 := s + `cd /tmp && echo "- 10-30 $(date +%H:%M) lead: rig-scan-tag died 20:25 LOUD (az blob list to Azurite :10000 read timed out at 60 s; machine load 197)." >> /tmp/TRIAGE.md && bash $S/lead/say.sh INFO "crius:lead,quotes:qa1" "Lead $(date +%H:%M): rig-scan-tag died 20:25 (Azurite read timeout, machine load 197); restarted pid 9819."; echo rc=$?`
+	for _, cmd := range []string{
+		say2027,
+		s + `bash "$S/lead/say.sh" INFO crius:lead "az login works again"`,
+		s + `bash ${S}/lead/say.sh INFO crius:lead "az login works"; bash $S/lead/say.sh INFO crius:lead "az again"`,
+		`export S=` + dir + `; bash $S/lead/say.sh INFO crius:lead "az ok"`,
+		`bash ` + dir + `/lead/say.sh INFO crius:lead "az ok"`,
+	} {
+		if why := check(bash(cmd, dir)); why != "" {
+			t.Errorf("%q asked: %s", cmd, why)
+		}
+	}
+	for _, cmd := range []string{
+		s + `bash $S/post.sh`,       // the script itself posts a comment
+		s + `bash $S/relay.sh POST`, // a method from its arguments
+		s + `bash $S/chain.sh`,      // a script that runs one that posts
+		`bash ` + dir + `/post.sh`,  // a literal name is read too
+		s + `cat > $S/lead/say.sh <<'EOF'` + "\n" + lead94205 + "\nEOF\nbash $S/lead/say.sh", // written by this command
+		s + `S=/elsewhere; bash $S/lead/say.sh INFO x "az login"`,                            // set twice: which one runs is not read
+		`bash $S/lead/say.sh INFO x "az login"`,                                              // S not set in the command
+		`bash $S/lead/say.sh INFO x "az login"; S=` + dir,                                    // set after the run
+		s + `S=$(pwd) bash $S/lead/say.sh INFO x "az login"`,                                 // computed
+		`for S in ` + dir + `; do bash $S/lead/say.sh INFO x "az login"; done`,
+		s + `bash $S/missing.sh INFO x "az login"`,
+	} {
+		if why := check(bash(cmd, dir)); !strings.Contains(why, "owner's click") {
+			t.Errorf("%q: %q", cmd, why)
+		}
+	}
+}
