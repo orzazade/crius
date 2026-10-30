@@ -145,6 +145,51 @@ func TestBuildReviewOfCbd8517(t *testing.T) {
 	}
 }
 
+// A "Needs owner" that starts with "nothing" asks nothing, whatever note follows (Crius 10-30 16:51: the q16 line, a
+// parked lead, asked the owner nothing). A note that opens with but/except/unless or holds a numbered item still asks:
+// the forms that made the reverted nothingRe a P1 (review of the queue gap, round 1, P1-2).
+func TestNothingWithAnyNoteIsNothing(t *testing.T) {
+	db := open(t)
+	dir := t.TempDir()
+	fields := map[string]bool{ // field → asks
+		"nothing (owner 2026-10-30 16:44: parked; GAINS.md walk-through when the owner resumes it)":                   false, // q16
+		"nothing (owner 2026-10-30 16:47: parked; START ask 3 split and the phase-1 walk-through wait until resumed)": false, // q17
+		`"nothing" (parked).`:           false,
+		"Nothing — parked until Monday": false,
+		"nothing open. Known leftovers kept on p1-test by owner choice: delete leftover test data on p1-test": false,
+		"nothing, except (1) OK to merge #12":     true,
+		"nothing; (1) OK to deploy":               true,
+		"nothing (but OK on PR 12 before Friday)": true,
+		"Nothing — unless PR 12 slips, then OK":   true,
+		"nothing (except: merge #12)":             true,
+		"none; (1) OK to deploy":                  true,
+		"nothingness of the drafts: OK to drop?":  true,
+	}
+	var leads []ingest.Lead
+	asks := map[string]bool{}
+	for f, ask := range fields {
+		name := fmt.Sprintf("l%d:lead", len(leads))
+		leads = append(leads, ingest.Lead{Name: name, StatusFile: statusFile(t, dir, name+".md", block("2026-10-30 16:50", f, "- [ ] one"))})
+		asks[name] = ask
+	}
+	needs, err := OwnerNeeds(db, leads)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, n := range needs {
+		if n.Err != nil {
+			t.Fatal(n.Err)
+		}
+		got[n.Lead] = len(n.Items) > 0
+	}
+	for i, l := range leads {
+		if got[l.Name] != asks[l.Name] {
+			t.Errorf("%q: asks %v, want %v", needs[i].Items, got[l.Name], asks[l.Name])
+		}
+	}
+}
+
 // Step 5 P4b (design §8): after the leads, what the store saw since the last report (checks that passed, blocked
 // lines, decisions; open waits), then quota pace and health, each list at most 3 items. A stamp line says when each
 // source was last read. A partial quota or health makes the report partial.
