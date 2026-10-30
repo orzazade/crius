@@ -463,7 +463,6 @@ func TestAScriptNamedThroughAVariableSetInTheCommandIsRead(t *testing.T) {
 		// review of 73f3942: a numbered redirect, the bus text in a variable, git reads around the script
 		s + `bash $S/lead/say.sh INFO x 'az blob list ok' 2>&1`, s + `bash $S/lead/say.sh INFO x 'az blob list ok' 2>/dev/null`,
 		s + `M='az blob list ok'; bash $S/lead/say.sh INFO x "$M"`,
-		s + `bash $S/lead/say.sh DONE x "az fix $(git -C /tmp rev-parse --short HEAD)"`,
 		s + `cd ~/Projects && git status --short . && bash $S/lead/say.sh INFO crius:lead 'az blob list ok'`,
 		// review of fd71df9: a name none of the n scripts reads; a write through a link to a folder of no script
 		s + `Q=30; bash $S/n1.sh 'az login'`,
@@ -596,6 +595,15 @@ func TestAScriptNamedThroughAVariableSetInTheCommandIsRead(t *testing.T) {
 		s + `bash $S/argar.sh $'a[\x24(az boards work-item update --id 1)]'`,
 		s + `bash $S/argar.sh "$(printf 'a[\x24(az boards work-item update --id 1)]')"`,
 		s + `bash $S/argar.sh "$(echo -e 'a[\x24(az boards work-item update --id 1)]')"`,
+		// review of 260216b: tr, cut or head make a $ from text with none, and a $(...) hands it to the script; only date
+		// runs in one (a sha in DONE text is written out)
+		s + `bash $S/argar.sh "$(echo 'a[#(az boards work-item update --id 1)]' | tr '"-%' '#-&')"`,
+		s + `bash $S/argar.sh "a[$(head -2 $S/argar.sh | tail -1 | cut -c3)(az boards work-item update --id 1)]"`,
+		s + `M="$(echo 'a[#(az boards work-item update --id 1)]' | tr '"-%' '#-&')"; bash $S/argar.sh "$M"`,
+		s + `bash $S/argar.sh <(echo 'az boards work-item update --id 1')`,
+		s + `bash $S/lead/say.sh DONE x "az fix $(git -C /tmp rev-parse --short HEAD)"`,
+		s + `bash $S/lead/say.sh INFO x "az at $(date +%H:%M; echo '#')"`,
+		s + `bash $S/lead/say.sh INFO x "az at $(date +%H$S)"`,
 		s + `bash $S/argar.sh "a[\$(az boards work-item update --id 1)]"`,
 		s + `N='a[$(az boards work-item update --id 1)]'; bash $S/n1.sh 'az login'`,
 	} {

@@ -29,8 +29,8 @@
 // update with --title only; a command name from a variable or a function ($AZ, f() { az "$@"; }); a script run by its
 // own name ($S/x.sh, ./x.sh); a command that makes bash read quoted code as a number or a name ((( 'a[$(az …)]' )),
 // printf -v $'a[\x24(az …)]' x, (( $(printf …) ))): only a script run is held to text with no $, ` or \ (quotedCode);
-// a $ that reaches a script's arithmetic from a file or git output an earlier command wrote; the code a script runs through source or an interpreter (python) when neither names
-// az or Azure DevOps; a
+// a $ that reaches a script's arithmetic from a file an earlier command wrote (around a script run, a $(...) runs only
+// date); the code a script runs through source or an interpreter (python) when neither names az or Azure DevOps; a
 // script that hides az (a'z', a PS4 prompt) when neither it nor the command names az, as for a command itself (and
 // PS4='$(az ...)' bash -xc : with no script); a script past the 16th one a call reads or 4 levels down;
 // python -m azure.cli; ssh or kubectl exec to another machine; code in a script file (inline -c/-e
@@ -545,6 +545,12 @@ func (c ctx) safeAround(script, body string) bool {
 			case *syntax.ParamExp:
 				safe = safe && n.Exp == nil && n.Slice == nil && n.Repl == nil && n.Index == nil && n.Names == 0 &&
 					!n.Excl && !n.Width
+			case *syntax.CmdSubst:
+				// its output may reach what the script reads, and tr, cut or head make a $ from text with none (review of
+				// 260216b: tr '"-%' '#-&' turns # into $): only date with literal words, whose output holds no $ or `
+				safe = safe && dateOnly(n)
+			case *syntax.ProcSubst:
+				safe = false
 			case *syntax.ForClause, *syntax.WhileClause, *syntax.FuncDecl, *syntax.ArithmExp, *syntax.ArithmCmd,
 				*syntax.LetClause, *syntax.TestClause, *syntax.CoprocClause, *syntax.TimeClause:
 				safe = false
@@ -639,6 +645,23 @@ func scriptReads(body string) (map[string]bool, bool) {
 		return true
 	})
 	return names, any
+}
+
+// dateOnly says whether a $(...) runs only date with literal words (Lead $(date +%H:%M): …).
+func dateOnly(cs *syntax.CmdSubst) bool {
+	if len(cs.Stmts) != 1 || len(cs.Stmts[0].Redirs) > 0 {
+		return false
+	}
+	ce, ok := cs.Stmts[0].Cmd.(*syntax.CallExpr)
+	if !ok || len(ce.Assigns) > 0 || len(ce.Args) == 0 {
+		return false
+	}
+	for i, w := range ce.Args {
+		if l := literal(w); !l.ok || i == 0 && l.text != "date" && l.text != "/bin/date" {
+			return false
+		}
+	}
+	return true
 }
 
 // codeNameRe is a variable that runs code or finds commands for a shell or git started later (codeVarRe's, ZDOTDIR, and
