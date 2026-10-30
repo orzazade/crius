@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -197,17 +198,17 @@ func list(home string, now time.Time) (q *ownerqueue.Queue, unread, held []strin
 	return q, unread, held, err
 }
 
-// readIn reads in what a lead's ask points to (needref). A git-object status file's labels are read from that object,
-// as its GOAL block was, and named files are looked for from its folder in the repo.
+// readIn reads in what a lead's ask points to (needref). A git-object status file's labels and the files its ask names
+// are read from that revision, as its GOAL block was.
 func readIn(ask string, l ingest.Lead) string {
 	st := needref.Status{Path: l.StatusFile, Dir: filepath.Dir(l.StatusFile)}
 	if l.Repo != "" {
-		_, path, _ := strings.Cut(l.StatusFile, ":")
+		rev, file, _ := strings.Cut(l.StatusFile, ":")
 		b, err := digest.GitStatus(l)
 		if err != nil {
 			return "Could not read " + l.StatusFile + ": " + err.Error()
 		}
-		st = needref.Status{Path: l.Repo + " " + l.StatusFile, Dir: filepath.Join(l.Repo, filepath.Dir(path)), Text: b}
+		st = needref.Status{Path: l.Repo + " " + l.StatusFile, Text: b, Git: &needref.Tree{Repo: l.Repo, Rev: rev, Dir: path.Dir(file)}}
 	}
 	return needref.Read(ask, st, slices.Concat(l.Dirs, []string{l.Repo}))
 }

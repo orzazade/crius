@@ -668,6 +668,8 @@ func TestAGoalRowNamesTheProjectAndCarriesTheQuestions(t *testing.T) {
 
 // A lead whose status file is a git object (crius:build, "git:<repo>#origin/main:docs/notes/RESUME.md") has its labels
 // read from that object, as its GOAL block is, not from a checkout on another branch (review of f1c57f3, P2).
+// Reviews 1 and 2 of f1c57f3: the checkout of a git-object lead's repo is on another branch; its labels and the files its
+// ask names are read from the object.
 func TestAGitObjectLeadReadsItsLabelFromTheObject(t *testing.T) {
 	h := setup(t, "")
 	repo := filepath.Join(h, "crius")
@@ -682,13 +684,20 @@ func TestAGitObjectLeadReadsItsLabelFromTheObject(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(resume, []byte("## GOAL (2026-10-30 12:00)\nGoal: g\n- [x] one · abc1234\nDone: 50% (1 of 2 milestones)\nNext: two\n"+
-		"Needs owner: yes or no on the split (see \"Open with owner\")\n\nOpen with owner: should the split ship today?\n"), 0o644); err != nil {
+		"Needs owner: yes or no on the split (see \"Open with owner\"; PLAN.md section 3)\n\nOpen with owner: should the split ship today?\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	plan := filepath.Join(repo, "docs/notes/PLAN.md")
+	if err := os.WriteFile(plan, []byte("## 3. Split\nShip the split today, or after the review?\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	git("init", "-q", "-b", "main")
 	git("add", ".")
 	git("commit", "-q", "-m", "goal")
 	if err := os.WriteFile(resume, []byte("## GOAL\nOpen with owner: an old question from another branch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(plan, []byte("## 3. Split\nAn old plan from another branch.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(h, "projects.toml"), []byte(fmt.Sprintf("[projects.crius]\nleads = { build = \"git:%s#main:docs/notes/RESUME.md\" }\n", repo)), 0o644); err != nil {
@@ -700,7 +709,8 @@ func TestAGitObjectLeadReadsItsLabelFromTheObject(t *testing.T) {
 	if err := json.Unmarshal([]byte(cli(t, h, "list", "--json")), &v); err != nil {
 		t.Fatal(err)
 	}
-	if want := "Open with owner: should the split ship today?\n(from " + repo + " main:docs/notes/RESUME.md)"; len(v.Open) != 1 || v.Open[0]["detail"] != want {
+	if want := "## 3. Split\nShip the split today, or after the review?\n(from " + repo + " main:docs/notes/PLAN.md section 3)\n\n" +
+		"Open with owner: should the split ship today?\n(from " + repo + " main:docs/notes/RESUME.md)"; len(v.Open) != 1 || v.Open[0]["detail"] != want {
 		t.Errorf("want detail %q: %+v", want, v.Open)
 	}
 }

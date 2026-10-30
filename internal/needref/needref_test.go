@@ -3,6 +3,7 @@ package needref
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -240,5 +241,52 @@ func TestASearchThatRunsOutOfTimeSaysSo(t *testing.T) {
 	walkBudget = 0
 	if got := Read("FAR.md", Status{Path: status, Dir: filepath.Dir(status)}, []string{filepath.Join(h, "repo")}); !strings.HasPrefix(got, "Could not read FAR.md: the search stopped after ") {
 		t.Errorf("no budget: %q", got)
+	}
+}
+
+// Review round 2 of ee67b2e (P2): a walk per name shared one budget, so a word that names no file (GO-LIVE walked all of
+// ~/Projects/Appxite in 1.4 s) left no time for the file after it. One walk looks for every name.
+func TestAWordThatIsNoFileLeavesTimeForTheFile(t *testing.T) {
+	h := t.TempDir()
+	status := write(t, filepath.Join(h, "state/STATUS.md"), "")
+	write(t, filepath.Join(h, "repo/a/STATUS-2026-10-28.md"), "## 6. Questions\n1. Wait for 94489?\n")
+	for i := range 200 {
+		write(t, filepath.Join(h, "repo/z", strconv.Itoa(i)+".txt"), "")
+	}
+	defer func(c func() time.Time, b time.Duration) { clock, walkBudget = c, b }(clock, walkBudget)
+	t0 := time.Now()
+	n := 0
+	clock = func() time.Time { n++; return t0.Add(time.Duration(n) * time.Millisecond) } // 1 ms per look
+	walkBudget = 100 * time.Millisecond
+	got := Read("OK on GO-LIVE; the 3 questions in STATUS-2026-10-28.md section 6", at(status), []string{filepath.Join(h, "repo")})
+	if !strings.HasPrefix(got, "## 6. Questions\n1. Wait for 94489?\n(from ") || !strings.HasSuffix(got, "\n\nNot looked for to the end (the search stopped after 100ms): GO-LIVE.md.") {
+		t.Errorf("the file was not read first, with the word's search said after it:\n%s", got)
+	}
+}
+
+// Review round 2 of ee67b2e (P3): the other shapes it probed.
+func TestRoundTwoShapesReadTheRightTextOrSaySo(t *testing.T) {
+	h := t.TempDir()
+	status := write(t, filepath.Join(h, "state/STATUS.md"), "")
+	repo := filepath.Join(h, "repo")
+	write(t, filepath.Join(repo, "PROD-HANDOVER.md"), "## 12. Open\n")
+	write(t, filepath.Join(repo, "PART.md"), "# Part\n## 12.2 Gate\ngate?\n## 12.3 Alerts\nwho?\n# Next\n")
+	write(t, filepath.Join(repo, "LIST.md"), "## 4. Steps\n1. a\n2. run\n   ```sh\n# install\n   ```\n3. c\n")
+	outside := write(t, filepath.Join(h, "secret/hosts.md"), "127.0.0.1 secret\n")
+	if err := os.Symlink(outside, filepath.Join(repo, "hosts.md")); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct{ ask, want string }{
+		{"see https://github.com/o/r/blob/main/PROD-HANDOVER.md", ""},
+		{"PART.md 12.2-12.8", "## 12.2 Gate\ngate?\n## 12.3 Alerts\nwho?\n(from " + filepath.Join(repo, "PART.md") + ` section 12.2-12.8 (no heading 12.8: read to "12.3 Alerts"))`},
+		{"LIST.md 4.1-4.3", "1. a\n2. run\n   ```sh\n# install\n   ```\n3. c\n(from " + filepath.Join(repo, "LIST.md") + " section 4.1-4.3)"},
+		{"hosts.md", "Could not read hosts.md: " + filepath.Join(repo, "hosts.md") + " leads outside the project folders, to "},
+	} {
+		if got := Read(c.ask, at(status), []string{repo}); !strings.HasPrefix(got, c.want) || c.want == "" && got != "" {
+			t.Errorf("%s:\n got %q\nwant %q", c.ask, got, c.want)
+		}
+	}
+	if got := Read("../x.md", Status{}, nil); got != "Could not read ../x.md: no project folder to look in." {
+		t.Errorf("no roots: %q", got)
 	}
 }
