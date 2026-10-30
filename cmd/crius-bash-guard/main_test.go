@@ -749,3 +749,38 @@ func TestAZshSplitIsReadAsBash(t *testing.T) {
 		}
 	}
 }
+
+// Crius 10-30 20:22: the marketplace backend ran a docker compose build of the whole AXI stack with no heavy slot: the
+// Docker VM held 11 cores, docker and az stopped answering. An image build runs through heavy.ts with HEAVY_SLOTS=1,
+// which waits until no heavy job holds a slot, so two builds never run at once.
+func TestADockerBuildOutsideOneHeavySlotIsRefused(t *testing.T) {
+	const heavy = "bun ~/Projects/Appxite/svc_quote/channels/poc/ui-app/scripts/heavy.ts run -- "
+	for _, cmd := range []string{
+		`cd ~/Projects/Appxite/AXI && docker compose up --build 2>&1 | tail -20`,
+		`docker compose up -d --build`, `docker compose -f a.yml -p axi --profile all up -d --build api`,
+		`docker compose build`, `docker compose --project-directory x build api`, `docker-compose up --build`,
+		`docker-compose -f a.yml build`, `docker compose run --build api npm test`, `docker compose create --build`,
+		`docker build -t x .`, `docker --context colima build .`, `docker -H unix:///x.sock build .`,
+		`docker buildx build --platform linux/amd64 -t x .`, `docker buildx --builder b bake`, `docker image build .`,
+		`docker builder build .`, `sudo docker build .`, `timeout 900 docker compose build`, `/usr/local/bin/docker build .`,
+		`bash -c 'docker build .'`, `for s in a b; do docker build -t $s .; done`,
+		heavy + `docker build .`, `HEAVY_SLOTS=2 ` + heavy + `docker compose up --build`,
+	} {
+		if why := check(cmd); !strings.Contains(why, "HEAVY_SLOTS=1") {
+			t.Errorf("%q: %q", cmd, why)
+		}
+	}
+	for _, cmd := range []string{
+		`HEAVY_SLOTS=1 ` + heavy + `docker compose up -d --build`, `env HEAVY_SLOTS=1 ` + heavy + `docker build .`,
+		`export HEAVY_SLOTS=1; ` + heavy + `docker build -t x .`,
+		`HEAVY_SLOTS=1 bun scripts/heavy.ts run -- timeout 900 docker compose build`,
+		`docker compose up -d`, `docker compose up -d --no-build`, `docker compose ps`, `docker compose logs build`,
+		`docker logs build`, `docker run img build`, `docker exec c npm run build`, `docker ps`, `docker images`,
+		`docker buildx ls`, `docker image ls`, `docker compose down`, `echo docker build .`, `grep -n "docker build" x.md`,
+		heavy + `npm test`,
+	} {
+		if why := check(cmd); why != "" {
+			t.Errorf("%q refused: %s", cmd, why)
+		}
+	}
+}

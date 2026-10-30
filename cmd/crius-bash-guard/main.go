@@ -1,10 +1,11 @@
-// Command crius-bash-guard is a Claude Code PreToolUse hook for Bash. It refuses four commands that broke the team:
+// Command crius-bash-guard is a Claude Code PreToolUse hook for Bash. It refuses five commands that broke the team:
 // team-wait.sh run detached with `&` (a detached waiter cannot wake the session; 10-21 22:44), and a line written
 // straight onto a bus log instead of through bus-post (10-20 and 10-21: UTC time slip, VERIFIED before the run; 10-22:
 // 332 quotes.log lines ingest cannot read), and a command that prints every variable with its value (env, set,
 // printenv, export -p, declare -p or a bare local: 10-22 a bare zsh local put a token into a transcript), and a cmux
 // send or send-key without --workspace and --surface as literal words (it types into the caller's own tab; 10-23
-// twice). Exit 2 refuses, with the reason on stderr; anything else passes.
+// twice), and a docker image build outside a lone heavy slot (HEAVY_SLOTS=1 bun .../heavy.ts run --: 10-30 a compose
+// build of the AXI stack held the Docker VM at 11 cores). Exit 2 refuses, with the reason on stderr; anything else passes.
 //
 // It catches habits, not intent: fifteen review rounds showed a list of shell forms is never complete, and the full
 // check is the digest's count of lines it cannot read. Known gaps: function bodies run later, source and ., a script
@@ -363,6 +364,14 @@ func (w *walker) call(c *syntax.CallExpr, redirs []*syntax.Redirect) {
 	case "cmux":
 		if !targeted(args[1:]) {
 			w.why = untargeted
+		}
+	case "docker", "docker-compose":
+		if builds(args) {
+			w.why = unslotted
+		}
+	case "bun", "node":
+		if job := heavyJob(args); len(job) > 0 && w.vars["HEAVY_SLOTS"] != "1" && builds(job) {
+			w.why = unslotted
 		}
 	case "tee":
 		for _, a := range rest {
@@ -950,6 +959,12 @@ const (
 	dump = "this command prints every variable with its value (env, printenv, set, export, declare, typeset, local or " +
 		"readonly with no name): a token in the environment would go into the transcript and so to the API. Print names " +
 		"only (zsh: print -l ${(k)parameters}; bash: compgen -v) and test one value with [ -n \"$X\" ]."
+	unslotted = "a docker image build (docker build, buildx build or bake, compose build, compose up, run or create " +
+		"with --build) runs alone in a heavy slot: run it as HEAVY_SLOTS=1 bun " +
+		"~/Projects/Appxite/svc_quote/channels/poc/ui-app/scripts/heavy.ts run -- <command>. HEAVY_SLOTS=1 waits until " +
+		"no heavy job holds a slot, so two builds never run at once; use compose up -d, as the slot is held while the " +
+		"command runs (10-30 20:22: a compose build of the AXI stack held " +
+		"the Docker VM at 11 cores and docker and az stopped answering)."
 	untargeted = "cmux send and send-key need --workspace <ref> and --surface <ref> written as separate literal words: " +
 		"without them the text goes to this session's own tab, and zsh does not split $S into several words."
 )
@@ -1003,6 +1018,111 @@ func targeted(args []*syntax.Word) bool {
 		return has["--workspace"] && has["--surface"]
 	}
 	return true
+}
+
+// dockerValued, composeValued and buildxValued: the options of docker, docker compose and docker buildx that take the
+// next word as their value (docker --help); a value is never read as the subcommand.
+var (
+	dockerValued = map[string]bool{"-c": true, "--context": true, "--config": true, "-H": true, "--host": true, "-l": true,
+		"--log-level": true, "--tlscacert": true, "--tlscert": true, "--tlskey": true}
+	composeValued = map[string]bool{"-f": true, "--file": true, "-p": true, "--project-name": true, "--profile": true,
+		"--env-file": true, "--project-directory": true, "--ansi": true, "--progress": true, "--parallel": true}
+	buildxValued = map[string]bool{"--builder": true}
+)
+
+// builds says whether a docker or docker-compose command (args[0] is the program, after its wrappers) builds images:
+// docker build, docker buildx, image or builder build (and bake), docker compose build, and compose up, create or run
+// with --build before its service. A word only the run shows ends the reading: such a command passes.
+func builds(args []*syntax.Word) bool {
+	args, _, _, _, _ = unwrap(args)
+	if len(args) == 0 {
+		return false
+	}
+	var words []string
+	for _, a := range args[1:] {
+		v, ok := literal(a)
+		if !ok {
+			break
+		}
+		words = append(words, v)
+	}
+	if base(args[0]) == "docker-compose" {
+		return composeBuilds(words)
+	}
+	sub, rest := subcommand(words, dockerValued)
+	switch sub {
+	case "build":
+		return true
+	case "compose":
+		return composeBuilds(rest)
+	case "buildx", "image", "builder":
+		sub, _ = subcommand(rest, buildxValued)
+		return sub == "build" || sub == "bake"
+	}
+	return false
+}
+
+// composeBuilds reads the words after docker compose (or docker-compose).
+func composeBuilds(words []string) bool {
+	sub, rest := subcommand(words, composeValued)
+	switch sub {
+	case "build":
+		return true
+	case "up", "create", "run":
+		for _, o := range rest {
+			if o == "--" || !strings.HasPrefix(o, "-") && sub == "run" { // run's service, then the container's command
+				return false
+			}
+			if o == "--build" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// subcommand is the first word that is no option, skipping the value of an option in valued, and the words after it.
+func subcommand(words []string, valued map[string]bool) (string, []string) {
+	for i := 0; i < len(words); i++ {
+		switch o := words[i]; {
+		case o == "--":
+			if i+1 < len(words) {
+				return words[i+1], words[i+2:]
+			}
+			return "", nil
+		case strings.HasPrefix(o, "-"):
+			if valued[o] {
+				i++
+			}
+		default:
+			return o, words[i+1:]
+		}
+	}
+	return "", nil
+}
+
+// heavyJob is the command a bun or node run of heavy.ts runs: the words after "heavy.ts run --" (the -- may be left out).
+func heavyJob(args []*syntax.Word) []*syntax.Word {
+	for i, a := range args[1:] {
+		if base(a) != "heavy.ts" {
+			continue
+		}
+		rest := args[i+2:]
+		if len(rest) == 0 {
+			return nil
+		}
+		if v, _ := literal(rest[0]); v != "run" {
+			return nil
+		}
+		rest = rest[1:]
+		if len(rest) > 0 {
+			if v, _ := literal(rest[0]); v == "--" {
+				rest = rest[1:]
+			}
+		}
+		return rest
+	}
+	return nil
 }
 
 // lists reports whether a command with these words after its name prints every variable with its value: printenv or
