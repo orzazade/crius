@@ -149,9 +149,15 @@ func TestACriusLeadLineToTheAskerAnswersIt(t *testing.T) {
 			at(104) + " NEED quotes:p2 -> crius — copied in only\n" +
 			at(105) + " DECISION crius:lead -> quotes:b1 (cc quotes:p2) — b1 takes it\n" +
 			at(106) + " NEED crius:lead -> crius:lead — remind me: check falcon\n" +
-			at(107) + " DECISION crius:lead -> crius:lead, cortex:lead — x\n",
-		// a bare role on its own team's bus and the team's :all name it too
+			at(107) + " DECISION crius:lead -> crius:lead, cortex:lead — x\n" +
+			// review of 0f8aee6: the bus's usual copy forms "a, cc b" and "a cc b" answer nothing either
+			at(108) + " NEED quotes:p3 -> crius — copied in with a bare cc\n" +
+			at(109) + " DECISION crius:lead -> quotes:b1, cc quotes:p3 — b1 takes it\n" +
+			at(108) + " NEED quotes:p4 -> crius — copied in with cc and no comma\n" +
+			at(109) + " DECISION crius:lead -> quotes:b1 cc quotes:p4 — b1 takes it\n",
+		// a bare role on its own team's bus names it, in any case; a line to the whole team answers no one member
 		"axi.log": at(100) + " NEED axi:lead -> crius — which branch\n" + at(101) + " DECISION crius:lead -> lead — main\n" +
+			at(100) + " NEED axi:p2 -> crius — which port\n" + at(101) + " DECISION crius:lead -> P2 — 8080\n" +
 			at(102) + " ASK axi:qa -> crius — which env\n" + at(103) + " DECISION crius:lead -> axi:all — p3-test\n",
 	})
 	f := &fake{}
@@ -167,9 +173,14 @@ func TestACriusLeadLineToTheAskerAnswersIt(t *testing.T) {
 		}
 	}
 	all := strings.Join(woke, "\n")
-	if len(woke) != 4 || !strings.Contains(all, "still open") || !strings.Contains(all, "asked after") ||
-		!strings.Contains(all, "copied in only") || !strings.Contains(all, "remind me") {
-		t.Fatalf("want only quotes' four lines, woke %d:\n%s", len(woke), all)
+	want := []string{"still open", "asked after", "copied in only", "remind me", "bare cc", "cc and no comma", "which env"}
+	for _, w := range want {
+		if !strings.Contains(all, w) {
+			t.Errorf("no wake for %q", w)
+		}
+	}
+	if len(woke) != len(want) {
+		t.Fatalf("want %d wakes, woke %d:\n%s", len(want), len(woke), all)
 	}
 }
 

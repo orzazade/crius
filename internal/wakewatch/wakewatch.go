@@ -440,8 +440,8 @@ func missed(home string, now time.Time, watch projects, park parked) ([][2]strin
 				continue
 			}
 			// a crius:lead line to the asker, of any type, answers the asker's lines before it (a DECISION, Crius 10-30
-			// 20:32: cortex's 16:40 DONE and 18:30 NEED, falcon's two 20:07 ASKs); a copy (cc) answers nothing, and
-			// Crius's own notes stay
+			// 20:32: cortex's 16:40 DONE and 18:30 NEED, falcon's two 20:07 ASKs); a copy (cc) or a line to the whole
+			// team answers nothing, and Crius's own notes stay
 			if from == "crius:lead" {
 				team := strings.TrimSuffix(filepath.Base(log), ".log")
 				open = slices.DeleteFunc(open, func(l string) bool {
@@ -471,13 +471,18 @@ func missed(home string, now time.Time, watch projects, park parked) ([][2]strin
 	return out, nil
 }
 
-// addressed says whether a line's main recipients (not its "(cc ...)") name who: by name, as its team's :all, or by the
-// bare role on its own team's bus (bus-post's "-> lead" on cortex.log is cortex:lead).
+// addressed says whether a line's main recipients name who: by name, or by the bare role on its own team's bus
+// (bus-post's "-> lead" on cortex.log is cortex:lead), in any case. A copy answers nothing: the main recipients end at
+// "(" or a "cc" word ("a (cc b)", "a, cc b", "a cc b"). Nor does a line to the whole team (x:all): it is no sign that
+// one member's question was answered (review of 0f8aee6).
 func addressed(to, who, team string) bool {
 	main, _, _ := strings.Cut(to, "(")
 	p, role, _ := strings.Cut(who, ":")
 	for _, r := range recipients(main) {
-		if r == who || r == p+":all" || p == team && r == role {
+		if strings.EqualFold(r, "cc") {
+			break
+		}
+		if strings.EqualFold(r, who) || p == team && strings.EqualFold(r, role) {
 			return true
 		}
 	}
