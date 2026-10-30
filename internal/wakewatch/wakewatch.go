@@ -237,7 +237,7 @@ func Run(d Deps) error {
 		if err != nil {
 			sendErr = err
 		}
-		if (strings.HasPrefix(a[0], "bus:") || strings.HasPrefix(a[0], "folder:") || strings.HasPrefix(a[0], "restore:")) && (err == nil || d.HandedOver != nil && d.HandedOver(err)) {
+		if (strings.HasPrefix(a[0], "bus:") || strings.HasPrefix(a[0], "folder:") || strings.HasPrefix(a[0], "restore:") || strings.HasPrefix(a[0], "handed:")) && (err == nil || d.HandedOver != nil && d.HandedOver(err)) {
 			st.Typed[a[0]] = d.Now
 		}
 		// Crius's waiter wakes on a bus line: a wake that cannot be typed goes there, so none is lost (S2, 10-22).
@@ -277,7 +277,7 @@ func Run(d Deps) error {
 	for k := range st.Typed {
 		kind, rest, _ := strings.Cut(k, ":")
 		id, _, _ := strings.Cut(rest, ":")
-		seen := kind == "folder" || kind == "restore" && !active["restore-unread"]
+		seen := kind == "folder" || kind == "restore" && !active["restore-unread"] || kind == "handed" && !active[screensFailed] && !active["screen-failed:"+rest[:max(0, strings.LastIndex(rest, ":"))]]
 		if seen && !active[k] && !hv.blind && !active["role-unread:"+id] {
 			delete(st.Typed, k)
 		}
@@ -492,9 +492,12 @@ func waiting(st *state, d Deps, watch projects, park parked, screens []Screen, h
 	var out [][2]string
 	live := map[string]bool{}
 	var done map[string]bool // read once, and only when a tab has been idle long enough to alert
+	var unread map[string]string
+	var leads map[string]bool
+	var config error // projects.toml unread: no role is known to be a lead, so none is handed back (review round 2)
 	finished := func(who string) bool {
 		if done == nil {
-			done = finishedLeads(d.Home)
+			done, unread, leads, config = finishedLeads(d.Home)
 		}
 		return done[strings.ToLower(who)]
 	}
@@ -600,6 +603,21 @@ func waiting(st *state, d Deps, watch projects, park parked, screens []Screen, h
 			if clear {
 				text += "; its screen says CLEAR-READY"
 			}
+			if why, ok := unread[strings.ToLower(who)]; ok {
+				text += "; not seen as finished: its " + why
+			}
+			if config != nil {
+				text += "; projects.toml cannot be read (" + config.Error() + "), so no role is known to be a lead"
+			}
+			back, err := handedBack(d.Home, who, config != nil || leads[strings.ToLower(who)])
+			if err != nil {
+				out = append(out, [2]string{"screen-failed:" + s.Surface, fmt.Sprintf("tab %q (%s): idle check could not read its bus: %v", s.Title, s.Surface, err)})
+				continue
+			}
+			if back { // said once (Typed; again after window+resend if it stays so): the wait is its lead's to end
+				out = append(out, [2]string{handedKey(s.Surface, h), text + "; its newest line is a DONE and nothing gave it work since: give it the next item or park it (said once; again in 12 h if it stays so)"})
+				continue
+			}
 			out = append(out, [2]string{idleKey(s.Surface, h), text})
 		}
 	}
@@ -615,16 +633,20 @@ func waiting(st *state, d Deps, watch projects, park parked, screens []Screen, h
 // says Done: 100% (RULES 3.1). Falcon 10-30 drew IDLE alerts again and again after its goal was done: a finished lead
 // has no work left to be idle on. A lead not found finished keeps its idle alert: a status file that is a git object
 // (git:<repo>#<rev>:<path>), cannot be read or has no readable GOAL block, and a projects.toml that cannot be read.
-func finishedLeads(home string) map[string]bool {
-	out := map[string]bool{}
+// unread gives why a lead's GOAL block cannot be read, for its idle alert to say (Crius 10-30 15:33: appxite-map's
+// "Done: 100% of phase 1" drew an IDLE every 20 min with no word why). leads gives every lead role, finished or not: a
+// lead may have another name (axi = { leader }, crius = { build }).
+func finishedLeads(home string) (out map[string]bool, unread map[string]string, leads map[string]bool, err error) {
+	out, unread, leads = map[string]bool{}, map[string]string{}, map[string]bool{}
 	var c struct {
 		Projects map[string]struct{ Leads map[string]string }
 	}
 	if _, err := toml.DecodeFile(filepath.Join(home, "projects.toml"), &c); err != nil {
-		return out
+		return out, unread, leads, err
 	}
 	for p, pc := range c.Projects {
 		for role, f := range pc.Leads {
+			leads[strings.ToLower(p+":"+role)] = true
 			if strings.HasPrefix(f, "git:") {
 				continue
 			}
@@ -632,12 +654,47 @@ func finishedLeads(home string) map[string]bool {
 				h, _ := os.UserHomeDir()
 				f = filepath.Join(h, rest)
 			}
-			if g, err := goal.ReadGoal(f); err == nil && g.Done == 100 {
+			g, err := goal.ReadGoal(f)
+			var u *goal.Unreadable
+			switch {
+			case err == nil && g.Done == 100:
 				out[strings.ToLower(p+":"+role)] = true
+			case errors.As(err, &u):
+				unread[strings.ToLower(p+":"+role)] = u.Error()
 			}
 		}
 	}
-	return out
+	return out, unread, leads, nil
+}
+
+// answersDone are the line types that answer a DONE and give no work.
+var answersDone = map[string]bool{"VERIFIED": true, "ACK": true, "PASS": true, "LANDED": true}
+
+// handedBack reports whether who, a role under a lead, has handed its work back: its newest line is a DONE and no line
+// gives it work after that (Crius 10-30 15:33: appxite-map:uploads and cortex:impact-tester drew an IDLE every 20 min for
+// hours after a VERIFIED DONE). A line to it or to its whole team (<project>:all, as Quotes gives work) gives it work,
+// but one that answers the DONE: a VERIFIED, ACK, QA PASS or the lead's LANDED. A lead never hands back: its goal says
+// when it is finished, and RULES 3.5 wants a lead idle after a DONE sent back to work. The file's order counts, not
+// the minute.
+func handedBack(home, who string, lead bool) (bool, error) {
+	if lead || rank(who) > 0 {
+		return false, nil
+	}
+	lines, _, err := busLines(home, who)
+	project := strings.SplitN(who, ":", 2)[0]
+	back := false
+	for _, m := range lines {
+		switch {
+		case busName(project, m[3]) == who:
+			back = m[2] == "DONE"
+		case !answersDone[m[2]] && slices.ContainsFunc(recipients(m[4]), func(r string) bool {
+			r = busName(project, r)
+			return r == who || r == project+":all"
+		}):
+			back = false
+		}
+	}
+	return back, err
 }
 
 // unwaited gives one alert naming each watched project (every <name>.log on the bus but waits.log) whose bus log no
@@ -837,6 +894,7 @@ func tools(d Deps) [][2]string {
 
 func screenKey(surface, hash string) string { return "screen:" + surface + ":" + hash }
 func idleKey(surface, hash string) string   { return "idle:" + surface + ":" + hash }
+func handedKey(surface, hash string) string { return "handed:" + surface + ":" + hash }
 
 // Clean makes text safe to type into a Claude prompt as one line: secrets redacted, one line, at most MaxLine runes.
 func Clean(s string) string {

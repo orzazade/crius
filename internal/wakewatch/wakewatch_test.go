@@ -2168,3 +2168,124 @@ func TestAWaiterOnTheRealPathOfTheBusCoversItsLogs(t *testing.T) {
 		}
 	}
 }
+
+// Crius 10-30 15:33: appxite-map:uploads and cortex:impact-tester drew an IDLE every 20 min for hours after a DONE that
+// was VERIFIED, with nothing sent to them since (their real lines below). A role under a lead whose newest line is a
+// DONE has handed its work back: its DONE woke Crius, and the idle alert says once that it waits for its next item. A
+// line that gives it work (not a VERIFIED or ACK of the DONE) starts the usual idle alerts again; a lead idle after a
+// DONE still alerts every 20 min (RULES 3.5).
+func TestARoleIdleAfterItsDoneAlertsOnce(t *testing.T) {
+	for _, c := range []struct {
+		name, log, title, bus, toml string
+		repeats, failRead           bool
+	}{
+		{"appxite-map:uploads (real lines)", "appxite-map.log", "appxite-map · uploads",
+			stamp(t0.Add(-29*time.Hour)) + " INFO appxite-map:uploads -> appxite-map:lead — UPLOADS.md draft written (19 live flows, 26 items)\n" +
+				stamp(t0.Add(-28*time.Hour)) + " DONE appxite-map:uploads -> appxite-map:lead — UPLOADS.md @28bb0fb (local main). 27 items\n" +
+				stamp(t0.Add(-28*time.Hour)) + " VERIFIED crius:lead -> appxite-map:uploads — 28bb0fb · UPLOADS.md file and counts match\n", "", false, false},
+		{"cortex:impact-tester (real lines)", "cortex.log", "cortex · impact-tester",
+			stamp(t0.Add(-15*time.Hour)) + " VERIFIED crius:lead -> cortex:impact-tester — 57ca002 · PR #18 head: clean checkout 1087/0\n" +
+				stamp(t0.Add(-4*time.Hour)) + " DONE cortex:impact-tester -> crius — #20 head f425134 (draft, mergeable). CI green 1116 pass 0 fail\n" +
+				stamp(t0.Add(-1*time.Hour)) + " INFO crius:lead -> cortex:lead — Wakewatch flags cortex:impact-tester idle 255 min; give it the next item or tell it to stand down\n", "", false, false},
+		{"work sent after the DONE", "cortex.log", "cortex · impact-tester",
+			stamp(t0.Add(-4*time.Hour)) + " DONE cortex:impact-tester -> crius — #20 head f425134\n" +
+				stamp(t0.Add(-3*time.Hour)) + " INFO cortex:lead -> cortex:impact-tester — next: deep review of #22 on 8730ead\n", "", true, false},
+		{"a lead idle after its DONE", "cortex.log", "cortex · lead",
+			stamp(t0.Add(-4*time.Hour)) + " DONE cortex:lead -> crius:lead — #22 merged\n", "", true, false},
+		// Review of the fix, P1: a lead whose role is not named lead (axi = { leader }, crius = { build }) is a lead.
+		{"axi:leader idle after its DONE", "axi.log", "axi · leader",
+			stamp(t0.Add(-4*time.Hour)) + " DONE axi:leader -> crius:lead — M4 order flow on main 1a2b3c4\n" +
+				stamp(t0.Add(-4*time.Hour)) + " VERIFIED crius:lead -> axi:leader — 1a2b3c4 · clean checkout 212/0\n",
+			"[projects.axi]\npersona = \"work\"\nleads = { leader = \"/nowhere/STATUS.md\" }\n", true, false},
+		// Review round 2, P2: with projects.toml unreadable no role is known to be a lead: none is handed back, and it is said.
+		{"axi:leader with projects.toml unreadable", "axi.log", "axi · leader",
+			stamp(t0.Add(-4*time.Hour)) + " DONE axi:leader -> crius:lead — M4 order flow on main 1a2b3c4\n" +
+				stamp(t0.Add(-4*time.Hour)) + " VERIFIED crius:lead -> axi:leader — 1a2b3c4 · clean checkout 212/0\n",
+			"[projects.axi\npersona = \"work\"\n", true, false},
+		// Review of the fix, P1: Quotes gives work through quotes:all (961 lines), with short names (P3).
+		{"work sent to the whole team", "quotes.log", "quotes · p3",
+			stamp(t0.Add(-4*time.Hour)) + " DONE P3 -> quotes:lead — F-141 on stream/d\n" +
+				stamp(t0.Add(-3*time.Hour)) + " ORDER quotes:lead -> quotes:all,crius:lead — next round. P3: take AC78\n", "", true, false},
+		// Review of the fix, P2: a QA PASS (or the lead's LANDED) answers the DONE and gives no work.
+		{"a QA PASS of the DONE", "quotes.log", "quotes · p3",
+			stamp(t0.Add(-4*time.Hour)) + " DONE P3 -> quotes:lead — F-141 on stream/d\n" +
+				stamp(t0.Add(-3*time.Hour)) + " PASS quotes:qa1 -> quotes:lead,quotes:p3 — F-141 J1-J4 pass\n", "", false, false},
+		// Review of the fix, P2: one failed read of the tab does not make the once-said alert be said again.
+		{"a failed read between runs", "appxite-map.log", "appxite-map · uploads",
+			stamp(t0.Add(-28*time.Hour)) + " DONE appxite-map:uploads -> appxite-map:lead — UPLOADS.md bb0fb\n", "", false, true},
+	} {
+		home := setup(t, map[string]string{c.log: c.bus})
+		toml := c.toml
+		if toml == "" { // the real home always has one: its lead is named lead
+			toml = "[projects." + strings.TrimSuffix(c.log, ".log") + "]\nleads = { lead = \"/nowhere/STATUS.md\" }\n"
+		}
+		testutil.Write(t, filepath.Join(home, "projects.toml"), toml)
+		f := &fake{}
+		draw := func(at time.Time) []Screen {
+			s := screen(c.title, tab(c.title, "Done. Waiting for the next item.\n\n⏳", "", at))
+			if c.failRead && at.Equal(t0.Add(15*time.Minute)) {
+				s.Text, s.Err = "", "read-screen: exit status 1"
+			}
+			return []Screen{s}
+		}
+		idle := func() (out []string) { // the unanswered DONE of a case wakes Crius too: only idle alerts count
+			for _, s := range f.sent {
+				if strings.Contains(s, "is idle") {
+					out = append(out, s)
+				}
+			}
+			return out
+		}
+		runAt(t, home, f, draw, 0, 5, 11)
+		if len(idle()) != 1 {
+			t.Fatalf("%s: sent %q, want one idle alert by min 11", c.name, f.sent)
+		}
+		if strings.HasPrefix(c.toml, "[projects.axi\n") && !strings.Contains(idle()[0], "projects.toml cannot be read") {
+			t.Errorf("%s: %q does not say projects.toml cannot be read", c.name, idle()[0])
+		}
+		if !c.repeats && !strings.Contains(idle()[0], "next item or park it") {
+			t.Errorf("%s: %q does not say it waits for its next item", c.name, idle()[0])
+		}
+		runAt(t, home, f, draw, 15, 31, 51, 71)
+		if got := len(idle()) > 1; got != c.repeats {
+			t.Errorf("%s: sent %q, want repeats %v", c.name, f.sent, c.repeats)
+		}
+	}
+}
+
+// Crius 10-30 15:33: appxite-map:lead drew an IDLE every 20 min though its STATUS says its phases are done: its GOAL
+// block (the real one below) is not in the RULES 3.1 form, so it was never seen as finished, and nothing said why. The
+// alert names the unreadable block; the same block in the RULES form, Done: 100%, ends the alerts.
+func TestALeadWhoseGoalCannotBeReadSaysWhy(t *testing.T) {
+	real := "## GOAL (2026-10-29 13:4x)\nGoal: an evidence-based Appxite health map\n" +
+		"- [x] M1 Inventory: MAP.md · b3aaeea\n- [x] M5 Verdicts: VERDICTS.md · cb6dfb4 · VERIFIED crius 12:47\n" +
+		"Done: 100% of phase 1 (5 of 5 milestones verified: M1-M5)\n" +
+		"- [x] P4 Start: START.md · 2c3eb59 · DONE posted (awaiting VERIFIED)\n" +
+		"Next: phases 2-4 done and VERIFIED (crius 22:29); waiting for the owner walk-through (NEED-OWNER posted)\n"
+	fixed := "## GOAL (2026-10-30 15:50)\nGoal: an evidence-based Appxite health map\n" +
+		"- [x] M1 Inventory: MAP.md · b3aaeea\n- [x] M5 Verdicts: VERDICTS.md · cb6dfb4 · VERIFIED crius 12:47\n" +
+		"- [x] P4 Start: START.md · 2c3eb59 · VERIFIED crius 22:29\n" +
+		"Done: 100% (phases 1-4: 3 of 3 milestones verified)\nNext: owner walk-through\nNeeds owner: walk-through\n"
+	for _, c := range []struct {
+		name, block string
+		idle        bool
+	}{{"real block", real, true}, {"RULES form", fixed, false}} {
+		home := setup(t, map[string]string{"appxite-map.log": stamp(t0.Add(-22*time.Hour)) +
+			" INFO appxite-map:lead -> crius:lead — Mirror deleted; phases 2-4 VERIFIED\n"})
+		status := filepath.Join(home, "appxite-map-STATUS.md")
+		testutil.Write(t, filepath.Join(home, "projects.toml"), "[projects.appxite-map]\npersona = \"work\"\n"+
+			"leads = { lead = \""+status+"\" }\n")
+		testutil.Write(t, status, c.block)
+		f := &fake{}
+		draw := func(at time.Time) []Screen {
+			return []Screen{screen("appxite-map · lead", tab("appxite-map · lead", "Waiting for the owner walk-through.\n\n⏳", "", at))}
+		}
+		runAt(t, home, f, draw, 0, 5, 11)
+		if idle := len(f.sent) == 1 && strings.Contains(f.sent[0], "is idle"); idle != c.idle || len(f.sent) > 1 {
+			t.Fatalf("%s: sent %q, want idle %v", c.name, f.sent, c.idle)
+		}
+		if c.idle && !strings.Contains(f.sent[0], "GOAL block unreadable: line 1: heading needs (YYYY-MM-DD HH:MM)") {
+			t.Errorf("%s: %q does not say why its goal is not seen as done", c.name, f.sent[0])
+		}
+	}
+}
