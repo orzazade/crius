@@ -69,6 +69,7 @@ type Row struct {
 	AnsweredBy string   `json:"answeredBy,omitempty"`
 	Asked      string   `json:"asked,omitempty"`   // the owner's last answer that asked back: the row stays open
 	AskedAt    string   `json:"askedAt,omitempty"` // when, as AnsweredAt
+	Carried    bool     `json:"carried,omitempty"` // Asked came from the lead's row before this one
 	Log        string   `json:"log,omitempty"`
 	Line       string   `json:"line,omitempty"`
 	Goal       string   `json:"goal,omitempty"`
@@ -108,8 +109,8 @@ func SyncGoals(home string, now time.Time, read func() ([]GoalNeed, error)) (hel
 		}
 		changed := false
 		// a lead's text already on show (open), or answered at a time (an answer covers the ask until the lead writes
-		// its block again); the owner's question on a row withdrawn now goes to the lead's new row (review of 8cdefa3)
-		open, answered, asked := map[[2]string]bool{}, map[[2]string]string{}, map[string][2]string{}
+		// its block again)
+		open, answered := map[[2]string]bool{}, map[[2]string]string{}
 		for i := range q.Rows {
 			r := &q.Rows[i]
 			if r.Goal == "" {
@@ -117,9 +118,6 @@ func SyncGoals(home string, now time.Time, read func() ([]GoalNeed, error)) (hel
 			}
 			if r.State == Open && !unread[r.Goal] && asks[r.Goal] != r.Line {
 				r.State, r.Answer, r.AnsweredAt, r.AnsweredBy = Withdrawn, noLongerAsked, now.Format(stamp), r.Goal
-				if r.Asked != "" {
-					asked[r.Goal] = [2]string{r.Asked, r.AskedAt}
-				}
 				changed = true
 			}
 			k := [2]string{r.Goal, r.Line}
@@ -141,7 +139,8 @@ func SyncGoals(home string, now time.Time, read func() ([]GoalNeed, error)) (hel
 			}
 			r := parse(n.Text)
 			r.ID, r.State, r.Opened, r.From, r.Goal, r.Line = next(q), Open, now.Format(stamp), from(n.Lead), n.Lead, n.Text
-			r.Asked, r.AskedAt = asked[n.Lead][0], asked[n.Lead][1]
+			r.Asked, r.AskedAt = askedOn(q, n.Lead)
+			r.Carried = r.Asked != ""
 			q.Rows = append(q.Rows, r)
 			changed = true
 		}
@@ -151,6 +150,21 @@ func SyncGoals(home string, now time.Time, read func() ([]GoalNeed, error)) (hel
 		return save(home, q)
 	})
 	return held, err
+}
+
+// askedOn gives the owner's question on the lead's GOAL row withdrawn last, when it was asked on that row: the lead's
+// next row carries it once, also when that row opens passes later, after a hold (reviews of de39210, rounds 1 and 2).
+func askedOn(q *Queue, lead string) (asked, at string) {
+	var last *Row
+	for i := range q.Rows {
+		if r := &q.Rows[i]; r.Goal == lead && r.State == Withdrawn && (last == nil || r.AnsweredAt >= last.AnsweredAt) {
+			last = r
+		}
+	}
+	if last == nil || last.Asked == "" || last.Carried {
+		return "", ""
+	}
+	return last.Asked, last.AskedAt
 }
 
 // shown names a bus row of project that holds a GOAL ask back: one still open, or one the owner answered at or after
@@ -255,7 +269,7 @@ func Answer(home string, now time.Time, id, text, by string) error {
 			return fmt.Errorf("%s is already %s (%q at %s)", id, r.State, r.Answer, r.AnsweredAt)
 		}
 		if r := &q.Rows[i]; by == "owner" && asksBack(text) && !slices.Contains(r.Options, strings.TrimSpace(text)) {
-			r.Asked, r.AskedAt = strings.TrimSpace(text), now.Format(stamp)
+			r.Asked, r.AskedAt, r.Carried = strings.TrimSpace(text), now.Format(stamp), false
 		} else {
 			answer(&q.Rows[i], text, now.Format(stamp), by)
 		}
@@ -267,9 +281,12 @@ func Answer(home string, now time.Time, id, text, by string) error {
 // q13): it ends in "?" (closing quotes, brackets or "!" may follow) or opens with what, why or how.
 var asksBackRe = regexp.MustCompile(`(?i)\?[\s"'”’)\]!.]*$|^\s*(?:what|why|how)\b`)
 
-// asksBack says an answer asks back: the row stays open, marked with the question. A button the owner pressed is the
-// row's own option and never asks back; a Crius line that forwards the question ("[queue q13] owner asks: …?") asks
-// back too (review of 8cdefa3, P1), while its relayed decision ("[queue q13] owner: go") answers.
+// forwardRe is a Crius line that forwards the owner's question ("[queue q13] owner asks: what you need"): it marks the
+// row and leaves it open. Any other Crius line answers, whatever its punctuation (reviews of de39210, rounds 1 and 2).
+var forwardRe = regexp.MustCompile(`(?i)^owner\s+ask(?:s|ed)\b[\s:—-]*`)
+
+// asksBack says an owner's answer asks back: the row stays open, marked with the question. A button the owner pressed
+// is the row's own option and never asks back.
 func asksBack(text string) bool { return asksBackRe.MatchString(text) }
 
 // OpenRows are the rows still open, oldest first (undated ones first: they are the oldest).
@@ -403,9 +420,9 @@ func syncLocked(home string) (*Queue, error) {
 			// a row its lead withdrew keeps the answer too: the owner decided it (review round 2 of the queue gap)
 			switch r := &q.Rows[i]; {
 			case r.ID != a.id || r.State != Open && r.State != Withdrawn:
-			case asksBack(a.text):
-				if r.State == Open {
-					r.Asked, r.AskedAt = a.text, a.at
+			case forwardRe.MatchString(a.text):
+				if q := forwardRe.ReplaceAllString(a.text, ""); a.at >= r.AskedAt && q != r.Asked { // never an older forward read again
+					r.Asked, r.AskedAt, r.Carried = q, a.at, false
 					changed = true
 				}
 			default:

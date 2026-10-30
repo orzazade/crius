@@ -495,3 +495,82 @@ func TestAQuestionBackSurvivesCriusForwardingItAndALeadRewrite(t *testing.T) {
 		t.Errorf("the rewritten ask's row carries no question: %+v", q5)
 	}
 }
+
+// Review round 2 of the question back: a Crius line asks back only when it says "owner asks" (with or without a "?");
+// any other Crius line answers, even one that opens with How or ends in "?)". An older forward read again never
+// replaces a newer question. A question on a GOAL row its lead rewrote while the new ask is held reaches the row that
+// opens later, once: a question carried to a row is not carried again.
+func TestOnlyAnOwnerAsksForwardAsksBackAndTheCarryOutlivesAHold(t *testing.T) {
+	h := setup(t, "")
+	for _, title := range []string{"Falcon: 3 choices", "Ship the release", "Merge order"} {
+		cli(t, h, "add", "--title", title, "--from", "aitch")
+	}
+	busLog := filepath.Join(h, "bus", "crius.log")
+	bus := "2026-10-30T13:10 INFO crius:lead -> falcon:lead — [queue q1] owner asks: what you need\n" +
+		"2026-10-30T13:11 DECISION crius:lead -> aitch:lead — [queue q2] How to ship: owner says B\n" +
+		"2026-10-30T13:12 DECISION crius:lead -> aitch:lead — [queue q3] owner: go (merge #12 first?)\n"
+	if err := os.WriteFile(busLog, []byte(bus), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cli(t, h, "list")
+	got := rows(t, h)
+	if got["q1"] != "open " || got["q2"] != "answered How to ship: owner says B" || got["q3"] != "answered owner: go (merge #12 first?)" {
+		t.Fatalf("want q1 asked back, q2 and q3 answered: %v", got)
+	}
+	cli(t, h, "answer", "q1", "and Q2, which folders?")
+	cli(t, h, "init", "--since", "2026-10-30T00:00") // the bus is read again from the start
+	cli(t, h, "list")
+	var v View
+	if err := json.Unmarshal([]byte(cli(t, h, "list", "--json")), &v); err != nil {
+		t.Fatal(err)
+	}
+	if len(v.Open) != 1 || v.Open[0].Asked != "and Q2, which folders?" {
+		t.Errorf("the 13:10 forward read again replaced the 14:00 question: %+v", v.Open)
+	}
+
+	status := filepath.Join(h, "falcon.md")
+	goal := func(stamp, needs string) {
+		t.Helper()
+		if err := os.WriteFile(status, []byte("## GOAL ("+stamp+")\nGoal: g\n- [x] one · abc1234\nDone: 100% (1 of 1 milestones)\n"+
+			"Next: none\nNeeds owner: "+needs+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(h, "projects.toml"), []byte(fmt.Sprintf("[projects.falcon]\nleads = { lead = %q }\n", status)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	goal("2026-10-30 12:00", "Q1 CI as a source · NEED 10-29")
+	cli(t, h, "list") // q4
+	cli(t, h, "answer", "q4", "what you need?")
+	falconLog := filepath.Join(h, "bus", "falcon.log")
+	if err := os.WriteFile(falconLog, []byte("2026-10-30T14:00 NEED-OWNER falcon:lead -> owner — Q1: CI as a source, (a) or (b)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	goal("2026-10-30 14:00", "Q1 CI as a source, (a) or (b)")
+	cli(t, h, "list") // q4 withdrawn, the bus row q5 opens, the new ask is held
+	cli(t, h, "answer", "q5", "--by", "crius", "settled: duplicate of the GOAL ask")
+	goal("2026-10-30 14:00", "Q1 CI as a source, (a) or (b)")
+	v = View{} // a decode into a used View keeps the fields a row leaves out
+	if err := json.Unmarshal([]byte(cli(t, h, "list", "--json")), &v); err != nil {
+		t.Fatal(err)
+	}
+	var row *Item
+	for i := range v.Open {
+		if v.Open[i].Goal == "falcon:lead" {
+			row = &v.Open[i]
+		}
+	}
+	if row == nil || row.Asked != "what you need?" {
+		t.Fatalf("the ask that opened after the hold carries no question: %+v", v.Open)
+	}
+	goal("2026-10-30 14:00", "Q1 CI as a source: (a)")
+	v = View{} // a decode into a used View keeps the fields a row leaves out
+	if err := json.Unmarshal([]byte(cli(t, h, "list", "--json")), &v); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range v.Open {
+		if r.Goal == "falcon:lead" && r.Asked != "" {
+			t.Errorf("a carried question is carried again: %+v", r)
+		}
+	}
+}
