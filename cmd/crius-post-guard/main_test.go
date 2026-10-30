@@ -350,6 +350,7 @@ func TestUnparsableCommands(t *testing.T) {
 // $S, so the guard could not read it, and the bus text named az ("az blob list"). S is set to a literal earlier in the
 // same command: the guard reads the script and checks its own commands.
 func TestAScriptNamedThroughAVariableSetInTheCommandIsRead(t *testing.T) {
+	t.Setenv("CRIUS_INHERITED", "1")
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "lead"), 0o755); err != nil {
 		t.Fatal(err)
@@ -408,6 +409,7 @@ func TestAScriptNamedThroughAVariableSetInTheCommandIsRead(t *testing.T) {
 	write("g3.sh", "#!/bin/bash\ngit -C /tmp grep --open-files=less -e hi\n")
 	write("g4.sh", "#!/bin/bash\ngit -C /tmp log -1 --out=/tmp/x\n")
 	write("g5.sh", "#!/bin/bash\nXDG_CONFIG_HOME=/tmp/y git -C /tmp show HEAD\n")
+	write("g7.sh", "#!/bin/bash\ngit -C /tmp grep -iOless -e hi\n")
 	write("g6.sh", "#!/bin/bash\ngit -C /tmp grep -q -e \"$1\" -- n.txt; git -C /tmp log -1 --oneline -- \"$2\"\n")
 	self := "#!/bin/bash\n" + strings.Repeat("bash "+filepath.Join(dir, "self.sh")+"\n", 15)
 	write("self.sh", self)
@@ -438,6 +440,11 @@ func TestAScriptNamedThroughAVariableSetInTheCommandIsRead(t *testing.T) {
 		s + `cd ~/Projects && ls *; grep -rn foo . ; bash $S/lead/say.sh INFO x 'az blob list ok'`,
 		// review of 26148a0: a computed git word as -e's pattern or after --
 		s + `bash $S/g6.sh 'az blob list' 'az login'`,
+		// review of 73f3942: a numbered redirect, the bus text in a variable, git reads around the script
+		s + `bash $S/lead/say.sh INFO x 'az blob list ok' 2>&1`, s + `bash $S/lead/say.sh INFO x 'az blob list ok' 2>/dev/null`,
+		s + `M='az blob list ok'; bash $S/lead/say.sh INFO x "$M"`,
+		s + `bash $S/lead/say.sh DONE x "az fix $(git -C /tmp rev-parse --short HEAD)"`,
+		s + `cd ~/Projects && git status --short . && bash $S/lead/say.sh INFO crius:lead 'az blob list ok'`,
 	} {
 		if why := check(bash(cmd, dir)); why != "" {
 			t.Errorf("%q asked: %s", cmd, why)
@@ -535,7 +542,11 @@ func TestAScriptNamedThroughAVariableSetInTheCommandIsRead(t *testing.T) {
 		s + `X='a[$(az boards work-item update --id 1)]'; for ((X;0;)); do :; done; bash $S/lead/say.sh INFO x hi`,
 		s + `X='a[$(az boards work-item update --id 1)]'; bash $S/lead/say.sh INFO x "${S:X}"`,
 		s + `X='$(az boards work-item update --id 1)'; bash $S/lead/say.sh INFO x "${X@P}"`,
-		s + `cd ~/Projects && git status --short . && bash $S/lead/say.sh INFO crius:lead 'az blob list ok'`,
+		s + `export M='az blob list ok'; bash $S/lead/say.sh INFO x "$M"`, // an export of a name no script word uses
+		s + `PAGER='less'; bash $S/lead/say.sh INFO x 'az login'`,         // already exported, runs code
+		s + `CRIUS_INHERITED=x; bash $S/lead/say.sh INFO x 'az login'`,    // already exported (t.Setenv)
+		s + `bash $S/g7.sh 'az login'`,                                    // -O in a bundle of short flags
+		s + `git -C /tmp log -1 --output=/tmp/x; bash $S/lead/say.sh INFO x 'az login'`,
 		s + `export PAGER='az boards work-item update --id 1'; bash $S/lead/say.sh INFO x hi`, // a name no script word uses
 		`HOME=` + dir + `; bash $HOME/lead/say.sh INFO x 'az login'`,                          // a code variable the path uses
 		s + `bash $S/lead/say.sh INFO x "${S:X} az login"`,                                    // X from the environment
