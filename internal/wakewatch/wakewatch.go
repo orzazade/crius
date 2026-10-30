@@ -409,8 +409,8 @@ func answered(typ, from, line string, park parked) bool {
 	return true
 }
 
-// missed gives [key, text] for each wake line to Crius, 20 min to 12 h old, with no reply line after it in its file
-// and not answered otherwise.
+// missed gives [key, text] for each wake line to Crius, 20 min to 12 h old, with no reply after it in its file (a
+// crius:lead line of a reply type, or of any type sent to the asker) and not answered otherwise.
 func missed(home string, now time.Time, watch projects, park parked) ([][2]string, error) {
 	logs, err := filepath.Glob(filepath.Join(home, "bus", "*.log"))
 	if err != nil {
@@ -438,6 +438,11 @@ func missed(home string, now time.Time, watch projects, park parked) ([][2]strin
 			if from == "crius:lead" && replyTypes[typ] {
 				open = nil
 				continue
+			}
+			// a crius:lead line to the asker, of any type, answers the asker's lines before it (a DECISION, Crius 10-30
+			// 20:32: cortex's 16:40 DONE and 18:30 NEED, falcon's two 20:07 ASKs)
+			if from == "crius:lead" {
+				open = slices.DeleteFunc(open, func(l string) bool { return sentTo(to, lineRe.FindStringSubmatch(l)[3]) })
 			}
 			if !wakeTypes[typ] || !toCrius(to) || answered(typ, from, line, park) {
 				continue

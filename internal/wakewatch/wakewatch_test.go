@@ -127,6 +127,43 @@ func TestALaterCriusLeadLineAnswersIt(t *testing.T) {
 	}
 }
 
+// Crius 10-30 20:32: wakewatch re-woke Crius for cortex's 16:40 DONE and 18:30 NEED and falcon's two 20:07 ASKs, each
+// answered within a minute by a crius:lead DECISION to that lead. Any crius:lead line sent to the asker after its line
+// answers it, whatever its type; a line to someone else, or one before the ask, does not.
+func TestACriusLeadLineToTheAskerAnswersIt(t *testing.T) {
+	at := func(m int) string { return stamp(t0.Add(time.Duration(m) * time.Minute)) }
+	home := setup(t, map[string]string{
+		"cortex.log": at(0) + " DONE cortex:lead -> crius — STATUS GOAL block now in RULES 3.1 form at the top\n" +
+			at(0) + " DECISION crius:lead -> cortex:lead — Deploy sha-eb557149e5bd now (Crius approves Cortex deploys)\n" +
+			at(110) + " NEED cortex:lead -> crius — PR #26 fix(sync): a Sync request on a pending repo was probed last\n" +
+			at(111) + " DECISION crius:lead -> cortex:lead — PR #26 approved by Crius: read ops/sync.ts diff\n",
+		"falcon.log": at(207) + " ASK falcon:lead -> crius:lead — (2) has 2 readings. A: copy the pr object from the card\n" +
+			at(207) + " ASK falcon:lead -> crius:lead — With B, PR reviews have one source: sense-pr cards. A or B?\n" +
+			at(207) + " DECISION crius:lead -> falcon:lead — (2) = B: a PR link in mail starts no action\n",
+		"quotes.log": at(90) + " NEED crius:lead -> quotes:qa1 — x\n" +
+			at(100) + " NEED quotes:lead -> crius — still open: Crius wrote to someone else\n" +
+			at(101) + " DECISION crius:lead -> quotes:b1 — not to the asker\n" +
+			at(102) + " DECISION crius:lead -> axi:lead — nor this\n" +
+			at(103) + " ASK quotes:qa1 -> crius:lead — asked after Crius wrote to it\n",
+	})
+	f := &fake{}
+	if err := Run(f.deps(home, t0.Add(240*time.Minute))); err != nil {
+		t.Fatal(err)
+	}
+	var woke []string
+	for _, s := range f.sent {
+		for _, l := range strings.Split(s, "\n") {
+			if strings.Contains(l, ".log: ") {
+				woke = append(woke, l)
+			}
+		}
+	}
+	if len(woke) != 2 || !strings.Contains(woke[0], "still open") && !strings.Contains(woke[1], "still open") ||
+		!strings.Contains(strings.Join(woke, "\n"), "asked after") {
+		t.Fatalf("want only quotes' two lines, woke %d:\n%s", len(woke), strings.Join(woke, "\n"))
+	}
+}
+
 // Crius 10-23 09:45: wakewatch re-woke Crius for a digest DONE (a report, it needs no reply) and for the quota guard's
 // NEED at 06:36 after Crius had parked quotes. A pause NEED is answered once its project, or every role it paused, is
 // in ~/.crius/parked; a NEED with roles still unparked, or about something else, still wakes.
