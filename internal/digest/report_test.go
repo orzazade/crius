@@ -145,30 +145,42 @@ func TestBuildReviewOfCbd8517(t *testing.T) {
 	}
 }
 
-// A "Needs owner" that starts with "nothing" asks nothing, whatever note follows (Crius 10-30 16:51: the q16 line, a
-// parked lead, asked the owner nothing). A note that opens with but/except/unless or holds a numbered item still asks:
-// the forms that made the reverted nothingRe a P1 (review of the queue gap, round 1, P1-2).
-func TestNothingWithAnyNoteIsNothing(t *testing.T) {
+// "nothing" with one note in brackets that ends the field asks nothing (Crius 10-30 16:51: the q16 line, a parked
+// lead, asked the owner nothing). Any other text after it still asks, and so does a note that opens with
+// but/except/unless: the forms that made the reverted nothingRe a P1 (review of the queue gap round 1 P1-2) and the
+// ones the review of 0ca5eaa found hidden.
+func TestNothingWithANoteInBracketsIsNothing(t *testing.T) {
 	db := open(t)
 	dir := t.TempDir()
 	fields := map[string]bool{ // field → asks
 		"nothing (owner 2026-10-30 16:44: parked; GAINS.md walk-through when the owner resumes it)":                   false, // q16
 		"nothing (owner 2026-10-30 16:47: parked; START ask 3 split and the phase-1 walk-through wait until resumed)": false, // q17
-		`"nothing" (parked).`:           false,
-		"Nothing — parked until Monday": false,
-		"nothing open. Known leftovers kept on p1-test by owner choice: delete leftover test data on p1-test": false,
-		"nothing, except (1) OK to merge #12":     true,
-		"nothing; (1) OK to deploy":               true,
-		"nothing (but OK on PR 12 before Friday)": true,
-		"Nothing — unless PR 12 slips, then OK":   true,
-		"nothing (except: merge #12)":             true,
-		"none; (1) OK to deploy":                  true,
-		"nothingness of the drafts: OK to drop?":  true,
+		`"nothing" (parked).`:                            false,
+		"Nothing.":                                       false,
+		`"Nothing."`:                                     false, // distiportal 10-30
+		"nothing, except (1) OK to merge #12":            true,
+		"nothing; (1) OK to deploy":                      true,
+		"none; (1) OK to deploy":                         true,
+		"nothing (but OK on PR 12 before Friday)":        true,
+		"nothing (Unless PR 12 slips: OK to merge)":      true,
+		"nothing (owner: OK to merge #12?)":              true,
+		"Nothing — parked until Monday":                  true,
+		"nothing (parked) but OK on PR 12 before Friday": true,
+		"nothing new; OK to merge #12 still pending":     true,
+		"nothing's blocked, but OK on PR 12 needed":      true,
+		"nothing until Friday, then OK to merge #12":     true,
+		"nothing… but OK on PR 12":                       true,
+		"nothing [but OK on PR 12]":                      true,
+		"nothing\u00a0but OK on PR 12":                   true,
+		"nothing; 1) OK to deploy":                       true,
+		"nothing (a) or OK on PR 12 (b)":                 true,
+		"nothingness of the drafts: OK to drop?":         true,
 	}
 	var leads []ingest.Lead
-	asks := map[string]bool{}
+	asks, field := map[string]bool{}, map[string]string{}
 	for f, ask := range fields {
 		name := fmt.Sprintf("l%d:lead", len(leads))
+		field[name] = f
 		leads = append(leads, ingest.Lead{Name: name, StatusFile: statusFile(t, dir, name+".md", block("2026-10-30 16:50", f, "- [ ] one"))})
 		asks[name] = ask
 	}
@@ -183,9 +195,9 @@ func TestNothingWithAnyNoteIsNothing(t *testing.T) {
 		}
 		got[n.Lead] = len(n.Items) > 0
 	}
-	for i, l := range leads {
+	for _, l := range leads {
 		if got[l.Name] != asks[l.Name] {
-			t.Errorf("%q: asks %v, want %v", needs[i].Items, got[l.Name], asks[l.Name])
+			t.Errorf("%q: asks %v, want %v", field[l.Name], got[l.Name], asks[l.Name])
 		}
 	}
 }

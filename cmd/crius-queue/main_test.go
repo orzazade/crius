@@ -365,3 +365,29 @@ func TestAnswerByNumberIsTheListPrintedNotOneRereadFromTheGoals(t *testing.T) {
 		t.Fatalf("answer 3 went to %q, want q3 (Restart Chrome)", got)
 	}
 }
+
+// Crius 10-30 16:51: a parked lead wrote "nothing (owner …: parked; …)" and the pane showed it as row q16. That field
+// asks nothing: no row opens, and the row its earlier ask opened is withdrawn by the lead.
+func TestNothingWithANoteOpensNoRowAndWithdrawsTheAsk(t *testing.T) {
+	h := setup(t, "")
+	status := filepath.Join(h, "gains.md")
+	goal := func(stamp, needs string) {
+		t.Helper()
+		if err := os.WriteFile(status, []byte("## GOAL ("+stamp+")\nGoal: g\n- [x] one · abc1234\nDone: 100% (1 of 1 milestones)\n"+
+			"Next: none\nNeeds owner: "+needs+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(h, "projects.toml"), []byte(fmt.Sprintf("[projects.appxite-gains]\nleads = { lead = %q }\n", status)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	goal("2026-10-30 14:00", "walk-through of GAINS.md")
+	cli(t, h, "list")
+	goal("2026-10-30 16:44", "nothing (owner 2026-10-30 16:44: parked; GAINS.md walk-through when the owner resumes it)")
+	if out := cli(t, h, "list"); !strings.Contains(out, "✓ Nothing waits on you.") {
+		t.Errorf("a parked lead's nothing (note) still waits on the owner:\n%s", out)
+	}
+	if got := rows(t, h); len(got) != 1 || got["q1"] != "withdrawn the GOAL block no longer asks this" {
+		t.Errorf("want only q1, withdrawn by the lead: %v", got)
+	}
+}

@@ -351,11 +351,12 @@ var (
 	needIDRe    = regexp.MustCompile(`\b[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*-[0-9]+\b`)
 	needQuoteRe = regexp.MustCompile(`(?:^|[^\w])(?:'([^']{3,60})'|"([^"]{3,60})")`) // a pair of one mark: "owner's choice"
 	ownerWordRe = regexp.MustCompile(`(?i)\bowner\b`)
-	// A "Needs owner" that starts with "nothing" asks nothing, whatever note follows (Crius 10-30 16:51: "nothing
-	// (parked …)" made queue row q16). A note that opens with but/except/unless or holds a numbered item "(1) " still
-	// asks: "nothing, except (1) OK to merge #12" (review of the queue gap, round 1, P1-2).
-	nothingRe    = regexp.MustCompile(`(?i)^"?nothing\b"?(.*)$`)
-	askingNoteRe = regexp.MustCompile(`(?i)^[\s"().,;:—–-]*(?:but|except|unless)\b|\(\d+\)\s`)
+	// "nothing" with at most one note in brackets that ends the field asks nothing (Crius 10-30 16:51: "nothing (owner
+	// 16:44: parked; …)" made queue row q16). Any other text after "nothing" is an ask, and so is a note that opens with
+	// but/except/unless or holds a "?" (reviews of the queue gap round 1 P1-2, of 0ca5eaa P1 and round 2 P2). An ask in a
+	// note with none of these marks ("nothing (still need OK on #12)") is still read as nothing: follow-up F27.
+	nothingRe    = regexp.MustCompile(`(?i)^"?nothing\.?"?\.?\s*(?:\(([^()]*)\))?\.?$`)
+	askingNoteRe = regexp.MustCompile(`(?i)^\s*(?:but|except|unless)\b|\?`)
 )
 
 // ownerAnswers splits a GOAL's "Needs owner" into its numbered items (one item when it has no numbers) and leaves out
