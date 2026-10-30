@@ -144,7 +144,15 @@ func TestACriusLeadLineToTheAskerAnswersIt(t *testing.T) {
 			at(100) + " NEED quotes:lead -> crius — still open: Crius wrote to someone else\n" +
 			at(101) + " DECISION crius:lead -> quotes:b1 — not to the asker\n" +
 			at(102) + " DECISION crius:lead -> axi:lead — nor this\n" +
-			at(103) + " ASK quotes:qa1 -> crius:lead — asked after Crius wrote to it\n",
+			at(103) + " ASK quotes:qa1 -> crius:lead — asked after Crius wrote to it\n" +
+			// review of a20321f: a copy (cc) answers nothing, nor does a line to Crius itself clear its own note
+			at(104) + " NEED quotes:p2 -> crius — copied in only\n" +
+			at(105) + " DECISION crius:lead -> quotes:b1 (cc quotes:p2) — b1 takes it\n" +
+			at(106) + " NEED crius:lead -> crius:lead — remind me: check falcon\n" +
+			at(107) + " DECISION crius:lead -> crius:lead, cortex:lead — x\n",
+		// a bare role on its own team's bus and the team's :all name it too
+		"axi.log": at(100) + " NEED axi:lead -> crius — which branch\n" + at(101) + " DECISION crius:lead -> lead — main\n" +
+			at(102) + " ASK axi:qa -> crius — which env\n" + at(103) + " DECISION crius:lead -> axi:all — p3-test\n",
 	})
 	f := &fake{}
 	if err := Run(f.deps(home, t0.Add(240*time.Minute))); err != nil {
@@ -158,9 +166,10 @@ func TestACriusLeadLineToTheAskerAnswersIt(t *testing.T) {
 			}
 		}
 	}
-	if len(woke) != 2 || !strings.Contains(woke[0], "still open") && !strings.Contains(woke[1], "still open") ||
-		!strings.Contains(strings.Join(woke, "\n"), "asked after") {
-		t.Fatalf("want only quotes' two lines, woke %d:\n%s", len(woke), strings.Join(woke, "\n"))
+	all := strings.Join(woke, "\n")
+	if len(woke) != 4 || !strings.Contains(all, "still open") || !strings.Contains(all, "asked after") ||
+		!strings.Contains(all, "copied in only") || !strings.Contains(all, "remind me") {
+		t.Fatalf("want only quotes' four lines, woke %d:\n%s", len(woke), all)
 	}
 }
 
