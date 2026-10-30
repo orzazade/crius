@@ -33,7 +33,7 @@ main = origin/main = this RESUME commit (P6b). Local main ref is behind: it is c
   after the work statusline, red first. Status: done (main c133717, 27c2a73; scorecard def v2).
 - Standing (memory): personal repo, push to main after review; effort medium/high only; no AI attribution.
 
-## GOAL (2026-10-22 15:36)
+## GOAL (2026-10-30 18:10)
 
 Goal: build the Crius record (design §9 steps 1-9) so Crius answers the owner's questions from its own store, and its watchers decide from session state (OpenRig parts)
 - [x] 1 store layout, leak test, decisions, items, bus grammar · 060610f
@@ -51,8 +51,8 @@ Goal: build the Crius record (design §9 steps 1-9) so Crius answers the owner's
 - [x] O4 messages stored (~/.crius/outbox), held while the box has typed text, retried until delivered (crius-say; wakewatch alerts) · 86f33e3 + a2f74f8 (test token fix), VERIFIED bus 17:23 (in the O5 line: items 1-5 all verified)
 - [x] O5 crius-spawn -resume <project> <role> by session id (role file ~/.crius/roles/<project>.<role>.json, kept by crius-hook) · f12739b, VERIFIED bus 17:23, installed; role file written live; -resume and /clear not yet tried on a live tab
 Done: 86% (12 of 14 required rows: 1-5, 4b, 3b, 6, 9, O1-O5, equal weight; 7 and 8 only if needed)
-Next: OpenRig brief observe one day, then decide (owner brief 10-22 14:27); first live -resume and /clear check; crius#P7 build items and their P3 follow-ups done (64848d1, VERIFIED 04:07); step 6 P7 descriptive read on 10-23 (after the 10-22 02:00 reset); P3b done (def v3)
-Needs owner: OK to install hook (a) no-ai-attribution.py from ~/.crius/state/crius/proposals/p7-3/ (58/58 tests); after the observe day, ~/.crius/wakewatch-mode = decide (O3), brought by Crius
+Next: owner queue brief (~/.crius/state/crius/STATUS-owner-queue-1030.md, A-I done, J screen asks in review); then step 6 P7 and step 9 Falcon source
+Needs owner: nothing (the no-ai-attribution hook installed on owner OK q12; turning wakewatch from observe to decide is a step Crius brings later)
 
 ## NOW
 
