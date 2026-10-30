@@ -533,7 +533,10 @@ func waiting(st *state, d Deps, watch projects, park parked, screens []Screen, h
 				parkAs = team + ":lead"
 			}
 		}
-		if watch != nil && !watch.has(team) && (s.Err == "" || team != "") {
+		// a team not watched raises no alert, but what its lead asks the owner still reaches the queue (live 10-30 18:27:
+		// marketplace and upload-central, the request's own cases, are not watched)
+		quiet := watch != nil && !watch.has(team)
+		if quiet && s.Err != "" && team != "" {
 			continue
 		}
 		if s.Err != "" {
@@ -550,6 +553,14 @@ func waiting(st *state, d Deps, watch projects, park parked, screens []Screen, h
 			view = hv.pick("tab:"+s.Surface, s.Title, view, stateView(hs, s.Text))
 		}
 		if view == "busy" {
+			continue
+		}
+		if quiet {
+			live[s.Surface] = true
+			h := hash(name + "\n" + body)
+			if since := seenSince(st, d, s, h); isLead(name) && !dialogRe.MatchString(s.Text) {
+				sa.note(d, name, s.Surface+":"+h, body, since)
+			}
 			continue
 		}
 		ask := view == "asks"
@@ -581,11 +592,8 @@ func waiting(st *state, d Deps, watch projects, park parked, screens []Screen, h
 		}
 		live[s.Surface] = true
 		h := hash(name + "\n" + body) // another session in the same tab starts afresh
-		seen, ok := st.Screens[s.Surface]
-		if !ok || seen.Hash != h {
-			st.Screens[s.Surface] = seenScreen{Hash: h, Since: d.Now}
-			seen = st.Screens[s.Surface]
-		}
+		seenSince(st, d, s, h)
+		seen := st.Screens[s.Surface]
 		if isLead(name) && !dialogRe.MatchString(s.Text) {
 			sa.note(d, name, s.Surface+":"+h, body, seen.Since)
 		}
@@ -641,6 +649,16 @@ func waiting(st *state, d Deps, watch projects, park parked, screens []Screen, h
 	}
 	sa.unread = config
 	return out
+}
+
+// seenSince gives when the tab first showed the screen h, keeping it in st.
+func seenSince(st *state, d Deps, s Screen, h string) time.Time {
+	seen, ok := st.Screens[s.Surface]
+	if !ok || seen.Hash != h {
+		seen = seenScreen{Hash: h, Since: d.Now}
+		st.Screens[s.Surface] = seen
+	}
+	return seen.Since
 }
 
 // screenAsks is what lead tabs ask the owner on screen this run (Crius 10-30 17:15: marketplace asked A1, A2 and "go"

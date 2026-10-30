@@ -2427,3 +2427,36 @@ func TestToolOutputWithItsCallScrolledOffIsNoReply(t *testing.T) {
 		}
 	}
 }
+
+// The watch list (wakewatch-projects) quiets a team's alerts, not what its lead asks the owner: live 10-30 18:27, the
+// marketplace and upload-central leads, the request's own cases, are not on it and their asks were never read.
+func TestAnUnwatchedLeadsScreenAskStillReachesTheQueue(t *testing.T) {
+	asked, err := os.ReadFile(filepath.Join("testdata", "marketplace-asks-1458.screen"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := setup(t, map[string]string{"marketplace.log": busFrom("marketplace:lead", t0.Add(-time.Hour)), "quotes.log": ""})
+	testutil.Write(t, filepath.Join(home, "wakewatch-projects"), "quotes\n")
+	status := filepath.Join(home, "marketplace-STATUS.md")
+	testutil.Write(t, filepath.Join(home, "projects.toml"), "[projects.marketplace]\nname = \"Azure Marketplace listing\"\n"+
+		"persona = \"work\"\ncwd = [\"/x\"]\nleads = { lead = \""+status+"\" }\n")
+	testutil.Write(t, status, "# Marketplace\n\n## GOAL (2026-10-30 09:00)\nGoal: list it.\n- [ ] Build · plan\nDone: 10% (0 of 1 milestones)\nNext: build\nNeeds owner: nothing\n")
+	if err := ownerqueue.Init(home, stamp(t0.Add(-2*time.Hour))); err != nil {
+		t.Fatal(err)
+	}
+	f := &fake{}
+	runAt(t, home, f, func(time.Time) []Screen {
+		return []Screen{{Surface: "surface:7", Title: "marketplace", Text: string(asked)}}
+	}, 0, 5, 11, 16)
+	q, err := ownerqueue.List(home, t0.Add(16*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	open := q.OpenRows()
+	if len(open) != 1 || open[0].Screen != "marketplace:lead" {
+		t.Fatalf("want the unwatched lead's ask as one open row, got %+v", open)
+	}
+	if len(f.sent) != 0 {
+		t.Errorf("a team not watched raises no alert: %q", f.sent)
+	}
+}
