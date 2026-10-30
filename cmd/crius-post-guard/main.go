@@ -18,8 +18,9 @@
 // It looks through env prefixes (GH_TOKEN=... az), wrappers (env, env -S, timeout, sudo, xargs, find -exec, watch,
 // op run, ...), bash -c, eval, a shell reading its script from stdin, ; && | chains, $(...), line continuations, quotes
 // and $'...'. A script file a shell runs passes when the guard can read it and every command in it only prints, tests or
-// reads, or is bus-post (S=/x; bash $S/say.sh); any other script is checked like a command and asks when it or the
-// command names az or Azure DevOps. az takes the last copy of an option and reads a value from @file; the guard does the same. When it
+// reads, or is bus-post (S=/x; bash $S/say.sh), and the command around it sets nothing the script would run (PS4,
+// BASH_ENV, an exported function) and touches no path at or above the script or bus-post; any other script is checked
+// like a command and asks when it or the command names az or Azure DevOps. az takes the last copy of an option and reads a value from @file; the guard does the same. When it
 // cannot tell (a method, resource or fields value from a variable or @file, eval or bash -c text it cannot read, a
 // command the bash parser cannot read that names az or an ADO host) it asks. Unreadable hook input also asks: a guard
 // on an outward-facing write never lets one through silently.
@@ -28,9 +29,9 @@
 // update with --title only; a command name from a variable or a function ($AZ, f() { az "$@"; }); a script run by its
 // own name ($S/x.sh, ./x.sh); the code a script runs through source or an interpreter (python) when neither names
 // az or Azure DevOps; a script's arguments used in arithmetic or [[ ]] (bash runs a $(...) found in the value); a
-// script or its folder rewritten under a name the command spells another way (a brace list, a folder above it); a
-// script that hides az (a'z', a PS4 prompt) when neither it nor the command names az, as for a command itself; a script
-// past the 16th one a call reads or 4 levels down;
+// script, its folder or bus-post rewritten under a path the command spells another way (a brace list, $(pwd)/..); a
+// script that hides az (a'z', a PS4 prompt) when neither it nor the command names az, as for a command itself (and
+// PS4='$(az ...)' bash -xc : with no script); a script past the 16th one a call reads or 4 levels down;
 // python -m azure.cli; ssh or kubectl exec to another machine; code in a script file (inline -c/-e
 // code in python, node, bun, ruby, perl or pwsh asks when it names Azure DevOps and a write method); a curl config file
 // (-K); an in-file written by a script; Azure DevOps MCP tools (they are not Bash calls).
@@ -114,12 +115,15 @@ type setVar struct {
 	text string
 	end  uint
 	lost bool
+	in   *syntax.Stmt // set after a command in a && chain: known only inside that chain (cd /tmp && S=x && bash $S/y)
 }
 
 // runs is a parsed command and the words in it that name a script a shell runs.
 type runs struct {
 	file    *syntax.File
-	scripts map[*syntax.Word]bool
+	text    string                          // the text file was parsed from
+	scripts map[*syntax.Word]bool           // the words that name a script a shell runs
+	args    map[*syntax.Word][]*syntax.Word // each such word's arguments: the words after it in its call
 }
 
 func check(in input) string {
@@ -153,7 +157,7 @@ func checkBash(command string, c ctx) string {
 		}
 		return ""
 	}
-	c = c.scan(f)
+	c = c.scan(f, command)
 	piped := map[*syntax.CallExpr]bool{}
 	why := ""
 	syntax.Walk(f, func(n syntax.Node) bool {
@@ -392,7 +396,10 @@ func checkShell(args []word, stdin bool, c ctx) string {
 	case sawC:
 		return ""
 	case i < len(args) && !sawS:
-		return checkScript(args[i], c, plainShell(args[1:i]))
+		// zsh reads a start-up file (.zshenv, ZDOTDIR) whatever its options; bash and sh only with -i, -l or BASH_ENV
+		plain := plainShell(args[1:i]) && !strings.Contains(path.Base(args[0].text), "zsh") &&
+			!strings.Contains(path.Base(args[0].text), "ksh")
+		return checkScript(args[i], c, plain)
 	case stdin:
 		return unsure(c, "a script on the shell's stdin")
 	}
@@ -435,8 +442,8 @@ func shellOpts(args []word) (i int, sawC, sawS bool) {
 // a script whose every command is on a list (safeScript) passes. Any other script is checked like a command; it, one
 // whose name or variables the command also uses elsewhere (it may write the file first), one the guard cannot find, and
 // one the command names relative to a folder it left ask when the script or the command names az or Azure DevOps. A
-// script is not passed on its list either when the shell takes options that run other code (plain: no --rcfile or -i)
-// or the command sets a variable that does (PS4='$(az ...)' bash -x, BASH_ENV=; review of 377cc0a).
+// script is not passed on its list either when the shell takes options that run other code (plain: no --rcfile or -i;
+// zsh and ksh read a start-up file always) or the command sets up code for it (noCodeVars; review of a4106c1).
 func checkScript(a word, c ctx, plain bool) string {
 	name, ok := a.text, a.ok
 	if !ok && a.node != nil {
@@ -448,7 +455,7 @@ func checkScript(a word, c ctx, plain bool) string {
 	if !filepath.IsAbs(name) {
 		name = filepath.Join(c.cwd, name)
 	}
-	if a.node == nil || c.touched(a.node, filepath.Base(name)) {
+	if a.node == nil || c.touched(a.node, filepath.Clean(name)) {
 		return unsure(c, "a shell script this command also names elsewhere")
 	}
 	fi, err := os.Stat(name)
@@ -464,7 +471,7 @@ func checkScript(a word, c ctx, plain bool) string {
 	if err != nil {
 		return unsure(c, "a shell script")
 	}
-	if plain && !codeVarRe.MatchString(c.whole) && safeScript(string(body)) {
+	if plain && c.noCodeVars() && safeScript(string(body)) {
 		return ""
 	}
 	// any other script gets the command check ("az" in quotes, review of ace0c14) and asks when unsure
@@ -475,6 +482,117 @@ func checkScript(a word, c ctx, plain bool) string {
 		return why
 	}
 	return unsure(ctx{whole: string(body) + "\n" + c.whole}, "a shell script")
+}
+
+// noCodeVars says whether the command around a script run leaves the script nothing that runs code: a script on the list
+// runs only listed commands, so what the command passes in through the shell's state is all that could post (PS4 with
+// set -x, BASH_ENV, an exported function named echo). It holds when no word outside the arguments of a script run names
+// a codeNameRe variable once quotes are taken out (read PS4, printf -v PS4, declare -x "P"S4=; review of a4106c1: a
+// list of ways to set NAME= was never complete), no command sets a variable whose name it computes (read "$v"), and
+// none exports a function, evals or sources. az text elsewhere in the command is checked as that command's own.
+func (c ctx) noCodeVars() bool {
+	inner := map[string]bool{}
+	for _, r := range c.files {
+		inner[r.text] = true
+	}
+	for _, r := range c.files {
+		skip := map[*syntax.Word]bool{}
+		for _, ws := range r.args {
+			for _, w := range ws {
+				skip[w] = true
+			}
+		}
+		safe := true
+		syntax.Walk(r.file, func(n syntax.Node) bool {
+			switch n := n.(type) {
+			case *syntax.Assign:
+				safe = safe && (n.Name == nil || !codeNameRe.MatchString(n.Name.Value))
+			case *syntax.Word:
+				if l := literal(n); skip[n] || l.ok && inner[l.text] {
+					return false // a script's own arguments, or bash -c text read as a file of its own
+				}
+				safe = safe && !codeNameRe.MatchString(litText(n))
+			case *syntax.DeclClause:
+				safe = safe && setsLiteral(n.Args)
+			case *syntax.CallExpr:
+				safe = safe && callSetsLiteral(n.Args)
+			}
+			return safe
+		})
+		if !safe {
+			return false
+		}
+	}
+	return true
+}
+
+// codeNameRe finds a variable name among codeVarRe's, or ZDOTDIR, as a word of its own.
+var codeNameRe = regexp.MustCompile(`(^|[^A-Za-z0-9_])(PS[0-4]|BASH_ENV|ENV|ZDOTDIR|PATH|HOME|IFS|CDPATH|GLOBIGNORE|` +
+	`SHELLOPTS|BASHOPTS|PROMPT_COMMAND|(GIT|BASH|LD|DYLD)_[A-Za-z0-9_]*)([^A-Za-z0-9_]|$)`)
+
+// litText gives a word's literal text with quotes and escapes taken out ("P"S4, P\S4); an expansion splits it.
+func litText(w *syntax.Word) string {
+	var b strings.Builder
+	var parts func(ps []syntax.WordPart)
+	parts = func(ps []syntax.WordPart) {
+		for _, p := range ps {
+			switch p := p.(type) {
+			case *syntax.Lit:
+				b.WriteString(unescape(p.Value, ""))
+			case *syntax.SglQuoted:
+				b.WriteString(p.Value)
+			case *syntax.DblQuoted:
+				parts(p.Parts)
+			default:
+				b.WriteByte(' ')
+			}
+		}
+	}
+	parts(w.Parts)
+	return b.String()
+}
+
+// setsLiteral says whether declare, typeset, local, export or readonly sets only names written out, and no function.
+func setsLiteral(args []*syntax.Assign) bool {
+	for _, a := range args {
+		if a.Naked && a.Value != nil && a.Name == nil {
+			w := literal(a.Value)
+			if !w.ok || strings.HasPrefix(w.text, "-") && strings.Contains(w.text, "f") {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// callSetsLiteral says whether a command that sets variables by name (read, printf -v, mapfile, getopts) names them as
+// literal words, and the command is no eval or source.
+func callSetsLiteral(args []*syntax.Word) bool {
+	k := 0
+	for k < len(args)-1 && (literal(args[k]).text == "builtin" || literal(args[k]).text == "command") {
+		k++
+	}
+	if len(args) == 0 {
+		return true
+	}
+	switch name := literal(args[k]).text; name {
+	case "eval", "source", ".":
+		return false
+	case "read", "mapfile", "readarray", "getopts", "unset":
+		for _, w := range args[k+1:] {
+			if !literal(w).ok {
+				return false
+			}
+		}
+	case "printf":
+		for i, w := range args[k+1:] {
+			a := literal(w)
+			if !a.ok && i == 0 || a.ok && a.text == "-v" && k+i+2 < len(args) && !literal(args[k+i+2]).ok {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // safeCmds are the commands a script may run and still pass: they print, test or read, and run no command their
@@ -500,10 +618,10 @@ var codeVarRe = regexp.MustCompile(`(^|[^A-Za-z0-9_])(PS[0-4]|BASH_ENV|ENV|PATH|
 // start-up file, nor --rcfile or -o).
 var plainFlagRe = regexp.MustCompile(`^-[ceux]+$`)
 
-// plainShell says whether a shell's options are all plainFlagRe ones.
+// plainShell says whether a shell's options are all plainFlagRe ones, with - or -- ending them.
 func plainShell(opts []word) bool {
 	for _, o := range opts {
-		if !o.ok || !plainFlagRe.MatchString(o.text) {
+		if !o.ok || !plainFlagRe.MatchString(o.text) && o.text != "--" && o.text != "-" {
 			return false
 		}
 	}
@@ -589,7 +707,7 @@ func safeCall(args []word, funcs map[string]bool) bool {
 		return i >= len(args) || safeCall(args[i:], funcs)
 	case shells[name]:
 		i, sawC, _ := shellOpts(args)
-		return sawC && plainShell(args[1:i]) && i < len(args) && args[i].ok && safeScript(args[i].text)
+		return sawC && i < len(args) && plainShell(args[1:i]) && args[i].ok && safeScript(args[i].text)
 	case name == "lockf":
 		i := 1
 		for i < len(args) && args[i].ok && strings.HasPrefix(args[i].text, "-") {
@@ -662,9 +780,9 @@ func safeGit(args []word) bool {
 // scan reads what a command sets up for the scripts it runs: the variables it sets once, to a literal value, as a
 // statement of its own at its top level (a shell a script starts is a new process, so they are this command's own), the
 // words that name a script a shell runs, and whether it changes folder.
-func (c ctx) scan(f *syntax.File) ctx {
+func (c ctx) scan(f *syntax.File, text string) ctx {
 	c.vars = map[string]setVar{}
-	r := runs{file: f, scripts: map[*syntax.Word]bool{}}
+	r := runs{file: f, text: text, scripts: map[*syntax.Word]bool{}, args: map[*syntax.Word][]*syntax.Word{}}
 	count := map[string]int{}
 	all := false // eval or source may set any variable
 	syntax.Walk(f, func(n syntax.Node) bool {
@@ -704,25 +822,28 @@ func (c ctx) scan(f *syntax.File) ctx {
 			case shells[name]:
 				if i, sawC, sawS := shellOpts(args[k:]); !sawC && !sawS && k+i < len(args) {
 					r.scripts[n.Args[k+i]] = true
+					r.args[n.Args[k+i]] = n.Args[k+i+1:]
 				}
 			}
 		}
 		return true
 	})
-	var top []*syntax.Stmt
+	// in a && b, b's assignment holds after the chain only when every statement before it is one too (false && S=x
+	// leaves S unset); otherwise only inside the chain, where it ran when what follows runs (review of a4106c1)
+	type stmtIn struct{ st, in *syntax.Stmt }
+	var top []stmtIn
 	for _, st := range f.Stmts {
-		// in a && b, b's assignment counts only when every statement before it is one too (false && S=x leaves S unset)
-		chain := andChain(st)
-		for i, s := range chain {
-			if i > 0 && !assignOnly(chain[i-1]) {
-				break
+		var in *syntax.Stmt
+		for _, s := range andChain(st) {
+			top = append(top, stmtIn{s, in})
+			if !assignOnly(s) {
+				in = st
 			}
-			top = append(top, s)
 		}
 	}
-	for _, st := range top {
+	for _, t := range top {
 		var as []*syntax.Assign
-		switch x := st.Cmd.(type) {
+		switch x := t.st.Cmd.(type) {
 		case *syntax.CallExpr:
 			if len(x.Args) == 0 {
 				as = x.Assigns
@@ -739,7 +860,7 @@ func (c ctx) scan(f *syntax.File) ctx {
 				v = literal(a.Value)
 			}
 			if v.ok && count[a.Name.Value] == 1 && !all {
-				c.vars[a.Name.Value] = setVar{text: v.text, end: a.End().Offset()}
+				c.vars[a.Name.Value] = setVar{text: v.text, end: a.End().Offset(), in: t.in}
 			}
 		}
 	}
@@ -770,12 +891,21 @@ func assignOnly(st *syntax.Stmt) bool {
 	return false
 }
 
-// touched says whether the command, or a command around it, names the script outside the words that run it: by its last
-// path part, or by a variable its name is made of (cat > "$F" <<EOF ... EOF; bash "$F" runs what this command wrote;
-// git -C $S pull; bash $S/x.sh), with quotes taken out (saf""e.sh), as a path part a glob matches (saf[e].sh), or by a
-// folder the run word names after the variable or the variable's last folder (ln -sfn evil $DIR/lead; review of
-// ace0c14). Text inside quotes and here-documents counts.
-func (c ctx) touched(run *syntax.Word, base string) bool {
+// touched says whether the command, or a command around it, names the script outside the words that run it: by its file
+// name anywhere in a word (saf""e.sh with quotes taken out; cat > "$F" <<EOF ... EOF), by a variable its name is made of
+// (git -C $S pull; bash $S/x.sh), or by a path that, once cleaned, is the script, bus-post or a folder above either, or
+// a glob that matches one (ln -sfn evil $D/lead, cp x/* $D/lead/., tar -C $D/., $D/lea[d]; review of a4106c1). A
+// relative path counts from the command's folder; after a cd, by its last part. Text inside quotes and here-documents
+// counts.
+func (c ctx) touched(run *syntax.Word, name string) bool {
+	base := path.Base(name)
+	home, _ := os.UserHomeDir()
+	near := map[string]bool{}
+	for _, t := range []string{name, home + "/.crius/bin/bus-post"} {
+		for p := path.Clean(t); p != "/" && p != "." && p != home; p = path.Dir(p) {
+			near[p] = true
+		}
+	}
 	vars := map[string]bool{}
 	syntax.Walk(run, func(n syntax.Node) bool {
 		if pe, ok := n.(*syntax.ParamExp); ok && pe.Param != nil {
@@ -783,30 +913,35 @@ func (c ctx) touched(run *syntax.Word, base string) bool {
 		}
 		return true
 	})
-	parts := []string{base}
-	for _, p := range strings.Split(literal(run).text, "/") {
-		if p != "" && p != "." && p != ".." {
-			parts = append(parts, p)
-		}
-	}
-	for v := range vars {
-		if s, ok := c.vars[v]; ok && path.Base(s.text) != "/" {
-			parts = append(parts, path.Base(s.text))
-		}
-	}
-	names := func(text string) bool {
-		if strings.Contains(text, base) {
-			return true
-		}
-		// a glob only for the file's own name, and not a bare * (ls /tmp/*); a folder only as a word's last part (ln -sfn
-		// evil $D/lead), not one inside another path (~/x/lead/STATUS.md); review of 377cc0a
-		segs := strings.Split(strings.TrimRight(text, "/"), "/")
-		for _, seg := range segs {
-			if m, _ := path.Match(seg, base); m && seg != "*" && strings.ContainsAny(seg, "*?[") {
+	// isNear says whether a cleaned path is one of near or a glob matching one; byBase compares last parts only
+	isNear := func(p string, byBase bool) bool {
+		for n := range near {
+			if byBase {
+				n, p = path.Base(n), path.Base(p)
+			}
+			if m, _ := path.Match(p, n); m || p == n {
 				return true
 			}
 		}
-		return slices.Contains(parts, segs[len(segs)-1])
+		return false
+	}
+	names := func(n *syntax.Word, printed string) bool {
+		if strings.Contains(printed, base) {
+			return true
+		}
+		p, ok := c.resolve(n)
+		if !ok || p == "" {
+			// a word the guard cannot read names a folder by its last part ($(pwd)/lead)
+			segs := strings.Split(strings.TrimRight(printed, "/"), "/")
+			return isNear(segs[len(segs)-1], true)
+		}
+		if path.IsAbs(p) {
+			return isNear(path.Clean(p), false)
+		}
+		if c.moved || c.cwd == "" {
+			return p == "." || p == ".." || strings.HasSuffix(p, "/.") || isNear(path.Clean(p), true)
+		}
+		return isNear(path.Join(c.cwd, p), false)
 	}
 	hit := false
 	for _, r := range c.files {
@@ -824,7 +959,7 @@ func (c ctx) touched(run *syntax.Word, base string) bool {
 				}
 				var b bytes.Buffer
 				syntax.NewPrinter().Print(&b, n)
-				hit = hit || names(b.String()) || names(literal(n).text)
+				hit = hit || names(n, b.String())
 			case *syntax.ParamExp:
 				hit = hit || n.Param != nil && vars[n.Param.Value]
 			}
@@ -843,7 +978,7 @@ func (c ctx) resolve(w *syntax.Word) (string, bool) {
 			return false
 		}
 		v, ok := c.vars[pe.Param.Value]
-		if !ok || v.lost || v.end > w.Pos().Offset() {
+		if !ok || v.lost || v.end > w.Pos().Offset() || v.in != nil && w.End().Offset() > v.in.End().Offset() {
 			return false
 		}
 		b.WriteString(v.text)

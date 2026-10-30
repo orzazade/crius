@@ -398,6 +398,7 @@ func TestAScriptNamedThroughAVariableSetInTheCommandIsRead(t *testing.T) {
 	write("over.sh", "#!/bin/bash\nprintf x > \"$HOME/.crius/bin/bus-post\"; \"$HOME/.crius/bin/bus-post\"\n")
 	write("home.sh", "#!/bin/bash\nHOME=/tmp/evil; \"$HOME/.crius/bin/bus-post\"\n")
 	write("log.sh", "#!/bin/bash\necho \"$1\" >> /tmp/x.log\n")
+	write("co.sh", "#!/bin/bash\nbash -co\n")
 	self := "#!/bin/bash\n" + strings.Repeat("bash "+filepath.Join(dir, "self.sh")+"\n", 15)
 	write("self.sh", self)
 	s := `S=` + dir + `; `
@@ -418,6 +419,10 @@ func TestAScriptNamedThroughAVariableSetInTheCommandIsRead(t *testing.T) {
 		s + `ls /tmp/*; bash $S/lead/say.sh INFO x 'az blob list ok'`,
 		s + `tail -3 ~/Projects/other/lead/STATUS.md; bash $S/lead/say.sh INFO x 'az blob list ok'`,
 		s + `bash -e $S/lead/say.sh INFO x 'az blob list ok'`,
+		// review of a4106c1: S set after a cd in an && chain, HOME= in the bus text, -- before the script
+		`cd /tmp && S=` + dir + ` && bash $S/lead/say.sh INFO x 'az blob list ok'`,
+		s + `bash $S/lead/say.sh INFO x 'HOME=/tmp az blob list ok'`,
+		s + `bash -x -- $S/lead/say.sh INFO x 'az blob list ok'`,
 	} {
 		if why := check(bash(cmd, dir)); why != "" {
 			t.Errorf("%q asked: %s", cmd, why)
@@ -467,6 +472,22 @@ func TestAScriptNamedThroughAVariableSetInTheCommandIsRead(t *testing.T) {
 		s + `export BASH_ENV=/tmp/p.sh; bash $S/lead/say.sh INFO x 'az login'`,
 		s + `bash --rcfile /tmp/p.sh -i $S/lead/say.sh INFO x 'az login'`,
 		`false && S=` + dir + `; bash $S/safe.sh 'az login'`, // S is not set when false fails
+		// review of a4106c1: a code variable set without NAME=, a function exported, a copy into a folder above the script
+		s + `read PS4 <<< '$(az boards work-item update --id 1)'; bash -x $S/lead/say.sh INFO x hi`,
+		s + `printf -v PS4 '%s' '$(az boards work-item update --id 1)'; bash -x $S/lead/say.sh INFO x hi`,
+		s + `declare -x "P"S4='$(az boards work-item update --id 1)'; bash -x $S/lead/say.sh INFO x hi`,
+		s + `set -a; read PS4 <<< '$(az boards work-item update --id 1)'; bash -x $S/lead/say.sh INFO x hi`,
+		s + `echo 'az boards work-item update --id 1' > /tmp/e.sh; read BASH_ENV <<< /tmp/e.sh; bash $S/lead/say.sh INFO x hi`,
+		s + `v=P; read "${v}S4" <<< '$(az boards work-item update --id 1)'; bash -x $S/lead/say.sh INFO x hi`,
+		s + `echo() { az boards work-item update --id 1; }; export -f echo; bash $S/lead/say.sh INFO x hi`,
+		s + `ZDOTDIR=/tmp/z zsh $S/lead/say.sh INFO x 'az login'`,
+		s + `echo 'az boards work-item update --id 1' >> /tmp/z/.zshenv; zsh $S/lead/say.sh INFO x hi`,
+		s + `cp /tmp/x/* ` + dir + `/lead/.; bash $S/lead/say.sh INFO x 'az login'`,
+		s + `cp /tmp/x/* ` + dir + `/lea[d]/; bash $S/lead/say.sh INFO x 'az login'`,
+		s + `tar -C ` + dir + `/. -xf /tmp/x.tar; bash $S/lead/say.sh INFO x 'az login'`,
+		s + `cp -R /tmp/x/. ` + dir + `/lead/./; bash $S/lead/say.sh INFO x 'az login'`,
+		s + `cp /tmp/evil ~/.crius/bin/; bash $S/lead/say.sh INFO x 'az login'`,
+		s + `bash $S/co.sh 'az login'`, // bash -co with no text after it (it crashed the guard)
 	} {
 		if why := check(bash(cmd, dir)); !strings.Contains(why, "owner's click") {
 			t.Errorf("%q: %q", cmd, why)
