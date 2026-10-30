@@ -747,3 +747,22 @@ func TestTheRestoreFoldersAreReadFromTheTabsClaudeRecords(t *testing.T) {
 		t.Error("an answer that is no record gave no error")
 	}
 }
+
+// The lines are as ps showed them on 10-30: Crius's waiters (one per log today, one with many logs soon), a lead's
+// waiter and a builder's (not --mode crius), and the zsh -c shell that started a waiter (not the waiter).
+func TestWaiterLogsAreTheLogsOfCriusModeWaiters(t *testing.T) {
+	const script = "/Users/x/.claude/skills/cmux-team/scripts/team-wait.sh"
+	ps := strings.Join([]string{
+		"/bin/zsh -c source /Users/x/.claude/shell-snapshots/s.sh 2>/dev/null || true && eval '~/.claude/skills/cmux-team/scripts/team-wait.sh --mode crius --role crius --alias crius:lead --cursor ~/.crius/wait-cursor-falcon ~/.crius/bus/falcon.log' < /dev/null && pwd -P >| /tmp/claude-d5ce-cwd",
+		"/bin/bash " + script + " --mode crius --role crius --alias crius:lead --cursor /Users/x/.crius/wait-cursor-cortex /Users/x/.crius/bus/cortex.log",
+		"/bin/bash " + script + " --mode lead --role LEADER --alias axi:leader --boss crius:lead --cursor /c /Users/x/.crius/bus/axi.log",
+		"/bin/bash " + script + " --role quotes:e2e-2 --cursor /c /Users/x/.crius/bus/quotes.log",
+		script + " --slot --mode=crius --quiet 5 --max-hours 6 --classify --digest d --from 3 /Users/x/.crius/bus/crius.log /Users/x/.crius/bus/aitch.log",
+		"",
+	}, "\n")
+	got := waiterLogs(ps)
+	want := []string{"/Users/x/.crius/bus/cortex.log", "/Users/x/.crius/bus/crius.log", "/Users/x/.crius/bus/aitch.log"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}

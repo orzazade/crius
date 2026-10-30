@@ -39,6 +39,8 @@ type fake struct {
 	stErr   error
 	restore map[string][]string // surface -> the config folder of each Claude record cmux keeps for it
 	rsErr   error
+	waiters []string // the bus logs a live waiter covers; nil: every bus log in home
+	waitErr error
 }
 
 func (f *fake) deps(home string, now time.Time) Deps {
@@ -49,7 +51,14 @@ func (f *fake) deps(home string, now time.Time) Deps {
 		Workspaces: func() ([]Workspace, error) { return f.wss, f.wsErr },
 		States:     func() ([]sessionstate.State, error) { return f.states, f.stErr },
 		Restore:    func(surface string) ([]string, error) { return f.restore[surface], f.rsErr },
-		Load:       func() (float64, error) { return f.load, f.loadErr },
+		Waiters: func() ([]string, error) {
+			if f.waiters == nil {
+				all, _ := filepath.Glob(filepath.Join(home, "bus", "*.log"))
+				return all, f.waitErr
+			}
+			return f.waiters, f.waitErr
+		},
+		Load: func() (float64, error) { return f.load, f.loadErr },
 		Resources: func() (float64, float64, error) {
 			if f.freeGB == 0 {
 				return 100, f.swapGB, f.resErr
@@ -2037,6 +2046,99 @@ func TestATabThatWouldRestoreOnAnotherFolderIsCaught(t *testing.T) {
 			if !strings.Contains(sent[0], w) {
 				t.Errorf("restore %q, err %v: %q lacks %q", c.restore, c.err, sent[0], w)
 			}
+		}
+	}
+}
+
+// Crius 10-30 13:22: a Cortex NEED sat ~20 min unseen, as no bus waiter of Crius's covered cortex.log (Falcon missed two
+// lines the same way on 10-29 16:23). A bus log no waiter covers for 10 min wakes Crius once; a shorter gap (Crius
+// re-arms after each wake) does not, and a gap after the waiter came back alerts again.
+func TestABusLogWithNoWaiterFor10MinWakesCriusOnce(t *testing.T) {
+	home := setup(t, map[string]string{"cortex.log": "", "falcon.log": "", "quotes.log": "", "waits.log": ""})
+	f := &fake{}
+	logs := func(names ...string) []string {
+		out := []string{}
+		for _, n := range names {
+			out = append(out, filepath.Join(home, "bus", n+".log"))
+		}
+		return out
+	}
+	some, all := logs("crius", "quotes"), logs("crius", "quotes", "cortex", "falcon")
+	for _, c := range []struct {
+		min     int
+		covered []string
+		want    string // a part of the one wake; "": none
+	}{
+		{0, some, ""},
+		{5, all, ""}, // a 5 min gap
+		{10, some, ""},
+		{15, some, ""},
+		{20, some, "no bus waiter covers cortex, falcon for 10+ min"},
+		{25, some, ""},
+		{45, some, ""}, // said once, not every 20 min
+		{50, logs("crius", "quotes", "falcon"), ""},
+		{55, some, ""}, // falcon's new gap starts afresh; cortex was said
+		{65, some, "no bus waiter covers falcon for 10+ min"},
+		{70, all, ""},
+		{75, some, ""},
+		{85, some, "cortex, falcon"},
+	} {
+		f.sent, f.waiters = nil, c.covered
+		if err := Run(f.deps(home, t0.Add(time.Duration(c.min)*time.Minute))); err != nil {
+			t.Fatal(c.min, err)
+		}
+		var got []string
+		for _, s := range f.sent {
+			if strings.Contains(s, "waiter") {
+				got = append(got, s)
+			}
+		}
+		if c.want == "" && len(got) != 0 || c.want != "" && (len(got) != 1 || !strings.Contains(got[0], c.want)) {
+			t.Fatalf("min %d: sent %q, want %q", c.min, got, c.want)
+		}
+	}
+}
+
+// Only the watched projects need a waiter, and a waiter check that cannot look is loud, never "all covered".
+func TestTheWaiterCheckWatchesTheListedProjectsAndFailsLoud(t *testing.T) {
+	home := setup(t, map[string]string{"cortex.log": "", "quotes.log": ""})
+	testutil.Write(t, filepath.Join(home, "wakewatch-projects"), "quotes\n")
+	f := &fake{waiters: []string{filepath.Join(home, "bus", "crius.log")}}
+	runAt(t, home, f, func(time.Time) []Screen { return nil }, 0, 11)
+	if len(f.sent) != 1 || !strings.Contains(f.sent[0], "no bus waiter covers quotes for") {
+		t.Fatalf("sent %q, want one wake for quotes alone", f.sent)
+	}
+	f.sent, f.waitErr = nil, errors.New("ps: exit status 1")
+	runAt(t, home, f, func(time.Time) []Screen { return nil }, 12)
+	if len(f.sent) != 1 || !strings.Contains(f.sent[0], "the waiter check failed to look: ps: exit status 1") {
+		t.Fatalf("sent %q, want the failed look", f.sent)
+	}
+}
+
+// Falcon 10-30: its goal was done (Done: 100%) and it drew IDLE alerts again and again. A lead whose GOAL block says
+// Done: 100% is finished, not idle; a lead with work left, or another role of that team, still alerts.
+func TestAnIdleLeadWhoseGoalIsDoneDoesNotAlert(t *testing.T) {
+	for _, c := range []struct {
+		done, who string
+		idle      bool
+	}{
+		{"100", "falcon: lead", false},
+		{"80", "falcon: lead", true},
+		{"100", "falcon: qa", true},
+	} {
+		home := setup(t, map[string]string{"falcon.log": busFrom("falcon:lead", t0) + busFrom("falcon:qa", t0)})
+		status := filepath.Join(home, "falcon-STATUS.md")
+		testutil.Write(t, filepath.Join(home, "projects.toml"), "[projects.falcon]\npersona = \"personal\"\ncwd = [\"/x\"]\n"+
+			"leads = { lead = \""+status+"\" }\n\n[projects.crius]\nleads = { build = \"git:/nowhere#origin/main:STATUS.md\" }\n")
+		testutil.Write(t, status, "# Falcon\n\n## GOAL (2026-10-30 09:00)\nGoal: Falcon is Crius's senses.\n"+
+			"- [x] Sources flow · 9c644de\nDone: "+c.done+"% (1 of 1 milestones)\nNext: nothing\nNeeds owner: nothing\n")
+		f := &fake{}
+		draw := func(at time.Time) []Screen {
+			return []Screen{screen("falcon", tab(c.who, "All milestones verified.", "  ⏵⏵ bypass permissions on\n", at))}
+		}
+		runAt(t, home, f, draw, 0, 5, 11)
+		if idle := len(f.sent) == 1 && strings.Contains(f.sent[0], "is idle"); idle != c.idle || len(f.sent) > 1 {
+			t.Errorf("%s, Done: %s%%: sent %q, want idle %v", c.who, c.done, f.sent, c.idle)
 		}
 	}
 }

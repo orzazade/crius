@@ -304,6 +304,7 @@ func laterReading(stamp time.Time) time.Time {
 }
 
 var (
+	rowsWordRe = regexp.MustCompile(`(?i)\brows\b`) // a Done line that names rows
 	// A "Needs owner" field of numbered items: "(1) …; (2) …". Only a number at the start or after ';' starts an item:
 	// "option (1) keep ours or (2) copy" is one question with choices (review of 0853631).
 	itemSepRe  = regexp.MustCompile(`(?:^|[;:])\s*(\(\d+\)\s)`)

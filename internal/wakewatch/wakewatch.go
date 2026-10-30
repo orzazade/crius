@@ -2,7 +2,7 @@
 // crius:lead line after it on the same bus for 20 min, a lead tab waiting on a question or dialog for 10 min, or any
 // tab of a team idle for 10 min (noting when its last reply says CLEAR-READY), the
 // Mac short of disk or deep in swap, and a tool the team needs (cmux, gh, az, bun, docker) that fails or does not answer, and a lead still in the same session
-// 20 min after its DONE. When ~/.crius/wakewatch-projects exists, only the projects it names are watched.
+// 20 min after its DONE, and a bus log no waiter of Crius's covers for 10 min. When ~/.crius/wakewatch-projects exists, only the projects it names are watched.
 // It runs as its own launchd job, outside
 // any chat, and wakes Crius by typing one line into Crius's own tab (when it cannot, the line goes on crius.log as an
 // ALERT, which Crius's waiter wakes on): Crius then acts, and sends the owner a push
@@ -31,6 +31,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/BurntSushi/toml"
+	"github.com/orzazade/crius/internal/goal"
 	"github.com/orzazade/crius/internal/redact"
 	"github.com/orzazade/crius/internal/sessionstate"
 	"github.com/orzazade/crius/internal/watchdog"
@@ -47,6 +49,7 @@ const (
 	diskDropGB  = 2                // a disk alarm wakes Crius again after this much more is gone (owner GO 10-25)
 	diskResend  = 2 * time.Hour    // or after this long; it clears once disk is diskDropGB over the line
 	maxSwapGB   = 26               // more swap in use than this wakes Crius
+	waiterAfter = 10 * time.Minute // a bus log no waiter covers this long wakes Crius; one 5 min run is Crius re-arming
 	MaxLine     = 500
 
 	Prefix        = "WAKEWATCH: "
@@ -96,6 +99,9 @@ type Deps struct {
 	// Restore gives, for each record of a Claude that cmux keeps to restore a tab after a restart (its resume binding and
 	// its restore record), the config folder it restores in, "" when it sets none; none when the tab keeps no Claude.
 	Restore func(surface string) (configs []string, err error)
+	// Waiters gives the bus logs (absolute paths) that Crius's live bus waiters cover: each team-wait.sh process run
+	// with --mode crius, by the logs it names.
+	Waiters func() (logs []string, err error)
 }
 
 // Workspace is one cmux workspace: Named is false while it shows a default title, and Color is "" when none is set.
@@ -127,6 +133,13 @@ type state struct {
 	Views       map[string][2]string // check -> what the screen and crius-hook's state said on the last run
 	HookLog     int64                // how much of crius-hook.log was already reported
 	Disk        diskAlarm            // the last disk alarm sent; zero once disk is back over the line
+	Unwaited    map[string]waitGap   // project -> its bus log's gap with no waiter, while it lasts
+}
+
+// waitGap is when a bus log was first seen with no waiter, and whether that gap was said to Crius.
+type waitGap struct {
+	Since time.Time
+	Said  bool
 }
 
 // diskAlarm is when the last disk alarm went out and how much disk was free then.
@@ -189,6 +202,7 @@ func Run(d Deps) error {
 	alerts = append(alerts, resources(d, &st)...)
 	alerts = append(alerts, load(d)...)
 	alerts = append(alerts, tools(d)...)
+	alerts = append(alerts, unwaited(d, &st, watch)...)
 	alerts = append(alerts, fresh(d, watch, park, screens, ss, sesErr, hv)...)
 	alerts = append(alerts, unnamed(d, screens)...)
 	alerts = append(alerts, hookLog(d.Home, &st)...)
@@ -470,13 +484,20 @@ func lineTime(s string, now time.Time) (time.Time, error) {
 
 // waiting gives [key, text] for each tab whose screen has waited on a question or dialog, unchanged, for 10 min, and
 // for each idle tab: unchanged and with no bus line of its own for 10 min, any role, unless the bus parks it
-// (parkedOnBus). A screen counts as unchanged by
+// (parkedOnBus) or it is a lead whose goal is done (finishedLeads). A screen counts as unchanged by
 // what is above its input box: the status line below it holds a clock. A tab whose read failed is an alert of its own
 // and keeps its place meanwhile (Run reports a failed read of all tabs). When a live session's crius-hook state names
 // the tab, the screen and the state each say whether it asks, works or is idle; the mode file says which one decides.
 func waiting(st *state, d Deps, watch projects, park parked, screens []Screen, hv *hooks) [][2]string {
 	var out [][2]string
 	live := map[string]bool{}
+	var done map[string]bool // read once, and only when a tab has been idle long enough to alert
+	finished := func(who string) bool {
+		if done == nil {
+			done = finishedLeads(d.Home)
+		}
+		return done[strings.ToLower(who)]
+	}
 	for _, s := range screens {
 		// A tab of a team not watched stays quiet. A dialog hides the named input box, and a tab that cannot be read
 		// shows nothing: then the title's first word that starts with a letter or digit names the project (a lead tab
@@ -569,7 +590,7 @@ func waiting(st *state, d Deps, watch projects, park parked, screens []Screen, h
 		if unparked.After(from) {
 			from = unparked
 		}
-		seen.Idle = d.Now.Sub(from) >= idleAfter
+		seen.Idle = d.Now.Sub(from) >= idleAfter && !finished(who)
 		st.Screens[s.Surface] = seen
 		if wait := d.Now.Sub(from); seen.Idle {
 			text := fmt.Sprintf("%s (tab %q, %s) is idle: not working, nothing running, no bus line from it for %d min", who, s.Title, s.Surface, int(wait.Minutes()))
@@ -588,6 +609,75 @@ func waiting(st *state, d Deps, watch projects, park parked, screens []Screen, h
 		}
 	}
 	return out
+}
+
+// finishedLeads gives the leads ("falcon:lead", as the role is named in leads=) of home/projects.toml whose GOAL block
+// says Done: 100% (RULES 3.1). Falcon 10-30 drew IDLE alerts again and again after its goal was done: a finished lead
+// has no work left to be idle on. A lead not found finished keeps its idle alert: a status file that is a git object
+// (git:<repo>#<rev>:<path>), cannot be read or has no readable GOAL block, and a projects.toml that cannot be read.
+func finishedLeads(home string) map[string]bool {
+	out := map[string]bool{}
+	var c struct {
+		Projects map[string]struct{ Leads map[string]string }
+	}
+	if _, err := toml.DecodeFile(filepath.Join(home, "projects.toml"), &c); err != nil {
+		return out
+	}
+	for p, pc := range c.Projects {
+		for role, f := range pc.Leads {
+			if strings.HasPrefix(f, "git:") {
+				continue
+			}
+			if rest, ok := strings.CutPrefix(f, "~/"); ok {
+				h, _ := os.UserHomeDir()
+				f = filepath.Join(h, rest)
+			}
+			if g, err := goal.ReadGoal(f); err == nil && g.Done == 100 {
+				out[strings.ToLower(p+":"+role)] = true
+			}
+		}
+	}
+	return out
+}
+
+// unwaited gives one alert naming each watched project (every <name>.log on the bus but waits.log) whose bus log no
+// live waiter of Crius's has covered for 10 min (Crius 10-30 13:22: a Cortex NEED sat ~20 min unseen with no waiter on
+// cortex.log; Falcon missed two lines the same way on 10-29 16:23). Each gap is said once; a project leaves st.Unwaited
+// once a waiter covers it again, so a later gap alerts again. A check that cannot look is its own alert, and every gap
+// stays as it was.
+func unwaited(d Deps, st *state, watch projects) [][2]string {
+	logs, err := d.Waiters()
+	if err != nil {
+		return [][2]string{{"waiters-failed", "the waiter check failed to look: " + err.Error()}}
+	}
+	covered := map[string]bool{}
+	for _, l := range logs {
+		covered[filepath.Clean(l)] = true
+	}
+	buses, _ := filepath.Glob(filepath.Join(d.Home, "bus", "*.log")) // sorted; the pattern is fixed
+	gaps := map[string]waitGap{}
+	var due []string
+	for _, b := range buses {
+		name := strings.TrimSuffix(filepath.Base(b), ".log")
+		if name == "waits" || !watch.has(name) || covered[filepath.Clean(b)] {
+			continue
+		}
+		g, ok := st.Unwaited[name]
+		if !ok {
+			g.Since = d.Now
+		}
+		if !g.Said && d.Now.Sub(g.Since) >= waiterAfter {
+			g.Said = true
+			due = append(due, name)
+		}
+		gaps[name] = g
+	}
+	st.Unwaited = gaps
+	if len(due) == 0 {
+		return nil
+	}
+	return [][2]string{{"waiter:" + strings.Join(due, ","), "no bus waiter covers " + strings.Join(due, ", ") +
+		" for 10+ min: their DONE/NEED lines wake nobody; re-arm the waiter"}}
 }
 
 // resources gives an alert when free disk is below 20 GB or swap in use above 26 GB, or when they could not be read.
