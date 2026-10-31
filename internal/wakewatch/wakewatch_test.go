@@ -2621,3 +2621,131 @@ func TestAnUnwatchedLeadsScreenAskStillReachesTheQueue(t *testing.T) {
 		t.Errorf("a team not watched raises no alert: %q", f.sent)
 	}
 }
+
+// leadsAt writes projects.toml with one lead per project, each with a GOAL block whose Next is next.
+func leadsAt(t *testing.T, home, next string, projects ...string) {
+	var toml string
+	for _, p := range projects {
+		status := filepath.Join(home, p+"-STATUS.md")
+		testutil.Write(t, status, "## GOAL (2026-10-31 09:00)\nGoal: g\n- [~] m · x\nDone: 50% (1 of 2 milestones)\nNext: "+next+"\nNeeds owner: nothing\n")
+		toml += "[projects." + p + "]\nleads = { lead = \"" + status + "\" }\n\n"
+	}
+	testutil.Write(t, filepath.Join(home, "projects.toml"), toml)
+}
+
+// Crius 11-01 00:04 (owner go): wakewatch missed two idle leads. marketplace:lead sat from 14:51 to 00:05 after a turn
+// that ended on ⏳, and cortex:lead after "recheck after 15:15Z"; each kept bus waiters as background shells, which read
+// as work, and marketplace is not a watched team. A lead tab idle an hour alerts whatever runs in its background and
+// whether or not its team is watched; only a park keeps it quiet. Other roles keep the 10-min rule.
+func TestALeadIdleAnHourAlertsWhateverItsBackgroundOrTeam(t *testing.T) {
+	const shells = "  ⏵⏵ bypass permissions on · 2 shells\n"
+	for _, c := range []struct {
+		name, title, reply, footer, bus string
+		alert                           bool
+	}{
+		{"marketplace, not watched", "marketplace · lead", "Backend is now fixing F1.\n\nI've also restarted the stall detector.\n\n⏳", shells, "", true},
+		{"marketplace, nothing running, not watched", "marketplace · lead", "Waiting for backend.\n\n⏳", "  ⏵⏵ bypass permissions on\n", "", true},
+		{"cortex, recheck later", "cortex · lead", "I'll recheck after 15:15Z, when the next sync has run.\n\n⏳", shells, "", true},
+		{"cortex, nothing running", "cortex · lead", "I'll recheck after 15:15Z.\n\n⏳", "  ⏵⏵ bypass permissions on\n", "", true},
+		{"cortex, a running agent", "cortex · lead", "Waiting on the review.\n\n⏳", "  ⏵⏵ bypass permissions on\n\n  ⏺ main\n  ◯ Explore  Tallying line numbers      4m 25s\n", "", true},
+		{"cortex, parked on the bus", "cortex · lead", "Parked.\n\n⏳", shells, " PARKED crius:lead -> cortex:lead — park until the owner signs in\n", false},
+		{"cortex builder", "cortex · qa", "Waiting for the deploy.\n\n⏳", shells, "", false},
+		{"marketplace builder, not watched", "marketplace · qa", "Waiting.\n\n⏳", "  ⏵⏵ bypass permissions on\n", "", false},
+	} {
+		who := strings.Replace(c.title, " · ", ":", 1)
+		bus := busFrom(who, t0)
+		if c.bus != "" {
+			bus += stamp(t0) + c.bus
+		}
+		p := project(who)
+		home := setup(t, map[string]string{p + ".log": bus})
+		testutil.Write(t, filepath.Join(home, "wakewatch-projects"), "cortex crius\n")
+		leadsAt(t, home, "item 2", "cortex", "marketplace")
+		f := &fake{waiters: []string{filepath.Join(home, "bus", "crius.log"), filepath.Join(home, "bus", p+".log")}}
+		draw := func(at time.Time) []Screen { return []Screen{screen(c.title, tab(c.title, c.reply, c.footer, at))} }
+		runAt(t, home, f, draw, 0, 20, 40, 59)
+		var idle []string
+		for _, s := range f.sent {
+			if strings.Contains(s, "idle") {
+				idle = append(idle, s)
+			}
+		}
+		if c.footer == "  ⏵⏵ bypass permissions on\n" && p == "cortex" && c.alert {
+			if len(idle) == 0 || !strings.Contains(idle[0], "for 20 min") { // a watched lead with nothing running keeps its 10-min alert
+				t.Errorf("%s: %q", c.name, idle)
+			}
+			continue
+		}
+		if len(idle) != 0 {
+			t.Errorf("%s: alerted before an hour: %q", c.name, idle)
+			continue
+		}
+		runAt(t, home, f, draw, 61)
+		idle = nil
+		for _, s := range f.sent {
+			if strings.Contains(s, "idle") {
+				idle = append(idle, s)
+			}
+		}
+		if got := len(idle) == 1 && strings.Contains(idle[0], who+" (tab") && strings.Contains(idle[0], "for 61 min"); got != c.alert || len(idle) > 1 {
+			t.Errorf("%s: sent %q, want an idle alert %v", c.name, idle, c.alert)
+		}
+	}
+}
+
+// The hour rule counts from the screen's last change: a lead that works in its turn (the working line moves) or posts
+// on the bus is not idle, whatever runs beside it.
+func TestALeadThatWorksOrPostsIsNotIdleAfterAnHour(t *testing.T) {
+	const shells = "  ⏵⏵ bypass permissions on · 2 shells\n"
+	home := setup(t, map[string]string{"cortex.log": busFrom("cortex:lead", t0)})
+	leadsAt(t, home, "item 2", "cortex")
+	f := &fake{}
+	runAt(t, home, f, func(at time.Time) []Screen {
+		return []Screen{screen("cortex · lead", tab("cortex · lead", "Deploying #27.\n\n"+
+			fmt.Sprintf("✻ Deploying… (%dm %ds · esc to interrupt)", int(at.Sub(t0).Minutes()), 0), shells, at))}
+	}, 0, 30, 61, 90)
+	bus := busFrom("cortex:lead", t0) + busFrom("cortex:lead", t0.Add(50*time.Minute))
+	home2 := setup(t, map[string]string{"cortex.log": bus})
+	leadsAt(t, home2, "item 2", "cortex")
+	f2 := &fake{}
+	runAt(t, home2, f2, func(at time.Time) []Screen {
+		return []Screen{screen("cortex · lead", tab("cortex · lead", "Waiting.\n\n⏳", shells, at))}
+	}, 0, 30, 61, 100)
+	for _, s := range append(f.sent, f2.sent...) {
+		if strings.Contains(s, "idle") {
+			t.Error(s)
+		}
+	}
+}
+
+// Review of U (P2): an unwatched lead's on-screen ask still reaches the owner queue when the hour rule's bus checks
+// skip it: parked on its bus, or with no bus at all.
+func TestAnUnwatchedLeadParkedOrWithNoBusKeepsItsQueueRow(t *testing.T) {
+	asked, err := os.ReadFile(filepath.Join("testdata", "marketplace-asks-1458.screen"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, buses := range map[string]map[string]string{
+		"parked on its bus": {"quotes.log": "", "marketplace.log": busFrom("marketplace:lead", t0.Add(-time.Hour)) +
+			stamp(t0.Add(-30*time.Minute)) + " PARKED crius:lead -> marketplace:lead — park until the owner answers A1\n"},
+		"no bus": {"quotes.log": ""},
+	} {
+		home := setup(t, buses)
+		testutil.Write(t, filepath.Join(home, "wakewatch-projects"), "quotes\n")
+		leadsAt(t, home, "build", "marketplace")
+		if err := ownerqueue.Init(home, stamp(t0.Add(-2*time.Hour))); err != nil {
+			t.Fatal(err)
+		}
+		f := &fake{}
+		runAt(t, home, f, func(time.Time) []Screen {
+			return []Screen{{Surface: "surface:7", Title: "marketplace", Text: string(asked)}}
+		}, 0, 5, 11, 16)
+		q, err := ownerqueue.List(home, t0.Add(16*time.Minute))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if open := q.OpenRows(); len(open) != 1 || open[0].Screen != "marketplace:lead" || len(f.sent) != 0 {
+			t.Errorf("%s: want the ask as one open row and no alert, got %+v, sent %q", name, open, f.sent)
+		}
+	}
+}

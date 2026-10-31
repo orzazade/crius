@@ -1,6 +1,7 @@
 // Package wakewatch tells the owner when Crius missed a wake: a lead's DONE, NEED, CLEAR-READY or ASK to Crius with no
 // crius:lead line after it on the same bus for 20 min, a lead tab waiting on a question or dialog for 10 min, or any
-// tab of a team idle for 10 min (noting when its last reply says CLEAR-READY), the
+// tab of a team idle for 10 min (noting when its last reply says CLEAR-READY), a lead tab idle an hour whatever runs in
+// its background and watched or not, the
 // Mac short of disk or deep in swap, and a tool the team needs (cmux, gh, az, bun, docker) that fails or does not answer, and a lead still in the same session
 // 20 min after its DONE, and a bus log no waiter of Crius's covers for 10 min. When ~/.crius/wakewatch-projects exists, only the projects it names are watched.
 // It runs as its own launchd job, outside
@@ -43,6 +44,7 @@ const (
 	wakeAfter   = 20 * time.Minute
 	screenAfter = 10 * time.Minute
 	idleAfter   = 10 * time.Minute // any tab of a team, lead or not (owner, ORDER 10-22 13:13)
+	leadAfter   = time.Hour        // a lead tab, whatever runs in its background and watched or not (Crius 11-01 00:04)
 	window      = 12 * time.Hour   // older lines are history: a first run must not wake Crius for them
 	resend      = 20 * time.Minute // an item still open wakes Crius again, never more often
 	freshAfter  = 20 * time.Minute // a lead's DONE with no new session of that lead this long wakes Crius
@@ -517,7 +519,8 @@ func lineTime(s string, now time.Time) (time.Time, error) {
 }
 
 // waiting gives [key, text] for each tab whose screen has waited on a question or dialog, unchanged, for 10 min, and
-// for each idle tab: unchanged and with no bus line of its own for 10 min, any role, unless the bus parks it
+// for each idle tab: unchanged and with no bus line of its own for 10 min (a lead: an hour, also with background jobs or
+// its team not watched), any role, unless the bus parks it
 // (parkedOnBus) or it is a lead whose goal is done (finishedLeads). A screen counts as unchanged by
 // what is above its input box: the status line below it holds a clock. A tab whose read failed is an alert of its own
 // and keeps its place meanwhile (Run reports a failed read of all tabs). When a live session's crius-hook state names
@@ -583,16 +586,22 @@ func waiting(st *state, d Deps, watch projects, park parked, screens []Screen, h
 		if hs, ok := hv.surface[s.ID]; ok {
 			view = hv.pick("tab:"+s.Surface, s.Title, view, stateView(hs, s.Text))
 		}
-		if view == "busy" {
+		// Crius 11-01 00:04 (owner go): marketplace:lead sat idle 9 h after a ⏳ and cortex:lead after "recheck after
+		// 15:15Z", each with bus waiters as background shells, which read as work; marketplace is not watched. A lead tab
+		// idle an hour alerts whatever runs in its background and whether or not its team is watched.
+		long := isLead(name) && (view == "busy" && background(s.Text) || quiet && view == "idle")
+		if view == "busy" && !long {
 			continue
 		}
-		if quiet {
+		if quiet { // its lead's ask reaches the queue here, before the hour rule's bus checks can skip the tab (review of U)
 			live[s.Surface] = true
 			h := hash(name + "\n" + body)
-			if since := seenSince(st, d, s, h); isLead(name) && !dialogRe.MatchString(s.Text) {
+			if since := seenSince(st, d, s, h); isLead(name) && !dialogRe.MatchString(s.Text) && view != "busy" {
 				sa.note(d, name, s.Surface+":"+h, body, since)
 			}
-			continue
+			if !long {
+				continue
+			}
 		}
 		ask := view == "asks"
 		var who string
@@ -625,7 +634,7 @@ func waiting(st *state, d Deps, watch projects, park parked, screens []Screen, h
 		h := hash(name + "\n" + body) // another session in the same tab starts afresh
 		seenSince(st, d, s, h)
 		seen := st.Screens[s.Surface]
-		if isLead(name) && !dialogRe.MatchString(s.Text) {
+		if isLead(name) && !dialogRe.MatchString(s.Text) && view != "busy" && !quiet {
 			sa.note(d, name, s.Surface+":"+h, body, seen.Since)
 		}
 		if seen.Since.Equal(d.Now) {
@@ -645,12 +654,19 @@ func waiting(st *state, d Deps, watch projects, park parked, screens []Screen, h
 		if unparked.After(from) {
 			from = unparked
 		}
-		seen.Idle = d.Now.Sub(from) >= idleAfter && !finished(who)
+		after, running := idleAfter, "nothing running"
+		if long {
+			after = leadAfter
+		}
+		if view == "busy" {
+			running = "only background jobs running (a waiter, an agent or a build)"
+		}
+		seen.Idle = d.Now.Sub(from) >= after && !finished(who)
 		st.Screens[s.Surface] = seen
 		if wait := d.Now.Sub(from); seen.Idle {
-			text := fmt.Sprintf("%s (tab %q, %s) is idle: not working, nothing running, no bus line from it for %d min", who, s.Title, s.Surface, int(wait.Minutes()))
+			text := fmt.Sprintf("%s (tab %q, %s) is idle: not working, %s, no bus line from it for %d min", who, s.Title, s.Surface, running, int(wait.Minutes()))
 			if lastLine.IsZero() { // Quotes builders post as "P3": only the screen's age is known
-				text = fmt.Sprintf("%s (tab %q, %s) is idle: not working, nothing running, screen unchanged for %d min, no bus line from %s", who, s.Title, s.Surface, int(wait.Minutes()), who)
+				text = fmt.Sprintf("%s (tab %q, %s) is idle: not working, %s, screen unchanged for %d min, no bus line from %s", who, s.Title, s.Surface, running, int(wait.Minutes()), who)
 			}
 			if clear {
 				text += "; its screen says CLEAR-READY"
@@ -1579,6 +1595,13 @@ func spinning(text string) bool {
 		}
 	}
 	return false
+}
+
+// background says whether a screen reads as busy only for its background jobs (shells, monitors, agents): it has its
+// input box, and no working line.
+func background(text string) bool {
+	_, foot, boxed := split(text)
+	return boxed && jobsRe.MatchString(foot) && !spinning(text) && !strings.Contains(text, "esc to interrupt")
 }
 
 // screenView is what a tab's screen says: "asks" (a dialog or a question), "busy" (working, jobs running, or no input
