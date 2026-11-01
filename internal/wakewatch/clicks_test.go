@@ -188,6 +188,36 @@ func TestAProjectWhoseClicksAreCriussGetsCriusClick(t *testing.T) {
 	}
 }
 
+// Review of d6cb914: only the border right under the dialog names its session. An unnamed session (a plain border) whose
+// history shows a quotes border is the owner's; a colon name is a quotes name too; a title with no role names no project.
+func TestOnlyTheDialogsOwnBorderNamesItsProject(t *testing.T) {
+	hook := screenFile(t, "owner-click-hook-1103.screen")
+	border := strings.Repeat("─", 63) + " quotes · frontend ─"
+	if !strings.Contains(hook, border) {
+		t.Fatal("the fixture has no quotes border")
+	}
+	unnamed := border + "\n" + strings.Replace(hook, border, strings.Repeat("─", 83), 1) // the quotes border is history now
+	for name, c := range map[string]struct {
+		tab  Screen
+		want string
+	}{
+		"an unnamed session with a quotes border in its history": {Screen{Surface: "surface:1", Title: "scratch", Text: unnamed}, " OWNER-CLICK crius:wakewatch -> crius:lead — scratch (surface:1) waits on your click: "},
+		"a colon name":         {Screen{Surface: "surface:2", Title: "x", Text: strings.Replace(hook, " quotes · frontend ", " quotes: frontend ", 1)}, " CRIUS-CLICK crius:wakewatch -> crius:lead — quotes: frontend (surface:2) waits on Crius's click: "},
+		"a title with no role": {Screen{Surface: "surface:3", Title: "quotes", Text: unnamed}, " OWNER-CLICK crius:wakewatch -> crius:lead — quotes (surface:3) waits on your click: "},
+		"a named border below the dialog's plain one": {Screen{Surface: "surface:5", Title: "scratch", Text: unnamed + border + "\n"}, " OWNER-CLICK crius:wakewatch -> crius:lead — scratch (surface:5) waits on your click: "},
+		"an unnamed quotes tab":                       {Screen{Surface: "surface:4", Title: "quotes · qa-frontend", Text: unnamed}, " CRIUS-CLICK crius:wakewatch -> crius:lead — quotes · qa-frontend (surface:4) waits on Crius's click: "},
+	} {
+		home := setup(t, nil)
+		testutil.Write(t, filepath.Join(home, "projects.toml"), "[projects.quotes]\nclicks = \"crius\"\n")
+		if err := Clicks(ClickDeps{Home: home, Now: t0, Screens: func() ([]Screen, error) { return []Screen{c.tab}, nil }}); err != nil {
+			t.Fatal(err)
+		}
+		if got := testutil.Read(t, filepath.Join(home, "bus", "crius.log")); !strings.Contains(got, c.want) {
+			t.Errorf("%s: %s", name, got)
+		}
+	}
+}
+
 func TestAnUnreadableOwnerClickStateAlertsAndStartsAfresh(t *testing.T) {
 	home := setup(t, nil)
 	testutil.Write(t, filepath.Join(home, "state", "owner-clicks.json"), "{")

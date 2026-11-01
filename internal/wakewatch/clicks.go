@@ -106,12 +106,26 @@ func OwnerClick(text string) (prompt, what string, ok bool) {
 	return prompt, what, true
 }
 
-// tabName is the session name on a dialog's bottom border ("quotes · frontend"), else the tab's title.
+// tabName is the session name on the border right under a dialog's options ("quotes · frontend"), else the tab's title:
+// a border further up is the tab's history (review of d6cb914: an unnamed session that had printed a quotes border drew
+// CRIUS-CLICK).
 func tabName(s Screen) string {
 	lines := strings.Split(s.Text, "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		if m := borderRe.FindStringSubmatch(strings.TrimSpace(lines[i])); m != nil && m[1] != "" {
-			return m[1]
+	last := -1
+	for i, l := range lines {
+		if menuRe.MatchString(l) || optionRe.MatchString(l) {
+			last = i
+		}
+	}
+	if last < 0 {
+		return s.Title
+	}
+	for _, l := range lines[last+1:] {
+		if m := borderRe.FindStringSubmatch(strings.TrimSpace(l)); m != nil {
+			if m[1] != "" {
+				return m[1]
+			}
+			break
 		}
 	}
 	return s.Title
@@ -187,7 +201,7 @@ func clicks(d ClickDeps) error {
 		}
 		if d.Now.Sub(f.Posted) >= clickRepeat {
 			typ, whose := "OWNER-CLICK", "your"
-			if p, _, _ := strings.Cut(tabName(s), " · "); crius[strings.ToLower(strings.TrimSpace(p))] {
+			if p, _, _ := strings.Cut(BusName(tabName(s)), ":"); crius[p] {
 				typ, whose = "CRIUS-CLICK", "Crius's"
 			}
 			text := fmt.Sprintf("%s (%s) waits on %s click since %s: %s", tabName(s), s.Surface, whose, f.Since.Format("15:04"), what)
@@ -235,7 +249,7 @@ func clicks(d ClickDeps) error {
 		err = cerr
 	}
 	if err != nil {
-		return err
+		return errors.Join(err, cerr)
 	}
 	for _, s := range posted {
 		e := next[s]
@@ -260,7 +274,7 @@ func criusClicks(home string) (map[string]bool, error) {
 		if errors.Is(err, fs.ErrNotExist) {
 			return out, nil
 		}
-		return out, fmt.Errorf("projects.toml cannot be read, so every click went to the owner: %w", err)
+		return out, fmt.Errorf("projects.toml cannot be read, so its clicks go to the owner: %w", err)
 	}
 	for p, pc := range c.Projects {
 		if pc.Clicks == "crius" {
