@@ -95,4 +95,10 @@ func TestAPromptIsGoneOnlyWhenTheTabShowsNone(t *testing.T) {
 	if gone, err := Gone(func() (string, error) { return "", errors.New("cmux read-screen: timeout") }); gone || err == nil {
 		t.Error("a tab that cannot be read is gone:", gone, err)
 	}
+	// review r3 of X5: a read that shows neither the input box nor a prompt says nothing; failing to look is not gone
+	for name, text := range map[string]string{"an empty read": "", "half drawn": "⏺ Bash(rm -rf build)\n\n Do you want to"} {
+		if gone, err := Gone(func() (string, error) { return text, nil }); gone || err == nil {
+			t.Errorf("%s: gone %v, err %v", name, gone, err)
+		}
+	}
 }

@@ -1,6 +1,7 @@
 package wakewatch
 
 import (
+	"errors"
 	"regexp"
 	"strings"
 )
@@ -85,11 +86,17 @@ func apiStop(text string) (string, bool) {
 
 // Gone says whether a tab no longer shows a prompt (crius-wakewatch gone, which team-wait.sh asks right before it hands
 // Crius a wait line); read gives the tab as deep as the clicks run reads it. A tab that cannot be read is not gone: the
-// line goes to Crius.
+// line goes to Crius. Nor is one read with neither the input box nor a prompt, empty or half drawn (review r3 of X5).
 func Gone(read func() (string, error)) (bool, error) {
 	text, err := read()
 	if err != nil {
 		return false, err
 	}
-	return !LivePrompt(text), nil
+	if LivePrompt(text) {
+		return false, nil
+	}
+	if _, _, boxed := split(text); !boxed {
+		return false, errors.New("the tab shows neither the input box nor a prompt")
+	}
+	return true, nil
 }
