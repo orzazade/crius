@@ -186,6 +186,15 @@ func TestAProjectWhoseClicksAreCriussGetsCriusClick(t *testing.T) {
 	if got := linesOf(t, home, "ALERT"); len(got) != 1 || !strings.Contains(got[0], "projects.toml") {
 		t.Fatal(got)
 	}
+	// review r2: a bus that cannot be opened keeps the projects.toml error beside its own
+	home = setup(t, nil)
+	testutil.Write(t, filepath.Join(home, "projects.toml"), "[projects.quotes\n")
+	if err := os.Chmod(filepath.Join(home, "bus", "crius.log"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(0); err == nil || !strings.Contains(err.Error(), "projects.toml") || !strings.Contains(err.Error(), "crius.log") {
+		t.Fatal(err)
+	}
 }
 
 // Review of d6cb914: only the border right under the dialog names its session. An unnamed session (a plain border) whose
@@ -205,7 +214,8 @@ func TestOnlyTheDialogsOwnBorderNamesItsProject(t *testing.T) {
 		"a colon name":         {Screen{Surface: "surface:2", Title: "x", Text: strings.Replace(hook, " quotes · frontend ", " quotes: frontend ", 1)}, " CRIUS-CLICK crius:wakewatch -> crius:lead — quotes: frontend (surface:2) waits on Crius's click: "},
 		"a title with no role": {Screen{Surface: "surface:3", Title: "quotes", Text: unnamed}, " OWNER-CLICK crius:wakewatch -> crius:lead — quotes (surface:3) waits on your click: "},
 		"a named border below the dialog's plain one": {Screen{Surface: "surface:5", Title: "scratch", Text: unnamed + border + "\n"}, " OWNER-CLICK crius:wakewatch -> crius:lead — scratch (surface:5) waits on your click: "},
-		"an unnamed quotes tab":                       {Screen{Surface: "surface:4", Title: "quotes · qa-frontend", Text: unnamed}, " CRIUS-CLICK crius:wakewatch -> crius:lead — quotes · qa-frontend (surface:4) waits on Crius's click: "},
+		// review r2: the tab title is the one name the session does not draw itself, so it never gives CRIUS-CLICK
+		"an unnamed session in a quotes tab": {Screen{Surface: "surface:4", Title: "quotes · qa-frontend", Text: unnamed}, " OWNER-CLICK crius:wakewatch -> crius:lead — quotes · qa-frontend (surface:4) waits on your click: "},
 	} {
 		home := setup(t, nil)
 		testutil.Write(t, filepath.Join(home, "projects.toml"), "[projects.quotes]\nclicks = \"crius\"\n")

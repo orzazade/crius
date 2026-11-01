@@ -1,6 +1,7 @@
 package wakewatch
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -106,10 +107,15 @@ func OwnerClick(text string) (prompt, what string, ok bool) {
 	return prompt, what, true
 }
 
-// tabName is the session name on the border right under a dialog's options ("quotes · frontend"), else the tab's title:
-// a border further up is the tab's history (review of d6cb914: an unnamed session that had printed a quotes border drew
-// CRIUS-CLICK).
+// tabName is the session name on the dialog's own border (dialogBorder), else the tab's title.
 func tabName(s Screen) string {
+	return cmp.Or(dialogBorder(s), s.Title)
+}
+
+// dialogBorder is the session name on the border right under a dialog's options ("quotes · frontend"), else "": a
+// border further up is the tab's history (review of d6cb914: an unnamed session that had printed a quotes border drew
+// CRIUS-CLICK).
+func dialogBorder(s Screen) string {
 	lines := strings.Split(s.Text, "\n")
 	last := -1
 	for i, l := range lines {
@@ -118,7 +124,7 @@ func tabName(s Screen) string {
 		}
 	}
 	if last < 0 {
-		return s.Title
+		return ""
 	}
 	for _, l := range lines[last+1:] {
 		if m := borderRe.FindStringSubmatch(strings.TrimSpace(l)); m != nil {
@@ -128,7 +134,7 @@ func tabName(s Screen) string {
 			break
 		}
 	}
-	return s.Title
+	return ""
 }
 
 // Clicks checks every tab once for a prompt only the owner may answer (owner 11-01 19:1x: Quotes tabs waited on his
@@ -140,7 +146,8 @@ func tabName(s Screen) string {
 // nobody.
 func Clicks(d ClickDeps) error {
 	last := filepath.Join(d.Home, "state", "owner-clicks.error")
-	err := clicks(d)
+	crius, cerr := criusClicks(d.Home)
+	err := errors.Join(clicks(d, crius), cerr)
 	if err == nil {
 		if rerr := os.Remove(last); rerr != nil && !os.IsNotExist(rerr) {
 			return rerr
@@ -159,7 +166,7 @@ func Clicks(d ClickDeps) error {
 	return err
 }
 
-func clicks(d ClickDeps) error {
+func clicks(d ClickDeps, crius map[string]bool) error {
 	path := filepath.Join(d.Home, "state", "owner-clicks.json")
 	seen := map[string]flagged{}
 	if b, err := os.ReadFile(path); err == nil {
@@ -177,7 +184,6 @@ func clicks(d ClickDeps) error {
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	crius, cerr := criusClicks(d.Home)
 	screens, err := d.Screens()
 	if err != nil {
 		return err
@@ -201,7 +207,8 @@ func clicks(d ClickDeps) error {
 		}
 		if d.Now.Sub(f.Posted) >= clickRepeat {
 			typ, whose := "OWNER-CLICK", "your"
-			if p, _, _ := strings.Cut(BusName(tabName(s)), ":"); crius[p] {
+			// only the name the session draws itself: the tab title never gives CRIUS-CLICK (review r2)
+			if p, _, _ := strings.Cut(BusName(dialogBorder(s)), ":"); crius[p] {
 				typ, whose = "CRIUS-CLICK", "Crius's"
 			}
 			text := fmt.Sprintf("%s (%s) waits on %s click since %s: %s", tabName(s), s.Surface, whose, f.Since.Format("15:04"), what)
@@ -229,7 +236,7 @@ func clicks(d ClickDeps) error {
 		return err
 	}
 	if len(posts) == 0 {
-		return cerr
+		return nil
 	}
 	bus := filepath.Join(d.Home, "bus", "crius.log")
 	f, err := os.OpenFile(bus, os.O_RDWR|os.O_APPEND|os.O_CREATE, 0o600)
@@ -249,22 +256,19 @@ func clicks(d ClickDeps) error {
 		err = cerr
 	}
 	if err != nil {
-		return errors.Join(err, cerr)
+		return err
 	}
 	for _, s := range posted {
 		e := next[s]
 		e.Confirmed = e.Posted
 		next[s] = e
 	}
-	if err := writeJSON(path, next); err != nil {
-		return err
-	}
-	return cerr
+	return writeJSON(path, next)
 }
 
 // criusClicks gives the projects whose Azure DevOps prompts Crius answers, not the owner: clicks = "crius" in
 // projects.toml (owner 11-01 22:4x: the quotes tabs, AGENTS.md 1205fdc). A file that cannot be read gives none, so every
-// click goes to the owner, and its error, which the run returns after posting.
+// click goes to the owner, and its error, which Clicks returns beside the run's own.
 func criusClicks(home string) (map[string]bool, error) {
 	out := map[string]bool{}
 	var c struct {
