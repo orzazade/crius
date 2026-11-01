@@ -90,19 +90,23 @@ func run(r io.Reader, w io.Writer) error {
 	if err := json.NewDecoder(r).Decode(&in); err != nil {
 		why := "crius-post-guard could not read the hook input (" + err.Error() + "), so it cannot tell whether " +
 			"this posts text to Azure DevOps: needs the owner's click."
+		err := ask(w, why)
 		logAsk(in, why)
-		return ask(w, why)
+		return err
 	}
 	if why := check(in); why != "" {
+		err := ask(w, why)
 		logAsk(in, why)
-		return ask(w, why)
+		return err
 	}
 	return nil
 }
 
 // logAsk keeps each ask in $CRIUS_HOME/state/post-guard-asks.log (mode 600): the time, the tool, the folder, the reason
 // and the first 200 characters of what was asked on, newlines as ⏎ (Crius 11-01 22:35: an ask on code the tab no longer
-// showed was lost). A log that cannot be written is said on stderr; the ask goes out either way.
+// showed was lost). It runs after the ask is written and opens the log without waiting: a FIFO or any file that is
+// not a regular one is not written (review: a log that blocks would hang the hook and lose the ask). A log that cannot
+// be written is said on stderr; the ask goes out either way.
 func logAsk(in input, why string) {
 	t := in.ToolInput
 	var parts []string
@@ -111,7 +115,8 @@ func logAsk(in input, why string) {
 			parts = append(parts, p)
 		}
 	}
-	text := []rune(strings.ReplaceAll(strings.Join(parts, " ⏎ "), "\n", "⏎"))
+	oneLine := strings.NewReplacer("\r\n", "⏎", "\n", "⏎", "\r", "⏎")
+	text := []rune(oneLine.Replace(strings.Join(parts, " ⏎ ")))
 	if len(text) > 200 {
 		text = text[:200]
 	}
@@ -124,9 +129,16 @@ func logAsk(in input, why string) {
 		}
 		home = filepath.Join(u, ".crius")
 	}
-	f, err := os.OpenFile(filepath.Join(home, "state", "post-guard-asks.log"), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+	f, err := os.OpenFile(filepath.Join(home, "state", "post-guard-asks.log"), os.O_WRONLY|os.O_APPEND|os.O_CREATE|syscall.O_NONBLOCK, 0o600)
 	if err == nil {
-		_, err = fmt.Fprintf(f, "%s %s %s — %s — %s\n", time.Now().Format(time.RFC3339), in.ToolName, in.Cwd, why, string(text))
+		if fi, serr := f.Stat(); serr != nil {
+			err = serr
+		} else if !fi.Mode().IsRegular() {
+			err = fmt.Errorf("%s is not a regular file", f.Name())
+		} else {
+			_, err = fmt.Fprintf(f, "%s %s %s — %s — %s\n", time.Now().Format(time.RFC3339), in.ToolName, oneLine.Replace(in.Cwd),
+				oneLine.Replace(why), string(text))
+		}
 		if cerr := f.Close(); err == nil {
 			err = cerr
 		}
