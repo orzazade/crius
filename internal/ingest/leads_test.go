@@ -47,6 +47,20 @@ cwd = ["/w/infra"]
 	}
 }
 
+// Owner 11-01 22:4x: clicks = "crius" names a project whose Azure DevOps prompts Crius answers (wakewatch reads it); the
+// ingest loads it, and any other value is refused, so a typo cannot quietly send the clicks back to the owner.
+func TestClicksLoadsOnlyAsCrius(t *testing.T) {
+	home := t.TempDir()
+	testutil.Write(t, filepath.Join(home, "projects.toml"), "[projects.quotes]\nclicks = \"crius\"\nleads = { lead = \"/w/q.md\" }\n")
+	if _, err := Leads(home); err != nil {
+		t.Fatal(err)
+	}
+	testutil.Write(t, filepath.Join(home, "projects.toml"), "[projects.quotes]\nclicks = \"Crius \"\n")
+	if _, err := Leads(home); err == nil || !strings.Contains(err.Error(), `project quotes: clicks "Crius " is not "crius"`) {
+		t.Fatal(err)
+	}
+}
+
 // Crius 10-19 18:00: a lead whose status file is committed elsewhere than a checkout is named by a git object,
 // "git:<repo>#<rev>:<path>"; a git form without both parts is refused when the config loads, not read as a file.
 func TestLeadsNameAGitObject(t *testing.T) {

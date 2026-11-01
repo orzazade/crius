@@ -127,6 +127,67 @@ func TestAnOwnerClickIsPostedAtOnceThenEvery30MinWhileItWaits(t *testing.T) {
 	}
 }
 
+func linesOf(t *testing.T, home, typ string) []string {
+	var out []string
+	for _, l := range strings.Split(testutil.Read(t, filepath.Join(home, "bus", "crius.log")), "\n") {
+		if strings.Contains(l, " "+typ+" ") {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// Owner 11-01 22:4x: Crius answers the quotes tabs' Azure DevOps prompts, not the owner (AGENTS.md 1205fdc). A project
+// whose projects.toml says clicks = "crius" gets CRIUS-CLICK, which Crius answers with no owner push; other projects
+// keep OWNER-CLICK.
+func TestAProjectWhoseClicksAreCriussGetsCriusClick(t *testing.T) {
+	home := setup(t, nil)
+	testutil.Write(t, filepath.Join(home, "projects.toml"), "[projects.quotes]\nclicks = \"crius\"\n[projects.tamada]\nname = \"Tamada\"\n")
+	hook := screenFile(t, "owner-click-hook-1103.screen")
+	quotes := Screen{Surface: "surface:1000050103", Title: "quotes · frontend", Text: hook}
+	// another project's tab: its dialog border names its own session
+	tamada := Screen{Surface: "surface:1000050094", Title: "tamada · lead", Text: strings.ReplaceAll(hook, "quotes · frontend", "tamada · lead")}
+	if tamada.Text == hook {
+		t.Fatal("the fixture names no quotes · frontend")
+	}
+	run := func(min int) error {
+		return Clicks(ClickDeps{Home: home, Now: t0.Add(time.Duration(min) * time.Minute), Screens: func() ([]Screen, error) { return []Screen{quotes, tamada}, nil }})
+	}
+	if err := run(0); err != nil {
+		t.Fatal(err)
+	}
+	crius, owner := linesOf(t, home, "CRIUS-CLICK"), linesOf(t, home, "OWNER-CLICK")
+	if len(crius) != 1 || !strings.Contains(crius[0], " CRIUS-CLICK crius:wakewatch -> crius:lead — quotes · frontend (surface:1000050103) waits on Crius's click: post-guard ask (az repos pr create --description)") {
+		t.Fatal("quotes:", crius)
+	}
+	if len(owner) != 1 || !strings.Contains(owner[0], "tamada · lead (surface:1000050094) waits on your click: ") {
+		t.Fatal("tamada:", owner)
+	}
+	// it repeats every 30 min like OWNER-CLICK, and the waiter and wakewatch see it as flagged
+	if err := run(30); err != nil {
+		t.Fatal(err)
+	}
+	if got := linesOf(t, home, "CRIUS-CLICK"); len(got) != 2 || !strings.Contains(got[1], "waits on Crius's click since ") {
+		t.Fatal(got)
+	}
+	if !ClickFlagged(home, t0.Add(30*time.Minute), quotes.Surface, func() (string, error) { return hook, nil }) {
+		t.Error("a posted CRIUS-CLICK is not flagged")
+	}
+	// a projects.toml that cannot be read sends every click to the owner, and the run fails (one ALERT)
+	home = setup(t, nil)
+	testutil.Write(t, filepath.Join(home, "projects.toml"), "[projects.quotes\nclicks = \"crius\"\n")
+	err := run(0)
+	if err == nil || !strings.Contains(err.Error(), "projects.toml") {
+		t.Fatal("no error for an unreadable projects.toml:", err)
+	}
+	if got := linesOf(t, home, "OWNER-CLICK"); len(got) != 2 || len(linesOf(t, home, "CRIUS-CLICK")) != 0 {
+		t.Fatal("with projects.toml unread, the clicks did not all go to the owner:", got)
+	}
+	if got := linesOf(t, home, "ALERT"); len(got) != 1 || !strings.Contains(got[0], "projects.toml") {
+		t.Fatal(got)
+	}
+}
+
 func TestAnUnreadableOwnerClickStateAlertsAndStartsAfresh(t *testing.T) {
 	home := setup(t, nil)
 	testutil.Write(t, filepath.Join(home, "state", "owner-clicks.json"), "{")

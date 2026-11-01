@@ -62,7 +62,8 @@ func loadConfig(home string) (*config, error) {
 			TeamLogs     []string `toml:"team_logs"`
 			ArtifactDirs []string `toml:"artifact_dirs"`
 			Leads        map[string]string
-			PauseAt      *int `toml:"pause_at"`
+			PauseAt      *int   `toml:"pause_at"`
+			Clicks       string // "crius": Crius answers its Azure DevOps prompts (wakewatch reads it)
 		}
 	}
 	path := filepath.Join(home, "projects.toml")
@@ -90,6 +91,9 @@ func loadConfig(home string) (*config, error) {
 			if a != "max" && a != "enterprise" {
 				return nil, fmt.Errorf("%s: project %s: unknown account %q", path, slug, a)
 			}
+		}
+		if p.Clicks != "" && p.Clicks != "crius" {
+			return nil, fmt.Errorf("%s: project %s: clicks %q is not \"crius\"", path, slug, p.Clicks)
 		}
 		pauseAt := 0
 		if a := p.PauseAt; a != nil {

@@ -2,7 +2,9 @@ package wakewatch
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -10,6 +12,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/BurntSushi/toml"
 	"github.com/orzazade/crius/internal/redact"
 	"github.com/orzazade/crius/internal/store"
 	"github.com/orzazade/crius/internal/watchdog"
@@ -116,7 +119,9 @@ func tabName(s Screen) string {
 
 // Clicks checks every tab once for a prompt only the owner may answer (owner 11-01 19:1x: Quotes tabs waited on his
 // approval unseen). A new one goes on Crius's bus as one OWNER-CLICK line at once, and again every 30 min while it
-// waits; the next prompt in that tab is new. A tab that cannot be read keeps what it had. launchd runs it every minute.
+// waits; the next prompt in that tab is new. A tab of a project whose projects.toml says clicks = "crius" gets CRIUS-CLICK
+// instead, which Crius answers with no owner push (owner 11-01 22:4x: the quotes tabs). A tab that cannot be read keeps
+// what it had. launchd runs it every minute.
 // A run that fails says so on the bus as an ALERT, once per error (kept in state/owner-clicks.error): its log is read by
 // nobody.
 func Clicks(d ClickDeps) error {
@@ -158,6 +163,7 @@ func clicks(d ClickDeps) error {
 	} else if !os.IsNotExist(err) {
 		return err
 	}
+	crius, cerr := criusClicks(d.Home)
 	screens, err := d.Screens()
 	if err != nil {
 		return err
@@ -180,16 +186,20 @@ func clicks(d ClickDeps) error {
 			f = flagged{Hash: h, Since: d.Now}
 		}
 		if d.Now.Sub(f.Posted) >= clickRepeat {
-			text := fmt.Sprintf("%s (%s) waits on your click since %s: %s", tabName(s), s.Surface, f.Since.Format("15:04"), what)
+			typ, whose := "OWNER-CLICK", "your"
+			if p, _, _ := strings.Cut(tabName(s), " · "); crius[strings.ToLower(strings.TrimSpace(p))] {
+				typ, whose = "CRIUS-CLICK", "Crius's"
+			}
+			text := fmt.Sprintf("%s (%s) waits on %s click since %s: %s", tabName(s), s.Surface, whose, f.Since.Format("15:04"), what)
 			if f.Posted.IsZero() {
-				text = fmt.Sprintf("%s (%s) waits on your click: %s", tabName(s), s.Surface, what)
+				text = fmt.Sprintf("%s (%s) waits on %s click: %s", tabName(s), s.Surface, whose, what)
 			}
 			if r := []rune(Clean(text)); len(r) > store.MaxLen {
 				text = string(r[:store.MaxLen-1]) + "…"
 			} else {
 				text = string(r)
 			}
-			line, err := store.FormatLine("OWNER-CLICK", "crius", "wakewatch", text, "crius:lead", d.Now)
+			line, err := store.FormatLine(typ, "crius", "wakewatch", text, "crius:lead", d.Now)
 			if err != nil {
 				return err
 			}
@@ -205,7 +215,7 @@ func clicks(d ClickDeps) error {
 		return err
 	}
 	if len(posts) == 0 {
-		return nil
+		return cerr
 	}
 	bus := filepath.Join(d.Home, "bus", "crius.log")
 	f, err := os.OpenFile(bus, os.O_RDWR|os.O_APPEND|os.O_CREATE, 0o600)
@@ -232,7 +242,32 @@ func clicks(d ClickDeps) error {
 		e.Confirmed = e.Posted
 		next[s] = e
 	}
-	return writeJSON(path, next)
+	if err := writeJSON(path, next); err != nil {
+		return err
+	}
+	return cerr
+}
+
+// criusClicks gives the projects whose Azure DevOps prompts Crius answers, not the owner: clicks = "crius" in
+// projects.toml (owner 11-01 22:4x: the quotes tabs, AGENTS.md 1205fdc). A file that cannot be read gives none, so every
+// click goes to the owner, and its error, which the run returns after posting.
+func criusClicks(home string) (map[string]bool, error) {
+	out := map[string]bool{}
+	var c struct {
+		Projects map[string]struct{ Clicks string }
+	}
+	if _, err := toml.DecodeFile(filepath.Join(home, "projects.toml"), &c); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return out, nil
+		}
+		return out, fmt.Errorf("projects.toml cannot be read, so every click went to the owner: %w", err)
+	}
+	for p, pc := range c.Projects {
+		if pc.Clicks == "crius" {
+			out[strings.ToLower(p)] = true
+		}
+	}
+	return out, nil
 }
 
 // promptKey is a prompt without spaces and box lines: a pane of another width wraps a long word elsewhere and draws its
