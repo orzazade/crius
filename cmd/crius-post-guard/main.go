@@ -1,4 +1,5 @@
-// Command crius-post-guard is a Claude Code PreToolUse hook for Bash, in both personas and their subagents. It makes
+// Command crius-post-guard is a Claude Code PreToolUse hook for Bash and context-mode's ctx_execute, ctx_execute_file and
+// ctx_batch_execute, in both personas and their subagents. It makes
 // every Azure DevOps write that posts text people read wait for the owner's click: it answers "ask", which Claude Code
 // keeps even in bypass mode (a headless probe on 10-30 refused the call). 10-30: a lead session posted a QA-notes
 // comment and a reply to a colleague on AB#94205 under the owner's name, because its brief said to; the owner had both
@@ -26,7 +27,8 @@
 // on an outward-facing write never lets one through silently.
 //
 // Known gaps: field-only work-item updates (state, title, description) pass by design for now; az repos pr create or
-// update with --title only; a command name from a variable or a function ($AZ, f() { az "$@"; }); a script run by its
+// update with --title only; a command name from a variable or a function ($AZ, f() { az "$@"; }) when the command
+// names neither az nor Azure DevOps; a script run by its
 // own name ($S/x.sh, ./x.sh); a command that makes bash read quoted code as a number or a name ((( 'a[$(az …)]' )),
 // printf -v $'a[\x24(az …)]' x, (( $(printf …) ))): only a script run is held to text with no $, ` or \ (quotedCode);
 // a $ that reaches a script's arithmetic from a file an earlier command wrote (around a script run, a $(...) runs only
@@ -35,7 +37,9 @@
 // PS4='$(az ...)' bash -xc : with no script); a script past the 16th one a call reads or 4 levels down;
 // python -m azure.cli; ssh or kubectl exec to another machine; code in a script file (inline -c/-e
 // code in python, node, bun, ruby, perl or pwsh asks when it names Azure DevOps and a write method); a curl config file
-// (-K); an in-file written by a script; Azure DevOps MCP tools (they are not Bash calls).
+// (-K); an in-file written by a script; Azure DevOps MCP tools (they are not Bash calls). ctx tools: code of another
+// language that runs the file it is handed by a spelling runnerRe lacks (require(path), runpy) or runs a shell command
+// that reads a script (execSync('bash post.sh')); the plugin's project folder is taken to be the session's folder.
 // Output: nothing (the call goes on) or one JSON line with permissionDecision "ask".
 package main
 
@@ -60,7 +64,12 @@ type input struct {
 	ToolName  string `json:"tool_name"`
 	Cwd       string `json:"cwd"`
 	ToolInput struct {
-		Command string `json:"command"`
+		Command  string        `json:"command"`
+		Code     string        `json:"code"`     // ctx_execute, ctx_execute_file
+		Language string        `json:"language"` // of Code: shell, javascript, python, …
+		Path     string        `json:"path"`     // ctx_execute_file: the file the code gets as FILE_CONTENT
+		Cwd      string        `json:"cwd"`      // ctx tools: where the code runs
+		Commands batchCommands `json:"commands"` // ctx_batch_execute
 	} `json:"tool_input"`
 }
 
@@ -126,11 +135,110 @@ type runs struct {
 	scripts map[*syntax.Word]bool // the words that name a script a shell runs
 }
 
+// check reads a Bash command, and the code context-mode's tools run (Crius 11-01 19:39: a lead ran an az write as
+// ctx_execute shell code): shell code and each ctx_batch_execute command get the Bash check (checkCode). The tool is known
+// by its name's ending, whatever the plugin's server is called. The plugin runs shell code in tool_input.cwd, else in its
+// project folder, and reads ctx_execute_file's path from the project folder (it takes no cwd there): the session's folder
+// stands for the project folder, and a relative cwd is taken from it.
 func check(in input) string {
-	if in.ToolName != "Bash" {
-		return ""
+	t := in.ToolInput
+	dir := t.Cwd
+	if !filepath.IsAbs(dir) {
+		dir = filepath.Join(in.Cwd, dir)
 	}
-	return checkBash(in.ToolInput.Command, ctx{cwd: in.Cwd, whole: in.ToolInput.Command, reads: new(int)})
+	switch name := in.ToolName; {
+	case name == "Bash":
+		return checkBash(t.Command, ctx{cwd: in.Cwd, whole: t.Command, reads: new(int)})
+	case strings.HasSuffix(name, "__ctx_batch_execute"):
+		for _, command := range t.Commands {
+			if why := checkBash(command, ctx{cwd: dir, whole: command, reads: new(int)}); why != "" {
+				return why
+			}
+		}
+	case strings.HasSuffix(name, "__ctx_execute"):
+		return checkCode(t.Language, t.Code, "", dir, false)
+	case strings.HasSuffix(name, "__ctx_execute_file"):
+		return checkCode(t.Language, t.Code, t.Path, in.Cwd, true)
+	}
+	return ""
+}
+
+// batchCommands is ctx_batch_execute's commands as the plugin takes them: objects with a command, plain strings, either
+// as JSON text, or one command as a string.
+type batchCommands []string
+
+func (b *batchCommands) UnmarshalJSON(data []byte) error {
+	var s string
+	if json.Unmarshal(data, &s) == nil {
+		if !json.Valid([]byte(s)) {
+			*b = append(*b, s)
+			return nil
+		}
+		data = []byte(s)
+	}
+	var raw []json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	for _, r := range raw {
+		var c struct {
+			Command string `json:"command"`
+		}
+		if json.Unmarshal(r, &s) == nil {
+			*b = append(*b, s)
+			continue
+		}
+		if err := json.Unmarshal(r, &c); err != nil {
+			return err
+		}
+		*b = append(*b, c.Command)
+	}
+	return nil
+}
+
+// azWordRe finds az as a word in code of another language: 'az' in a list, or a string that starts the CLI.
+var azWordRe = regexp.MustCompile(`(?i)(^|[^\w.-])az([^\w.-]|$)`)
+
+// runnerRe finds code of another language that starts a command or runs text.
+var runnerRe = regexp.MustCompile(`\b(exec\w*|spawn\w*|system|popen|Popen|subprocess|child_process|eval|shell_exec|passthru|Deno\.Command)\b`)
+
+// unreadFile stands for a file ctx_execute_file names that the guard cannot read: it may hold an az command.
+const unreadFile = "az (a file the guard cannot read)"
+
+// checkCode reads the code of ctx_execute and ctx_execute_file. Shell code gets the Bash check; code in another language
+// asks when it names az (execSync('az …'), the plugin's own pattern) or an ADO host with a write word. ctx_execute_file
+// hands the code the file at path as FILE_CONTENT and FILE_CONTENT_PATH: shell code gets the plugin's own lines that set
+// them first, so bash or source "$FILE_CONTENT_PATH" reads the file as in Bash, and where the guard cannot read what it
+// runs (eval "$FILE_CONTENT") the file's text counts as part of the command; other code that starts commands asks when
+// the file names az or ADO. A file that is not a regular one of at most 1 MiB is not read (a FIFO would hang the hook).
+func checkCode(lang, code, file, cwd string, hasFile bool) string {
+	text := ""
+	if hasFile {
+		text = unreadFile
+		if !filepath.IsAbs(file) && cwd != "" {
+			file = filepath.Join(cwd, file)
+		}
+		if fi, err := os.Stat(file); err == nil && fi.Mode().IsRegular() && fi.Size() <= 1<<20 && filepath.IsAbs(file) {
+			if b, err := os.ReadFile(file); err == nil {
+				text = string(b)
+			}
+		}
+	}
+	if lang == "shell" {
+		if hasFile {
+			q := "'" + strings.ReplaceAll(file, "'", `'\''`) + "'"
+			code = "FILE_CONTENT_PATH=" + q + "\nfile_path=" + q + "\nFILE_CONTENT=$(cat " + q + ")\n" + code
+		}
+		return checkBash(code, ctx{cwd: cwd, whole: code + "\n" + text, reads: new(int)})
+	}
+	switch {
+	case azWordRe.MatchString(code) || adoMarkRe.MatchString(code):
+		// review r3: a write needs no method word (urllib data=, the Azure DevOps SDKs)
+		return asked(lang + " code that runs az or calls Azure DevOps")
+	case hasFile && runnerRe.MatchString(code) && (azWordRe.MatchString(text) || adoMarkRe.MatchString(text)):
+		return asked(lang + " code that starts a command and a file that names az or Azure DevOps")
+	}
+	return ""
 }
 
 // adoMarkRe finds a sign of Azure DevOps in a command: a host, an API path, or a variable that only an ADO call uses.
@@ -143,7 +251,8 @@ func asked(what string) string { return reason + " (" + what + ")" }
 
 // unsure asks when text the guard cannot read sits in a command that names az or Azure DevOps.
 func unsure(c ctx, what string) string {
-	if adoRe.MatchString(c.whole) {
+	// review r4: az next to ), `, ] or " counts too ($(which az), ${commands[az]})
+	if azWordRe.MatchString(c.whole) || adoMarkRe.MatchString(c.whole) {
 		return asked(what + " the guard cannot read")
 	}
 	return ""
@@ -152,7 +261,8 @@ func unsure(c ctx, what string) string {
 func checkBash(command string, c ctx) string {
 	f, err := syntax.NewParser(syntax.Variant(syntax.LangBash)).Parse(strings.NewReader(command), "")
 	if err != nil {
-		if adoRe.MatchString(command) {
+		// c.whole holds the file ctx_execute_file hands the code (review r3: zsh code that reads it does not parse)
+		if adoRe.MatchString(command + "\n" + c.whole) {
 			return asked("the guard cannot parse this command, so it cannot tell whether it writes")
 		}
 		return ""
@@ -329,10 +439,20 @@ var httpTools = map[string]bool{"curl": true, "wget": true, "http": true, "https
 // stdin: the command reads a pipe, a file or a heredoc on its standard input.
 func checkCall(args []word, stdin bool, c ctx) string {
 	if !args[0].ok {
-		return ""
+		if name, ok := c.resolve(args[0].node); ok {
+			args = append([]word{{text: name, src: args[0].src, ok: true, node: args[0].node}}, args[1:]...)
+		} else {
+			// a command name from text the guard cannot read ($FILE_CONTENT, X=$(cat f); $X), review r2 of the ctx tools check
+			return unsure(c, "a command name")
+		}
 	}
 	name := path.Base(args[0].text)
 	switch {
+	case (name == "source" || name == ".") && len(args) > 1:
+		if args[1].text == "--" && len(args) > 2 {
+			return checkScript(args[2], c, false)
+		}
+		return checkScript(args[1], c, false)
 	case name == "eval":
 		var parts []string
 		for _, a := range args[1:] {
@@ -374,7 +494,7 @@ func checkCall(args []word, stdin bool, c ctx) string {
 			if !a.ok {
 				continue
 			}
-			if n := path.Base(a.text); n == "az" || n == "eval" || shells[n] || httpTools[n] || interpreters[n] {
+			if n := path.Base(a.text); n == "az" || n == "eval" || (n == "source" || n == ".") && (name == "builtin" || name == "command") || shells[n] || httpTools[n] || interpreters[n] {
 				inner := args[i:]
 				if feeders[name] {
 					// xargs adds words from its stdin: they may be the method or the URL
@@ -1117,6 +1237,12 @@ func (c ctx) resolve(w *syntax.Word) (string, bool) {
 			return false
 		}
 		v, ok := c.vars[pe.Param.Value]
+		if !ok && pe.Param.Value == "HOME" {
+			// "$HOME/.crius/bin/bus-post" is how leads call bus-post (review r3 of the ctx tools check)
+			home, err := os.UserHomeDir()
+			b.WriteString(home)
+			return err == nil
+		}
 		if !ok || v.lost || v.end > w.Pos().Offset() || v.in != nil && w.End().Offset() > v.in.End().Offset() {
 			return false
 		}
