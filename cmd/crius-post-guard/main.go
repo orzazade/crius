@@ -56,6 +56,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"mvdan.cc/sh/v3/syntax"
 )
@@ -87,13 +88,52 @@ func main() {
 func run(r io.Reader, w io.Writer) error {
 	var in input
 	if err := json.NewDecoder(r).Decode(&in); err != nil {
-		return ask(w, "crius-post-guard could not read the hook input ("+err.Error()+"), so it cannot tell whether "+
-			"this posts text to Azure DevOps: needs the owner's click.")
+		why := "crius-post-guard could not read the hook input (" + err.Error() + "), so it cannot tell whether " +
+			"this posts text to Azure DevOps: needs the owner's click."
+		logAsk(in, why)
+		return ask(w, why)
 	}
 	if why := check(in); why != "" {
+		logAsk(in, why)
 		return ask(w, why)
 	}
 	return nil
+}
+
+// logAsk keeps each ask in $CRIUS_HOME/state/post-guard-asks.log (mode 600): the time, the tool, the folder, the reason
+// and the first 200 characters of what was asked on, newlines as ⏎ (Crius 11-01 22:35: an ask on code the tab no longer
+// showed was lost). A log that cannot be written is said on stderr; the ask goes out either way.
+func logAsk(in input, why string) {
+	t := in.ToolInput
+	var parts []string
+	for _, p := range append([]string{t.Command, t.Path, t.Code}, t.Commands...) {
+		if p != "" {
+			parts = append(parts, p)
+		}
+	}
+	text := []rune(strings.ReplaceAll(strings.Join(parts, " ⏎ "), "\n", "⏎"))
+	if len(text) > 200 {
+		text = text[:200]
+	}
+	home := os.Getenv("CRIUS_HOME")
+	if home == "" {
+		u, err := os.UserHomeDir()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "crius-post-guard: ask log:", err)
+			return
+		}
+		home = filepath.Join(u, ".crius")
+	}
+	f, err := os.OpenFile(filepath.Join(home, "state", "post-guard-asks.log"), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+	if err == nil {
+		_, err = fmt.Fprintf(f, "%s %s %s — %s — %s\n", time.Now().Format(time.RFC3339), in.ToolName, in.Cwd, why, string(text))
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "crius-post-guard: ask log:", err)
+	}
 }
 
 func ask(w io.Writer, why string) error {
