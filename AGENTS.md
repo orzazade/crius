@@ -19,7 +19,10 @@ Rules: [docs/RULES.md](docs/RULES.md) (definition of done, bugs, goals and repor
   each lead is told about the other and the order.
 - **Routine start-up prompts in leads Crius launched** (folder trust, start-up confirmations, in the
   owner's own project folders): Crius answers them. Still ask the owner for anything destructive,
-  outward-facing, production, live trading, sign-ins or credentials.
+  outward-facing, production, live trading, sign-ins or credentials. A prompt to post in Azure DevOps
+  (crius-post-guard, or an `mcp__azure-devops__` ask rule) is the owner's click, except for the quotes leads: Crius
+  reads the exact command and text and answers it (owner, 2026-11-01). Crius still says no to a merge to main,
+  auto-complete, production, or text with AI credit.
 - **Briefs for rig or branch updates** say: backup tag first, local only, resolve conflicts (upstream wins
   on security and behaviour; adapt our commits around it), rebuild and re-run the live checks, list each
   conflict and its fix in DONE. NEED only for a product decision. Never brief "stop on conflict".
@@ -39,13 +42,22 @@ Rules: [docs/RULES.md](docs/RULES.md) (definition of done, bugs, goals and repor
 - **Record and scorecard design:** when unsure whether to count an event, count it and show it. An event
   that shows on no score is silent success. Ask only when the choice changes cost or privacy.
 - Cortex: until it is fully ready, Crius approves its merges and deploys (small PRs, each checked); no owner wait
-  (owner, 2026-10-27).
+  (owner, 2026-10-27). No Codex review for Cortex changes; green CI and Crius's check are enough (owner, 2026-10-30).
 - Falcon: k3s deploys go as soon as their checks pass (review P1=0, live check after); no owner wait
   (owner, 2026-10-29).
+- Tamada: Crius makes its decisions, scifilab test deploys included; no owner wait. Contacting outside people
+  (restaurants) waits for the owner's intro (owner, 2026-11-01).
+- Timelock diary (yolo): Crius makes every product and design decision end to end; never ask the owner. Only
+  installing on his phone or anything under his Apple ID waits for him (owner, 2026-11-01). Every design decision
+  there (Crius's or the lead's) goes through the `frontend-design` and `ux-review` skills first (owner, 2026-11-01).
 - AXI v1 is being retired: a new v1-only security finding is one line in the next report, not an S1.
   Re-raise if it also hits v2 or the retirement date slips (owner, 2026-10-17).
+- Moving a session to another account resumes the same session (same id, full context) at a turn boundary; never
+  park and restart fresh (owner, 2026-10-30). Until `crius-spawn -move` does this: ~/.crius/state/crius/move-to-max2.sh.
 - `cmux send` targets a session only with `--workspace workspace:N --surface surface:NNN`. A bare positional
   number is treated as text and goes to your own surface.
+- Decline a prompt in a lead's tab only with `~/.crius/bin/crius-decline`: a bare Escape ends the tab's turn
+  and a bus line does not wake it, so the tab sits idle.
 
 ## Repo notes
 
