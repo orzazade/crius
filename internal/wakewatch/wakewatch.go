@@ -1501,7 +1501,17 @@ func wrongFolder(d Deps, h *hooks) [][2]string {
 			unread = cmp.Or(unread, err)
 			continue
 		}
-		i := slices.IndexFunc(cs, func(c string) bool { return c == "" || samePath(c) != samePath(r.FiledConfig()) })
+		// a record with no folder restores where Claude begins with none, ~/.claude: right for a role filed there (Crius 22:43)
+		def := ""
+		if u, err := os.UserHomeDir(); err == nil {
+			def = filepath.Join(u, ".claude")
+		}
+		i := slices.IndexFunc(cs, func(c string) bool {
+			if c == "" {
+				c = def
+			}
+			return c == "" || samePath(c) != samePath(r.FiledConfig())
+		})
 		if i < 0 {
 			continue
 		}

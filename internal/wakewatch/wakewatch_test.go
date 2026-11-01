@@ -2120,6 +2120,31 @@ func TestATabThatWouldRestoreOnAnotherFolderIsCaught(t *testing.T) {
 	}
 }
 
+// Crius 22:43: a record with no folder restores in ~/.claude, so a role filed there is in its own folder (timelock-diary
+// lead 11-01 22:37, a false alert).
+func TestARecordWithNoFolderIsRightForARoleFiledInTheDefaultFolder(t *testing.T) {
+	home := setup(t, nil)
+	u := t.TempDir()
+	t.Setenv("HOME", u)
+	def := filepath.Join(u, ".claude")
+	os.MkdirAll(def, 0o700)
+	role := hookState("s1", sessionstate.Idle, "timelock", "lead")
+	role.Config, role.Filed, role.Workspace = def, def, "W1"
+	if err := sessionstate.WriteRole(filepath.Join(home, "roles"), role, true); err != nil {
+		t.Fatal(err)
+	}
+	f := &fake{ses: []Session{{Name: "timelock: lead", ID: "s1", Started: t0.Add(-time.Hour)}}, states: []sessionstate.State{role},
+		restore: map[string][]string{sfID: {""}}}
+	if err := Run(f.deps(home, t0)); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range f.sent {
+		if strings.Contains(m, "cmux restart") {
+			t.Errorf("a role filed in ~/.claude with a record that names no folder alerted: %q", m)
+		}
+	}
+}
+
 // Crius 10-30 13:22: a Cortex NEED sat ~20 min unseen, as no bus waiter of Crius's covered cortex.log (Falcon missed two
 // lines the same way on 10-29 16:23). A bus log no waiter covers for 10 min wakes Crius once; a shorter gap (Crius
 // re-arms after each wake) does not, and a gap after the waiter came back alerts again.
