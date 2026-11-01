@@ -170,3 +170,69 @@ func TestAFailingOwnerClickRunAlertsOnceAndABrokenBusLineIsKeptApart(t *testing.
 		t.Fatal("a run that worked kept the error:", err)
 	}
 }
+
+// Crius 11-01 20:02: 9 repeat wakes 19:27-20:00 for 4 known Azure DevOps clicks. Once a prompt is flagged OWNER-CLICK, the
+// dialog alert leaves it to OWNER-CLICK's own repeat; a prompt not flagged yet, or another dialog in that tab, alerts.
+// Review X4: the tab is read again as deep as the clicks run reads it, so a dialog taller than the 30 lines of the main
+// run is the same prompt; a state the clicks job stopped rewriting (older than 3 min) flags nothing.
+func TestAFlaggedOwnerClickDrawsNoDialogAlert(t *testing.T) {
+	hook := screenFile(t, "owner-click-hook-1103.screen")
+	tall := strings.Replace(hook, " │ https://dev.azure.com", strings.Repeat(" │ --debug\n", 20)+" │ https://dev.azure.com", 1)
+	lines := strings.Split(tall, "\n")
+	tail := strings.Join(lines[len(lines)-30:], "\n") // what the main run's 30 lines show of it
+	other := strings.ReplaceAll(hook, "needs the owner's click", "needs a look")
+	mcp := screenFile(t, "owner-click-mcp-1105.screen")
+	for name, c := range map[string]struct {
+		text, deep string // the tab at 30 lines and at 80
+		posted     string // what the clicks job saw at 80 lines and posted; "": it ran on no tab
+		stopped    bool   // and then stopped rewriting its state
+		busFails   bool   // its bus append failed
+		alerts     int
+	}{
+		"flagged":     {hook, hook, hook, false, false, 0},
+		"not flagged": {hook, hook, "", false, false, 1},
+		// the clicks job has not seen it yet (it runs once a minute) or could not read the tab
+		"another dialog in a flagged tab":             {other, other, hook, false, false, 1},
+		"another owner-click dialog in a flagged tab": {mcp, mcp, hook, false, false, 1},
+		"a tall flagged dialog":                       {tail, tall, tall, false, false, 0},
+		"the clicks job stopped":                      {hook, hook, hook, true, false, 1},
+		"the post did not reach the bus":              {hook, hook, hook, false, true, 1},
+	} {
+		home := setup(t, map[string]string{"quotes.log": stamp(t0) + " INFO quotes:frontend -> quotes:lead — on it\n"})
+		if c.busFails {
+			testutil.Write(t, filepath.Join(home, "bus", "crius.log"), "")
+			if err := os.Chmod(filepath.Join(home, "bus", "crius.log"), 0o400); err != nil {
+				t.Fatal(err)
+			}
+		}
+		clicksAt := func(at time.Time) {
+			if c.posted == "" {
+				return
+			}
+			flaggedScreen := []Screen{screen("quotes · frontend", c.posted)}
+			if err := Clicks(ClickDeps{Home: home, Now: at, Screens: func() ([]Screen, error) { return flaggedScreen, nil }}); err != nil && !c.busFails {
+				t.Fatal(err)
+			}
+			if err := os.Chtimes(filepath.Join(home, "state", "owner-clicks.json"), at, at); err != nil {
+				t.Fatal(err)
+			}
+		}
+		clicksAt(t0)
+		f := &fake{deep: map[string]string{"surface:7": c.deep}}
+		runAt(t, home, f, func(at time.Time) []Screen {
+			if !c.stopped {
+				clicksAt(at)
+			}
+			return []Screen{screen("quotes · frontend", c.text)}
+		}, 0, 5, 11, 15)
+		n := 0
+		for _, m := range f.sent {
+			if strings.Contains(m, "waits on a question or dialog") {
+				n++
+			}
+		}
+		if n != c.alerts {
+			t.Errorf("%s: %d dialog alerts, want %d: %q", name, n, c.alerts, f.sent)
+		}
+	}
+}

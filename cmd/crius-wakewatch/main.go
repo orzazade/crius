@@ -44,23 +44,29 @@ func main() {
 		return
 	}
 	if len(os.Args) == 2 && os.Args[1] == "clicks" {
-		// 80 lines: a tall dialog keeps its tool, its reason and the PR title in view
-		err := wakewatch.Clicks(wakewatch.ClickDeps{Home: store.Home(), Now: time.Now(), Screens: func() ([]wakewatch.Screen, error) { return readScreens("80") }})
+		err := wakewatch.Clicks(wakewatch.ClickDeps{Home: store.Home(), Now: time.Now(), Screens: func() ([]wakewatch.Screen, error) { return readScreens(clickLines) }})
 		if err != nil {
 			fmt.Fprintln(os.Stderr, time.Now().Format(time.RFC3339), "crius-wakewatch clicks:", err)
 			os.Exit(1)
 		}
 		return
 	}
+	if len(os.Args) == 3 && os.Args[1] == "flagged" {
+		// team-wait.sh asks before it wakes Crius for a sweep line of a tab: exit 0 when OWNER-CLICK posted its live prompt
+		if !wakewatch.ClickFlagged(store.Home(), time.Now(), os.Args[2], func() (string, error) { return reread(os.Args[2]) }) {
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) > 1 {
-		fmt.Fprintln(os.Stderr, "usage: crius-wakewatch [after-boot | clicks]")
+		fmt.Fprintln(os.Stderr, "usage: crius-wakewatch [after-boot | clicks | flagged <surface>]")
 		os.Exit(2)
 	}
 	// Messages held on an earlier run go first, so a new alert never jumps ahead of an older one.
 	if err := flushOutbox(store.Home(), time.Now()); err != nil {
 		fmt.Fprintln(os.Stderr, time.Now().Format(time.RFC3339), "crius-wakewatch: outbox:", err)
 	}
-	err := wakewatch.Run(wakewatch.Deps{Home: store.Home(), Now: time.Now(), Screens: screens, Send: send, HandedOver: handedOver,
+	err := wakewatch.Run(wakewatch.Deps{Home: store.Home(), Now: time.Now(), Screens: screens, Reread: reread, Send: send, HandedOver: handedOver,
 		Workspaces: workspaces, Resources: resources, Load: loadAvg, Tools: tools, Sessions: func() ([]wakewatch.Session, error) {
 			home, err := os.UserHomeDir()
 			if err != nil {
@@ -216,6 +222,15 @@ func waiterLogs(ps string) []string {
 
 // screens reads the last 30 lines of every terminal tab in cmux. A tab whose read fails comes back with Err set.
 func screens() ([]wakewatch.Screen, error) { return readScreens("30") }
+
+// clickLines is how deep the owner-click checks read a tab: a tall dialog keeps its tool, its reason and the PR title in view.
+const clickLines = "80"
+
+// reread reads one tab as deep as the owner-click run does.
+func reread(surface string) (string, error) {
+	text, err := outbox.Cmux("read-screen", "--surface", surface, "--lines", clickLines)
+	return string(text), err
+}
 
 // readScreens reads the last lines of every terminal tab in cmux.
 func readScreens(lines string) ([]wakewatch.Screen, error) {

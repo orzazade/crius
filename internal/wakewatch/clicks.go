@@ -40,10 +40,11 @@ type ClickDeps struct {
 	Screens func() ([]Screen, error)
 }
 
-// flagged is a tab's prompt waiting on the owner's click: its hash, when first seen and when last posted.
+// flagged is a tab's prompt waiting on the owner's click: its hash, when first seen, when last posted, and when a post
+// last reached the bus (Confirmed equals Posted only then: review X4 r2, a failed append must not quiet anything).
 type flagged struct {
-	Hash          string
-	Since, Posted time.Time
+	Hash                     string
+	Since, Posted, Confirmed time.Time
 }
 
 // OwnerClick reads a screen's live permission dialog and reports whether only the owner may answer it: the post-guard's
@@ -162,7 +163,7 @@ func clicks(d ClickDeps) error {
 		return err
 	}
 	next := map[string]flagged{}
-	var posts []string
+	var posts, posted []string
 	for _, s := range screens {
 		if s.Err != "" {
 			if f, ok := seen[s.Surface]; ok {
@@ -193,6 +194,7 @@ func clicks(d ClickDeps) error {
 				return err
 			}
 			posts = append(posts, line)
+			posted = append(posted, s.Surface)
 			f.Posted = d.Now
 		}
 		next[s.Surface] = f
@@ -222,7 +224,15 @@ func clicks(d ClickDeps) error {
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	for _, s := range posted {
+		e := next[s]
+		e.Confirmed = e.Posted
+		next[s] = e
+	}
+	return writeJSON(path, next)
 }
 
 // promptKey is a prompt without spaces and box lines: a pane of another width wraps a long word elsewhere and draws its
@@ -257,4 +267,35 @@ func writeJSON(path string, v any) error {
 		os.Remove(tmp.Name())
 	}
 	return werr
+}
+
+// clickFresh is how old the owner-click state may be: the clicks job rewrites it every minute, so an older one means the
+// job stopped and nothing repeats the prompt (review X4).
+const clickFresh = 3 * time.Minute
+
+// ClickFlagged says whether a tab's live prompt is one OWNER-CLICK posted (Crius 11-01 20:02: 9 repeat wakes 19:27-20:00
+// for 4 known Azure DevOps clicks): OWNER-CLICK's own 30-min repeat covers it then. read gives the tab as deep as the
+// clicks run reads it, and is called only when the state holds a prompt whose post reached the bus. Another prompt in that tab,
+// a read that fails, or a state file that cannot be read or is older than clickFresh is not flagged and alerts as before.
+func ClickFlagged(home string, now time.Time, surface string, read func() (string, error)) bool {
+	path := filepath.Join(home, "state", "owner-clicks.json")
+	fi, err := os.Stat(path)
+	if err != nil || now.Sub(fi.ModTime()) > clickFresh {
+		return false
+	}
+	var seen map[string]flagged
+	b, err := os.ReadFile(path)
+	if err != nil || json.Unmarshal(b, &seen) != nil {
+		return false
+	}
+	f, ok := seen[surface]
+	if !ok || f.Posted.IsZero() || !f.Confirmed.Equal(f.Posted) {
+		return false
+	}
+	text, err := read()
+	if err != nil {
+		return false
+	}
+	prompt, _, ok := OwnerClick(text)
+	return ok && f.Hash == hash(promptKey(prompt))
 }

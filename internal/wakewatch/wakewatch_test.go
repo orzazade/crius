@@ -42,6 +42,7 @@ type fake struct {
 	rsErr   error
 	waiters []string // the bus logs a live waiter covers; nil: every bus log in home
 	waitErr error
+	deep    map[string]string // surface -> the tab read deep; none: its screen
 }
 
 func (f *fake) deps(home string, now time.Time) Deps {
@@ -52,6 +53,17 @@ func (f *fake) deps(home string, now time.Time) Deps {
 		Workspaces: func() ([]Workspace, error) { return f.wss, f.wsErr },
 		States:     func() ([]sessionstate.State, error) { return f.states, f.stErr },
 		Restore:    func(surface string) ([]string, error) { return f.restore[surface], f.rsErr },
+		Reread: func(surface string) (string, error) {
+			if text, ok := f.deep[surface]; ok {
+				return text, nil
+			}
+			for _, s := range f.screens {
+				if s.Surface == surface {
+					return s.Text, nil
+				}
+			}
+			return "", fmt.Errorf("no tab %s", surface)
+		},
 		Waiters: func() ([]string, error) {
 			if f.waiters == nil {
 				all, _ := filepath.Glob(filepath.Join(home, "bus", "*.log"))

@@ -89,7 +89,9 @@ type Deps struct {
 	Home    string
 	Now     time.Time
 	Screens func() ([]Screen, error)
-	Send    func(text string) error
+	// Reread reads one tab as deep as the owner-click run does (Screens reads 30 lines; a tall dialog needs more).
+	Reread func(surface string) (string, error)
+	Send   func(text string) error
 	// HandedOver says a Send error still hands the text to the outbox: stored to be typed later, or set aside after
 	// it may have gone. nil: no error does.
 	HandedOver func(err error) bool
@@ -641,7 +643,7 @@ func waiting(st *state, d Deps, watch projects, park parked, screens []Screen, h
 			continue
 		}
 		if ask {
-			if wait := d.Now.Sub(seen.Since); wait >= screenAfter {
+			if wait := d.Now.Sub(seen.Since); wait >= screenAfter && !ClickFlagged(d.Home, d.Now, s.Surface, func() (string, error) { return d.Reread(s.Surface) }) {
 				out = append(out, [2]string{screenKey(s.Surface, h),
 					fmt.Sprintf("tab %q (%s) waits on a question or dialog for %d min", s.Title, s.Surface, int(wait.Minutes()))})
 			}
