@@ -30,8 +30,8 @@ var (
 	// its rule's line.
 	clickToolRe = regexp.MustCompile(`Tool use azure-devops — (.+?)(?: Tool:)? \(MCP\)|Permission rule mcp__azure-devops__(\w+) requires confirmation`)
 	// A dialog's option under the cursor: the owner may have moved it off option 1.
-	optionRe  = regexp.MustCompile(`^\s*❯\s*\d+\.\s`)
-	menuRe    = regexp.MustCompile(`^\s*\d+\.\s`)
+	optionRe  = regexp.MustCompile(`^[\s\x{a0}]*❯[\s\x{a0}]*\d+\.[\s\x{a0}]`)
+	menuRe    = regexp.MustCompile(`^[\s\x{a0}]*\d+\.[\s\x{a0}]`)
 	prTitleRe = regexp.MustCompile(`--title[ =]"([^"]+)"|--title[ =]'([^']+)'|(?:^| )title: "([^"]+)"`)
 	prIDRe    = regexp.MustCompile(`--(?:id|pull-request-id)[ =](\d+)|pullRequestId: (\d+)`)
 	prRepoRe  = regexp.MustCompile(`--repository[ =]"?([\w.-]+)|repositoryId: "([^"]+)"`)

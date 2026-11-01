@@ -7,14 +7,15 @@ import (
 
 var (
 	// wait-sweep.sh's rule (~/.claude/hooks): a numbered option, the "❯" cursor on one, a rule or box border, a dropped
-	// prompt's notice
-	sweepOptRe     = regexp.MustCompile(`^[\s│]*(?:❯\s*)?(\d+)\.\s`)
-	sweepCursorRe  = regexp.MustCompile(`^[\s│]*❯\s*\d+\.\s`)
-	sweepFirstRe   = regexp.MustCompile(`^[\s│]*(?:❯\s*)?1\.\s`)
-	sweepBorderRe  = regexp.MustCompile(`^[\s│]*[─╌╭╰┌└]`)
-	sweepDroppedRe = regexp.MustCompile(`^[\s│⎿⏺✗✘⚠•·*-]*Prompt dropped by a hook`)
-	// The turn's last reply line, "⏺ text" or a result under it, "⎿  text"
-	replyRe = regexp.MustCompile(`^\s*[⏺⎿]\s*(.*)$`)
+	// prompt's notice. A space may be drawn as a no-break space, which perl's \s takes and Go's does not (review of X5).
+	sweepOptRe     = regexp.MustCompile(`^[\s\x{a0}│]*(?:❯[\s\x{a0}]*)?(\d+)\.[\s\x{a0}]`)
+	sweepCursorRe  = regexp.MustCompile(`^[\s\x{a0}│]*❯[\s\x{a0}]*\d+\.[\s\x{a0}]`)
+	sweepFirstRe   = regexp.MustCompile(`^[\s\x{a0}│]*(?:❯[\s\x{a0}]*)?1\.[\s\x{a0}]`)
+	sweepBorderRe  = regexp.MustCompile(`^[\s\x{a0}│]*[─╌╭╰┌└]`)
+	sweepDroppedRe = regexp.MustCompile(`^[\s\x{a0}│⎿⏺✗✘⚠•·*-]*Prompt dropped by a hook`)
+	// The turn's last reply line, "⏺ text" or a result under it, "⎿  text"; Claude Code's error line in it
+	replyRe    = regexp.MustCompile(`^\s*[⏺⎿]\s*(.*)$`)
+	apiErrorRe = regexp.MustCompile(`^API Error(?::|\s*\()`)
 )
 
 // LivePrompt says whether a tab's screen still shows a prompt waiting on an answer (Crius 11-01 22:09: Crius relayed
@@ -63,18 +64,19 @@ func sweepClean(s string) string {
 }
 
 // apiStop gives the line a turn ended on when it is an API error (Crius 11-01 22:09: quotes · backend-orders sat dead
-// on one, unseen): its last reply line above the input box, with no working line and no question after it. A retry
-// ("API Error (…) · Retrying in 5 seconds") is still working.
+// on one, unseen): its last reply line above the input box, with no working line after it. A retry ("API Error (…) ·
+// Retrying in 5 seconds") is still working. A ❓ above it was asked before the turn that died (review of X5), and a
+// dialog hides the input box.
 func apiStop(text string) (string, bool) {
 	body, _, boxed := split(text)
-	if !boxed || spinning(text) || strings.Contains(text, "esc to interrupt") || asks(text) {
+	if !boxed || spinning(text) || strings.Contains(text, "esc to interrupt") {
 		return "", false
 	}
 	lines := strings.Split(body, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
 		if m := replyRe.FindStringSubmatch(lines[i]); m != nil {
 			t := strings.TrimSpace(m[1])
-			return t, strings.HasPrefix(t, "API Error") && !strings.Contains(t, "Retrying in")
+			return t, apiErrorRe.MatchString(t) && !strings.Contains(t, "Retrying in")
 		}
 	}
 	return "", false

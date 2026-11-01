@@ -25,22 +25,34 @@ func TestATabStoppedOnAnAPIErrorAlertsAtOnce(t *testing.T) {
 	if len(f.sent) != 1 {
 		t.Fatal("said again within 20 min:", f.sent)
 	}
-	for name, reply := range map[string]string{
-		"still retrying":            "API Error (Request timed out.) · Retrying in 5 seconds… (attempt 3/10)\n\n✻ Brewing… (12s · esc to interrupt)",
-		"an error, then it went on": "API Error: 500 Internal server error\n\n⏺ Picked up again: the checks pass.\n\n✻ Brewed for 2m · done 10:20 PM",
-		"an ordinary end":           "PR opened, checks running.\n\n⏳",
-		"a retry countdown alone":   "API Error (Overloaded) · Retrying in 3 seconds… (attempt 2/10)",
-		"an error, working again":   "API Error: 529 Overloaded\n\n✻ Brewing… (4s · esc to interrupt)",
+	for name, c := range map[string]struct {
+		session, reply string
+		stopped        bool
+	}{
+		"still retrying":            {"quotes · backend-orders", "API Error (Request timed out.) · Retrying in 5 seconds… (attempt 3/10)\n\n✻ Brewing… (12s · esc to interrupt)", false},
+		"an error, then it went on": {"quotes · backend-orders", "API Error: 500 Internal server error\n\n⏺ Picked up again: the checks pass.\n\n✻ Brewed for 2m · done 10:20 PM", false},
+		"an ordinary end":           {"quotes · backend-orders", "PR opened, checks running.\n\n⏳", false},
+		"a retry countdown alone":   {"quotes · backend-orders", "API Error (Overloaded) · Retrying in 3 seconds… (attempt 2/10)", false},
+		"an error, working again":   {"quotes · backend-orders", "API Error: 529 Overloaded\n\n✻ Brewing… (4s · esc to interrupt)", false},
+		// review of X5: words, not Claude Code's error line ("API Error: …" or "API Error (…)")
+		"a reply about API errors": {"quotes · backend-orders", "API Error handling is fixed and tested.\n\n✅", false},
+		// review of X5: a tab outside any team is no one's to restart
+		"a session of no team": {"scratch", "API Error: 500 Internal server error", false},
+		// review of X5: the owner's "go" to an earlier ❓, then the next turn died; the old ❓ is still on screen
+		"an old question, then the error": {"quotes · backend-orders", "Shall I deploy it?\n\n❓\n\n> go\n\n⏺ API Error: 500 Internal server error", true},
+		"an error in parentheses":         {"quotes · backend-orders", "API Error (Connection error.)", true},
 	} {
 		home := setup(t, map[string]string{"quotes.log": busFrom("quotes:lead", t0)})
 		f := &fake{}
 		runAt(t, home, f, func(at time.Time) []Screen {
-			return []Screen{screen("quotes · backend-orders", tab("quotes · backend-orders", reply, jobs, at))}
+			return []Screen{screen(c.session, tab(c.session, c.reply, jobs, at))}
 		}, 0, 5)
+		var stopped bool
 		for _, s := range f.sent {
-			if strings.Contains(s, "STOPPED") {
-				t.Errorf("%s: %s", name, s)
-			}
+			stopped = stopped || strings.Contains(s, "STOPPED")
+		}
+		if stopped != c.stopped {
+			t.Errorf("%s: STOPPED %v: %q", name, stopped, f.sent)
 		}
 	}
 }
@@ -61,6 +73,9 @@ func TestAPromptIsGoneOnlyWhenTheTabShowsNone(t *testing.T) {
 		"an idle tab":                        {"⏺ PR opened.\n\n✅\n" + idleBox, false},
 		"a question in prose, no menu":       {"⏺ Should I merge it?\n\n❓\n" + idleBox, false},
 		"a reply listing options, no cursor": {"⏺ Which one should I take?\n  1. Fix the test\n  2. Skip it\n\n✻ Brewing… (3s · esc to interrupt)\n", false},
+		// review of X5: a no-break space where a space was drawn; perl's \s takes it, Go's \s does not
+		"a menu drawn with no-break spaces": {"⏺ Bash(rm -rf build)\n\n Do you want to proceed?\n   1. Yes\n ❯ 2. No\n", true},
+		"the cursor on 1, a no-break space": {"⏺ Bash(rm -rf build)\n ❯ 1. Yes\n   2. No\n", true},
 	} {
 		if got := LivePrompt(c.text); got != c.live {
 			t.Errorf("%s: live %v", name, got)
