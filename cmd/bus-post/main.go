@@ -16,6 +16,10 @@
 // A project's table in ~/.crius/bus.toml adds the guards in guards.go: hex words must be commits, and one live run at a
 // time (the check and the write hold a lock on the bus log).
 //
+// An OWNER line from crius:lead to a project with an open card in the owner queue opens with the tag of one of its
+// cards ("[queue q62] owner: …"), the only way it closes the card: answers relayed untagged left q62-q64 open for hours
+// (Crius 11-01 17:19).
+//
 // An ORDER or ASK to someone with no live Claude Code session is posted and said, exit 5: crius:lead's ORDERs of 10-25
 // 13:18 to crius:build went nowhere for hours. Posted, so a caller must not send it again.
 //
@@ -42,6 +46,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/orzazade/crius/internal/ownerqueue"
 	"github.com/orzazade/crius/internal/redact"
 	"github.com/orzazade/crius/internal/store"
 	"github.com/orzazade/crius/internal/wakewatch"
@@ -141,6 +146,11 @@ func postLine(args []string, now time.Time, stderr io.Writer) int {
 	}
 	if typ == "VERIFIED" {
 		if err := checkRunLog(text); err != nil {
+			return refuse(stderr, "%v", err)
+		}
+	}
+	if typ == "OWNER" && from == "crius:lead" {
+		if err := namesCard(store.Home(), now, to, logProject(log), text); err != nil {
 			return refuse(stderr, "%v", err)
 		}
 	}
@@ -274,6 +284,75 @@ func deadRecipients(to, project string) ([]string, error) {
 		}
 	}
 	return dead, nil
+}
+
+var openTag = regexp.MustCompile(`^\[queue (q\d+)\]`)
+
+// namesCard refuses an owner answer Crius relays to a project with an open card in the owner queue unless the text
+// opens with the tag of a card of that project, the only way such a line closes a card (Crius 11-01 17:19, a repeat:
+// q62-q64 stayed open 5-6 h after their answers went to tamada:lead untagged). A card the owner answered in the pane is
+// closed already and its tag still counts (review of V: crius-queue answer closes it, then hands Crius the tagged line).
+// A tag of another project's card is refused: the sync would close that card. A card of Crius's own may go to anyone. A queue never set up has no cards; one
+// that cannot be read is an error, not an empty queue.
+func namesCard(home string, now time.Time, to, project, text string) error {
+	q, err := ownerqueue.List(home, now)
+	if errors.Is(err, ownerqueue.ErrNotSetUp) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("the owner queue cannot be read to check this answer's card: %v", err)
+	}
+	tagged := "" // the project of the card the opening tag names
+	if m := openTag.FindStringSubmatch(text); m != nil {
+		for _, r := range q.Rows {
+			if r.ID == m[1] {
+				tagged = strings.ToLower(r.From) // every row's From is its project ("Crius" for Crius's own)
+			}
+		}
+	}
+	var projects []string
+	for _, n := range (&store.Line{To: to}).Recipients() {
+		n = strings.ToLower(n)
+		p, _, ok := strings.Cut(n, ":")
+		switch {
+		case n == "cc":
+			continue
+		case !ok && p == "crius":
+		case !ok: // a bare role, or all: the bus's own project
+			p = project
+		}
+		if !slices.Contains(projects, p) {
+			projects = append(projects, p)
+		}
+	}
+	if tagged == "crius" { // a card Crius added itself is answered to whoever acts on it (review r2 of V)
+		return nil
+	}
+	if tagged != "" && !slices.Contains(projects, tagged) {
+		return fmt.Errorf("the tag opening the text names a card of %s, but the line goes to %s", tagged, strings.Join(projects, ", "))
+	}
+	for _, p := range projects {
+		var cards []string
+		for _, r := range q.OpenRows() {
+			if strings.ToLower(r.From) == p {
+				cards = append(cards, r.ID+" ("+r.Title+")")
+			}
+		}
+		if len(cards) == 0 || tagged == p {
+			continue
+		}
+		have := "an open card: "
+		if len(cards) > 1 {
+			have = "open cards: "
+		}
+		split := ""
+		if len(projects) > 1 {
+			split = " Send one line per project."
+		}
+		return fmt.Errorf("%s has %s%s; open the text with [queue qN] of the card it answers: only a tag that opens an "+
+			"OWNER line closes a card.%s", p, have, strings.Join(cards, ", "), split)
+	}
+	return nil
 }
 
 func refuse(stderr io.Writer, format string, args ...any) int {

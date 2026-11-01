@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/orzazade/crius/internal/ownerqueue"
 	"github.com/orzazade/crius/internal/testutil"
 )
 
@@ -423,5 +424,89 @@ func TestARefusalIsLogged(t *testing.T) {
 	if rc != 6 || err != nil || !strings.Contains(string(b), "2026-10-25T17:43:00") ||
 		!strings.Contains(string(b), "rc=6 crius:lead ASK crius.log — bus-post: refused: typed time 17:50") {
 		t.Fatalf("rc %d, log %v: %q", rc, err, b)
+	}
+}
+
+// Crius 11-01 17:19, a repeat: three owner answers went to tamada:lead as OWNER lines with no [queue qN] (11:07, 11:08,
+// 15:52; the real lines, cut), so q62-q64 stayed open 5-6 h in the owner's "Waiting on you" pane. An OWNER line from
+// crius:lead to a project with an open card is refused unless its text opens with the tag of a card of that project.
+func TestAnOwnerRelayToAProjectWithAnOpenCardMustNameIt(t *testing.T) {
+	home, _ := setup(t)
+	tamada := filepath.Join(home, "bus", "tamada.log")
+	testutil.Write(t, tamada, "2026-11-01T11:06 NEED-OWNER tamada:lead -> crius:lead — Pilot pack draft 2ebb4ca docs/PILOT-PACK.md. "+
+		"Owner decision: may pilot sites keep a few hundred face-blurred still frames on the site PC\n"+
+		"2026-11-01T11:07 NEED-OWNER tamada:lead -> crius:lead — Next milestone is the edge benchmark: code + model installs\n")
+	testutil.Write(t, filepath.Join(home, "bus", "cortex.log"), "")
+	testutil.Write(t, filepath.Join(home, "bus", "quotes.log"), "2026-11-01T11:05 NEED-OWNER quotes:lead -> crius:lead — GO for the env004 deploy\n")
+	if err := ownerqueue.Init(home, "2026-11-01T00:00"); err != nil {
+		t.Fatal(err)
+	}
+	q, err := ownerqueue.List(home, at("2026-11-01T11:07"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if open := q.OpenRows(); len(open) != 3 || open[0].From != "quotes" || open[1].ID != "q2" || open[2].ID != "q3" { // logs in name order
+		t.Fatalf("%+v", open)
+	}
+	relay := "Owner 11-01: training frames = option b. With the restaurant's written OK, keep a few hundred still frames"
+	now := at("2026-11-01T11:07")
+	refused := func(to, text, want string) {
+		t.Helper()
+		if rc, errs := post(t, now, tamada, "OWNER", "crius:lead", to, text); rc != 2 || !strings.Contains(errs, want) {
+			t.Errorf("to %s, %q: rc %d, %q; want refused with %q", to, text, rc, errs, want)
+		}
+	}
+	for _, to := range []string{"tamada:lead", "tamada:lead, cortex:lead", "lead", "all"} { // a bare role or all: the bus's project
+		refused(to, relay, "tamada has open cards: q2 (Pilot pack draft")
+	}
+	refused("tamada:lead", "Owner 11-01: option b, as in [queue q2]", "tamada has open cards") // a tag further on answers nothing
+	refused("tamada:lead", "[queue q7] owner: option b", "tamada has open cards")              // no such card
+	refused("quotes:lead", "[queue q2] owner: go", "names a card of tamada, but the line goes to quotes")
+	refused("cortex:lead", "[queue q1] owner: go", "names a card of quotes, but the line goes to cortex")
+	refused("quotes:lead, tamada:lead", "[queue q1] owner: go", "Send one line per project")
+	// Review r2 of V: a card Crius added itself is answered to the lead that acts on it.
+	crius, err := ownerqueue.Add(home, now, ownerqueue.Row{Title: "Should tamada buy the N100?", From: "Crius"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rc, errs := post(t, now, tamada, "OWNER", "crius:lead", "tamada:lead", "[queue "+crius+"] owner: no"); rc != 0 {
+		t.Fatal("a card of Crius's own:", rc, errs)
+	}
+	// Other projects, other senders and other types are free of it.
+	for _, c := range [][3]string{{"OWNER", "crius:lead", "cortex:lead"}, {"INFO", "crius:lead", "tamada:lead"}, {"OWNER", "quotes:lead", "tamada:lead"}} {
+		if rc, errs := post(t, now, tamada, c[0], c[1], c[2], relay); rc != 0 {
+			t.Fatal(c, rc, errs)
+		}
+	}
+	// Review of V (P1): the owner answers q2 in the pane, which closes it and hands Crius the tagged line; q3 is open.
+	if err := ownerqueue.Answer(home, now, "q2", "option b", "owner"); err != nil {
+		t.Fatal(err)
+	}
+	if rc, errs := post(t, now, tamada, "OWNER", "crius:lead", "tamada:lead", "[queue q2] owner: "+relay); rc != 0 {
+		t.Fatal("a card answered in the pane:", rc, errs)
+	}
+	if rc, errs := post(t, now, tamada, "OWNER", "crius:lead", "tamada:lead", "[queue q3] owner: GO for code and model installs"); rc != 0 {
+		t.Fatal(rc, errs)
+	}
+	if q, err = ownerqueue.List(home, now); err != nil {
+		t.Fatal(err)
+	}
+	if open := q.OpenRows(); len(open) != 1 || open[0].From != "quotes" {
+		t.Fatalf("the tagged relays left a tamada card open: %+v", open)
+	}
+	if rc, errs := post(t, now, tamada, "OWNER", "crius:lead", "tamada:lead", relay); rc != 0 {
+		t.Fatal("no open card left:", rc, errs)
+	}
+}
+
+// A queue that cannot be read is said, not taken as no open card; a queue never set up has no cards.
+func TestAnOwnerRelayWhenTheQueueCannotBeRead(t *testing.T) {
+	home, log := setup(t)
+	if rc, errs := post(t, at("2026-11-01T11:07"), log, "OWNER", "crius:lead", "tamada:lead", "x"); rc != 0 {
+		t.Fatal("no queue set up:", rc, errs)
+	}
+	testutil.Write(t, filepath.Join(home, "state", "owner-queue.sync.json"), "{not json")
+	if rc, errs := post(t, at("2026-11-01T11:07"), log, "OWNER", "crius:lead", "tamada:lead", "x"); rc != 2 || !strings.Contains(errs, "owner queue") {
+		t.Fatal(rc, errs)
 	}
 }
