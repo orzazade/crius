@@ -7,7 +7,8 @@ import (
 
 var (
 	// wait-sweep.sh's rule (~/.claude/hooks): a numbered option, the "❯" cursor on one, a rule or box border, a dropped
-	// prompt's notice. A space may be drawn as a no-break space, which perl's \s takes and Go's does not (review of X5).
+	// prompt's notice. A space may be drawn as a no-break space, which perl's \s takes and Go's does not (review of X5);
+	// these scan only below the idle input box, whose "❯" a no-break space follows.
 	sweepOptRe     = regexp.MustCompile(`^[\s\x{a0}│]*(?:❯[\s\x{a0}]*)?(\d+)\.[\s\x{a0}]`)
 	sweepCursorRe  = regexp.MustCompile(`^[\s\x{a0}│]*❯[\s\x{a0}]*\d+\.[\s\x{a0}]`)
 	sweepFirstRe   = regexp.MustCompile(`^[\s\x{a0}│]*(?:❯[\s\x{a0}]*)?1\.[\s\x{a0}]`)
@@ -65,8 +66,8 @@ func sweepClean(s string) string {
 
 // apiStop gives the line a turn ended on when it is an API error (Crius 11-01 22:09: quotes · backend-orders sat dead
 // on one, unseen): its last reply line above the input box, with no working line after it. A retry ("API Error (…) ·
-// Retrying in 5 seconds") is still working. A ❓ above it was asked before the turn that died (review of X5), and a
-// dialog hides the input box.
+// Retrying in 5 seconds") is still working. A ❓ above it was asked before the turn that died (review of X5), one after
+// it ends an ordinary turn that only mentions an error (review r2), and a dialog hides the input box.
 func apiStop(text string) (string, bool) {
 	body, _, boxed := split(text)
 	if !boxed || spinning(text) || strings.Contains(text, "esc to interrupt") {
@@ -76,7 +77,7 @@ func apiStop(text string) (string, bool) {
 	for i := len(lines) - 1; i >= 0; i-- {
 		if m := replyRe.FindStringSubmatch(lines[i]); m != nil {
 			t := strings.TrimSpace(m[1])
-			return t, apiErrorRe.MatchString(t) && !strings.Contains(t, "Retrying in")
+			return t, apiErrorRe.MatchString(t) && !strings.Contains(t, "Retrying in") && !strings.ContainsAny(strings.Join(lines[i:], "\n"), "❓✅⏳")
 		}
 	}
 	return "", false

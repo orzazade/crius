@@ -41,6 +41,9 @@ func TestATabStoppedOnAnAPIErrorAlertsAtOnce(t *testing.T) {
 		// review of X5: the owner's "go" to an earlier ❓, then the next turn died; the old ❓ is still on screen
 		"an old question, then the error": {"quotes · backend-orders", "Shall I deploy it?\n\n❓\n\n> go\n\n⏺ API Error: 500 Internal server error", true},
 		"an error in parentheses":         {"quotes · backend-orders", "API Error (Connection error.)", true},
+		// review r2 of X5: a reply that opens with the words and ends on a status emoji is an ordinary turn
+		"a question about an API error": {"quotes · backend-orders", "API Error (429) shows in the logs again. Shall I add a retry?\n\n  ❓", false},
+		"a fix of API errors, done":     {"quotes · backend-orders", "API Error: 500 responses now retry three times.\n\n✅", false},
 	} {
 		home := setup(t, map[string]string{"quotes.log": busFrom("quotes:lead", t0)})
 		f := &fake{}
@@ -74,8 +77,10 @@ func TestAPromptIsGoneOnlyWhenTheTabShowsNone(t *testing.T) {
 		"a question in prose, no menu":       {"⏺ Should I merge it?\n\n❓\n" + idleBox, false},
 		"a reply listing options, no cursor": {"⏺ Which one should I take?\n  1. Fix the test\n  2. Skip it\n\n✻ Brewing… (3s · esc to interrupt)\n", false},
 		// review of X5: a no-break space where a space was drawn; perl's \s takes it, Go's \s does not
-		"a menu drawn with no-break spaces": {"⏺ Bash(rm -rf build)\n\n Do you want to proceed?\n   1. Yes\n ❯ 2. No\n", true},
-		"the cursor on 1, a no-break space": {"⏺ Bash(rm -rf build)\n ❯ 1. Yes\n   2. No\n", true},
+		"a menu drawn with no-break spaces": {"⏺ Bash(rm -rf build)\n\n Do you want to proceed?\n\u00a0\u00a0 1. Yes\n ❯\u00a02. No\n", true},
+		// review r2 of X5: the idle input box is "❯" and a no-break space; a draft in it that starts with a number is no
+		// dialog (testdata/marketplace-asks-1458.screen)
+		"a numbered draft in the input box": {"⏺ PR opened.\n\n⏳\n" + strings.Replace(idleBox, "❯ \n", "❯\u00a01. fix the flaky test first\n", 1), false},
 	} {
 		if got := LivePrompt(c.text); got != c.live {
 			t.Errorf("%s: live %v", name, got)

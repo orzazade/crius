@@ -65,8 +65,9 @@ var (
 	wakeTypes  = map[string]bool{"DONE": true, "NEED": true, "CLEAR-READY": true, "ASK": true}
 	replyTypes = map[string]bool{"ORDER": true, "ANSWER": true, "VERIFIED": true, "ACK": true, "INFO": true, "GO": true, "OWNER": true}
 	lineRe     = regexp.MustCompile(`^(\d{4}-\d\d-\d\dT\d\d:\d\dZ?) ([A-Z][A-Z-]*) (\S+)(?: -> (.*?))? — `)
-	// A Claude Code permission or choice dialog: a numbered option under the cursor.
-	dialogRe = regexp.MustCompile(`(?m)^[\s\x{a0}]*❯[\s\x{a0}]*1\.[\s\x{a0}]`)
+	// A Claude Code permission or choice dialog: a numbered option under the cursor. Its spaces are plain: the idle input
+	// box draws "❯" and a no-break space, so a draft there that starts with "1." is no dialog (review r2 of X5).
+	dialogRe = regexp.MustCompile(`(?m)^\s*❯\s*1\.\s`)
 	// The input box's top border carries the session name: "──── quotes: lead ─".
 	borderRe = regexp.MustCompile(`^─+(?: (.+?) ─+)?$`)
 	// A session name: "quotes: lead", "quotes · p6", or "quotes · p6 · max2" on a picked Max account.

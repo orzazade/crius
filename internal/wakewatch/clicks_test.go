@@ -41,6 +41,8 @@ func TestOwnerClickReadsTodaysPrompts(t *testing.T) {
 		// review of the owner-click watch: a dialog that only quotes the words is no ask
 		"a command quoting the reason": strings.Replace(hook, "Hook PreToolUse:Bash requires confirmation for this command:", "echo", 1),
 		"an edit naming an ADO tool":   "───────\n Edit file\n │ \"allow\": [\"mcp__azure-devops__wit_get_work_item\"]\n Do you want to make this edit to settings.json?\n ❯ 1. Yes\n   2. No\n─── crius · build ─\n",
+		// review r2 of X5: the idle input box is "❯" and a no-break space; a numbered draft in it is no dialog
+		"a quoted ask and a numbered draft": "⏺ It said: Hook PreToolUse:Bash requires confirmation for this command: Posts text to Azure DevOps under the owner's name: needs the owner's click.\n─── quotes · frontend ─\n❯\u00a01. retry the post\n───────\n",
 	} {
 		if _, what, ok := OwnerClick(text); ok {
 			t.Errorf("%s: flagged as %q", name, what)
@@ -51,8 +53,6 @@ func TestOwnerClickReadsTodaysPrompts(t *testing.T) {
 	for name, text := range map[string]string{
 		"cursor on 2": strings.Replace(hook, " ❯ 1. Yes\n   2. No", "   1. Yes\n ❯ 2. No", 1),
 		"rewrapped":   strings.Replace(hook, "demo-channel\n │ s/00000000", "demo-chann\n │ els/00000000", 1),
-		// review of X5: options drawn with no-break spaces
-		"cursor on 2, no-break spaces": strings.Replace(hook, " ❯ 1. Yes\n   2. No", "   1. Yes\n ❯ 2. No", 1),
 	} {
 		if text == hook {
 			t.Fatalf("%s: the fixture did not change", name)
@@ -218,8 +218,6 @@ func TestOnlyTheDialogsOwnBorderNamesItsProject(t *testing.T) {
 		"a named border below the dialog's plain one": {Screen{Surface: "surface:5", Title: "scratch", Text: unnamed + border + "\n"}, " OWNER-CLICK crius:wakewatch -> crius:lead — scratch (surface:5) waits on your click: "},
 		// review r2: the tab title is the one name the session does not draw itself, so it never gives CRIUS-CLICK
 		"an unnamed session in a quotes tab": {Screen{Surface: "surface:4", Title: "quotes · qa-frontend", Text: unnamed}, " OWNER-CLICK crius:wakewatch -> crius:lead — quotes · qa-frontend (surface:4) waits on your click: "},
-		// review of X5: options drawn with no-break spaces are the same dialog
-		"options drawn with no-break spaces": {Screen{Surface: "surface:6", Title: "x", Text: strings.NewReplacer(" ❯ 1. Yes", " ❯ 1. Yes", "   2. No", "   2. No").Replace(hook)}, " CRIUS-CLICK crius:wakewatch -> crius:lead — quotes · frontend (surface:6) waits on Crius's click: "},
 	} {
 		home := setup(t, nil)
 		testutil.Write(t, filepath.Join(home, "projects.toml"), "[projects.quotes]\nclicks = \"crius\"\n")
