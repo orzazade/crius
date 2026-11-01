@@ -1,6 +1,8 @@
 // Command crius-wakewatch runs one missed-wake check (internal/wakewatch) and exits 1 when it could not finish or not
 // reach Crius's tab. launchd starts it every 5 min. "crius-wakewatch after-boot" checks the helpers in
 // ~/.crius/helpers.toml instead and names the dead ones to Crius (wakewatch.AfterBoot); launchd starts it once per login.
+// "crius-wakewatch clicks" posts each tab that waits on a prompt only the owner may answer (wakewatch.Clicks); launchd
+// starts it every minute.
 package main
 
 import (
@@ -41,8 +43,17 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) == 2 && os.Args[1] == "clicks" {
+		// 80 lines: a tall dialog keeps its tool, its reason and the PR title in view
+		err := wakewatch.Clicks(wakewatch.ClickDeps{Home: store.Home(), Now: time.Now(), Screens: func() ([]wakewatch.Screen, error) { return readScreens("80") }})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, time.Now().Format(time.RFC3339), "crius-wakewatch clicks:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) > 1 {
-		fmt.Fprintln(os.Stderr, "usage: crius-wakewatch [after-boot]")
+		fmt.Fprintln(os.Stderr, "usage: crius-wakewatch [after-boot | clicks]")
 		os.Exit(2)
 	}
 	// Messages held on an earlier run go first, so a new alert never jumps ahead of an older one.
@@ -204,14 +215,17 @@ func waiterLogs(ps string) []string {
 }
 
 // screens reads the last 30 lines of every terminal tab in cmux. A tab whose read fails comes back with Err set.
-func screens() ([]wakewatch.Screen, error) {
+func screens() ([]wakewatch.Screen, error) { return readScreens("30") }
+
+// readScreens reads the last lines of every terminal tab in cmux.
+func readScreens(lines string) ([]wakewatch.Screen, error) {
 	tabs, err := outbox.Terminals()
 	if err != nil {
 		return nil, err
 	}
 	var out []wakewatch.Screen
 	for _, tab := range tabs {
-		text, err := outbox.Cmux("read-screen", "--surface", tab.Surface, "--lines", "30")
+		text, err := outbox.Cmux("read-screen", "--surface", tab.Surface, "--lines", lines)
 		if err != nil {
 			out = append(out, wakewatch.Screen{Surface: tab.Surface, ID: tab.ID, Title: tab.Title, Err: fmt.Sprintf("cmux read-screen: %v: %s", err, strings.TrimSpace(string(text)))})
 			continue

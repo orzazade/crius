@@ -461,10 +461,10 @@ more than a late one.
 - Types (the one list; `internal/store` tests check the Go list equals it): `DONE`, `BLOCKED`, `NEED-OWNER`,
   `PAUSE`, `PAUSED`, `LIMIT`, `ITEM`, `DECISION`, `RESUMED`, `ALERT`, `INFO`, `NEED`, `WAIT`, `PARKED`, `VERIFIED`,
   `CORRECTED`, `GO`, `ACK`, `ORDER`, `ANSWER`, `ASK`, `START`, `CLEAR-READY`, `OWNER`, `READY`, `PASS`, `FAIL`,
-  `LANDED`, `CORRECTION`. Tests also check that RULES.md and the
+  `LANDED`, `CORRECTION`, `OWNER-CLICK`. Tests also check that RULES.md and the
   cmux-team skill name no other type.
 - Who writes them: OWNER only Crius, for the owner's own words it relays (the goal report lists them with the decisions); ALERT only Crius's
-  own scripts (ingest, watchdog), WAIT the wait detector, PARKED the park mod
+  own scripts (ingest, watchdog), OWNER-CLICK only wakewatch (a tab waits on a prompt only the owner may answer), WAIT the wait detector, PARKED the park mod
   (via the leader). Team-only types (QUEUE, NEED-QA, BUG, LESSON) never go on the Crius bus; any type
   not in the list above is malformed: ingest keeps a row per line with the time it read it, and the goal report
   counts them per log.

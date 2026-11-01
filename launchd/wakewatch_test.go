@@ -42,3 +42,17 @@ func TestAfterBootJobRunsOnceAtLogin(t *testing.T) {
 	}
 	// The installer loads every template under launchd/: TestInstallLoadsEveryTemplate.
 }
+
+// Owner 11-01 19:1x: a tab waiting on the owner's click is posted within a minute, so its job runs every 60 s.
+func TestOwnerClickJobRunsEveryMinute(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join(testutil.RepoRoot(t), "launchd", "space.scifilab.crius.owner-clicks.plist.in"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"<string>@HOME@/.crius/bin/crius-wakewatch</string>\n\t\t<string>clicks</string>",
+		"<key>StartInterval</key>\n\t<integer>60</integer>", "/Applications/cmux.app/Contents/Resources/bin", "@HOME@/.crius/logs/owner-clicks.log"} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("plist lacks %q", want)
+		}
+	}
+}

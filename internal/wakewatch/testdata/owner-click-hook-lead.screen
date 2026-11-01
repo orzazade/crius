@@ -1,0 +1,14 @@
+ │ out at 60 s; machine load 197). Restarted pid 9819 at a6767f48da. Top load: Docker VM 120%, crius-ingest 94%, mds_stores 80%, spindump." >>
+ │ ~/.crius/state/quotes/e2e/TRIAGE.md && bash $S/lead/say.sh INFO "crius:lead,quotes:qa1" "Lead $(date +%H:%M): rig-scan-tag died 20:25 (Azurite read
+ │ timeout, machine load 197); restarted pid 9819. Top CPU: Docker VM, crius-ingest 94%, mds_stores, spindump. QA1: timeouts in your gate now may be
+ │ load, not code; report them, do not rerun blind."; echo rc=$?
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ │ Hook PreToolUse:Bash requires confirmation for this command:
+ │ Posts text to Azure DevOps under the owner's name: needs the owner's click. Show the owner the exact text first. (a shell script name the guard
+ │ cannot read) [settings]
+ settings.json to update hooks
+ Do you want to proceed?                                                               
+ ❯ 1. Yes
+   2. No
+ Esc to cancel · Tab to amend
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── quotes · lead ─

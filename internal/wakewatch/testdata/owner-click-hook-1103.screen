@@ -1,0 +1,25 @@
+───────────────────────────────────────────────────────────────────────────────────
+ Bash command
+ Open PR to develop
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ │ cd ~/Projects/work/svc_demo/wt/frontend; az repos pr create --org
+ │ https://dev.azure.com/example-org --project "Example Platform" --repository
+ │ svc_demo --source-branch feature/1001-web-shell --target-branch develop
+ │ --title "feat(web): demo web app shell with runtime config, sign-in and
+ │ health page" --description "$(cat
+ │ /private/tmp/claude-501/-Users-me-Projects-work-svc-demo-channel
+ │ s/00000000-0000-4000-8000-000000000000/scratchpad/pr-web-shell.md)"
+ │ --work-items 1001 --query
+ │ '{id:pullRequestId,status:status,autoComplete:autoCompleteSetBy}' -o json 2>&1
+ │ | tail -6
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ │ Hook PreToolUse:Bash requires confirmation for this command:
+ │ Posts text to Azure DevOps under the owner's name: needs the owner's click.
+ │ Show the owner the exact text first. (az repos pr create --description)
+ │ [settings]
+ settings.json to update hooks
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. No
+ Esc to cancel · Tab to amend
+─────────────────────────────────────────────────────────────── quotes · frontend ─

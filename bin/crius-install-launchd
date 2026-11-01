@@ -1,6 +1,6 @@
 #!/bin/bash
 # Install (or reinstall) every Crius launchd job under launchd/: the ingest every 10 min, the watchdog and the missed-wake
-# watch (wakewatch) every 5 min, the helper check once per login (after-boot, ~/.crius/helpers.toml), the goal report at
+# watch (wakewatch) every 5 min, the owner-click watch every minute, the helper check once per login (after-boot, ~/.crius/helpers.toml), the goal report at
 # 09:00 and 18:00, the weekly job (scorecards and the restore test, Thursday 04:00), and the disk cleanup (tidy, 04:30).
 # Builds every command under cmd/ from this checkout into ~/.crius/bin with the run scripts, then prints each installed
 # plist and the job state, so the owner sees exactly what was installed.

@@ -22,7 +22,7 @@ var Types = map[string]bool{"DONE": true, "BLOCKED": true, "NEED-OWNER": true, "
 	"ITEM": true, "DECISION": true, "RESUMED": true, "ALERT": true, "INFO": true, "NEED": true, "WAIT": true,
 	"PARKED": true, "VERIFIED": true, "CORRECTED": true, "GO": true, "ACK": true,
 	"ORDER": true, "ANSWER": true, "ASK": true, "START": true, "CLEAR-READY": true, "OWNER": true,
-	"READY": true, "PASS": true, "FAIL": true, "LANDED": true, "CORRECTION": true}
+	"READY": true, "PASS": true, "FAIL": true, "LANDED": true, "CORRECTION": true, "OWNER-CLICK": true}
 
 const MaxLen = 300
 
