@@ -17,23 +17,18 @@ var costNotes = []string{
 	"COST-STUDY-2026-10-25-B.md", "RESUME.md", "step2.md", "TSTACK-COMPARISON-2026-10-26.md",
 }
 
-// testRoot makes an empty folder for one test. Not t.TempDir: with TMPDIR under /tmp (Linux, a sandbox, the
-// scratchpad) every test folder would sit in a "tmp" series folder, where the guard refuses nothing.
+// testRoot makes an empty folder for one test, and has seriesDir read only the folders below it: wherever the
+// checkout or TMPDIR sits (/tmp, the scratchpad), the folders above would otherwise put every test folder in a "tmp"
+// series folder, where the guard refuses nothing (Crius 11-01 17:35).
 func testRoot(t *testing.T) string {
 	t.Helper()
-	dir, err := os.MkdirTemp(".", ".doc-guard-test-")
+	dir, err := filepath.Abs(t.TempDir()) // the guard checks absolute paths only; TMPDIR may be relative
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
-	abs, err := filepath.Abs(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if seriesDir(abs) {
-		t.Fatalf("test folder %s is under a series folder, where the guard refuses nothing", abs)
-	}
-	return abs
+	seriesFrom = dir
+	t.Cleanup(func() { seriesFrom = "" })
+	return dir
 }
 
 // notes makes a docs/notes folder with the real names and returns its path.
@@ -307,6 +302,28 @@ func TestTopicStem(t *testing.T) {
 	} {
 		if got := topicStem(name); got != want {
 			t.Errorf("%s: %q, want %q", name, got, want)
+		}
+	}
+}
+
+// seriesDir reads only the folders below seriesFrom; a folder outside it, and every folder when it is "", is read whole.
+func TestSeriesFoldersAboveTheTestFolderDoNotCount(t *testing.T) {
+	t.Cleanup(func() { seriesFrom = "" })
+	for _, c := range []struct {
+		from, dir string
+		want      bool
+	}{
+		{"/x/tmp/root", "/x/tmp/root/docs/notes", false},
+		{"/x/tmp/root", "/x/tmp/root", false},
+		{"/x/tmp/root", "/x/tmp/root/out/a", true},
+		{"/x/tmp/root", "/x/tmp/rootless/docs", true},
+		{"/x/tmp/root", "/x/tmp", true},
+		{"", "/x/tmp/root/docs/notes", true},
+		{"", "/Users/x/Projects/crius/docs", false},
+	} {
+		seriesFrom = c.from
+		if got := seriesDir(c.dir); got != c.want {
+			t.Errorf("seriesFrom %q, %s: %v, want %v", c.from, c.dir, got, c.want)
 		}
 	}
 }

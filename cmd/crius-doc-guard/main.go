@@ -229,7 +229,15 @@ var seriesDirs = []string{
 	"vendor",    // 2 / 2: third-party copies, a workflow repo vendor/gstack (PLAN_TUNING_V0.md, gpt-5.4.md)
 }
 
+// seriesFrom is the folder whose own path seriesDir does not read: "" reads the whole path. The tests set it to their
+// test folder, so a checkout under /tmp or a scratchpad does not put every test folder in a series folder (Crius 11-01
+// 17:35: 6 FAIL from /tmp/crius-verify-6002a0a, 0 from ~/Projects).
+var seriesFrom string
+
 func seriesDir(dir string) bool {
+	if rel, err := filepath.Rel(seriesFrom, dir); seriesFrom != "" && err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		dir = rel
+	}
 	for _, part := range strings.Split(strings.ToLower(filepath.ToSlash(dir)), "/") {
 		if slices.ContainsFunc(seriesDirs, func(g string) bool { ok, _ := path.Match(g, part); return ok }) {
 			return true
