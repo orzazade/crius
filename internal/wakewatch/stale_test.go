@@ -1,0 +1,78 @@
+package wakewatch
+
+import (
+	"errors"
+	"strings"
+	"testing"
+	"time"
+)
+
+// Crius 11-01 22:09: quotes · backend-orders sat dead on an API error and Crius missed it: its turn ended on the error
+// and a waiter shell kept the tab looking busy. Such a tab is STOPPED at once, and again every 20 min while it stays so.
+func TestATabStoppedOnAnAPIErrorAlertsAtOnce(t *testing.T) {
+	stop := "API Error: Your computer went to sleep mid-response. The response above may be incomplete.\n\n✻ Brewed for 1h 13m 31s · done 10:15 PM · 1 shell still running"
+	jobs := "  ⏵⏵ bypass permissions on · 1 shell\n"
+	home := setup(t, map[string]string{"quotes.log": busFrom("quotes:lead", t0)})
+	f := &fake{}
+	draw := func(at time.Time) []Screen {
+		return []Screen{screen("quotes · backend-orders", tab("quotes · backend-orders", stop, jobs, at))}
+	}
+	runAt(t, home, f, draw, 0)
+	if len(f.sent) != 1 || !strings.Contains(f.sent[0], "quotes:backend-orders (tab \"quotes · backend-orders\", surface:7) STOPPED: its last turn ended on an API error: API Error: Your computer went to sleep mid-response") {
+		t.Fatal(f.sent)
+	}
+	runAt(t, home, f, draw, 5, 19)
+	if len(f.sent) != 1 {
+		t.Fatal("said again within 20 min:", f.sent)
+	}
+	for name, reply := range map[string]string{
+		"still retrying":            "API Error (Request timed out.) · Retrying in 5 seconds… (attempt 3/10)\n\n✻ Brewing… (12s · esc to interrupt)",
+		"an error, then it went on": "API Error: 500 Internal server error\n\n⏺ Picked up again: the checks pass.\n\n✻ Brewed for 2m · done 10:20 PM",
+		"an ordinary end":           "PR opened, checks running.\n\n⏳",
+		"a retry countdown alone":   "API Error (Overloaded) · Retrying in 3 seconds… (attempt 2/10)",
+		"an error, working again":   "API Error: 529 Overloaded\n\n✻ Brewing… (4s · esc to interrupt)",
+	} {
+		home := setup(t, map[string]string{"quotes.log": busFrom("quotes:lead", t0)})
+		f := &fake{}
+		runAt(t, home, f, func(at time.Time) []Screen {
+			return []Screen{screen("quotes · backend-orders", tab("quotes · backend-orders", reply, jobs, at))}
+		}, 0, 5)
+		for _, s := range f.sent {
+			if strings.Contains(s, "STOPPED") {
+				t.Errorf("%s: %s", name, s)
+			}
+		}
+	}
+}
+
+// Crius 11-01 22:09: Crius relayed waits whose prompt was gone. A prompt is live while any rule sees one; only a tab
+// read with none is gone, and a tab that cannot be read is not.
+func TestAPromptIsGoneOnlyWhenTheTabShowsNone(t *testing.T) {
+	menu := "⏺ Bash(rm -rf build)\n\n Do you want to proceed?\n   1. Yes\n ❯ 2. No, and tell Claude what to do differently\n\n Esc to cancel\n"
+	idleBox := "───────── quotes · lead ─\n❯ \n─────────\n  Opus 5.5 │ main\n"
+	for name, c := range map[string]struct {
+		text string
+		live bool
+	}{
+		"the owner-click dialog":             {screenFile(t, "owner-click-hook-1103.screen"), true},
+		"a menu with the cursor on 2":        {menu, true},
+		"a dropped prompt below the box":     {"⏺ done\n" + idleBox + "  ⎿  Prompt dropped by a hook: cache tax\n", true},
+		"answered: the box is back":          {menu + "⏺ Not run.\n" + idleBox, false},
+		"an idle tab":                        {"⏺ PR opened.\n\n✅\n" + idleBox, false},
+		"a question in prose, no menu":       {"⏺ Should I merge it?\n\n❓\n" + idleBox, false},
+		"a reply listing options, no cursor": {"⏺ Which one should I take?\n  1. Fix the test\n  2. Skip it\n\n✻ Brewing… (3s · esc to interrupt)\n", false},
+	} {
+		if got := LivePrompt(c.text); got != c.live {
+			t.Errorf("%s: live %v", name, got)
+		}
+	}
+	if gone, err := Gone(func() (string, error) { return menu + "⏺ Not run.\n" + idleBox, nil }); !gone || err != nil {
+		t.Error("an answered prompt is not gone:", gone, err)
+	}
+	if gone, err := Gone(func() (string, error) { return menu, nil }); gone || err != nil {
+		t.Error("a live prompt is gone:", gone, err)
+	}
+	if gone, err := Gone(func() (string, error) { return "", errors.New("cmux read-screen: timeout") }); gone || err == nil {
+		t.Error("a tab that cannot be read is gone:", gone, err)
+	}
+}

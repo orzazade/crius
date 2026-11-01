@@ -588,6 +588,13 @@ func waiting(st *state, d Deps, watch projects, park parked, screens []Screen, h
 		if hs, ok := hv.surface[s.ID]; ok {
 			view = hv.pick("tab:"+s.Surface, s.Title, view, stateView(hs, s.Text))
 		}
+		// Crius 11-01 22:09: quotes · backend-orders sat dead on an API error, unseen: a waiter shell kept it looking busy.
+		// Said at once, and every 20 min while it stays so, whatever runs in its background or whether its team is watched.
+		if line, ok := apiStop(s.Text); ok {
+			who := cmp.Or(name, s.Title)
+			out = append(out, [2]string{"stopped:" + s.Surface + ":" + hash(body), fmt.Sprintf("%s (tab %q, %s) STOPPED: its last turn ended on an API error: %s", who, s.Title, s.Surface, line)})
+			continue
+		}
 		// Crius 11-01 00:04 (owner go): marketplace:lead sat idle 9 h after a ⏳ and cortex:lead after "recheck after
 		// 15:15Z", each with bus waiters as background shells, which read as work; marketplace is not watched. A lead tab
 		// idle an hour alerts whatever runs in its background and whether or not its team is watched.

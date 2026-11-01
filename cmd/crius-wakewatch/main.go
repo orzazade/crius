@@ -58,8 +58,21 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) == 3 && os.Args[1] == "gone" {
+		// team-wait.sh asks right before it hands Crius a wait line of a tab: exit 0 when the tab shows no prompt now, 1 when
+		// it still does, 2 when it cannot be read (the line goes to Crius)
+		gone, err := wakewatch.Gone(func() (string, error) { return reread(os.Args[2]) })
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "crius-wakewatch gone:", err)
+			os.Exit(2)
+		}
+		if !gone {
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) > 1 {
-		fmt.Fprintln(os.Stderr, "usage: crius-wakewatch [after-boot | clicks | flagged <surface>]")
+		fmt.Fprintln(os.Stderr, "usage: crius-wakewatch [after-boot | clicks | flagged <surface> | gone <surface>]")
 		os.Exit(2)
 	}
 	// Messages held on an earlier run go first, so a new alert never jumps ahead of an older one.
