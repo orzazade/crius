@@ -580,6 +580,30 @@ func TestAnIdleTabWithUnsentTextSaysSo(t *testing.T) {
 	}
 }
 
+// Review of X10, P2: the handed-back line is said once, so text that shows up in the box after it (a lead's send left
+// without its Enter) is said at once, and like that line not again while it stays.
+func TestUnsentTextAfterTheHandedBackLineIsSaidAtOnce(t *testing.T) {
+	home := setup(t, map[string]string{"appxite-map.log": stamp(t0.Add(-28*time.Hour)) + " DONE appxite-map:uploads -> appxite-map:lead — UPLOADS.md bb0fb\n"})
+	testutil.Write(t, filepath.Join(home, "projects.toml"), "[projects.appxite-map]\nleads = { lead = \"/nowhere/STATUS.md\" }\n")
+	f := &fake{typed: map[string]bool{}}
+	draw := func(at time.Time) []Screen {
+		return []Screen{screen("appxite-map · uploads", tab("appxite-map · uploads", "Done. Waiting for the next item.\n\n⏳", "", at))}
+	}
+	runAt(t, home, f, draw, 0, 5, 11)
+	if len(f.sent) != 1 || !strings.Contains(f.sent[0], "next item or park it") || strings.Contains(f.sent[0], "unsent") {
+		t.Fatalf("%q", f.sent)
+	}
+	f.typed["surface:7"] = true
+	runAt(t, home, f, draw, 15)
+	if len(f.sent) != 2 || !strings.HasSuffix(f.sent[1], "; its input box holds unsent text, so every cmux send to it fails: clear it") {
+		t.Fatalf("%q", f.sent)
+	}
+	runAt(t, home, f, draw, 31, 51)
+	if len(f.sent) != 2 {
+		t.Fatalf("said again: %q", f.sent[2:])
+	}
+}
+
 func TestABusyLeadIsNotIdle(t *testing.T) {
 	for _, c := range []struct{ reply, footer string }{
 		{"✻ Running tests… (2m 10s · esc to interrupt)", "  ⏵⏵ bypass permissions on\n"},

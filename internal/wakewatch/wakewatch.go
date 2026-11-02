@@ -684,11 +684,6 @@ func waiting(st *state, d Deps, watch projects, park parked, screens []Screen, h
 			if clear {
 				text += "; its screen says CLEAR-READY"
 			}
-			if typed, err := d.Typed(s.Surface); err != nil {
-				text += "; its input box could not be checked: " + err.Error()
-			} else if typed {
-				text += "; its input box holds unsent text, so every cmux send to it fails: clear it"
-			}
 			if why, ok := unread[strings.ToLower(who)]; ok {
 				text += "; not seen as finished: its " + why
 			}
@@ -700,11 +695,19 @@ func waiting(st *state, d Deps, watch projects, park parked, screens []Screen, h
 				out = append(out, [2]string{"screen-failed:" + s.Surface, fmt.Sprintf("tab %q (%s): idle check could not read its bus: %v", s.Title, s.Surface, err)})
 				continue
 			}
+			// Said last, so a long error cannot cut off the rest; text that shows up after the once-said handed-back line
+			// gets its own key, so it is said at once (review of X10)
+			box, boxKey := "", h
+			if typed, err := d.Typed(s.Surface); err != nil {
+				box = "; its input box could not be checked: " + err.Error()
+			} else if typed {
+				box, boxKey = "; its input box holds unsent text, so every cmux send to it fails: clear it", h+":typed"
+			}
 			if back { // said once (Typed; again after window+resend if it stays so): the wait is its lead's to end
-				out = append(out, [2]string{handedKey(s.Surface, h), text + "; its newest line is a DONE and nothing gave it work since: give it the next item or park it (said once; again in 12 h if it stays so)"})
+				out = append(out, [2]string{handedKey(s.Surface, boxKey), text + "; its newest line is a DONE and nothing gave it work since: give it the next item or park it (said once; again in 12 h if it stays so)" + box})
 				continue
 			}
-			out = append(out, [2]string{idleKey(s.Surface, h), text})
+			out = append(out, [2]string{idleKey(s.Surface, h), text + box})
 		}
 	}
 	for k := range st.Screens {
