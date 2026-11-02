@@ -333,9 +333,9 @@ func TestToolsFailOnlyOnASecondMissAndSayTheLoad(t *testing.T) {
 	}
 }
 
-// The fresh-start check reads every config folder's live sessions; a linked folder (~/.claude-personal) lists the
-// same process twice, a dead pid's file is left over, and a session with no transcript yet has no start.
-func TestSessionsReadsLiveSessionsWithTheirStart(t *testing.T) {
+// The hook states are matched to every config folder's live sessions; a linked folder (~/.claude-personal) lists the
+// same process twice, and a dead pid's file is left over.
+func TestSessionsReadsLiveSessions(t *testing.T) {
 	home := t.TempDir()
 	write := func(path, body string) {
 		os.MkdirAll(filepath.Dir(path), 0o700)
@@ -347,7 +347,6 @@ func TestSessionsReadsLiveSessionsWithTheirStart(t *testing.T) {
 	write(filepath.Join(home, ".claude", "sessions", fmt.Sprint(me)+".json"),
 		fmt.Sprintf(`{"pid":%d,"sessionId":"aaa","name":"quotes: lead","status":"busy","procStart":%q}`, me, testutil.ProcStart(t, me)))
 	write(filepath.Join(home, ".claude", "sessions", "99999999.json"), `{"pid":99999999,"sessionId":"dead","name":"axi: lead"}`)
-	write(filepath.Join(home, ".claude", "projects", "-Users-o-x", "aaa.jsonl"), "{}\n")
 	write(filepath.Join(home, ".claude-work", "sessions", fmt.Sprint(parent)+".json"),
 		fmt.Sprintf(`{"pid":%d,"sessionId":"bbb","name":"cortex · lead","procStart":%q}`, parent, testutil.ProcStart(t, parent)))
 	if err := os.Symlink(filepath.Join(home, ".claude"), filepath.Join(home, ".claude-personal")); err != nil {
@@ -363,12 +362,6 @@ func TestSessionsReadsLiveSessionsWithTheirStart(t *testing.T) {
 	}
 	if len(ss) != 2 || got["aaa"].Name != "quotes: lead" || got["bbb"].Name != "cortex · lead" {
 		t.Fatalf("%+v", ss)
-	}
-	if d := time.Since(got["aaa"].Started); d < 0 || d > time.Minute {
-		t.Errorf("aaa started %v", got["aaa"].Started)
-	}
-	if !got["bbb"].Started.IsZero() {
-		t.Errorf("bbb has no transcript: %v", got["bbb"].Started)
 	}
 	// Review of 078f69a, P3: pid 0 (kill(0, 0) signals our own group) and a file gone between the listing and the
 	// read (a session ending) are not live sessions, and not a failure to look.

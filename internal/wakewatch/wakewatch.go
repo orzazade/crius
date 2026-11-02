@@ -26,7 +26,6 @@ import (
 	"regexp"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -47,7 +46,6 @@ const (
 	leadAfter   = time.Hour        // a lead tab, whatever runs in its background and watched or not (Crius 11-01 00:04)
 	window      = 12 * time.Hour   // older lines are history: a first run must not wake Crius for them
 	resend      = 20 * time.Minute // an item still open wakes Crius again, never more often
-	freshAfter  = 20 * time.Minute // a lead's DONE with no new session of that lead this long wakes Crius
 	minFreeGB   = 20               // less free disk than this wakes Crius
 	diskDropGB  = 2                // a disk alarm wakes Crius again after this much more is gone (owner GO 10-25)
 	diskResend  = 2 * time.Hour    // or after this long; it clears once disk is diskDropGB over the line
@@ -74,9 +72,6 @@ var (
 	sessionRe = regexp.MustCompile(`^([A-Za-z0-9][\w.-]*)\s*[:·]\s*([\w.-]+)(?:\s*·\s*[\w.-]+)?$`)
 	// Under the input box: background shells, monitors, tasks or agents still running.
 	jobsRe = regexp.MustCompile(`\b\d+ (?:shells?|monitors?|background tasks?|agents?)\b|(?m)^\s*◯ `)
-	leadRe = regexp.MustCompile(`^lead(?:er)?$`)
-	// The status line's context use: "██░░░░░░░░ ctx 21%".
-	ctxRe = regexp.MustCompile(`\bctx (\d{1,3})%`)
 	// The quota guard's pause NEED: its project and, for a pause per account, the roles it paused. The whole-team one
 	// puts the accounts' shares, "(max1 91%, max2 92%)", before the ";".
 	pauseRe = regexp.MustCompile(`reached (\S+)'s pause at \d+%(?: \([^)]*\))?; (?:PAUSE posted to ([^;.]+))?`)
@@ -123,7 +118,6 @@ type Workspace struct {
 // Session is a live Claude Code session: its name ("quotes: lead"), id, and when it started (zero: nothing written yet).
 type Session struct {
 	Name, ID string
-	Started  time.Time
 }
 
 type seenScreen struct {
@@ -217,7 +211,6 @@ func Run(d Deps) error {
 	alerts = append(alerts, load(d)...)
 	alerts = append(alerts, tools(d)...)
 	alerts = append(alerts, unwaited(d, &st, watch)...)
-	alerts = append(alerts, fresh(d, watch, park, screens, ss, sesErr, hv)...)
 	alerts = append(alerts, unnamed(d, screens)...)
 	alerts = append(alerts, hookLog(d.Home, &st)...)
 	hv.finish()
@@ -379,7 +372,7 @@ func (p parked) has(who, team string) bool {
 
 // readParked reads home/parked, a list as in wakewatch-projects (Crius 10-22 20:40: P4 parked, and Quotes pauses whole
 // at 70% of the weekly quota): Crius adds a role or project when it parks it and removes it on resume. A parked tab
-// wakes no one when idle or asking, and a parked lead needs no fresh start. Not a field in roles/*.json: crius-hook
+// wakes no one when idle or asking. Not a field in roles/*.json: crius-hook
 // rewrites that file on every event. A file that cannot be read parks nothing and is an alert. A tab with no bus name
 // whose title is one word ("✳ quotes") counts as the lead, so a parked quotes:lead quiets any such tab; a lead under
 // another name (quotes:leader) is parked by that exact name.
@@ -1047,98 +1040,6 @@ func load(d Deps) [][2]string {
 	return nil
 }
 
-// fresh gives an alert for each lead whose newest DONE (in the last 12 h) is 20 min old while no session of that lead
-// started after it and Crius sent it no ORDER after it: no /clear and no relaunch (cmux-team SKILL §5, fresh context
-// per item). A lead whose tabs all show ctx under 50% in the status line below the input box has room left and needs
-// no fresh start yet (Crius 10-22 13:23). Nor does a lead whose crius-hook state says it works, when the state decides.
-func fresh(d Deps, watch projects, park parked, screens []Screen, ss []Session, err error, hv *hooks) [][2]string {
-	used := map[string]int{} // the most any tab of that session shows
-	text := map[string]string{}
-	unread := map[string]bool{} // tabs cmux could not read: they show no text to judge from
-	for _, s := range screens {
-		if who, _ := session(s.Text, s.Title); who != "" {
-			used[who] = max(used[who], ctxUsed(s.Text))
-		}
-		if s.ID != "" {
-			text[s.ID] = s.Text
-			unread[s.ID] = s.Err != ""
-		}
-	}
-	if err != nil {
-		return [][2]string{{"sessions-failed", "the lead fresh-start check failed to look: " + err.Error()}}
-	}
-	newest := map[string]time.Time{}
-	ids := map[string][]string{} // the lead's own sessions, by id: a child claude can carry the lead's project and role
-	var whos []string
-	for _, s := range ss {
-		m := sessionRe.FindStringSubmatch(strings.TrimSpace(s.Name))
-		if m == nil || !leadRe.MatchString(m[2]) || !watch.has(m[1]) || park.has(m[1]+":"+m[2], m[1]) {
-			continue
-		}
-		who, started := m[1]+":"+m[2], s.Started
-		if started.IsZero() {
-			started = d.Now // nothing written yet: it has just started
-		}
-		if _, ok := newest[who]; !ok {
-			whos = append(whos, who)
-		}
-		if started.After(newest[who]) {
-			newest[who] = started
-		}
-		ids[who] = append(ids[who], s.ID)
-	}
-	sort.Strings(whos)
-	var out [][2]string
-	for _, who := range whos {
-		at, found, err := lastFrom(d.Home, who, "DONE", d.Now)
-		if err != nil {
-			out = append(out, [2]string{"fresh-failed:" + who, fmt.Sprintf("the lead fresh-start check failed to look at %s's bus: %v", who, err)})
-			hv.keep("fresh:" + who)
-			continue
-		}
-		u, shown := used[who]
-		if !found || at.IsZero() || d.Now.Sub(at) < freshAfter || d.Now.Sub(at) > window || newest[who].After(at) ||
-			shown && u < 50 {
-			continue
-		}
-		// Crius sent the lead back to work after the DONE (Crius 10-22 01:07): a decision, so no alert. An ACK is not.
-		ordered, err := orderAfterDone(d.Home, who)
-		if err != nil {
-			out = append(out, [2]string{"fresh-failed:" + who, fmt.Sprintf("the lead fresh-start check failed to look at %s's bus: %v", who, err)})
-			hv.keep("fresh:" + who)
-			continue
-		}
-		if ordered {
-			continue
-		}
-		var hs []sessionstate.State
-		for _, id := range ids[who] {
-			if s, ok := hv.session[id]; ok {
-				hs = append(hs, s)
-				if unread[s.Surface] {
-					hv.keep("fresh:" + who) // its pair stays as last seen (OF6)
-				}
-			}
-		}
-		if len(hs) > 0 {
-			state := "alert"
-			for _, s := range hs {
-				if stateView(s, text[s.Surface]) != "idle" {
-					state = "none"
-				}
-			}
-			if hv.pick("fresh:"+who, who+" fresh start", "alert", state) == "none" {
-				continue
-			}
-		}
-		when := at.Format("2006-01-02T15:04")
-		out = append(out, [2]string{"fresh:" + who + ":" + when, fmt.Sprintf("%s posted DONE at %s and has had no fresh "+
-			"start since (no /clear or relaunch in %d min; cmux-team SKILL §5: fresh context per item)", who, when,
-			int(d.Now.Sub(at).Minutes()))})
-	}
-	return out
-}
-
 // tools gives one alert per tool that failed or did not answer.
 func tools(d Deps) [][2]string {
 	res := d.Tools()
@@ -1218,23 +1119,6 @@ func split(text string) (body, foot string, boxed bool) {
 	return text, "", false
 }
 
-// ctxUsed gives the context % a screen's status line shows below the input box's bottom border (the last border line:
-// a draft may hold a dash line), or 100 when it shows none. Text typed in the box does not count.
-func ctxUsed(text string) int {
-	_, foot, boxed := split(text)
-	lines := strings.Split(foot, "\n")
-	for i := len(lines) - 1; boxed && i >= 1; i-- {
-		if borderRe.MatchString(strings.TrimSpace(lines[i])) {
-			if m := ctxRe.FindStringSubmatch(strings.Join(lines[i+1:], "\n")); m != nil {
-				n, _ := strconv.Atoi(m[1])
-				return n
-			}
-			break
-		}
-	}
-	return 100
-}
-
 // session gives the bus name ("quotes:lead") and role of a tab, from the input box border or else the tab title.
 func session(text, title string) (who, role string) {
 	name := title
@@ -1278,22 +1162,6 @@ func lastFrom(home, who, typ string, now time.Time) (last time.Time, found bool,
 		}
 	}
 	return last, found, err
-}
-
-// orderAfterDone reports whether crius:lead sent who an ORDER below who's last DONE in its project's bus log. The
-// file's order counts, not the minute: both lines often carry the same one.
-func orderAfterDone(home, who string) (bool, error) {
-	lines, _, err := busLines(home, who)
-	ordered := false
-	for _, m := range lines {
-		switch {
-		case m[3] == who && m[2] == "DONE":
-			ordered = false
-		case m[3] == "crius:lead" && m[2] == "ORDER" && sentTo(m[4], who):
-			ordered = true
-		}
-	}
-	return ordered, err
 }
 
 // parkedOnBus reports whether who's newest line on its project's bus, sent by it or to it by name, parks it (Crius
@@ -1470,7 +1338,7 @@ func readHooks(d Deps, prev map[string][2]string, ss []Session, sesErr error) (*
 	}
 	h.blind = err != nil || sesErr != nil
 	if sesErr != nil {
-		return h, out
+		return h, append(out, [2]string{"sessions-failed", "the session list could not be read, so the screen decides alone: " + sesErr.Error()})
 	}
 	live := map[string]bool{}
 	for _, s := range ss {

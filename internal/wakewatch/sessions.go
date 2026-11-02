@@ -6,15 +6,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
-	"time"
 
 	"github.com/orzazade/crius/internal/sessionstate"
 )
 
-// LiveSessions lists the live Claude Code sessions of every config folder (~/.claude*) under the user home: name, id,
-// and the birth time of the session's transcript (zero when it has none yet). A linked folder lists a process again; it
-// counts once.
+// LiveSessions lists the live Claude Code sessions of every config folder (~/.claude*) under the user home: name and
+// id. A linked folder lists a process again; it counts once.
 func LiveSessions(home string) ([]Session, error) {
 	files, err := filepath.Glob(filepath.Join(home, ".claude*", "sessions", "*.json"))
 	if err != nil {
@@ -49,19 +46,7 @@ func LiveSessions(home string) ([]Session, error) {
 			continue
 		}
 		seen[s.PID] = true
-		ses := Session{Name: s.Name, ID: s.SessionID}
-		ts, err := filepath.Glob(filepath.Join(filepath.Dir(filepath.Dir(f)), "projects", "*", s.SessionID+".jsonl"))
-		if err != nil {
-			return nil, err
-		}
-		for _, t := range ts {
-			var st syscall.Stat_t
-			if err := syscall.Stat(t, &st); err != nil {
-				return nil, err
-			}
-			ses.Started = time.Unix(st.Birthtimespec.Unix())
-		}
-		out = append(out, ses)
+		out = append(out, Session{Name: s.Name, ID: s.SessionID})
 	}
 	return out, nil
 }

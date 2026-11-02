@@ -962,6 +962,37 @@ func TestAToolThatDoesNotAnswerWakesCrius(t *testing.T) {
 	}
 }
 
+// X11 (Crius 11-02 04:25, quotes:lead 04:1x): cmux-team SKILL §5 clear-and-resume is for members, and the leader sends
+// the /clear, so a lead's DONE with no fresh start of that lead wakes no one.
+func TestALeadDONEWithNoFreshStartSaysNothing(t *testing.T) {
+	for _, role := range []string{"lead", "leader"} {
+		home := setup(t, map[string]string{"quotes.log": done(t0)})
+		f := &fake{ses: []Session{{Name: "quotes: " + role, ID: "18c04af5"}}}
+		for _, m := range []int{10, 21, 30, 41} {
+			if err := Run(f.deps(home, t0.Add(time.Duration(m)*time.Minute))); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if got := freshSent(f); len(got) != 0 {
+			t.Errorf("%s: %q", role, got)
+		}
+	}
+}
+
+// X11: the lead fresh-start check was the only one to say a failed session read out loud; with it gone, readHooks
+// says it, as the hook states then cannot be matched to live sessions and the screen decides alone.
+func TestAFailedSessionReadIsAnAlert(t *testing.T) {
+	home := setup(t, nil)
+	f := &fake{sesErr: errors.New("open ~/.claude/sessions: permission denied")}
+	if err := Run(f.deps(home, t0)); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.sent) != 1 || !strings.Contains(f.sent[0], "session list could not be read") ||
+		!strings.Contains(f.sent[0], "permission denied") {
+		t.Fatal(f.sent)
+	}
+}
+
 func freshSent(f *fake) []string {
 	var out []string
 	for _, m := range f.sent {
@@ -972,147 +1003,8 @@ func freshSent(f *fake) []string {
 	return out
 }
 
-// Crius 10-21 23:58 (cmux-team SKILL §5, fresh context per item): a lead's DONE with no fresh start of that lead (a
-// /clear or a relaunch, so a new session) within 20 min wakes Crius. Case 10-21: quotes:lead ran 00:57-00:00 through
-// six DONEs in one session.
-func TestALeadDONEWithNoFreshStartWakesCrius(t *testing.T) {
-	bus := done(t0) + stamp(t0.Add(time.Minute)) + " ACK crius:lead -> quotes:lead — seen\n"
-	old := Session{Name: "quotes: lead", ID: "18c04af5", Started: t0.Add(-2 * time.Hour)}
-	for name, c := range map[string]struct {
-		ses  []Session
-		want int
-	}{
-		"same session":             {[]Session{old}, 2},
-		"name with a dot":          {[]Session{{Name: "quotes · lead", ID: "1", Started: t0.Add(-time.Hour)}}, 2},
-		"cleared after the DONE":   {[]Session{{Name: "quotes: lead", ID: "2", Started: t0.Add(5 * time.Minute)}}, 0},
-		"old and a new one":        {[]Session{old, {Name: "quotes: lead", ID: "3", Started: t0.Add(3 * time.Minute)}}, 0},
-		"new, nothing written yet": {[]Session{{Name: "quotes: lead", ID: "4"}}, 0},
-		"no lead session":          {[]Session{{Name: "quotes: qa-api", ID: "5", Started: t0.Add(-time.Hour)}}, 0},
-		"no session":               {nil, 0},
-	} {
-		home := setup(t, map[string]string{"quotes.log": bus})
-		f := &fake{ses: c.ses}
-		for _, m := range []int{10, 21, 30, 41} {
-			if err := Run(f.deps(home, t0.Add(time.Duration(m)*time.Minute))); err != nil {
-				t.Fatal(err)
-			}
-		}
-		got := freshSent(f)
-		if len(got) != c.want {
-			t.Errorf("%s: want %d, got %q", name, c.want, got)
-		}
-		for _, m := range got {
-			if !strings.Contains(m, "quotes:lead") || !strings.Contains(m, stamp(t0)) {
-				t.Errorf("%s: %q", name, m)
-			}
-		}
-	}
-}
-
-// Crius 10-22 01:07: Crius's ORDER to the lead after its DONE closes the alert (a send-back is a decision); an ACK
-// does not (above), nor an ORDER before the DONE or to another lead.
-func TestCriusOrderAfterTheDONEClosesTheFreshStartAlert(t *testing.T) {
-	old := []Session{{Name: "quotes: lead", ID: "1", Started: t0.Add(-2 * time.Hour)}}
-	order := func(at time.Time, to string) string {
-		return stamp(at) + " ORDER crius:lead -> " + to + " — fix review P2 on the same item\n"
-	}
-	for name, c := range map[string]struct {
-		bus  string
-		want int
-	}{
-		"order after the DONE":  {done(t0) + order(t0.Add(2*time.Minute), "quotes:lead"), 0},
-		"order before the DONE": {order(t0.Add(-time.Minute), "quotes:lead") + done(t0), 2},
-		// Review of 24f04c9: the file's order counts, not the minute; a line may name several recipients.
-		"order in the DONE's minute":        {done(t0) + order(t0, "quotes:lead"), 0},
-		"order before, in the same minute":  {order(t0, "quotes:lead") + done(t0), 2},
-		"order to several":                  {done(t0) + order(t0.Add(2*time.Minute), "crius:build, quotes:lead"), 0},
-		"order to several, not to the lead": {done(t0) + order(t0.Add(2*time.Minute), "crius:build, quotes:qa-api"), 2},
-		"order to several, spaces only":     {done(t0) + order(t0.Add(2*time.Minute), "crius:build quotes:lead"), 0},
-		"order to another lead":             {done(t0) + order(t0.Add(2*time.Minute), "quotes:qa-api"), 2},
-		"order from someone else":           {done(t0) + stamp(t0.Add(2*time.Minute)) + " ORDER quotes:qa-api -> quotes:lead — x\n", 2},
-	} {
-		home := setup(t, map[string]string{"quotes.log": c.bus})
-		f := &fake{ses: old}
-		for _, m := range []int{10, 21, 30, 41} {
-			if err := Run(f.deps(home, t0.Add(time.Duration(m)*time.Minute))); err != nil {
-				t.Fatal(err)
-			}
-		}
-		if got := freshSent(f); len(got) != c.want {
-			t.Errorf("%s: want %d, got %q", name, c.want, got)
-		}
-	}
-}
-
-// A DONE older than the 12 h window, or from a role that is not a lead, does not count; a failed session read is loud.
-func TestTheFreshStartCheckSkipsOldAndNonLeadDONEs(t *testing.T) {
-	old := Session{Name: "quotes: lead", ID: "1", Started: t0.Add(-20 * time.Hour)}
-	home := setup(t, map[string]string{"quotes.log": done(t0.Add(-13*time.Hour)) +
-		stamp(t0.Add(-1*time.Hour)) + " DONE quotes:qa-api -> crius:lead — F-87 · 1c6e705 · 12 OK\n"})
-	f := &fake{ses: []Session{old, {Name: "quotes: qa-api", ID: "2", Started: t0.Add(-20 * time.Hour)}}}
-	Run(f.deps(home, t0))
-	if got := freshSent(f); len(got) != 0 {
-		t.Fatalf("%q", got)
-	}
-	f.sesErr = errors.New("open ~/.claude/sessions: permission denied")
-	Run(f.deps(home, t0.Add(time.Minute)))
-	if got := freshSent(f); len(got) != 1 || !strings.Contains(got[0], "permission denied") {
-		t.Fatalf("%q", got)
-	}
-}
-
-// Crius ORDER 10-22 13:23: quotes:lead at ctx 21% with 2 monitors, landing train after train, was told it had no fresh
-// start. A lead whose own tab shows ctx under 50% in the status line below its input box has room left: no alert.
-func TestALeadWithContextUnder50PercentNeedsNoFreshStart(t *testing.T) {
-	old := []Session{{Name: "quotes: lead", ID: "1", Started: t0.Add(-2 * time.Hour)}}
-	status := func(ctx string) string {
-		return "  Opus 5.5 ENT │ main │ $22.97 │ ██░░░░░░░░ " + ctx + " │ spend $0 of $600\n"
-	}
-	lead := func(ctx string) func(time.Time) []Screen {
-		return func(at time.Time) []Screen {
-			return []Screen{screen("quotes", tab("quotes: lead", "landed", status(ctx)+"  ⏵⏵ bypass permissions on · 2 monitors\n", at))}
-		}
-	}
-	for name, c := range map[string]struct {
-		draw func(time.Time) []Screen
-		want int
-	}{
-		"ctx 21%":      {lead("ctx 21%"), 0},
-		"ctx 49%":      {lead("ctx 49%"), 0},
-		"ctx 50%":      {lead("ctx 50%"), 2},
-		"ctx 87%":      {lead("ctx 87%"), 2},
-		"no ctx shown": {lead("ctx –"), 2},
-		"no lead tab":  {func(time.Time) []Screen { return nil }, 2},
-		"another lead's tab": {func(at time.Time) []Screen {
-			return []Screen{screen("axi", tab("axi: lead", "landed", status("ctx 21%"), at))}
-		}, 2},
-		"a builder's tab": {func(at time.Time) []Screen {
-			return []Screen{screen("quotes · p3", tab("quotes: p3", "landed", status("ctx 21%"), at))}
-		}, 2},
-		"ctx typed in the box": {func(at time.Time) []Screen {
-			text := strings.Replace(tab("quotes: lead", "landed", status("ctx 87%"), at), "❯ \n", "❯ it said ctx 21%\n", 1)
-			return []Screen{screen("quotes", text)}
-		}, 2},
-		// Review: a dash line in a draft is not the box's bottom border, and a second tab of the same lead decides too.
-		"ctx typed under a dash line": {func(at time.Time) []Screen {
-			text := strings.Replace(tab("quotes: lead", "landed", status("ctx 87%"), at), "❯ \n", "❯ see\n  ───\n  ctx 21%\n", 1)
-			return []Screen{screen("quotes", text)}
-		}, 2},
-		"two tabs of the lead": {func(at time.Time) []Screen {
-			return append(lead("ctx 21%")(at), screen("quotes", tab("quotes: lead", "landed", status("ctx 87%"), at)))
-		}, 2},
-	} {
-		home := setup(t, map[string]string{"quotes.log": done(t0), "axi.log": ""})
-		f := &fake{ses: old}
-		runAt(t, home, f, c.draw, 10, 21, 30, 41)
-		if got := freshSent(f); len(got) != c.want {
-			t.Errorf("%s: want %d, got %q", name, c.want, got)
-		}
-	}
-}
-
 // projectAlerts runs the watch over two projects, quotes and axi, each with a missed DONE, a tab waiting on a question,
-// an idle lead tab and a lead with no fresh start, and gives the lines sent for each project.
+// and an idle lead tab, and gives the lines sent for each project.
 func projectAlerts(t *testing.T, list string) (quotes, axi []string) {
 	t.Helper()
 	axiDone := strings.Replace(done(t0), "quotes:lead", "axi:lead", 1)
@@ -1120,8 +1012,8 @@ func projectAlerts(t *testing.T, list string) (quotes, axi []string) {
 	if list != "" {
 		testutil.Write(t, filepath.Join(home, "wakewatch-projects"), list)
 	}
-	f := &fake{ses: []Session{{Name: "quotes: lead", ID: "1", Started: t0.Add(-time.Hour)},
-		{Name: "axi: lead", ID: "2", Started: t0.Add(-time.Hour)}}}
+	f := &fake{ses: []Session{{Name: "quotes: lead", ID: "1"},
+		{Name: "axi: lead", ID: "2"}}}
 	draw := func(at time.Time) []Screen {
 		return []Screen{{Surface: "surface:1", Title: "quotes: qa", Text: question},
 			{Surface: "surface:2", Title: "quotes", Text: tab("quotes: lead", "Rerun is on.", "", at)},
@@ -1139,10 +1031,10 @@ func projectAlerts(t *testing.T, list string) (quotes, axi []string) {
 	return quotes, axi
 }
 
-// kinds names the alert kinds among lines: a missed wake, a waiting tab, an idle lead, a lead with no fresh start.
+// kinds names the alert kinds among lines: a missed wake, a waiting tab, an idle lead.
 func kinds(lines []string) []string {
 	var out []string
-	for _, k := range []string{".log: ", "waits on a question", "is idle", "no fresh start"} {
+	for _, k := range []string{".log: ", "waits on a question", "is idle"} {
 		for _, m := range lines {
 			if strings.Contains(m, k) {
 				out = append(out, k)
@@ -1156,7 +1048,7 @@ func kinds(lines []string) []string {
 // Owner 10-22 02:2x (Crius ORDER 02:16): only the projects in ~/.crius/wakewatch-projects are watched, so wakes about
 // other teams do not fill Crius's context. Disk, swap and tools belong to the Mac and are always watched.
 func TestOnlyTheListedProjectsAreWatched(t *testing.T) {
-	all := []string{".log: ", "waits on a question", "is idle", "no fresh start"}
+	all := []string{".log: ", "waits on a question", "is idle"}
 	quotes, axi := projectAlerts(t, "")
 	if fmt.Sprint(kinds(quotes)) != fmt.Sprint(all) || fmt.Sprint(kinds(axi)) != fmt.Sprint(all) {
 		t.Fatalf("with no list every project is watched: quotes %q, axi %q", quotes, axi)
@@ -1244,7 +1136,7 @@ func TestAnUnlistedSenderOnAListedBusStaysQuiet(t *testing.T) {
 // A listed name with no bus file (a capital, a typo, "quotes.log") would silence that team with no word: it is an
 // alert that names it. Names match bus files whatever their case.
 func TestAListedNameWithNoBusIsAnAlert(t *testing.T) {
-	all := []string{".log: ", "waits on a question", "is idle", "no fresh start"}
+	all := []string{".log: ", "waits on a question", "is idle"}
 	quotes, axi := projectAlerts(t, "Quotes, qoutes\n")
 	if len(axi) != 0 || fmt.Sprint(kinds(quotes)) != fmt.Sprint(all) {
 		t.Fatalf("Quotes is listed: quotes %q, axi %q", quotes, axi)
@@ -1379,7 +1271,7 @@ func TestADialogQuotedOnScreenIsNotADialogWhenTheHookSaysOtherwise(t *testing.T)
 	runningTab := func(at time.Time) []Screen { // a tool approved in its dialog runs: no hook says so
 		return []Screen{withID(screen("quotes · p3", tab("quotes: p3", "Bash(make test)\n\n✻ Running… (12s · esc to interrupt)", "  ⏵⏵ bypass permissions on\n", at)))}
 	}
-	live := []Session{{Name: "quotes: p3", ID: "s1", Started: t0.Add(-time.Hour)}}
+	live := []Session{{Name: "quotes: p3", ID: "s1"}}
 	for name, c := range map[string]struct {
 		mode   string
 		draw   func(time.Time) []Screen
@@ -1438,7 +1330,7 @@ func TestAChildSessionInTheTabDoesNotHideItsParentsDialog(t *testing.T) {
 	draw := func(at time.Time) []Screen {
 		return []Screen{withID(screen("quotes · p3", tab("quotes: p3", quoted, "  ⏵⏵ bypass permissions on\n", at)))}
 	}
-	live := []Session{{Name: "quotes: p3", ID: "s1", Started: t0.Add(-time.Hour)}, {Name: "child", ID: "s2", Started: t0.Add(-time.Minute)}}
+	live := []Session{{Name: "quotes: p3", ID: "s1"}, {Name: "child", ID: "s2"}}
 	parent := hookState("s1", sessionstate.Waiting, "quotes", "p3")
 	child := hookState("s2", sessionstate.Running, "appxite", "unknown")
 	child.Time = parent.Time.Add(time.Second)
@@ -1448,41 +1340,6 @@ func TestAChildSessionInTheTabDoesNotHideItsParentsDialog(t *testing.T) {
 	runAt(t, home, f, draw, 0, 5, 11)
 	if len(f.sent) != 1 || !strings.Contains(f.sent[0], "waits on a question or dialog") {
 		t.Errorf("want one dialog alert, got %q (state log %q)", f.sent, stateLog(t, home))
-	}
-}
-
-// Case 10-22 13:23 (Crius ORDER): "quotes:lead DONE, no fresh start in 23 min" while the lead was running, landing
-// train after train. A lead whose hook state says it is working gets no fresh-start alert.
-func TestABusyLeadByItsHookStateNeedsNoFreshStart(t *testing.T) {
-	old := []Session{{Name: "quotes: lead", ID: "1", Started: t0.Add(-2 * time.Hour)}, {Name: "quotes-demo-3d", ID: "2", Started: t0.Add(-time.Hour)}}
-	for name, c := range map[string]struct {
-		mode   string
-		states []sessionstate.State
-		want   int
-		logged bool
-	}{
-		"running, decide":        {"decide", []sessionstate.State{hookState("1", sessionstate.Running, "quotes", "lead")}, 0, true},
-		"waiting, decide":        {"decide", []sessionstate.State{hookState("1", sessionstate.Waiting, "quotes", "lead")}, 0, true},
-		"idle, decide":           {"decide", []sessionstate.State{hookState("1", sessionstate.Idle, "quotes", "lead")}, 2, false},
-		"running, observe":       {"observe", []sessionstate.State{hookState("1", sessionstate.Running, "quotes", "lead")}, 2, true},
-		"another role running":   {"decide", []sessionstate.State{hookState("2", sessionstate.Running, "quotes", "p3")}, 2, false},
-		"a dead session running": {"decide", []sessionstate.State{hookState("9", sessionstate.Running, "quotes", "lead")}, 2, false},
-		"no state":               {"decide", nil, 2, false},
-		// review 10-22: the lead's own session by its id, not any session that names the lead's project and role
-		"the lead's, no role": {"decide", []sessionstate.State{hookState("1", sessionstate.Running, "quotes", "")}, 0, true},
-		"a child with its role": {"decide", []sessionstate.State{hookState("1", sessionstate.Idle, "quotes", "lead"),
-			hookState("2", sessionstate.Running, "quotes", "lead")}, 2, false},
-	} {
-		home := setup(t, map[string]string{"quotes.log": done(t0)})
-		setMode(t, home, c.mode)
-		f := &fake{ses: old, states: c.states}
-		runAt(t, home, f, func(time.Time) []Screen { return nil }, 10, 21, 30, 41)
-		if got := freshSent(f); len(got) != c.want {
-			t.Errorf("%s: want %d, got %q", name, c.want, got)
-		}
-		if l := stateLog(t, home); (l != "") != c.logged || c.logged && !strings.Contains(l, "quotes:lead") {
-			t.Errorf("%s: state log %q", name, l)
-		}
 	}
 }
 
@@ -1763,7 +1620,7 @@ func TestTheStateLogKeepsWhatItCouldNotSeeAndClosesWhatWent(t *testing.T) {
 	setMode(t, home, "observe")
 	quoted := "the fixture:\n Do you want to proceed?\n ❯ 1. Yes\n   2. No, and tell Claude what to do differently (esc)"
 	f := &fake{states: []sessionstate.State{hookState("s1", sessionstate.Idle, "quotes", "p3")},
-		ses: []Session{{Name: "quotes: p3", ID: "s1", Started: t0.Add(-time.Hour)}}}
+		ses: []Session{{Name: "quotes: p3", ID: "s1"}}}
 	draw := func(at time.Time) []Screen {
 		return []Screen{withID(screen("quotes · p3", tab("quotes: p3", quoted, "  ⏵⏵ bypass permissions on\n", at)))}
 	}
@@ -1814,7 +1671,7 @@ func TestAnUnreadTabUnderAnotherTitleKeepsItsPair(t *testing.T) {
 	setMode(t, home, "observe")
 	quoted := "the fixture:\n Do you want to proceed?\n ❯ 1. Yes\n   2. No, and tell Claude what to do differently (esc)"
 	f := &fake{states: []sessionstate.State{hookState("s1", sessionstate.Idle, "quotes", "p3")},
-		ses: []Session{{Name: "quotes: p3", ID: "s1", Started: t0.Add(-time.Hour)}}}
+		ses: []Session{{Name: "quotes: p3", ID: "s1"}}}
 	draw := func(at time.Time) []Screen {
 		return []Screen{withID(screen("quotes · p3", tab("quotes: p3", quoted, "  ⏵⏵ bypass permissions on\n", at)))}
 	}
@@ -1831,65 +1688,17 @@ func TestAnUnreadTabUnderAnotherTitleKeepsItsPair(t *testing.T) {
 	}
 }
 
-// OF6 review 2: a run that could not read the screens still judged the lead's fresh start from no screen text, so the
-// pair flipped and was logged, then flipped back on the next run. A blind run logs nothing and keeps every pair.
-func TestARunBlindToTheScreensKeepsTheFreshPair(t *testing.T) {
-	home := setup(t, map[string]string{"quotes.log": done(t0)})
-	setMode(t, home, "observe")
-	f := &fake{ses: []Session{{Name: "quotes: lead", ID: "1", Started: t0.Add(-2 * time.Hour)}},
-		states: []sessionstate.State{hookState("1", sessionstate.Idle, "quotes", "lead")}}
-	asks := func(at time.Time) []Screen {
-		return []Screen{withID(screen("quotes · lead", tab("quotes: lead", "Which branch should the fix go to, main or develop?\n\n❓",
-			"  ⏵⏵ bypass permissions on\n", at)))}
-	}
-	runAt(t, home, f, asks, 21)
-	if log := stateLog(t, home); strings.Count(log, "\n") != 1 || !strings.Contains(log, "fresh:quotes:lead") {
-		t.Fatalf("want one fresh line:\n%s", log)
-	}
-	f.scrErr = errors.New("cmux: no answer")
-	runAt(t, home, f, func(time.Time) []Screen { return nil }, 26)
-	f.scrErr = nil
-	runAt(t, home, f, asks, 31)
-	if log := stateLog(t, home); strings.Count(log, "\n") != 1 {
-		t.Fatalf("a run blind to the screens logged the fresh pair:\n%s", log)
-	}
-}
-
-// OF6 review 3: one lead tab that could not be read, while cmux answered for the rest, still judged the fresh start
-// from no text, so the pair flipped and was logged, then flipped back. The lead's pair stays as last seen.
-func TestAnUnreadLeadTabKeepsTheFreshPair(t *testing.T) {
-	home := setup(t, map[string]string{"quotes.log": done(t0)})
-	setMode(t, home, "observe")
-	f := &fake{ses: []Session{{Name: "quotes: lead", ID: "1", Started: t0.Add(-2 * time.Hour)}},
-		states: []sessionstate.State{hookState("1", sessionstate.Idle, "quotes", "lead")}}
-	asks := func(at time.Time) []Screen {
-		return []Screen{withID(screen("quotes · lead", tab("quotes: lead", "Which branch should the fix go to, main or develop?\n\n❓",
-			"  ⏵⏵ bypass permissions on\n", at)))}
-	}
-	runAt(t, home, f, asks, 21)
-	runAt(t, home, f, func(at time.Time) []Screen {
-		s := asks(at)
-		s[0].Text, s[0].Err = "", "surface not readable"
-		return s
-	}, 26)
-	runAt(t, home, f, asks, 31)
-	if log := stateLog(t, home); strings.Count(log, "\n") != 1 {
-		t.Fatalf("an unread lead tab changed the fresh pair:\n%s", log)
-	}
-}
-
 // OF6 review 3: a run that could not write the state log still saved its pairs, so a disagreement that went while the
 // log was unwritable never got its "gone" line and statelog judged it open for ever. The next run logs it.
 func TestAGoneLineLostToAnUnwritableLogIsWrittenNextRun(t *testing.T) {
-	home := setup(t, map[string]string{"quotes.log": done(t0)})
+	home := setup(t, map[string]string{"quotes.log": busFrom("quotes:p3", t0)})
 	setMode(t, home, "observe")
-	f := &fake{ses: []Session{{Name: "quotes: lead", ID: "1", Started: t0.Add(-2 * time.Hour)}},
-		states: []sessionstate.State{hookState("1", sessionstate.Idle, "quotes", "lead")}}
-	asks := func(at time.Time) []Screen {
-		return []Screen{withID(screen("quotes · lead", tab("quotes: lead", "Which branch should the fix go to, main or develop?\n\n❓",
-			"  ⏵⏵ bypass permissions on\n", at)))}
-	}
-	runAt(t, home, f, asks, 21)
+	quoted := "the fixture:\n Do you want to proceed?\n ❯ 1. Yes\n   2. No, and tell Claude what to do differently (esc)"
+	f := &fake{states: []sessionstate.State{hookState("s1", sessionstate.Idle, "quotes", "p3")},
+		ses: []Session{{Name: "quotes: p3", ID: "s1"}}}
+	runAt(t, home, f, func(at time.Time) []Screen {
+		return []Screen{withID(screen("quotes · p3", tab("quotes: p3", quoted, "  ⏵⏵ bypass permissions on\n", at)))}
+	}, 0)
 	p := filepath.Join(home, "logs", "wakewatch-state.log")
 	if err := os.Rename(p, p+".kept"); err != nil {
 		t.Fatal(err)
@@ -1897,17 +1706,17 @@ func TestAGoneLineLostToAnUnwritableLogIsWrittenNextRun(t *testing.T) {
 	if err := os.Mkdir(p, 0o700); err != nil { // a folder in its place: the append fails
 		t.Fatal(err)
 	}
-	f.ses, f.states = nil, nil // the lead went: its open pair is gone
-	runAt(t, home, f, func(time.Time) []Screen { return nil }, 26)
+	f.ses, f.states = nil, nil // the tab went: its open pair is gone
+	runAt(t, home, f, func(time.Time) []Screen { return nil }, 5)
 	if err := os.Remove(p); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Rename(p+".kept", p); err != nil {
 		t.Fatal(err)
 	}
-	runAt(t, home, f, func(time.Time) []Screen { return nil }, 31)
+	runAt(t, home, f, func(time.Time) []Screen { return nil }, 10)
 	if log := stateLog(t, home); strings.Count(log, "\n") != 2 || !strings.Contains(log, "gone") {
-		t.Fatalf("want the fresh line and its gone line:\n%s", log)
+		t.Fatalf("want the tab's line and its gone line:\n%s", log)
 	}
 }
 
@@ -2079,7 +1888,7 @@ func TestASessionRestoredOnTheDefaultFolderIsCaught(t *testing.T) {
 		}
 	}
 	file(max2)
-	live := []Session{{Name: "quotes: p3", ID: "s1", Started: t0.Add(-time.Hour)}, {Name: "quotes: p4", ID: "s2", Started: t0}}
+	live := []Session{{Name: "quotes: p3", ID: "s1"}, {Name: "quotes: p4", ID: "s2"}}
 	running := hookState("s1", sessionstate.Idle, "quotes", "p3")
 	running.Config = def
 	other := hookState("s2", sessionstate.Idle, "quotes", "p3") // not the role's session: a child claude run in a tab
@@ -2151,7 +1960,7 @@ func TestATabThatWouldRestoreOnAnotherFolderIsCaught(t *testing.T) {
 	if err := sessionstate.WriteRole(filepath.Join(home, "roles"), role, true); err != nil {
 		t.Fatal(err)
 	}
-	f := &fake{ses: []Session{{Name: "quotes: p3", ID: "s1", Started: t0.Add(-time.Hour)}}, states: []sessionstate.State{role}}
+	f := &fake{ses: []Session{{Name: "quotes: p3", ID: "s1"}}, states: []sessionstate.State{role}}
 	at := t0
 	run := func(restore map[string][]string, err error) []string {
 		f.sent, f.restore, f.rsErr = nil, restore, err
@@ -2208,7 +2017,7 @@ func TestARecordWithNoFolderIsRightForARoleFiledInTheDefaultFolder(t *testing.T)
 	if err := sessionstate.WriteRole(filepath.Join(home, "roles"), role, true); err != nil {
 		t.Fatal(err)
 	}
-	f := &fake{ses: []Session{{Name: "timelock: lead", ID: "s1", Started: t0.Add(-time.Hour)}}, states: []sessionstate.State{role},
+	f := &fake{ses: []Session{{Name: "timelock: lead", ID: "s1"}}, states: []sessionstate.State{role},
 		restore: map[string][]string{sfID: {""}}}
 	if err := Run(f.deps(home, t0)); err != nil {
 		t.Fatal(err)
