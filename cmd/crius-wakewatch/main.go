@@ -88,7 +88,7 @@ func main() {
 			return wakewatch.LiveSessions(home)
 		}, States: func() ([]sessionstate.State, error) {
 			return sessionstate.List(filepath.Join(store.Home(), "sessions"))
-		}, Restore: restore, Waiters: waiters})
+		}, Restore: restore, Waiters: waiters, Typed: outbox.Typed})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, time.Now().Format(time.RFC3339), "crius-wakewatch:", err)
 		os.Exit(1)

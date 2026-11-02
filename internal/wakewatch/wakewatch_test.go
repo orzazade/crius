@@ -21,28 +21,30 @@ var t0 = time.Date(2026, 10, 21, 22, 0, 0, 0, time.Local)
 func stamp(t time.Time) string { return t.Format("2006-01-02T15:04") }
 
 type fake struct {
-	sent    []string
-	sendErr error
-	tried   []string // every text given to Send, sent or not
-	screens []Screen
-	scrErr  error
-	freeGB  float64 // free disk; 0 means a healthy 100
-	swapGB  float64
-	resErr  error
-	load    float64
-	loadErr error
-	tools   map[string]error
-	ses     []Session
-	sesErr  error
-	wss     []Workspace
-	wsErr   error
-	states  []sessionstate.State // crius-hook's session files
-	stErr   error
-	restore map[string][]string // surface -> the config folder of each Claude record cmux keeps for it
-	rsErr   error
-	waiters []string // the bus logs a live waiter covers; nil: every bus log in home
-	waitErr error
-	deep    map[string]string // surface -> the tab read deep; none: its screen
+	sent     []string
+	sendErr  error
+	tried    []string // every text given to Send, sent or not
+	screens  []Screen
+	scrErr   error
+	freeGB   float64 // free disk; 0 means a healthy 100
+	swapGB   float64
+	resErr   error
+	load     float64
+	loadErr  error
+	tools    map[string]error
+	ses      []Session
+	sesErr   error
+	wss      []Workspace
+	wsErr    error
+	states   []sessionstate.State // crius-hook's session files
+	stErr    error
+	restore  map[string][]string // surface -> the config folder of each Claude record cmux keeps for it
+	rsErr    error
+	waiters  []string // the bus logs a live waiter covers; nil: every bus log in home
+	waitErr  error
+	deep     map[string]string // surface -> the tab read deep; none: its screen
+	typed    map[string]bool   // surface -> its input box holds typed text
+	typedErr error
 }
 
 func (f *fake) deps(home string, now time.Time) Deps {
@@ -71,7 +73,8 @@ func (f *fake) deps(home string, now time.Time) Deps {
 			}
 			return f.waiters, f.waitErr
 		},
-		Load: func() (float64, error) { return f.load, f.loadErr },
+		Load:  func() (float64, error) { return f.load, f.loadErr },
+		Typed: func(surface string) (bool, error) { return f.typed[surface], f.typedErr },
 		Resources: func() (float64, float64, error) {
 			if f.freeGB == 0 {
 				return 100, f.swapGB, f.resErr
@@ -547,6 +550,33 @@ func TestAnIdleLeadAlertsAfter10MinAndWakesCrius(t *testing.T) {
 	}
 	if a := alertLines(t, home); len(a) != 0 {
 		t.Fatal("woke Crius on the bus, not in its tab:", a)
+	}
+}
+
+// Crius 11-02 02:19: quotes:qa-backend sat 30 min with unsent text in its input box, which refuses every cmux send, so
+// its lead's messages were lost unseen. The idle line says so; a box that cannot be checked is said too.
+func TestAnIdleTabWithUnsentTextSaysSo(t *testing.T) {
+	const draft = "; its input box holds unsent text, so every cmux send to it fails: clear it"
+	for name, c := range map[string]struct {
+		typed bool
+		err   error
+		want  string
+	}{
+		"unsent text":        {true, nil, draft},
+		"an empty box":       {false, nil, ""},
+		"a check that fails": {false, errors.New("cmux rpc surface.input_state: timeout"), "; its input box could not be checked: cmux rpc surface.input_state: timeout"},
+	} {
+		home := setup(t, map[string]string{"quotes.log": busFrom("quotes:lead", t0)})
+		f := &fake{typed: map[string]bool{"surface:7": c.typed}, typedErr: c.err}
+		runAt(t, home, f, func(at time.Time) []Screen {
+			return []Screen{screen("quotes · qa-backend", strings.Replace(tab("quotes · qa-backend", "Waiting on the lead.", "", at), "❯ \n", "❯ half a mess\n", 1))}
+		}, 0, 5, 11)
+		if len(f.sent) != 1 || !strings.Contains(f.sent[0], "is idle") {
+			t.Fatalf("%s: %q", name, f.sent)
+		}
+		if got := strings.Contains(f.sent[0], draft) || strings.Contains(f.sent[0], "input box could not"); c.want == "" && got || c.want != "" && !strings.Contains(f.sent[0], c.want) {
+			t.Errorf("%s: %q", name, f.sent[0])
+		}
 	}
 }
 

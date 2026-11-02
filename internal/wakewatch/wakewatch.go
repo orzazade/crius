@@ -108,6 +108,9 @@ type Deps struct {
 	// Waiters gives the bus logs (absolute paths) that Crius's live bus waiters cover: each team-wait.sh process run
 	// with --mode crius, by the logs it names and every *.log in its --watch-dir.
 	Waiters func() (logs []string, err error)
+	// Typed says whether a tab's input box (surface:N) holds typed text, not grey placeholder text: cmux send refuses such a
+	// tab, so a lead's message to it is lost (Crius 11-02 02:19).
+	Typed func(surface string) (bool, error)
 }
 
 // Workspace is one cmux workspace: Named is false while it shows a default title, and Color is "" when none is set.
@@ -680,6 +683,11 @@ func waiting(st *state, d Deps, watch projects, park parked, screens []Screen, h
 			}
 			if clear {
 				text += "; its screen says CLEAR-READY"
+			}
+			if typed, err := d.Typed(s.Surface); err != nil {
+				text += "; its input box could not be checked: " + err.Error()
+			} else if typed {
+				text += "; its input box holds unsent text, so every cmux send to it fails: clear it"
 			}
 			if why, ok := unread[strings.ToLower(who)]; ok {
 				text += "; not seen as finished: its " + why
