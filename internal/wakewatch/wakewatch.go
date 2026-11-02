@@ -115,7 +115,7 @@ type Workspace struct {
 	Color      string
 }
 
-// Session is a live Claude Code session: its name ("quotes: lead"), id, and when it started (zero: nothing written yet).
+// Session is a live Claude Code session: its name ("quotes: lead") and id.
 type Session struct {
 	Name, ID string
 }

@@ -973,8 +973,13 @@ func TestALeadDONEWithNoFreshStartSaysNothing(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if got := freshSent(f); len(got) != 0 {
-			t.Errorf("%s: %q", role, got)
+		for _, m := range f.sent { // only the missed wake for the DONE itself
+			if !strings.Contains(m, "quotes.log: ") {
+				t.Errorf("%s: %q", role, m)
+			}
+		}
+		if len(f.sent) == 0 {
+			t.Errorf("%s: no missed wake for the DONE: the run looked at nothing", role)
 		}
 	}
 }
@@ -991,16 +996,6 @@ func TestAFailedSessionReadIsAnAlert(t *testing.T) {
 		!strings.Contains(f.sent[0], "permission denied") {
 		t.Fatal(f.sent)
 	}
-}
-
-func freshSent(f *fake) []string {
-	var out []string
-	for _, m := range f.sent {
-		if strings.Contains(m, "no fresh start") || strings.Contains(m, "fresh-start check") {
-			out = append(out, m)
-		}
-	}
-	return out
 }
 
 // projectAlerts runs the watch over two projects, quotes and axi, each with a missed DONE, a tab waiting on a question,
