@@ -235,6 +235,9 @@ func Run(d Deps) error {
 		if _, ok := st.Typed[a[0]]; ok {
 			continue
 		}
+		if _, ok := st.Typed[a[0]+":typed"]; ok && strings.HasPrefix(a[0], "handed:") { // said with unsent text in its box
+			continue
+		}
 		// The disk alarm is raised only when due (resources): the 20 min resend would hold back a 2 GB drop.
 		if last, ok := st.Alerted[a[0]]; ok && d.Now.Sub(last) < resend && a[0] != "disk" {
 			continue
@@ -288,11 +291,14 @@ func Run(d Deps) error {
 	// A wrong folder can clear and come back (review of item 8: a second restore on it was silent for 12 h): once a run
 	// that saw the sessions finds it gone, it wakes Crius again when it returns.
 	// The same for a tab's restore folder, once a run also read the tabs' restore records.
+	// A handed-back line and the same line with unsent text in the box (":typed") are one: either keeps both, so a box
+	// cleared, typed again or not checked says nothing new (review r2 of X10).
 	for k := range st.Typed {
-		kind, rest, _ := strings.Cut(k, ":")
+		base := strings.TrimSuffix(k, ":typed")
+		kind, rest, _ := strings.Cut(base, ":")
 		id, _, _ := strings.Cut(rest, ":")
 		seen := kind == "folder" || kind == "restore" && !active["restore-unread"] || kind == "handed" && !active[screensFailed] && !active["screen-failed:"+rest[:max(0, strings.LastIndex(rest, ":"))]]
-		if seen && !active[k] && !hv.blind && !active["role-unread:"+id] {
+		if seen && !active[base] && !active[base+":typed"] && !hv.blind && !active["role-unread:"+id] {
 			delete(st.Typed, k)
 		}
 	}

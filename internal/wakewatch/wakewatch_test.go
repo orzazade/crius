@@ -602,6 +602,27 @@ func TestUnsentTextAfterTheHandedBackLineIsSaidAtOnce(t *testing.T) {
 	if len(f.sent) != 2 {
 		t.Fatalf("said again: %q", f.sent[2:])
 	}
+	// review r2 of X10: the box cleared, typed again, or a check that fails between runs says nothing new
+	for i, c := range []struct {
+		typed bool
+		err   error
+	}{{false, nil}, {true, nil}, {false, errors.New("cmux rpc surface.input_state: timeout")}, {true, nil}, {false, nil}} {
+		f.typed["surface:7"], f.typedErr = c.typed, c.err
+		runAt(t, home, f, draw, 52+i)
+	}
+	if len(f.sent) != 2 {
+		t.Fatalf("said again: %q", f.sent[2:])
+	}
+	// text in the box from the start: the line said with it covers the plain line once the box is cleared
+	home = setup(t, map[string]string{"appxite-map.log": stamp(t0.Add(-28*time.Hour)) + " DONE appxite-map:uploads -> appxite-map:lead — UPLOADS.md bb0fb\n"})
+	testutil.Write(t, filepath.Join(home, "projects.toml"), "[projects.appxite-map]\nleads = { lead = \"/nowhere/STATUS.md\" }\n")
+	f = &fake{typed: map[string]bool{"surface:7": true}}
+	runAt(t, home, f, draw, 0, 5, 11)
+	f.typed["surface:7"] = false
+	runAt(t, home, f, draw, 15, 31)
+	if len(f.sent) != 1 || !strings.Contains(f.sent[0], "unsent text") {
+		t.Fatalf("%q", f.sent)
+	}
 }
 
 func TestABusyLeadIsNotIdle(t *testing.T) {
