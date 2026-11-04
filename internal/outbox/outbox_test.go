@@ -802,6 +802,12 @@ func TestSendToSaysMaybeSentAfterAnEnterItCannotProve(t *testing.T) {
 	if err := SendTo(t.TempDir(), "workspace:1", "surface:1", "go"); err == nil || errors.Is(err, ErrMaybeSent) {
 		t.Fatalf("err %v", err)
 	}
+	// review r2: an Enter pressed on an earlier try may still take; a later one that surely failed does not undo it
+	tab = &box{title: "staffy · backend-dev", lose: 1, key: "fail"}
+	fake(t, tab)
+	if err := SendTo(t.TempDir(), "workspace:1", "surface:1", "go"); !errors.Is(err, ErrMaybeSent) || tab.enters != 1 {
+		t.Fatalf("err %v after %d Enters", err, tab.enters)
+	}
 }
 
 // A tab that is not there, or one whose box holds someone's draft, gets nothing typed.

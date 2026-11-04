@@ -536,15 +536,17 @@ func SendTo(home, workspace, surface, text string) error {
 		if tab.Workspace != workspace || tab.Surface != surface {
 			continue
 		}
+		// pressed is the first try's Enter maybe gone; a later key that surely failed does not undo it
 		entered := false
 		mark := func(e bool) error { entered = e; return nil }
 		err := deliverTab(surface, tab, text, false, mark)
-		for try := 1; err != nil && entered && try < 3; try++ {
+		pressed := entered
+		for try := 1; err != nil && pressed && try < 3; try++ {
 			time.Sleep(RetryWait)
 			err = deliverTab(surface, tab, text, true, mark)
 		}
 		switch {
-		case err == nil, !entered, errors.Is(err, errStill):
+		case err == nil, !pressed, errors.Is(err, errStill):
 			return err
 		}
 		return fmt.Errorf("%w: %v", ErrMaybeSent, err)
