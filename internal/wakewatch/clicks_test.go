@@ -139,37 +139,39 @@ func linesOf(t *testing.T, home, typ string) []string {
 	return out
 }
 
-// Owner 11-01 22:4x: Crius answers the quotes tabs' Azure DevOps prompts, not the owner (AGENTS.md 1205fdc). A project
-// whose projects.toml says clicks = "crius" gets CRIUS-CLICK, which Crius answers with no owner push; other projects
-// keep OWNER-CLICK.
-func TestAProjectWhoseClicksAreCriussGetsCriusClick(t *testing.T) {
+// Owner 11-01 22:4x, 11-04: Crius answers the Azure DevOps prompts of the sessions it runs, not the owner (AGENTS.md
+// 5c2d595). A project in projects.toml gets CRIUS-CLICK, which Crius answers with no owner push, with or without the old
+// clicks key; a project Crius does not run keeps OWNER-CLICK.
+func TestAProjectCriusRunsGetsCriusClick(t *testing.T) {
 	home := setup(t, nil)
 	testutil.Write(t, filepath.Join(home, "projects.toml"), "[projects.quotes]\nclicks = \"crius\"\n[projects.tamada]\nname = \"Tamada\"\n")
 	hook := screenFile(t, "owner-click-hook-1103.screen")
 	quotes := Screen{Surface: "surface:1000050103", Title: "quotes · frontend", Text: hook}
 	// another project's tab: its dialog border names its own session
 	tamada := Screen{Surface: "surface:1000050094", Title: "tamada · lead", Text: strings.ReplaceAll(hook, "quotes · frontend", "tamada · lead")}
+	other := Screen{Surface: "surface:1000050095", Title: "sideline · lead", Text: strings.ReplaceAll(hook, "quotes · frontend", "sideline · lead")}
 	if tamada.Text == hook {
 		t.Fatal("the fixture names no quotes · frontend")
 	}
 	run := func(min int) error {
-		return Clicks(ClickDeps{Home: home, Now: t0.Add(time.Duration(min) * time.Minute), Screens: func() ([]Screen, error) { return []Screen{quotes, tamada}, nil }})
+		return Clicks(ClickDeps{Home: home, Now: t0.Add(time.Duration(min) * time.Minute), Screens: func() ([]Screen, error) { return []Screen{quotes, tamada, other}, nil }})
 	}
 	if err := run(0); err != nil {
 		t.Fatal(err)
 	}
 	crius, owner := linesOf(t, home, "CRIUS-CLICK"), linesOf(t, home, "OWNER-CLICK")
-	if len(crius) != 1 || !strings.Contains(crius[0], " CRIUS-CLICK crius:wakewatch -> crius:lead — quotes · frontend (surface:1000050103) waits on Crius's click: post-guard ask (az repos pr create --description)") {
-		t.Fatal("quotes:", crius)
+	if len(crius) != 2 || !strings.Contains(crius[0], " CRIUS-CLICK crius:wakewatch -> crius:lead — quotes · frontend (surface:1000050103) waits on Crius's click: post-guard ask (az repos pr create --description)") ||
+		!strings.Contains(crius[1], " CRIUS-CLICK crius:wakewatch -> crius:lead — tamada · lead (surface:1000050094) waits on Crius's click: ") {
+		t.Fatal("quotes and tamada:", crius)
 	}
-	if len(owner) != 1 || !strings.Contains(owner[0], "tamada · lead (surface:1000050094) waits on your click: ") {
-		t.Fatal("tamada:", owner)
+	if len(owner) != 1 || !strings.Contains(owner[0], "sideline · lead (surface:1000050095) waits on your click: ") {
+		t.Fatal("sideline:", owner)
 	}
 	// it repeats every 30 min like OWNER-CLICK, and the waiter and wakewatch see it as flagged
 	if err := run(30); err != nil {
 		t.Fatal(err)
 	}
-	if got := linesOf(t, home, "CRIUS-CLICK"); len(got) != 2 || !strings.Contains(got[1], "waits on Crius's click since ") {
+	if got := linesOf(t, home, "CRIUS-CLICK"); len(got) != 4 || !strings.Contains(got[2], "waits on Crius's click since ") {
 		t.Fatal(got)
 	}
 	if !ClickFlagged(home, t0.Add(30*time.Minute), quotes.Surface, func() (string, error) { return hook, nil }) {
@@ -182,7 +184,7 @@ func TestAProjectWhoseClicksAreCriussGetsCriusClick(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "projects.toml") {
 		t.Fatal("no error for an unreadable projects.toml:", err)
 	}
-	if got := linesOf(t, home, "OWNER-CLICK"); len(got) != 2 || len(linesOf(t, home, "CRIUS-CLICK")) != 0 {
+	if got := linesOf(t, home, "OWNER-CLICK"); len(got) != 3 || len(linesOf(t, home, "CRIUS-CLICK")) != 0 {
 		t.Fatal("with projects.toml unread, the clicks did not all go to the owner:", got)
 	}
 	if got := linesOf(t, home, "ALERT"); len(got) != 1 || !strings.Contains(got[0], "projects.toml") {
@@ -196,6 +198,28 @@ func TestAProjectWhoseClicksAreCriussGetsCriusClick(t *testing.T) {
 	}
 	if err := run(0); err == nil || !strings.Contains(err.Error(), "projects.toml") || !strings.Contains(err.Error(), "crius.log") {
 		t.Fatal(err)
+	}
+}
+
+// Owner 11-04 (Crius NEED 16:17, AGENTS.md of 11-04): Crius answers the Azure DevOps prompts of every session it runs,
+// not only the quotes tabs. Case 16:15: axi · devops waited on "your click" (OWNER-CLICK) for a post-guard ask on
+// python3 code. A session whose dialog border names a project in projects.toml gets CRIUS-CLICK, clicks key or none.
+func TestEveryAzureDevOpsPromptOfASessionCriusRunsGetsCriusClick(t *testing.T) {
+	home := setup(t, nil)
+	testutil.Write(t, filepath.Join(home, "projects.toml"), "[projects.axi]\nname = \"AXI\"\n")
+	hook := screenFile(t, "owner-click-hook-lead.screen")
+	text := strings.Replace(strings.Replace(hook, " quotes · lead ", " axi · devops ", 1),
+		"(a shell script name the guard\n │ cannot read)", "(python3 code on stdin that may write to Azure DevOps)", 1)
+	if !strings.Contains(text, " axi · devops ") || !strings.Contains(text, "(python3 code") {
+		t.Fatal("the fixture changed")
+	}
+	tab := Screen{Surface: "surface:1000050123", Title: "axi · devops", Text: text}
+	if err := Clicks(ClickDeps{Home: home, Now: t0, Screens: func() ([]Screen, error) { return []Screen{tab}, nil }}); err != nil {
+		t.Fatal(err)
+	}
+	crius, owner := linesOf(t, home, "CRIUS-CLICK"), linesOf(t, home, "OWNER-CLICK")
+	if len(owner) != 0 || len(crius) != 1 || !strings.Contains(crius[0], " CRIUS-CLICK crius:wakewatch -> crius:lead — axi · devops (surface:1000050123) waits on Crius's click: post-guard ask (python3 code on stdin that may write to Azure DevOps)") {
+		t.Fatalf("crius %q, owner %q", crius, owner)
 	}
 }
 

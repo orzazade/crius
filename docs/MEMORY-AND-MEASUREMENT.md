@@ -464,7 +464,7 @@ more than a late one.
   `LANDED`, `CORRECTION`, `OWNER-CLICK`, `CRIUS-CLICK`. Tests also check that RULES.md and the
   cmux-team skill name no other type.
 - Who writes them: OWNER only Crius, for the owner's own words it relays (the goal report lists them with the decisions); ALERT only Crius's
-  own scripts (ingest, watchdog), OWNER-CLICK only wakewatch (a tab waits on a prompt only the owner may answer), CRIUS-CLICK only wakewatch (the same prompt in a project whose projects.toml says `clicks = "crius"`: Crius answers it, no owner push), WAIT the wait detector, PARKED the park mod
+  own scripts (ingest, watchdog), OWNER-CLICK only wakewatch (a tab waits on a prompt only the owner may answer), CRIUS-CLICK only wakewatch (the same prompt in a session whose dialog border names a project in projects.toml: Crius answers it, no owner push; owner 11-04), WAIT the wait detector, PARKED the park mod
   (via the leader). Team-only types (QUEUE, NEED-QA, BUG, LESSON) never go on the Crius bus; any type
   not in the list above is malformed: ingest keeps a row per line with the time it read it, and the goal report
   counts them per log.

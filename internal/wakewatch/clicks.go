@@ -139,14 +139,14 @@ func dialogBorder(s Screen) string {
 
 // Clicks checks every tab once for a prompt only the owner may answer (owner 11-01 19:1x: Quotes tabs waited on his
 // approval unseen). A new one goes on Crius's bus as one OWNER-CLICK line at once, and again every 30 min while it
-// waits; the next prompt in that tab is new. A tab of a project whose projects.toml says clicks = "crius" gets CRIUS-CLICK
-// instead, which Crius answers with no owner push (owner 11-01 22:4x: the quotes tabs). A tab that cannot be read keeps
-// what it had. launchd runs it every minute.
+// waits; the next prompt in that tab is new. A session Crius runs, one whose dialog border names a project in
+// projects.toml, gets CRIUS-CLICK instead, which Crius answers with no owner push (owner 11-01 22:4x: the quotes tabs;
+// 11-04: every session Crius runs). A tab that cannot be read keeps what it had. launchd runs it every minute.
 // A run that fails says so on the bus as an ALERT, once per error (kept in state/owner-clicks.error): its log is read by
 // nobody.
 func Clicks(d ClickDeps) error {
 	last := filepath.Join(d.Home, "state", "owner-clicks.error")
-	crius, cerr := criusClicks(d.Home)
+	crius, cerr := criusRuns(d.Home)
 	err := errors.Join(clicks(d, crius), cerr)
 	if err == nil {
 		if rerr := os.Remove(last); rerr != nil && !os.IsNotExist(rerr) {
@@ -266,13 +266,13 @@ func clicks(d ClickDeps, crius map[string]bool) error {
 	return writeJSON(path, next)
 }
 
-// criusClicks gives the projects whose Azure DevOps prompts Crius answers, not the owner: clicks = "crius" in
-// projects.toml (owner 11-01 22:4x: the quotes tabs, AGENTS.md 1205fdc). A file that cannot be read gives none, so every
-// click goes to the owner, and its error, which Clicks returns beside the run's own.
-func criusClicks(home string) (map[string]bool, error) {
+// criusRuns gives the projects Crius runs, whose Azure DevOps prompts Crius answers, not the owner: every project in
+// projects.toml (owner 11-04, AGENTS.md of 11-04). A file that cannot be read gives none, so every click goes to the
+// owner, and its error, which Clicks returns beside the run's own.
+func criusRuns(home string) (map[string]bool, error) {
 	out := map[string]bool{}
 	var c struct {
-		Projects map[string]struct{ Clicks string }
+		Projects map[string]struct{}
 	}
 	if _, err := toml.DecodeFile(filepath.Join(home, "projects.toml"), &c); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -280,10 +280,8 @@ func criusClicks(home string) (map[string]bool, error) {
 		}
 		return out, fmt.Errorf("projects.toml cannot be read, so its clicks go to the owner: %w", err)
 	}
-	for p, pc := range c.Projects {
-		if pc.Clicks == "crius" {
-			out[strings.ToLower(p)] = true
-		}
+	for p := range c.Projects {
+		out[strings.ToLower(p)] = true
 	}
 	return out, nil
 }

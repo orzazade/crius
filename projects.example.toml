@@ -7,8 +7,8 @@
 # launch (optional): the absolute folder crius-spawn starts sessions in; needed when cwd lists several folders.
 # pause_at (optional, 1-100): at this Max 7-day share the ingest posts PAUSE to <project>:all on the project's bus
 # and a NEED to crius:lead, once per weekly window.
-# clicks (optional): "crius" when Crius answers this project's Azure DevOps prompts: wakewatch posts CRIUS-CLICK
-#   for them, not OWNER-CLICK, so the owner gets no push. Missing: the owner answers them.
+# Azure DevOps prompts of every project listed here go to Crius (wakewatch posts CRIUS-CLICK, no owner push; owner
+#   11-04). The old clicks key is still accepted and read by nothing.
 
 # Transcript folders per persona (these are the defaults when the table is missing).
 [transcripts]
