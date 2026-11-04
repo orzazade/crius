@@ -110,10 +110,16 @@ func redactShortFlag(s string) (string, int) {
 }
 
 // Redact returns the text with each secret replaced by [redacted], and the number of secrets replaced.
-func Redact(s string) (string, int) {
+func Redact(s string) (string, int) { return RedactNames(s, nil) }
+
+// RedactNames is Redact for text that holds the given names (configured leads, "axi-v1-secrets:lead"): a secret
+// word inside one of them is no key, so its "value" (the rest of the line) stays (X15). The text is never changed
+// before the rules read it: every other rule sees what Redact sees (review of 2733352: a stand-in word lowered the
+// entropy and hid the keywords of secrets beside it). A name counts with no letter, digit, _ or - next to it.
+func RedactNames(s string, names []string) (string, int) {
 	hits := 0
 	s = blockRe.ReplaceAllStringFunc(s, func(string) string { hits++; return "[redacted]" })
-	s, n := redactPairs(s)
+	s, n := redactPairs(s, names)
 	hits += n
 	for _, re := range secretRes {
 		s = re.ReplaceAllStringFunc(s, func(string) string { hits++; return "[redacted]" })
@@ -130,7 +136,7 @@ func Redact(s string) (string, int) {
 // to the end of the line (or of the JSON string, which JSON redacts alone). A value that continues below its key
 // line (YAML, a block scalar, a line ending at an operator) takes the next line and the lines indented under the
 // key. Over-redacting is accepted; printing part of a secret is not. Each step moves on through the text: linear.
-func redactPairs(s string) (string, int) {
+func redactPairs(s string, names []string) (string, int) {
 	var b strings.Builder
 	hits, pos := 0, 0
 	for {
@@ -139,6 +145,11 @@ func redactPairs(s string) (string, int) {
 			break
 		}
 		start, v := pos+m[0], pos+m[len(m)-2]
+		if inName(s, start, names) { // look again from the next byte: a key after it is still a key
+			b.WriteString(s[pos : start+1])
+			pos = start + 1
+			continue
+		}
 		b.WriteString(s[pos:start])
 		b.WriteString("[redacted]")
 		hits++
@@ -149,6 +160,27 @@ func redactPairs(s string) (string, int) {
 	}
 	b.WriteString(s[pos:])
 	return b.String(), hits
+}
+
+// inName says whether byte i of s is inside one of names, standing with no letter, digit, _ or - beside it.
+func inName(s string, i int, names []string) bool {
+	word := func(c byte) bool {
+		return c == '_' || c == '-' || '0' <= c && c <= '9' || 'a' <= c|0x20 && c|0x20 <= 'z'
+	}
+	for _, n := range names {
+		for from := max(0, i-len(n)+1); n != "" && from <= i; {
+			j := strings.Index(s[from:], n)
+			if j < 0 || from+j > i {
+				break
+			}
+			j += from
+			if end := j + len(n); (j == 0 || !word(s[j-1])) && (end == len(s) || !word(s[end])) {
+				return true
+			}
+			from = j + 1
+		}
+	}
+	return false
 }
 
 // valueEnd is where the value that starts at v certainly ends (see redactPairs).

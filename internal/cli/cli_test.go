@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -518,33 +519,32 @@ func TestDigestSnapshotKeepsEveryLeadNameAndShape(t *testing.T) {
 	}
 }
 
-// X15: a lead's name keeps its line; a secret beside it, or one that only holds a name, is still redacted.
+// X15: a lead's name keeps its line, and every secret Redact removes is removed: only a secret word inside a
+// name is no key (review of 2733352: a stand-in word for the name lowered entropy and hid a rule's keyword).
 func TestKeepNamesRedactsAllButTheLeadNames(t *testing.T) {
-	leads := []ingest.Lead{{Name: "axi-v1-secrets:lead"}, {Name: "demo:lead"}}
-	known := func(slug string) bool { return slug == "axi-v1-secrets" || slug == "demo" }
+	leads := []ingest.Lead{{Name: "axi-v1-secrets:lead"}, {Name: "demo:lead"}, {Name: "sourcegraph:lead"}, {Name: "d:lead"}}
 	key := "ghp_" + strings.Repeat("F", 36)
 	in := "axi-v1-secrets:lead: 40% claimed\npassword: demo:lead\ndemo:lead: rotate " + key + "\nsecrets:lead-2 x"
 	want := "axi-v1-secrets:lead: 40% claimed\n[redacted]\ndemo:lead: rotate [redacted]\n"
-	if got := keepNames(in, leads, known); !strings.HasPrefix(got, want) || strings.Contains(got, "FFFF") || strings.Contains(got, "\x01") ||
-		strings.Contains(got, "lead-2 x") {
+	if got := keepNames(in, leads); !strings.HasPrefix(got, want) || strings.Contains(got, "FFFF") || strings.Contains(got, "lead-2 x") {
 		t.Fatalf("%q", got)
 	}
-	// review of 74cc5cd (P1): a shielded name must not hide a secret around it; whatever Redact takes with a plain word
-	// of the name's shape there, keepNames takes (only the name's own "secrets" no longer counts)
-	for _, tmpl := range []string{"postgres://NAME.hunter2@host/db", "password.NAME=hunter2", "NAME password: hunter2",
-		"Authorization: Basic NAME hunter2", "export TOKEN=NAME-hunter2", "https://NAME:hunter2@example.com", "token NAME=hunter2",
-		`api_key: "NAME hunter2"`, "secret_key=NAME/hunter2", "-----BEGIN PRIVATE KEY-----\nNAME\nhunter2\n-----END PRIVATE KEY-----"} {
-		for _, l := range leads {
+	secrets := []string{"postgres://NAME.hunter2@host/db", "password.NAME=hunter2", "NAME password: hunter2",
+		"Authorization: Basic NAME hunter2", "export TOKEN=NAME-hunter2", "https://NAME:hunter2@example.com",
+		`api_key: "NAME hunter2"`, "secret_key=NAME/hunter2", "-----BEGIN PRIVATE KEY-----\nNAME\nhunter2\n-----END PRIVATE KEY-----"}
+	others := []string{"access NAME.abcd123456", "access NAME.bbbbbbcdefghijklmn", "token NAME=hunter2",
+		"Goal: NAME\nNext: rotate " + strings.Repeat("0123456789abcdef", 2) + "01234567"} // built: the repo holds no raw token
+	for _, l := range leads {
+		for _, tmpl := range append(slices.Clone(secrets), others...) {
 			in := strings.ReplaceAll(tmpl, "NAME", l.Name)
-			plain, _ := redact.Redact(strings.ReplaceAll(tmpl, "NAME", stand(l.Name, 0)))
-			if got := keepNames(in, leads, known); strings.Contains(got, "hunter2") && !strings.Contains(plain, "hunter2") {
-				t.Errorf("%q: %q", in, got)
+			if plain, _ := redact.Redact(in); l.Name != "axi-v1-secrets:lead" && keepNames(in, leads) != plain {
+				t.Errorf("%q: %q, Redact gives %q", in, keepNames(in, leads), plain)
 			}
 		}
-	}
-	for _, in := range []string{"postgres://demo:lead.hunter2@host/db", "password.demo:lead=hunter2"} {
-		if got := keepNames(in, leads, known); strings.Contains(got, "hunter2") {
-			t.Errorf("%q: %q", in, got)
+		for _, tmpl := range secrets {
+			if in := strings.ReplaceAll(tmpl, "NAME", l.Name); strings.Contains(keepNames(in, leads), "hunter2") {
+				t.Errorf("%q: %q", in, keepNames(in, leads))
+			}
 		}
 	}
 }
