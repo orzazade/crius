@@ -748,3 +748,43 @@ func TestTextTypedBetweenTheTwoLooksIsNotSent(t *testing.T) {
 		t.Errorf("typed %q, draft %q: want the owner's text left alone", tab.typed, tab.draft)
 	}
 }
+
+// X14 (staffy:leader via Crius 11-04 16:35): a leader's messages were left typed but unsent. SendTo types into the tab
+// at a workspace and surface, presses Enter once the box holds the text, and fails loudly if the text still sits there.
+func TestSendToTypesThenPressesEnterAndChecksTheBox(t *testing.T) {
+	tab := &box{title: "staffy · backend-dev"}
+	fake(t, tab)
+	if err := SendTo(t.TempDir(), "workspace:1", "surface:1", "read your brief and go on"); err != nil {
+		t.Fatal(err)
+	}
+	if len(tab.typed) != 1 || tab.typed[0] != "read your brief and go on" || tab.draft != "" {
+		t.Errorf("typed %q, box %q", tab.typed, tab.draft)
+	}
+}
+
+func TestSendToFailsLoudlyWhenTheTextStaysInTheBox(t *testing.T) {
+	tab := &box{title: "staffy · backend-dev", key: "lost"}
+	fake(t, tab)
+	err := SendTo(t.TempDir(), "workspace:1", "surface:1", "read your brief")
+	if err == nil || !strings.Contains(err.Error(), "still holds the message after Enter") {
+		t.Fatalf("err %v", err)
+	}
+}
+
+// A tab that is not there, or one whose box holds someone's draft, gets nothing typed.
+func TestSendToTypesNothingIntoAMissingTabOrOverADraft(t *testing.T) {
+	tab := &box{title: "staffy · backend-dev"}
+	fake(t, tab)
+	for _, ref := range [][2]string{{"workspace:1", "surface:2"}, {"workspace:2", "surface:1"}} {
+		if err := SendTo(t.TempDir(), ref[0], ref[1], "go"); err == nil || !strings.Contains(err.Error(), "no terminal "+ref[1]+" in "+ref[0]) {
+			t.Errorf("%v: err %v", ref, err)
+		}
+	}
+	tab.draft = "half a thought"
+	if err := SendTo(t.TempDir(), "workspace:1", "surface:1", "go"); err == nil || !strings.Contains(err.Error(), "holds a draft") {
+		t.Errorf("err %v", err)
+	}
+	if len(tab.typed) != 0 || tab.draft != "half a thought" {
+		t.Errorf("typed %q, box %q", tab.typed, tab.draft)
+	}
+}

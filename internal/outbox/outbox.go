@@ -433,17 +433,22 @@ func deliver(to, text string, entered bool, mark func(entered bool) error) error
 	if len(found) != 1 {
 		return fmt.Errorf("cmux tree --all has %d terminals titled %q, want one: nothing typed", len(found), to)
 	}
-	if err := claudeInFront(found[0]); err != nil {
+	return deliverTab(to, found[0], text, entered, mark)
+}
+
+// deliverTab is deliver for one tab; to names it in errors.
+func deliverTab(to string, tab Terminal, text string, entered bool, mark func(entered bool) error) error {
+	if err := claudeInFront(tab); err != nil {
 		return err
 	}
-	ws, surface := found[0].Workspace, found[0].Surface
+	ws, surface := tab.Workspace, tab.Surface
 	draft, err := inputBox(ws, surface)
 	if err != nil {
 		return err
 	}
 	if draft != "" && strings.Contains(squash(draft), squash(text)) {
 		// read-screen has no colours: what looks like the message may be a grey suggestion in an empty box.
-		typed, err := typedText(found[0])
+		typed, err := typedText(tab)
 		if err != nil {
 			return err
 		}
@@ -499,11 +504,33 @@ func deliver(to, text string, entered bool, mark func(entered bool) error) error
 		return fmt.Errorf("%q's prompt could not be read after Enter: %v", to, err)
 	}
 	if squash(draft) == squash(text) {
-		if typed, err := typedText(found[0]); err != nil || typed {
+		if typed, err := typedText(tab); err != nil || typed {
 			return errors.Join(fmt.Errorf("%q's prompt still holds the message after Enter", to), err)
 		}
 	}
 	return nil
+}
+
+// SendTo types text into the Claude tab at workspace and surface (refs as cmux gives them: workspace:N, surface:N),
+// then Enter, with deliver's checks, and stores nothing: nil means the box took it, any error that it was not sent or
+// may sit in the box, as the error says (X14: a leader's messages were left typed but unsent). It waits for the
+// outbox's lock, so it never types into a tab while crius-say or wakewatch does.
+func SendTo(home, workspace, surface, text string) error {
+	unlock, err := lock(home)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	tabs, err := Terminals()
+	if err != nil {
+		return err
+	}
+	for _, tab := range tabs {
+		if tab.Workspace == workspace && tab.Surface == surface {
+			return deliverTab(surface, tab, text, false, func(bool) error { return nil })
+		}
+	}
+	return fmt.Errorf("cmux tree --all has no terminal %s in %s: nothing typed", surface, workspace)
 }
 
 // Typed asks cmux whether the input box of the tab with this ref (surface:N) holds typed text, not grey text.
