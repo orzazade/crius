@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -746,7 +747,13 @@ func digestCmd(home string, now time.Time, write, printPath bool, stdout, stderr
 	defer db.Close()
 	dir := filepath.Join(home, "state", "digest")
 	in := digest.Input{Leads: leads, Digest: filepath.Join(home, "state", "crius", "bus-digest.log")}
-	in.Prev, in.Since, err = lastSnapshot(dir)
+	known, err := ingest.KnownProjects(home)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return exitError
+	}
+	var lost []string
+	in.Prev, in.Since, lost, err = lastSnapshot(dir)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return exitError
@@ -771,18 +778,21 @@ func digestCmd(home string, now time.Time, write, printPath bool, stdout, stderr
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return exitError
 	}
-	text, _ := redact.Redact(r.Text)
+	text := keepNames(r.Text, leads, known)
 	partial := r.Status != "complete"
+	if len(lost) > 0 { // those leads read as a first report, and the report says why
+		line := "Previous report: " + strings.Join(lost, "; ") + "; compared as a first report."
+		text, partial = text+"\n"+keepNames(line, leads, known)+"\n", true
+	}
 	if now.Hour() < 12 {
 		md, err := morningExperiments(db, home, now, write)
 		if err != nil {
 			md, partial = "## Experiments\n\nExperiments: could not count "+now.AddDate(0, 0, -1).Format("2006-01-02")+": "+err.Error()+"\n", true
 		}
-		md, _ = redact.Redact(md)
-		text += "\n" + md
+		text += "\n" + keepNames(md, leads, known)
 	}
 	if write {
-		snap, err := redact.JSON(r.Snap)
+		snap, err := snapshotJSON(r.Snap, known)
 		if err == nil {
 			err = os.MkdirAll(dir, 0o700)
 		}
@@ -800,6 +810,8 @@ func digestCmd(home string, now time.Time, write, printPath bool, stdout, stderr
 	}
 	if printPath {
 		fmt.Fprintln(stdout, filepath.Join(dir, now.Format("2006-01-02-1504"))+".md")
+	} else if w, ok := stdout.(redact.Writer); ok {
+		fmt.Fprint(w.W, text) // redacted above with the lead names kept; Run's raw Writer would take them again (X15)
 	} else {
 		fmt.Fprint(stdout, text)
 	}
@@ -987,15 +999,75 @@ func driversCmd(home, fromArg, toArg string, asJSON bool, refPath string, stdout
 
 var reportJSONRe = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}-\d{4}\.json$`)
 
+// snapshotJSON encodes a report's numbers. A key is a lead's name, so it is redacted by the name rule, never as free
+// text: "axi-v1-secrets:lead" read as the pair "secrets: lead" lost its name and its numbers (X15). Each value is
+// redacted on its own, so its shape is kept.
+func snapshotJSON(s digest.Snapshot, known func(slug string) bool) ([]byte, error) {
+	red := func(s string) string { s, _ = redact.Redact(s); return s }
+	out := map[string]json.RawMessage{}
+	for name, v := range s {
+		b, err := redact.JSON(v)
+		if err != nil {
+			return nil, err
+		}
+		key := ingest.RedactName(name, known, red)
+		if _, ok := out[key]; ok {
+			return nil, fmt.Errorf("two leads are both %q once redacted", key)
+		}
+		out[key] = b
+	}
+	return json.MarshalIndent(out, "", "  ")
+}
+
+// keepNames redacts text as free text, but each lead's name by the name rule: free text reads axi-v1-secrets:lead as
+// the pair "secrets: lead…" and dropped the rest of its report line (X15). A name counts only with no letter, digit, _
+// or - beside it, so a token that holds one is not split apart before the patterns see it.
+func keepNames(text string, leads []ingest.Lead, known func(slug string) bool) string {
+	red := func(s string) string { s, _ = redact.Redact(s); return s }
+	names := make([]string, 0, len(leads))
+	for _, l := range leads {
+		names = append(names, l.Name)
+	}
+	slices.SortFunc(names, func(a, b string) int { return len(b) - len(a) }) // a longer name first, never its part
+	word := func(c byte) bool {
+		return c == '_' || c == '-' || '0' <= c && c <= '9' || 'a' <= c|0x20 && c|0x20 <= 'z'
+	}
+	for i, name := range names {
+		var b strings.Builder
+		at := 0
+		for from := 0; ; {
+			j := strings.Index(text[from:], name)
+			if j < 0 {
+				break
+			}
+			j += from
+			end := j + len(name)
+			if (j == 0 || !word(text[j-1])) && (end == len(text) || !word(text[end])) {
+				b.WriteString(text[at:j])
+				fmt.Fprintf(&b, "\x01%d\x01", i)
+				at = end
+			}
+			from = end
+		}
+		text = b.String() + text[at:]
+	}
+	text = red(text)
+	for i, name := range names {
+		text = strings.ReplaceAll(text, fmt.Sprintf("\x01%d\x01", i), ingest.RedactName(name, known, red))
+	}
+	return strings.ReplaceAll(text, "\x01", "") // a mark cut by a redacted value
+}
+
 // lastSnapshot reads the numbers and time of the newest saved report (YYYY-MM-DD-HHMM.json); no saved report yet is an empty snapshot, any other
-// failure an error.
-func lastSnapshot(dir string) (digest.Snapshot, time.Time, error) {
+// failure an error. An entry that is no lead's numbers is left out and named in lost: one bad entry made every later
+// digest exit 1, so no report could replace it (X15).
+func lastSnapshot(dir string) (digest.Snapshot, time.Time, []string, error) {
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
-		return digest.Snapshot{}, time.Time{}, nil
+		return digest.Snapshot{}, time.Time{}, nil, nil
 	}
 	if err != nil {
-		return nil, time.Time{}, err
+		return nil, time.Time{}, nil, err
 	}
 	var names []string // sorted by name, so by time
 	for _, e := range entries {
@@ -1004,22 +1076,32 @@ func lastSnapshot(dir string) (digest.Snapshot, time.Time, error) {
 		}
 	}
 	if len(names) == 0 {
-		return digest.Snapshot{}, time.Time{}, nil
+		return digest.Snapshot{}, time.Time{}, nil, nil
 	}
 	last := names[len(names)-1]
 	at, err := time.ParseInLocation("2006-01-02-1504.json", filepath.Base(last), time.Local)
 	if err != nil {
-		return nil, time.Time{}, err
+		return nil, time.Time{}, nil, err
 	}
 	b, err := os.ReadFile(last)
 	if err != nil {
-		return nil, time.Time{}, err
+		return nil, time.Time{}, nil, err
 	}
-	var s digest.Snapshot
-	if err := json.Unmarshal(b, &s); err != nil {
-		return nil, time.Time{}, fmt.Errorf("%s: %w", last, err)
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return nil, time.Time{}, nil, fmt.Errorf("%s: %w", last, err)
 	}
-	return s, at, nil
+	s, lost := digest.Snapshot{}, []string(nil)
+	for name, v := range raw {
+		var l digest.LeadSnap
+		if err := json.Unmarshal(v, &l); err != nil {
+			lost = append(lost, fmt.Sprintf("%s: %q could not be read (%v)", filepath.Base(last), name, err))
+			continue
+		}
+		s[name] = l
+	}
+	slices.Sort(lost)
+	return s, at, lost, nil
 }
 
 // openLog opens a state log (a variable so a test can move the log between two opens).

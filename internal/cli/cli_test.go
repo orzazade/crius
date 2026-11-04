@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/orzazade/crius/internal/digest"
 	"github.com/orzazade/crius/internal/ingest"
 	"github.com/orzazade/crius/internal/scorecard"
 	"github.com/orzazade/crius/internal/store"
@@ -467,6 +468,65 @@ func TestDigestPrintsThePathItWrote(t *testing.T) {
 	}
 	if rc, _ := run("digest", "--print-path"); rc != exitUsage {
 		t.Fatal(rc)
+	}
+}
+
+// X15 (Crius 11-04 18:10, S2): the 18:00 snapshot named lead axi-v1-secrets:lead "axi-v1-[redacted]" with the string
+// "[redacted]" for its numbers, and every digest after it exited 1 reading it. A lead's name is a name, redacted by
+// the name rule; its numbers keep their shape; one entry that cannot be read is said in the report, never exit 1.
+func TestDigestSnapshotKeepsEveryLeadNameAndShape(t *testing.T) {
+	home := findStore(t)
+	a, b := filepath.Join(home, "a.md"), filepath.Join(home, "b.md")
+	testutil.Write(t, a, "## GOAL (2026-11-04 17:30)\nGoal: retire\n- [x] one · abc1234\n- [ ] two\nDone: 40% (guess)\nNext: two\nNeeds owner: nothing\n")
+	testutil.Write(t, b, "## GOAL (2026-11-04 17:30)\nGoal: ship\n- [ ] one\nDone: 10% (guess)\nNext: one\nNeeds owner: nothing\n")
+	testutil.Write(t, filepath.Join(home, "projects.toml"), "[projects.axi-v1-secrets]\ncwd = [\"/w/axi\"]\nleads = { lead = \""+a+
+		"\" }\n[projects.demo]\ncwd = [\"/w/demo\"]\nleads = { lead = \""+b+"\" }\n")
+	dir := filepath.Join(home, "state", "digest")
+	if rc, out := run("digest", "--write"); rc != exitPartial {
+		t.Fatal(rc, out)
+	}
+	jsons, _ := filepath.Glob(filepath.Join(dir, "*.json"))
+	if len(jsons) != 1 {
+		t.Fatal(jsons)
+	}
+	if md := testutil.Read(t, strings.TrimSuffix(jsons[0], ".json")+".md"); !strings.Contains(md, "axi-v1-secrets:lead: 40% claimed") {
+		t.Fatal(md)
+	}
+	var snap digest.Snapshot
+	if err := json.Unmarshal([]byte(testutil.Read(t, jsons[0])), &snap); err != nil {
+		t.Fatal(err, testutil.Read(t, jsons[0]))
+	}
+	want := digest.Snapshot{"axi-v1-secrets:lead": {Done: 40}, "demo:lead": {Done: 10}}
+	if len(snap) != len(want) {
+		t.Fatal(snap)
+	}
+	for name, w := range want {
+		if snap[name] != w {
+			t.Errorf("%s: %+v, want %+v (%v)", name, snap[name], w, snap)
+		}
+	}
+	if rc, out := run("digest"); rc != exitPartial || strings.Count(out, "· no change since the last report") != 2 {
+		t.Fatal(rc, out)
+	}
+	// the live 18:00 file: one entry is a string; the other lead is still compared, and the report says what was lost
+	testutil.Write(t, filepath.Join(dir, "2099-01-01-0900.json"), `{"axi-v1-[redacted]": "[redacted]", "demo:lead": {"done": 10, "verified": 0}}`)
+	rc, out := run("digest")
+	if rc != exitPartial || !strings.Contains(out, "demo:lead: 10% claimed") || !strings.Contains(out, "· no change since the last report") ||
+		!strings.Contains(out, `"axi-v1-[redacted]" could not be read`) {
+		t.Fatal(rc, out)
+	}
+}
+
+// X15: a lead's name keeps its line; a secret beside it, or one that only holds a name, is still redacted.
+func TestKeepNamesRedactsAllButTheLeadNames(t *testing.T) {
+	leads := []ingest.Lead{{Name: "axi-v1-secrets:lead"}, {Name: "demo:lead"}}
+	known := func(slug string) bool { return slug == "axi-v1-secrets" || slug == "demo" }
+	key := "ghp_" + strings.Repeat("F", 36)
+	in := "axi-v1-secrets:lead: 40% claimed\npassword: demo:lead\ndemo:lead: rotate " + key + "\nsecrets:lead-2 x"
+	want := "axi-v1-secrets:lead: 40% claimed\n[redacted]\ndemo:lead: rotate [redacted]\n"
+	if got := keepNames(in, leads, known); !strings.HasPrefix(got, want) || strings.Contains(got, "FFFF") || strings.Contains(got, "\x01") ||
+		strings.Contains(got, "lead-2 x") {
+		t.Fatalf("%q", got)
 	}
 }
 
