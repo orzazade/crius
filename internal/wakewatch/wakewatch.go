@@ -1010,7 +1010,7 @@ func resources(d Deps, st *state) [][2]string {
 	if free < minFreeGB && (st.Disk.At.IsZero() || d.Now.Sub(st.Disk.At) >= diskResend ||
 		free <= st.Disk.FreeGB-diskDropGB) {
 		st.Disk = diskAlarm{At: d.Now, FreeGB: free}
-		out = append(out, [2]string{"disk", fmt.Sprintf("disk: %.1f GB free, below %d GB", free, minFreeGB)})
+		out = append(out, [2]string{"disk", fmt.Sprintf("disk: %.1f GB free, below %d GB; load the disk-cleanup skill", free, minFreeGB)})
 	}
 	if swap > maxSwapGB {
 		out = append(out, [2]string{"swap", fmt.Sprintf("swap: %.1f GB in use, above %d GB", swap, maxSwapGB)})

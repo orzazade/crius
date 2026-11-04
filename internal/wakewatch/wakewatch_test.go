@@ -900,6 +900,19 @@ func TestLowDiskOrHighSwapWakesCrius(t *testing.T) {
 	}
 }
 
+// Owner 11-04 (Crius NEED 16:30): disk cleanup follows the disk-cleanup skill, so the disk alert ends by naming it and
+// every Crius that reads the line loads it.
+func TestTheDiskAlertSaysToLoadTheDiskCleanupSkill(t *testing.T) {
+	home := setup(t, nil)
+	f := &fake{freeGB: 19.5, swapGB: 1}
+	if err := Run(f.deps(home, t0)); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.sent) != 1 || !strings.HasSuffix(strings.TrimSpace(f.sent[0]), "disk: 19.5 GB free, below 20 GB; load the disk-cleanup skill") {
+		t.Fatal(f.sent)
+	}
+}
+
 // Brief fixes-1025 item 7 (E1, crius:lead 18:38): each run logs the 1-minute load for the experiment scorecard; a
 // load read that fails wakes Crius, as a disk read that fails does.
 func TestEachRunLogsTheLoad(t *testing.T) {
