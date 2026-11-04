@@ -279,6 +279,12 @@ func TestBuildAddsTheStoreSections(t *testing.T) {
 			t.Fatal(err, r.Text)
 		}
 	}
+	// review of 74cc5cd (P2): an entry of the last report that could not be read makes the report partial, in its head
+	lost := `2026-11-04-1800.json: "axi-v1-[redacted]" could not be read (json: cannot unmarshal string)`
+	if r, err := Build(db, Input{Quota: &quota.Report{Status: "complete"}, Health: &recall.Health{Status: "complete"}, Lost: []string{lost}}, now); err != nil ||
+		r.Status != "partial" || !strings.Contains(r.Text, "· status partial\n! last report "+lost+"; that lead is compared as a first report\n") {
+		t.Fatal(err, r.Text)
+	}
 	if got := clip(strings.Repeat("a", 200), 110); got != strings.Repeat("a", 109)+"…" {
 		t.Fatal(got)
 	}

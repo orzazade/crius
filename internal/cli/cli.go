@@ -752,8 +752,7 @@ func digestCmd(home string, now time.Time, write, printPath bool, stdout, stderr
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return exitError
 	}
-	var lost []string
-	in.Prev, in.Since, lost, err = lastSnapshot(dir)
+	in.Prev, in.Since, in.Lost, err = lastSnapshot(dir)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return exitError
@@ -780,10 +779,6 @@ func digestCmd(home string, now time.Time, write, printPath bool, stdout, stderr
 	}
 	text := keepNames(r.Text, leads, known)
 	partial := r.Status != "complete"
-	if len(lost) > 0 { // those leads read as a first report, and the report says why
-		line := "Previous report: " + strings.Join(lost, "; ") + "; compared as a first report."
-		text, partial = text+"\n"+keepNames(line, leads, known)+"\n", true
-	}
 	if now.Hour() < 12 {
 		md, err := morningExperiments(db, home, now, write)
 		if err != nil {
@@ -1021,7 +1016,8 @@ func snapshotJSON(s digest.Snapshot, known func(slug string) bool) ([]byte, erro
 
 // keepNames redacts text as free text, but each lead's name by the name rule: free text reads axi-v1-secrets:lead as
 // the pair "secrets: lead…" and dropped the rest of its report line (X15). A name counts only with no letter, digit, _
-// or - beside it, so a token that holds one is not split apart before the patterns see it.
+// or - beside it, and the patterns see it as a word of its own shape (stand), so whatever is around it reads as
+// before: a mark without the name's ":" hid demo:lead.hunter2@host from the URL rule (review of 74cc5cd).
 func keepNames(text string, leads []ingest.Lead, known func(slug string) bool) string {
 	red := func(s string) string { s, _ = redact.Redact(s); return s }
 	names := make([]string, 0, len(leads))
@@ -1031,6 +1027,19 @@ func keepNames(text string, leads []ingest.Lead, known func(slug string) bool) s
 	slices.SortFunc(names, func(a, b string) int { return len(b) - len(a) }) // a longer name first, never its part
 	word := func(c byte) bool {
 		return c == '_' || c == '-' || '0' <= c && c <= '9' || 'a' <= c|0x20 && c|0x20 <= 'z'
+	}
+	stands := make([]string, len(names))
+	for i, name := range names {
+		for c := i; ; c += len(names) { // a stand in the text, or in or around another, would be put back wrongly
+			st, clash := stand(name, c), strings.Contains(text, stand(name, c))
+			for _, o := range append(slices.Clone(stands[:i]), names...) {
+				clash = clash || strings.Contains(o, st) || strings.Contains(st, o)
+			}
+			if !clash {
+				stands[i] = st
+				break
+			}
+		}
 	}
 	for i, name := range names {
 		var b strings.Builder
@@ -1043,8 +1052,7 @@ func keepNames(text string, leads []ingest.Lead, known func(slug string) bool) s
 			j += from
 			end := j + len(name)
 			if (j == 0 || !word(text[j-1])) && (end == len(text) || !word(text[end])) {
-				b.WriteString(text[at:j])
-				fmt.Fprintf(&b, "\x01%d\x01", i)
+				b.WriteString(text[at:j] + stands[i])
 				at = end
 			}
 			from = end
@@ -1053,9 +1061,24 @@ func keepNames(text string, leads []ingest.Lead, known func(slug string) bool) s
 	}
 	text = red(text)
 	for i, name := range names {
-		text = strings.ReplaceAll(text, fmt.Sprintf("\x01%d\x01", i), ingest.RedactName(name, known, red))
+		text = strings.ReplaceAll(text, stands[i], ingest.RedactName(name, known, red))
 	}
-	return strings.ReplaceAll(text, "\x01", "") // a mark cut by a redacted value
+	return text
+}
+
+// stand is name with its letters and digits written as the number c (letters base 26, digits base 10, from the left;
+// the rest a or 0) and every other byte kept, so a pattern sees the shape the name has.
+func stand(name string, c int) string {
+	b := []byte(name)
+	for k := range b {
+		switch {
+		case 'a' <= b[k]|0x20 && b[k]|0x20 <= 'z':
+			b[k], c = 'a'+byte(c%26), c/26
+		case '0' <= b[k] && b[k] <= '9':
+			b[k], c = '0'+byte(c%10), c/10
+		}
+	}
+	return string(b)
 }
 
 // lastSnapshot reads the numbers and time of the newest saved report (YYYY-MM-DD-HHMM.json); no saved report yet is an empty snapshot, any other

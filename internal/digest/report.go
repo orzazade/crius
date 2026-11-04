@@ -48,7 +48,8 @@ type Input struct {
 	Since  time.Time     // the last report's time; zero: none
 	Quota  *quota.Report // built for now
 	Health *recall.Health
-	Digest string // the combined waiter's digest file of routine bus lines; "": not counted
+	Digest string   // the combined waiter's digest file of routine bus lines; "": not counted
+	Lost   []string // entries of the last report's numbers that could not be read; each makes the report partial
 }
 
 // Build makes the goal report (RULES 3.4, Crius 10-17 02:29): what needs the owner on top, the first marked; then per
@@ -177,6 +178,10 @@ func Build(db *sql.DB, in Input, now time.Time) (*Report, error) {
 	if cannotRead > 0 {
 		status = "partial"
 		reasons = append(reasons, fmt.Sprintf("%d lead status file cannot be read", cannotRead))
+	}
+	for _, l := range in.Lost { // its lead reads as new, so the report says why (X15)
+		status = "partial"
+		reasons = append(reasons, "last report "+l+"; that lead is compared as a first report")
 	}
 	r.Status = status
 	head := []string{fmt.Sprintf("# Goal report · %s · status %s", now.Format("2006-01-02 15:04"), status)}

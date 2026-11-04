@@ -12,6 +12,7 @@ import (
 
 	"github.com/orzazade/crius/internal/digest"
 	"github.com/orzazade/crius/internal/ingest"
+	"github.com/orzazade/crius/internal/redact"
 	"github.com/orzazade/crius/internal/scorecard"
 	"github.com/orzazade/crius/internal/store"
 	"github.com/orzazade/crius/internal/testutil"
@@ -512,7 +513,7 @@ func TestDigestSnapshotKeepsEveryLeadNameAndShape(t *testing.T) {
 	testutil.Write(t, filepath.Join(dir, "2099-01-01-0900.json"), `{"axi-v1-[redacted]": "[redacted]", "demo:lead": {"done": 10, "verified": 0}}`)
 	rc, out := run("digest")
 	if rc != exitPartial || !strings.Contains(out, "demo:lead: 10% claimed") || !strings.Contains(out, "· no change since the last report") ||
-		!strings.Contains(out, `"axi-v1-[redacted]" could not be read`) {
+		!strings.Contains(out, `! last report 2099-01-01-0900.json: "axi-v1-[redacted]" could not be read (`) {
 		t.Fatal(rc, out)
 	}
 }
@@ -527,6 +528,24 @@ func TestKeepNamesRedactsAllButTheLeadNames(t *testing.T) {
 	if got := keepNames(in, leads, known); !strings.HasPrefix(got, want) || strings.Contains(got, "FFFF") || strings.Contains(got, "\x01") ||
 		strings.Contains(got, "lead-2 x") {
 		t.Fatalf("%q", got)
+	}
+	// review of 74cc5cd (P1): a shielded name must not hide a secret around it; whatever Redact takes with a plain word
+	// of the name's shape there, keepNames takes (only the name's own "secrets" no longer counts)
+	for _, tmpl := range []string{"postgres://NAME.hunter2@host/db", "password.NAME=hunter2", "NAME password: hunter2",
+		"Authorization: Basic NAME hunter2", "export TOKEN=NAME-hunter2", "https://NAME:hunter2@example.com", "token NAME=hunter2",
+		`api_key: "NAME hunter2"`, "secret_key=NAME/hunter2", "-----BEGIN PRIVATE KEY-----\nNAME\nhunter2\n-----END PRIVATE KEY-----"} {
+		for _, l := range leads {
+			in := strings.ReplaceAll(tmpl, "NAME", l.Name)
+			plain, _ := redact.Redact(strings.ReplaceAll(tmpl, "NAME", stand(l.Name, 0)))
+			if got := keepNames(in, leads, known); strings.Contains(got, "hunter2") && !strings.Contains(plain, "hunter2") {
+				t.Errorf("%q: %q", in, got)
+			}
+		}
+	}
+	for _, in := range []string{"postgres://demo:lead.hunter2@host/db", "password.demo:lead=hunter2"} {
+		if got := keepNames(in, leads, known); strings.Contains(got, "hunter2") {
+			t.Errorf("%q: %q", in, got)
+		}
 	}
 }
 
