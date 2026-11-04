@@ -51,8 +51,8 @@ type flagged struct {
 	Since, Posted, Confirmed time.Time
 }
 
-// OwnerClick reads a screen's live permission dialog and reports whether only the owner may answer it: the post-guard's
-// ask or an Azure DevOps MCP tool's. prompt is the dialog's text (the same prompt gives the same text), what says what it
+// OwnerClick reads a screen's live permission dialog and reports whether it is one only the owner, or Crius for a session
+// it runs, may answer: the post-guard's ask or an Azure DevOps MCP tool's. prompt is the dialog's text (the same prompt gives the same text), what says what it
 // asks for, with the PR's title (else its id and repo) when the dialog shows one.
 func OwnerClick(text string) (prompt, what string, ok bool) {
 	lines := strings.Split(text, "\n")
@@ -137,11 +137,12 @@ func dialogBorder(s Screen) string {
 	return ""
 }
 
-// Clicks checks every tab once for a prompt only the owner may answer (owner 11-01 19:1x: Quotes tabs waited on his
-// approval unseen). A new one goes on Crius's bus as one OWNER-CLICK line at once, and again every 30 min while it
-// waits; the next prompt in that tab is new. A session Crius runs, one whose dialog border names a project in
-// projects.toml, gets CRIUS-CLICK instead, which Crius answers with no owner push (owner 11-01 22:4x: the quotes tabs;
-// 11-04: every session Crius runs). A tab that cannot be read keeps what it had. launchd runs it every minute.
+// Clicks checks every tab once for a prompt only the owner, or Crius for a session it runs, may answer (owner 11-01
+// 19:1x: Quotes tabs waited on his approval unseen). A new one goes on Crius's bus as one OWNER-CLICK line at once, and
+// again every 30 min while it waits; the next prompt in that tab is new. A session Crius runs, one whose dialog border
+// names a project in projects.toml, gets CRIUS-CLICK instead, which Crius answers with no owner push (owner 11-01 22:4x:
+// the quotes tabs; 11-04: every session Crius runs); Crius's own tab keeps OWNER-CLICK. A tab that cannot be read keeps
+// what it had. launchd runs it every minute.
 // A run that fails says so on the bus as an ALERT, once per error (kept in state/owner-clicks.error): its log is read by
 // nobody.
 func Clicks(d ClickDeps) error {
@@ -207,8 +208,9 @@ func clicks(d ClickDeps, crius map[string]bool) error {
 		}
 		if d.Now.Sub(f.Posted) >= clickRepeat {
 			typ, whose := "OWNER-CLICK", "your"
-			// only the name the session draws itself: the tab title never gives CRIUS-CLICK (review r2)
-			if p, _, _ := strings.Cut(BusName(dialogBorder(s)), ":"); crius[p] {
+			// only the name the session draws itself: the tab title never gives CRIUS-CLICK (review r2); Crius's own tab is
+			// blocked by its dialog, so only the owner can answer it (review of 2ae5117)
+			if who := BusName(dialogBorder(s)); who != "crius:lead" && crius[strings.SplitN(who, ":", 2)[0]] {
 				typ, whose = "CRIUS-CLICK", "Crius's"
 			}
 			text := fmt.Sprintf("%s (%s) waits on %s click since %s: %s", tabName(s), s.Surface, whose, f.Since.Format("15:04"), what)

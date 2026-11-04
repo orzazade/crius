@@ -221,6 +221,20 @@ func TestEveryAzureDevOpsPromptOfASessionCriusRunsGetsCriusClick(t *testing.T) {
 	if len(owner) != 0 || len(crius) != 1 || !strings.Contains(crius[0], " CRIUS-CLICK crius:wakewatch -> crius:lead — axi · devops (surface:1000050123) waits on Crius's click: post-guard ask (python3 code on stdin that may write to Azure DevOps)") {
 		t.Fatalf("crius %q, owner %q", crius, owner)
 	}
+	// review of 2ae5117: Crius's own tab is blocked by its dialog, so only the owner can answer it, though crius is a
+	// listed project; a session Crius runs in the crius project (crius · build) is Crius's to answer
+	home = setup(t, nil)
+	testutil.Write(t, filepath.Join(home, "projects.toml"), "[projects.crius]\nname = \"Crius\"\n")
+	own := Screen{Surface: "surface:1000050000", Title: CriusTitle, Text: strings.Replace(hook, " quotes · lead ", " "+CriusTitle+" ", 1)}
+	build := Screen{Surface: "surface:1000050001", Title: "crius · build", Text: strings.Replace(hook, " quotes · lead ", " crius · build ", 1)}
+	if err := Clicks(ClickDeps{Home: home, Now: t0, Screens: func() ([]Screen, error) { return []Screen{own, build}, nil }}); err != nil {
+		t.Fatal(err)
+	}
+	crius, owner = linesOf(t, home, "CRIUS-CLICK"), linesOf(t, home, "OWNER-CLICK")
+	if len(owner) != 1 || !strings.Contains(owner[0], " — crius (surface:1000050000) waits on your click: ") ||
+		len(crius) != 1 || !strings.Contains(crius[0], " — crius · build (surface:1000050001) waits on Crius's click: ") {
+		t.Fatalf("crius %q, owner %q", crius, owner)
+	}
 }
 
 // Review of d6cb914: only the border right under the dialog names its session. An unnamed session (a plain border) whose
