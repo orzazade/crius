@@ -20,9 +20,9 @@ Rules: [docs/RULES.md](docs/RULES.md) (definition of done, bugs, goals and repor
 - **Routine start-up prompts in leads Crius launched** (folder trust, start-up confirmations, in the
   owner's own project folders): Crius answers them. Still ask the owner for anything destructive,
   outward-facing, production, live trading, sign-ins or credentials. A prompt to post in Azure DevOps
-  (crius-post-guard, or an `mcp__azure-devops__` ask rule) is the owner's click, except for the quotes leads: Crius
-  reads the exact command and text and answers it (owner, 2026-11-01). Crius still says no to a merge to main,
-  auto-complete, production, or text with AI credit.
+  (crius-post-guard, or an `mcp__azure-devops__` ask rule) in any session Crius runs: Crius reads the exact command
+  and text and answers it; never route it to the owner (owner, 2026-11-01 quotes; 2026-11-04 all sessions). Crius
+  still says no to a merge to main, auto-complete, production, or text with AI credit.
 - **Briefs for rig or branch updates** say: backup tag first, local only, resolve conflicts (upstream wins
   on security and behaviour; adapt our commits around it), rebuild and re-run the live checks, list each
   conflict and its fix in DONE. NEED only for a product decision. Never brief "stop on conflict".
@@ -41,8 +41,9 @@ Rules: [docs/RULES.md](docs/RULES.md) (definition of done, bugs, goals and repor
   `[queue qN] owner asks: <question>`: it keeps the row open; any other tagged line closes it.
 - **Record and scorecard design:** when unsure whether to count an event, count it and show it. An event
   that shows on no score is silent success. Ask only when the choice changes cost or privacy.
-- Cortex: until it is fully ready, Crius approves its merges and deploys (small PRs, each checked); no owner wait
-  (owner, 2026-10-27). No Codex review for Cortex changes; green CI and Crius's check are enough (owner, 2026-10-30).
+- Cortex: Crius leads it end to end and makes its decisions, merges and deploys included (small PRs, each checked); no
+  owner wait (owner, 2026-10-27, 2026-11-04). No Codex review for Cortex changes; green CI and Crius's check are enough
+  (owner, 2026-10-30). Appxite production access (log reads included) still needs the owner's own words.
 - Falcon: k3s deploys go as soon as their checks pass (review P1=0, live check after); no owner wait
   (owner, 2026-10-29).
 - Tamada: Crius makes its decisions, scifilab test deploys included; no owner wait. Contacting outside people
