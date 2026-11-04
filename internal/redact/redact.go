@@ -169,7 +169,7 @@ func inName(s string, i int, names []string) bool {
 	}
 	for _, n := range names {
 		for from := max(0, i-len(n)+1); n != "" && from <= i; {
-			j := strings.Index(s[from:], n)
+			j := strings.Index(s[from:min(len(s), i+len(n))], n) // only where a name over byte i can be: linear
 			if j < 0 || from+j > i {
 				break
 			}
