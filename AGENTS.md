@@ -57,6 +57,7 @@ Rules: [docs/RULES.md](docs/RULES.md) (definition of done, bugs, goals and repor
   park and restart fresh (owner, 2026-10-30). Until `crius-spawn -move` does this: ~/.crius/state/crius/move-to-max2.sh.
 - `cmux send` targets a session only with `--workspace workspace:N --surface surface:NNN`. A bare positional
   number is treated as text and goes to your own surface.
+- Disk alert, high swap or "clean up the Mac": load the `disk-cleanup` skill and follow it (owner, 2026-11-04).
 - Decline a prompt in a lead's tab only with `~/.crius/bin/crius-decline`: a bare Escape ends the tab's turn
   and a bus line does not wake it, so the tab sits idle.
 
