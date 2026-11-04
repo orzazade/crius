@@ -51,6 +51,7 @@ var (
 	ErrOnto      = errors.New("typed onto other text in the box")
 	ErrMaybeSent = errors.New("its Enter was pressed before, so it may have gone")
 	errKilled    = errors.New("killed")
+	errStill     = errors.New("still holds the message after Enter")
 )
 
 // runCmux gives cmux's stdout, or on failure its stdout and stderr: a warning on stderr must not reach a JSON parse.
@@ -505,16 +506,22 @@ func deliverTab(to string, tab Terminal, text string, entered bool, mark func(en
 	}
 	if squash(draft) == squash(text) {
 		if typed, err := typedText(tab); err != nil || typed {
-			return errors.Join(fmt.Errorf("%q's prompt still holds the message after Enter", to), err)
+			return errors.Join(fmt.Errorf("%q's prompt %w", to, errStill), err)
 		}
 	}
 	return nil
 }
 
+// RetryWait is the pause before SendTo looks at a box again after an Enter it could not prove. Tests shorten it.
+var RetryWait = time.Second
+
 // SendTo types text into the Claude tab at workspace and surface (refs as cmux gives them: workspace:N, surface:N),
-// then Enter, with deliver's checks, and stores nothing: nil means the box took it, any error that it was not sent or
-// may sit in the box, as the error says (X14: a leader's messages were left typed but unsent). It waits for the
-// outbox's lock, so it never types into a tab while crius-say or wakewatch does.
+// then Enter, with deliver's checks, and stores nothing (X14: a leader's messages were left typed but unsent). After an
+// Enter it could not prove, it looks again, up to 3 tries in all (as send.sh did): a box that no longer holds the text
+// is sent, one that still holds it gets Enter again. nil means the box took it; an error wrapping ErrMaybeSent that
+// Enter was pressed and the text may have gone, so it must not be sent again; any other that it was not sent, though
+// the text may sit in the box, as the error says. It waits for the outbox's lock, so it never types into a tab while
+// crius-say or wakewatch does.
 func SendTo(home, workspace, surface, text string) error {
 	unlock, err := lock(home)
 	if err != nil {
@@ -526,9 +533,21 @@ func SendTo(home, workspace, surface, text string) error {
 		return err
 	}
 	for _, tab := range tabs {
-		if tab.Workspace == workspace && tab.Surface == surface {
-			return deliverTab(surface, tab, text, false, func(bool) error { return nil })
+		if tab.Workspace != workspace || tab.Surface != surface {
+			continue
 		}
+		entered := false
+		mark := func(e bool) error { entered = e; return nil }
+		err := deliverTab(surface, tab, text, false, mark)
+		for try := 1; err != nil && entered && try < 3; try++ {
+			time.Sleep(RetryWait)
+			err = deliverTab(surface, tab, text, true, mark)
+		}
+		switch {
+		case err == nil, !entered, errors.Is(err, errStill):
+			return err
+		}
+		return fmt.Errorf("%w: %v", ErrMaybeSent, err)
 	}
 	return fmt.Errorf("cmux tree --all has no terminal %s in %s: nothing typed", surface, workspace)
 }

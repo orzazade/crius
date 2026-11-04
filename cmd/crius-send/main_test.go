@@ -18,9 +18,9 @@ func fakeTab(t *testing.T, enterGoes bool) *[]string {
 	}
 	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
 	t.Setenv("CRIUS_HOME", t.TempDir())
-	old, oldWait := outbox.Cmux, outbox.BoxWait
-	t.Cleanup(func() { outbox.Cmux, outbox.BoxWait = old, oldWait })
-	outbox.BoxWait = time.Millisecond
+	old, oldWait, oldRetry := outbox.Cmux, outbox.BoxWait, outbox.RetryWait
+	t.Cleanup(func() { outbox.Cmux, outbox.BoxWait, outbox.RetryWait = old, oldWait, oldRetry })
+	outbox.BoxWait, outbox.RetryWait = time.Millisecond, time.Millisecond
 	draft := ""
 	var done []string
 	outbox.Cmux = func(args ...string) ([]byte, error) {
@@ -61,11 +61,33 @@ func TestSendTypesPressesEnterAndProvesIt(t *testing.T) {
 	if strings.Join(*done, "|") != "typed read your brief|Enter" || !strings.Contains(out.String(), "SENT surface:4") {
 		t.Fatalf("%q %q", *done, out.String())
 	}
-	done = fakeTab(t, false)
+	done = fakeTab(t, false) // every Enter goes nowhere
 	out.Reset()
 	errs.Reset()
 	if code := run([]string{"workspace:2", "surface:4", "read your brief"}, &out, &errs); code != 1 ||
-		!strings.Contains(errs.String(), "NOT SENT surface:4: ") || !strings.Contains(errs.String(), "still holds the message after Enter") {
+		!strings.Contains(errs.String(), "NOT SENT surface:4: ") || !strings.Contains(errs.String(), "still holds the message after Enter") ||
+		strings.Count(strings.Join(*done, "|"), "Enter") != 3 {
+		t.Fatalf("exit %d: %q %q", code, errs.String(), *done)
+	}
+}
+
+// Review of cffd3a6: an Enter that may have gone, but could not be proven (the box gone after it), exits 3, MAYBE SENT:
+// a caller must look at the tab, not send again.
+func TestSendSaysMaybeSentWhenTheBoxIsGoneAfterEnter(t *testing.T) {
+	done := fakeTab(t, true)
+	old := outbox.Cmux
+	pressed := false
+	outbox.Cmux = func(args ...string) ([]byte, error) {
+		if args[0] == "send-key" {
+			pressed = true
+		}
+		if args[0] == "read-screen" && pressed {
+			return []byte("Select model\n❯ 1. Default\n"), nil
+		}
+		return old(args...)
+	}
+	var out, errs strings.Builder
+	if code := run([]string{"workspace:2", "surface:4", "/model"}, &out, &errs); code != 3 || !strings.Contains(errs.String(), "MAYBE SENT surface:4: ") {
 		t.Fatalf("exit %d: %q %q", code, errs.String(), *done)
 	}
 }

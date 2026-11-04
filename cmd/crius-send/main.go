@@ -3,11 +3,14 @@
 //	crius-send <workspace:N> <surface:N> <text…>
 //
 // It types only into a tab where Claude is in front and the box holds no draft, presses Enter once the box holds the
-// text, and reads the box after: it exits 0 when the box no longer holds the text, 1 (NOT SENT) when it does or nothing
-// was typed, and 2 for a call it refuses before typing (X14: a leader's messages were left typed but unsent).
+// text, and reads the box after, pressing Enter again up to 3 in all: it exits 0 when the box no longer holds the text,
+// 1 (NOT SENT) when it still does or nothing was typed, 3 (MAYBE SENT: look at the tab, do not send again) when Enter
+// was pressed but the box could not be read after, and 2 for a call it refuses before typing (X14: a leader's messages
+// were left typed but unsent).
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -45,7 +48,10 @@ func run(args []string, out, errs io.Writer) int {
 		return 2
 	}
 	text = wakewatch.Clean(text) // secrets masked and spaces joined, as crius-say types it
-	if err := outbox.SendTo(store.Home(), ws, surface, text); err != nil {
+	if err := outbox.SendTo(store.Home(), ws, surface, text); errors.Is(err, outbox.ErrMaybeSent) {
+		fmt.Fprintf(errs, "MAYBE SENT %s: %v\n", surface, err)
+		return 3
+	} else if err != nil {
 		fmt.Fprintf(errs, "NOT SENT %s: %v\n", surface, err)
 		return 1
 	}

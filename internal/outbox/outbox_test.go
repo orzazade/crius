@@ -28,6 +28,8 @@ type box struct {
 	// grey is faint text (a suggestion) shown while the box is empty; read-screen gives it as plain text, and the input
 	// state calls the box empty. greyNext is shown after the next Enter. stateOf answers the input state for another tab.
 	grey, greyNext, stateOf string
+	lose                    int // Enters that go nowhere, with no error, before the keys work again
+	enters                  int // Enters pressed
 }
 
 // fake replaces Cmux with tab and puts a ps on PATH that shows Claude in front.
@@ -37,9 +39,9 @@ func fake(t *testing.T, tab *box) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
-	old, oldWait := Cmux, BoxWait
-	t.Cleanup(func() { Cmux, BoxWait = old, oldWait })
-	BoxWait = time.Millisecond
+	old, oldWait, oldRetry := Cmux, BoxWait, RetryWait
+	t.Cleanup(func() { Cmux, BoxWait, RetryWait = old, oldWait, oldRetry })
+	BoxWait, RetryWait = time.Millisecond, time.Millisecond
 	Cmux = func(args ...string) ([]byte, error) {
 		tab.mu.Lock()
 		defer tab.mu.Unlock()
@@ -74,6 +76,9 @@ func fake(t *testing.T, tab *box) {
 				return []byte("Error: send: the agent prompt holds text someone is typing"), errors.New("exit status 1")
 			}
 			tab.draft += args[len(args)-1]
+		case args[0] == "send-key" && tab.lose > 0:
+			tab.lose--
+			tab.enters++
 		case args[0] == "send-key" && tab.key == "fail":
 			return []byte("Error: surface not found"), errors.New("exit status 1")
 		case args[0] == "send-key" && tab.key == "timeout-lost":
@@ -84,6 +89,7 @@ func fake(t *testing.T, tab *box) {
 			return nil, killed
 		case args[0] == "send-key" && tab.key == "lost":
 		case args[0] == "send-key":
+			tab.enters++
 			tab.typed = append(tab.typed, tab.draft)
 			tab.draft = ""
 			tab.grey, tab.greyNext = tab.greyNext, ""
@@ -762,11 +768,38 @@ func TestSendToTypesThenPressesEnterAndChecksTheBox(t *testing.T) {
 	}
 }
 
+// Review of cffd3a6: an Enter that did not take, or a tab slow to redraw, gets Enter again, up to 3 in all (as
+// send.sh did); the text still there after the third is NOT SENT, and its error is not "may have gone".
 func TestSendToFailsLoudlyWhenTheTextStaysInTheBox(t *testing.T) {
-	tab := &box{title: "staffy · backend-dev", key: "lost"}
+	tab := &box{title: "staffy · backend-dev", lose: 9}
 	fake(t, tab)
 	err := SendTo(t.TempDir(), "workspace:1", "surface:1", "read your brief")
-	if err == nil || !strings.Contains(err.Error(), "still holds the message after Enter") {
+	if err == nil || !strings.Contains(err.Error(), "still holds the message after Enter") || errors.Is(err, ErrMaybeSent) || tab.enters != 3 {
+		t.Fatalf("err %v after %d Enters", err, tab.enters)
+	}
+	tab = &box{title: "staffy · backend-dev", lose: 2}
+	fake(t, tab)
+	if err := SendTo(t.TempDir(), "workspace:1", "surface:1", "read your brief"); err != nil || len(tab.typed) != 1 || tab.enters != 3 {
+		t.Fatalf("err %v, typed %q after %d Enters", err, tab.typed, tab.enters)
+	}
+}
+
+// Review of cffd3a6: an error after Enter was pressed is not "not sent": the text may have gone. A box that is read
+// empty again counts as sent; one that cannot be read (a picker opened) or a key cmux was killed on is ErrMaybeSent.
+func TestSendToSaysMaybeSentAfterAnEnterItCannotProve(t *testing.T) {
+	tab := &box{title: "staffy · backend-dev", key: "timeout"} // the key went, then cmux was killed
+	fake(t, tab)
+	if err := SendTo(t.TempDir(), "workspace:1", "surface:1", "go"); err != nil || len(tab.typed) != 1 {
+		t.Fatalf("a box read empty after a killed Enter: err %v, typed %q", err, tab.typed)
+	}
+	tab = &box{title: "staffy · backend-dev", blindNext: 99} // the box is gone after Enter
+	fake(t, tab)
+	if err := SendTo(t.TempDir(), "workspace:1", "surface:1", "/model"); !errors.Is(err, ErrMaybeSent) || len(tab.typed) != 1 {
+		t.Fatalf("err %v, typed %q", err, tab.typed)
+	}
+	tab = &box{title: "staffy · backend-dev", key: "fail"} // the key surely did not go
+	fake(t, tab)
+	if err := SendTo(t.TempDir(), "workspace:1", "surface:1", "go"); err == nil || errors.Is(err, ErrMaybeSent) {
 		t.Fatalf("err %v", err)
 	}
 }
