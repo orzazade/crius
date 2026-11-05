@@ -410,7 +410,8 @@ func codePosts(lang, body string) (string, uint) {
 				// get the az check, and what follows the quote is a word the guard cannot read
 				var args []word
 				for _, f := range strings.Fields(text)[1:] {
-					args = append(args, word{text: f, src: f, ok: !strings.ContainsAny(f, "${")})
+					// a placeholder ($__x) or one the quote cut ( `az ${require(` ); a bare $X in code is text
+					args = append(args, word{text: f, src: f, ok: !strings.Contains(f, "$__x") && !strings.Contains(f, "${")})
 				}
 				if strings.ContainsRune("\"'`", rune(open)) && (len(args) == 0 || !args[0].ok) {
 					// review r5: 'az ' + open('cmd.txt').read(), `az ${args}`: the command words come from elsewhere
