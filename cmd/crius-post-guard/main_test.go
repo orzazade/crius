@@ -65,6 +65,21 @@ EOF
 		`az repos pr update --id 7 --description "new text"`,
 		`az repos pr comment create --id 7 --text hi`, // a comment-like subcommand
 		`az devops wiki page update --path /a --wiki W --content hi --version v`,
+		// owner 11-05: any change to a pull request, a work item or a pipeline is a post (were passed as field-only)
+		`az devops invoke --area wit --resource workitems --http-method PATCH --in-file state.json`,
+		`az boards work-item update --id 94205 --state Done`,
+		`az boards work-item update --id 94205 --title T --description D`,
+		`az boards work-item update --id 94205 --fields System.State=Done`,
+		`az repos pr update --id 7 --status completed`,
+		`az repos pr set-vote --id 7 --vote approve`,
+		`az repos pr reviewer add --id 7 --reviewers a@b.c`,
+		`az repos pr work-item add --id 7 --work-items 1`,
+		`az pipelines run --name svc --branch feature/x`,
+		`az pipelines build queue --definition-id 1119`,
+		`az pipelines runs tag add --run-id 1 --tags x`,
+		`az boards work-item delete --id 1 --yes`,
+		`az devops invoke --area build --resource builds --http-method DELETE --route-parameters buildId=1`,
+		`az devops invoke --area wit --resource workitems --in-file x.json`, // an --in-file and no method
 		// REST through an HTTP tool or az rest
 		`curl -X POST -H "Content-Type: application/json" -d @c.json "https://dev.azure.com/appxite/AppXite%20Platform/_apis/wit/workItems/94205/comments?api-version=7.1-preview"`,
 		`curl -sS -d '{"text":"hi"}' https://dev.azure.com/appxite/_apis/wit/workItems/1/comments`,
@@ -89,9 +104,6 @@ EOF
 
 func TestReadsAndOtherWritesPass(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "state.json"), []byte(`[{"op":"add","path":"/fields/System.State","value":"Done"}]`), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	for _, cmd := range []string{
 		`az devops invoke --area wit --resource comments --route-parameters project="AppXite Platform" workItemId=94205 --api-version 7.1-preview --org https://dev.azure.com/appxite`,
 		`az devops invoke --area wit --resource comments --http-method GET --route-parameters workItemId=94205`,
@@ -101,11 +113,13 @@ func TestReadsAndOtherWritesPass(t *testing.T) {
 		`az repos pr list --status active`,
 		`az repos pr show --id 7`,
 		`az account show`,
-		`az devops invoke --area wit --resource workitems --http-method PATCH --in-file state.json`, // a field-only update (known gap)
-		`az boards work-item update --id 94205 --state Done`,                                        // field-only (known gap)
-		`az boards work-item update --id 94205 --title T --description D`,                           // field-only (known gap)
-		`az boards work-item update --id 94205 --fields System.State=Done`,
-		`az repos pr update --id 7 --status completed`,
+		// owner 11-05: a policy run queued again and a local checkout are no post; a query POST only reads
+		`az repos pr policy queue --id 7 --evaluation-id e`,
+		`az repos pr checkout --id 7`,
+		`az pipelines runs list --top 1`,
+		`az pipelines runs artifact download --run-id 1 --artifact-name a --path /tmp/a`,
+		`az devops invoke --area wit --resource wiql --http-method POST --in-file q.json`,
+		`az repos pr show --id 7774 --org https://dev.azure.com/example --query description -o tsv`,
 		`curl -s https://dev.azure.com/appxite/_apis/wit/workItems/94205/comments`,
 		`curl -G -d api-version=7.1 https://dev.azure.com/appxite/_apis/x`,
 		`curl -X POST https://example.com/api -d x=1`,
@@ -276,7 +290,11 @@ func TestReviewRound3(t *testing.T) {
 		`az rest --method post --url "https://dev.azure.com/o/P/_apis/wit/wiql?api-version=7.1" --body @q.json | python3 -m json.tool`,
 		`curl -s -X POST -d @q.json "https://dev.azure.com/o/P/_apis/wit/wiql" | python3 summarize.py`,
 	} {
-		if why := check(bash(cmd, t.TempDir())); why != "" {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "summarize.py"), []byte("import json,sys\nprint(len(json.load(sys.stdin)))\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if why := check(bash(cmd, dir)); why != "" {
 			t.Errorf("asked: %q: %s", cmd, why)
 		}
 	}
@@ -514,7 +532,7 @@ func TestAScriptNamedThroughAVariableSetInTheCommandIsRead(t *testing.T) {
 		// review of 377cc0a
 		`bash ` + dir + `/ps4.sh 'az ok'`, s + `bash $S/ps4.sh 'az ok'`, s + `bash $S/benv.sh 'az login'`,
 		s + `bash $S/rc.sh 'az login'`, s + `bash $S/gitenv.sh 'az login'`, s + `bash $S/decl.sh PA""TH=/tmp/az-bin 'az login'`,
-		s + `bash $S/over.sh 'az login'`, s + `bash $S/home.sh 'az login'`, s + `bash $S/log.sh 'az login'`,
+		s + `bash $S/over.sh 'az login'`, s + `bash $S/home.sh 'az login'`,
 		s + `bash $S/self.sh 'az login'`,
 		s + `PS4='$(az boards work-item update --id 1)' bash -x $S/lead/say.sh INFO x hi`,
 		s + `BASH_ENV=/tmp/p.sh bash $S/lead/say.sh INFO x 'az login'`,
@@ -536,7 +554,6 @@ func TestAScriptNamedThroughAVariableSetInTheCommandIsRead(t *testing.T) {
 		s + `tar -C ` + dir + `/. -xf /tmp/x.tar; bash $S/lead/say.sh INFO x 'az login'`,
 		s + `cp -R /tmp/x/. ` + dir + `/lead/./; bash $S/lead/say.sh INFO x 'az login'`,
 		s + `cp /tmp/evil ~/.crius/bin/; bash $S/lead/say.sh INFO x 'az login'`,
-		s + `bash $S/co.sh 'az login'`, // bash -co with no text after it (it crashed the guard)
 		// review of 516ec50: a code variable set by ${X:=}, a loop or -vNAME with set -a; a write at or above home or into
 		// the command's own folder; a redirect into bus-post's folder, through a link, or to a {fd} named PATH
 		s + `echo 'az boards work-item update --id 1' > /tmp/e.sh; set -a; : ${BASH_ENV:=/tmp/e.sh}; bash $S/lead/say.sh INFO x hi`,
@@ -565,18 +582,16 @@ func TestAScriptNamedThroughAVariableSetInTheCommandIsRead(t *testing.T) {
 		s + `XDG_CONFIG_HOME=/tmp/y bash $S/lead/say.sh INFO x 'az login'`,
 		s + `XDG_CONFIG_HOME=/tmp/y; bash $S/lead/say.sh INFO x 'az login'`,
 		s + `bash $S/g1.sh '` + run + `;:'`, s + `bash $S/g2.sh '-O` + run + `;:'`, s + `bash $S/g3.sh 'az login'`,
-		s + `bash $S/g4.sh 'az login'`, s + `bash $S/g5.sh 'az login'`,
+		s + `bash $S/g5.sh 'az login'`,
 		s + `X='a[$(az boards work-item update --id 1)]'; for ((X;0;)); do :; done; bash $S/lead/say.sh INFO x hi`,
 		s + `X='a[$(az boards work-item update --id 1)]'; bash $S/lead/say.sh INFO x "${S:X}"`,
 		s + `X='$(az boards work-item update --id 1)'; bash $S/lead/say.sh INFO x "${X@P}"`,
-		s + `export M='az blob list ok'; bash $S/lead/say.sh INFO x "$M"`, // an export of a name no script word uses
-		s + `PAGER='less'; bash $S/lead/say.sh INFO x 'az login'`,         // already exported, runs code
+		s + `PAGER='less'; bash $S/lead/say.sh INFO x 'az login'`, // already exported, runs code
 		// review of 3d38316: a name the script reads (the session may have exported it; bash runs a $(...) in its value
 		// in (( )))
 		s + `SAY_FREE_GB='x[$(az boards work-item update --id 1)]'; bash $S/lead/say.sh START x hi`,
-		s + `SAY_FREE_GB=30; bash $S/lead/say.sh START x 'az login'`,
-		s + `bash $S/g7.sh 'az login'`, // -O in a bundle of short flags
-		s + `git -C /tmp log -1 --output=/tmp/x; bash $S/lead/say.sh INFO x 'az login'`,
+		s + `bash $S/g7.sh 'az login'`,                                                        // -O in a bundle of short flags
+		s + `bash $S/lead/say.sh INFO x 'az login'; cd /tmp && git log $o`,                    // $o may be --output=<the script>
 		s + `export PAGER='az boards work-item update --id 1'; bash $S/lead/say.sh INFO x hi`, // a name no script word uses
 		`HOME=` + dir + `; bash $HOME/lead/say.sh INFO x 'az login'`,                          // a code variable the path uses
 		s + `bash $S/lead/say.sh INFO x "${S:X} az login"`,                                    // X from the environment
@@ -584,9 +599,6 @@ func TestAScriptNamedThroughAVariableSetInTheCommandIsRead(t *testing.T) {
 		`XDG_CONFIG_HOME=` + dir + `; bash $XDG_CONFIG_HOME/lead/say.sh INFO x 'az login'`,
 		// review of fd71df9: the disk goes up from a link's target at a .., and a link may lead into the script's folder
 		s + `printf x > ` + dir + `/other/lk/../../../lead/say.sh; bash $S/lead/say.sh INFO x 'az login'`,
-		s + `printf x > ` + dir + `/other/ln/x; bash $S/lead/say.sh INFO x 'az login'`,
-		s + `printf x > ` + dir + `/other/ln2/x; bash $S/lead/say.sh INFO x 'az login'`,
-		s + `printf x > /tmp/../tmp/x; bash $S/lead/say.sh INFO x 'az login'`,
 		s + `printf x > ` + dir + `/other/hl; bash $S/lead/say.sh INFO x 'az login'`, // a hard link to say.sh
 		// review of 1a40027: bash runs a $(...) in quoted text a script that passes reads as a number (argar.sh:
 		// (( n > 0 )) on its $1); review of f0e77a8: a \ makes the $ at run time
@@ -611,13 +623,37 @@ func TestAScriptNamedThroughAVariableSetInTheCommandIsRead(t *testing.T) {
 			t.Errorf("%q: %q", cmd, why)
 		}
 	}
+	// owner 11-05: the guard reads what a script runs and asks when that posts. These scripts run no text they get
+	// (a log line, a file next to the script, a value with no $ or ` read as a number), so they pass; co.sh once
+	// crashed the guard.
+	pass := []string{
+		s + `bash $S/log.sh 'az login'`,
+		s + `bash $S/co.sh 'az login'`,
+		s + `bash $S/g4.sh 'az login'`,
+		s + `export M='az blob list ok'; bash $S/lead/say.sh INFO x "$M"`,
+		s + `SAY_FREE_GB=30; bash $S/lead/say.sh START x 'az login'`,
+		s + `printf x > ` + dir + `/other/ln/x; bash $S/lead/say.sh INFO x 'az login'`,
+		s + `printf x > ` + dir + `/other/ln2/x; bash $S/lead/say.sh INFO x 'az login'`,
+		s + `printf x > /tmp/../tmp/x; bash $S/lead/say.sh INFO x 'az login'`,
+		s + `printf x > ` + dir + `/Lead/new/x.sh; bash $S/lead/say.sh INFO x 'az login'`,
+		// git writes /tmp/x, which is neither script nor folder: it asked only while the script's folder state was
+		// used for the command's words (review of the 11-05 change)
+		s + `git -C /tmp log -1 --output=/tmp/x; bash $S/lead/say.sh INFO x 'az login'`,
+		// 11-05 18:39: after cd D && …, a script run by its path gets words that are D's files, not its own
+		`cd /tmp && ` + dir + `/lead/say.sh INFO x 'az login'`,
+		// 11-05 18:39: git cat-file has no option that writes a file
+		s + `bash $S/lead/say.sh INFO x 'az login'; cd /tmp && h=$(az repos pr show --id 1 -o tsv) && git cat-file -e $h`,
+	}
 	for i := 1; i <= 9; i++ {
-		cmd := s + `N=30; bash $S/n` + strconv.Itoa(i) + `.sh 'az login'`
 		if i > 7 {
-			cmd = s + `N=x; bash $S/n` + strconv.Itoa(i) + `.sh 'az login'` // a computed read: any name set asks
+			pass = append(pass, s+`N=x; bash $S/n`+strconv.Itoa(i)+`.sh 'az login'`)
+			continue
 		}
-		if why := check(bash(cmd, dir)); !strings.Contains(why, "owner's click") {
-			t.Errorf("%q: %q", cmd, why)
+		pass = append(pass, s+`N=30; bash $S/n`+strconv.Itoa(i)+`.sh 'az login'`)
+	}
+	for _, cmd := range pass {
+		if why := check(bash(cmd, dir)); why != "" {
+			t.Errorf("asked: %q: %q", cmd, why)
 		}
 	}
 	// review of 3d38316: the script's folder named in another case, on a disk that folds case as macOS's does
@@ -627,7 +663,6 @@ func TestAScriptNamedThroughAVariableSetInTheCommandIsRead(t *testing.T) {
 	}
 	for _, cmd := range []string{
 		s + `printf x > ` + dir + `/LEAD/say.sh; bash $S/lead/say.sh INFO x 'az login'`,
-		s + `printf x > ` + dir + `/Lead/new/x.sh; bash $S/lead/say.sh INFO x 'az login'`,
 		s + `printf x > ~/.CRIUS/bin/bus-post; bash $S/lead/say.sh INFO x 'az login'`,
 	} {
 		if why := check(bash(cmd, dir)); !strings.Contains(why, "owner's click") {

@@ -122,10 +122,10 @@ func TestScriptsThatOnlyReadPass(t *testing.T) {
 	}
 }
 
-// Review r2: a script that writes a file the guard cannot place (buildwait.sh's "$E/build.txt", from $0) or runs code
-// the guard cannot read (watch-0152.sh's python3 -c) may rewrite itself or another script, so it asks, though its logged
-// run only read.
-func TestScriptsTheGuardCannotReadAsk(t *testing.T) {
+// Review r2 asked for these (buildwait.sh writes "$E/build.txt" beside itself, from $0; watch-0152.sh runs python3 -c);
+// owner 11-05: they only read Azure DevOps, so they pass. $(dirname "$0") is the script's folder, and a redirect writes
+// the one file it names.
+func TestScriptsThatWriteBesideThemselvesOrRunPythonPass(t *testing.T) {
 	dir := scriptDir(t, readScripts)
 	w := filepath.Join(dir, "watch/watch-0152.sh")
 	body, _ := os.ReadFile(w)
@@ -137,8 +137,8 @@ func TestScriptsTheGuardCannotReadAsk(t *testing.T) {
 		`E=` + dir + `; bash $E/buildwait.sh; cat $E/build.txt`,
 		`bash ` + w + `; echo rc=$?; tail -20 ` + dir + `/watch-0152.out | cut -c1-200`,
 	} {
-		if why := check(bash(cmd, dir)); !strings.Contains(why, "a shell script the guard cannot read") {
-			t.Errorf("%q: %q", cmd, why)
+		if why := check(bash(cmd, dir)); why != "" {
+			t.Errorf("%q asked: %s", cmd, why)
 		}
 	}
 }
@@ -227,10 +227,11 @@ func TestTextWritesHiddenInScriptsVariablesLoopsAndFunctionsAsk(t *testing.T) {
 		`az rest --method post --url "https://dev.azure.com/appxite/_apis/wit/workItems/1/comments" $BODY`,
 		`f() { az repos pr update --id 7 "$@"; }; f --description x`,
 		`O="--org https://dev.azure.com/Appxite -d text"; az repos pr update --id 7 $O`,
-		// an az command in text a script gets is still az text it may run; bash -c's own arguments are no -c text
-		s + `bash $S/read.sh "az repos pr update --id 7 -d x"`,
+		// bash -c's own arguments are no -c text: the script's path there is not known
 		s + `bash -c 'bash $1/read.sh "$2"' _ $S "az repos pr update --id 7 -d x"`,
-		s + `bash $S/read.sh "x" '/usr/local/bin/az boards work-item update --id 1 --discussion x'`,
+		// owner 11-05: a change of status is a post
+		`O="--org https://dev.azure.com/Appxite"; az repos pr update --id 7 $O --status completed`,
+		`az repos pr update --id "$ID" --status completed --org https://dev.azure.com/Appxite`,
 	} {
 		if why := check(bash(cmd, dir)); !strings.Contains(why, "owner's click") {
 			t.Errorf("%q: %q", cmd, why)
@@ -242,8 +243,9 @@ func TestTextWritesHiddenInScriptsVariablesLoopsAndFunctionsAsk(t *testing.T) {
 		`cd ` + dir + `/w && bash rd.sh`,
 		`cd ` + dir + `/w || exit; bash rd.sh`,
 		`az repos pr show --id 7 -o json; (cd ` + dir + `/w || exit; bash rd.sh); bash read.sh`,
-		`O="--org https://dev.azure.com/Appxite"; az repos pr update --id 7 $O --status completed`,
-		`az repos pr update --id "$ID" --status completed --org https://dev.azure.com/Appxite`,
+		// owner 11-05: az text a script gets that it only prints or reads is no command (read.sh runs none of its words)
+		s + `bash $S/read.sh "az repos pr update --id 7 -d x"`,
+		s + `bash $S/read.sh "x" '/usr/local/bin/az boards work-item update --id 1 --discussion x'`,
 		`O=https://dev.azure.com/Appxite; az repos pr policy list --id 7732 --org $O --query "[].status" -o tsv`,
 		`az pipelines runs show --id $RUN $OPTS`,
 	} {
@@ -281,7 +283,7 @@ func TestScriptPassFailsClosed(t *testing.T) {
 		"P1.1 a write to the script through a name the guard cannot read": s + enc + ` > $S/e; T=$S/s.sh; cp $S/e ${T%.x}; bash $S/s.sh`,
 		"P1.2a cat's stdin is another redirect, not the heredoc":          `cat > ` + dir + `/n.sh <<'E' <<< "$(` + enc + `)"` + "\naz account show\nE\nbash " + dir + "/n.sh",
 		"P1.2b cat is a function":                                         `cat() { ` + enc + `; }; cat > ` + dir + `/n.sh <<'E'` + "\naz account show\nE\nbash " + dir + "/n.sh",
-		"P1.2c any heredoc into the script":                               `cat > ` + dir + `/n.sh <<'E'` + "\naz account show\nE\nbash " + dir + "/n.sh",
+		"P1.2c a heredoc into the script that posts":                      `cat > ` + dir + `/n.sh <<'E'` + "\naz repos pr create --title t -d hi\nE\nbash " + dir + "/n.sh",
 		"P1.3a exec runs a command name it cannot read":                   s + `bash $S/c.sh`,
 		"P1.3b timeout runs a command name it cannot read":                s + `bash $S/c2.sh`,
 		"P1.4a --title=$1 may split":                                      s + `bash $S/d.sh 'x --description hi'`,
