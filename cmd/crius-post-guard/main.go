@@ -873,6 +873,19 @@ func checkCall(args []word, stdin bool, c ctx) string {
 				return unsureName(c)
 			}
 			if name == "find" && (a.text == "-exec" || a.text == "-execdir" || a.text == "-ok" || a.text == "-okdir") {
+				// each -exec part ends at ; or {} + and is judged alone: a read command there must not take a later
+				// -exec part as its own words (review of bf78438, P1-a)
+				j := i + 1
+				for j < len(args) && !(args[j].ok && (args[j].text == ";" || args[j].text == "+" && args[j-1].text == "{}")) {
+					j++
+				}
+				if j < len(args) {
+					if why := checkCall(append([]word{args[0], a}, args[i+1:j]...), stdin, c); why != "" {
+						return why
+					}
+					i = j
+					continue
+				}
 				runsNext, first = true, true
 				continue
 			}
