@@ -1228,9 +1228,21 @@ func shownNoWrite(name string, args []word) bool {
 	if name != "find" && name != "sed" && name != "sort" {
 		return false
 	}
+	// sed's program is the word after -e, else its first word that is no option; the words after it are files it
+	// reads (11-05 23:02: sed -n 1,40p review-check.sh; bash review-check.sh asked: the path has a w and an e)
+	sawE, sawProg, progNext := false, false, false
 	for _, a := range args {
 		t := a.text
 		short := strings.HasPrefix(t, "-") && !strings.HasPrefix(t, "--")
+		if name == "sed" && a.ok {
+			isProg := progNext || !sawE && !sawProg && !strings.HasPrefix(t, "-")
+			progNext = short && strings.Contains(t, "e")
+			sawE = sawE || progNext
+			if !isProg && !strings.HasPrefix(t, "-") {
+				continue // a file it reads
+			}
+			sawProg = sawProg || isProg
+		}
 		switch {
 		case !a.ok:
 			return false

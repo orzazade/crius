@@ -356,6 +356,9 @@ func TestScriptReadingReviewRound5(t *testing.T) {
 		"alias x='echo hi; az boards work-item update --id 1 --discussion y'\nx": "(az boards work-item update",
 		// 11-05 replay: merge.sh asked on tsc after a cd (merge-ok.sh line 75); the ask names the line that posts
 		`bash mrg.sh web`: "(az repos pr update; ",
+		// a sed program that writes (w) still changes the script
+		"sed -n -e 'w review-check.sh' notes.txt; bash review-check.sh 1; az repos pr list": "before it runs",
+		"sed -n 'w review-check.sh' notes.txt; bash review-check.sh 1; az repos pr list":    "before it runs",
 		// review r5b: a part of an az command in an alias body (bash expands x repos pr create)
 		"shopt -s expand_aliases\nalias x=az\nx repos pr create --title t": "alias",
 		"alias x='az repos'\nx pr create --title t":                        "alias",
@@ -422,7 +425,9 @@ func TestScriptReadingReviewRound5(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "review-check.sh"), b, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, cmd := range []string{`bash review-check.sh 7815`, `./review-check.sh 7815; echo rc=$?`} {
+	for _, cmd := range []string{`bash review-check.sh 7815`, `./review-check.sh 7815; echo rc=$?`,
+		// 11-05 23:0x: printing the script first changes nothing; the words after sed's program are files it reads
+		`sed -n 1,40p review-check.sh; bash review-check.sh 7809; echo rc=$?`} {
 		if why := check(bash(cmd, dir)); why != "" {
 			t.Errorf("%q asked: %s", cmd, why)
 		}
