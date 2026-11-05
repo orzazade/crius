@@ -217,6 +217,12 @@ func TestScriptReadingReviewRound3(t *testing.T) {
 		"cpx.sh":      "#!/bin/bash\necho hi\n",
 		"sub/p.txt":   "az repos pr create --title t\n",
 		"c.txt":       "az repos pr create --title t\n",
+		"vc.ts":       "const t = require('child_process').spawnSync('az', ['repos', 'pr', 'show', '--id', '1']).stdout;\nconsole.log(String(t));\n",
+		"pp.sh":       "#!/bin/bash\nB=$(dirname \"$0\")\nbun \"$B/vc.ts\" --pr \"$1\" || exit 6\nb=$(az pipelines runs show --id 1 -o tsv | tr '\\n' ' ')\nprintf '%s\\n' \"$(IFS=,; echo \"$b\")\" >> \"$B/log.md\"\n",
+		"pp3.sh":      "#!/bin/bash\nno() { echo \"refused $1\"; exit 2; }\nB=$(dirname \"$0\")\nbun \"$B/vc.ts\" || no 1\nb=$(az pipelines runs show --id 1 -o tsv | tr '\\n' ' ') || no 2\n",
+		"pp4.sh":      "#!/bin/bash\nr() { bun \"$(dirname \"$0\")/vc.ts\"; }\nIFS=,\nr\n",
+		"pp6.sh":      "#!/bin/bash\nbun \"$(dirname \"$0\")/vc.ts\"\nfor i in 1 2; do s=$(az repos pr show --id 1 | tr '\\n' ' '); done\n",
+		"pp2.sh":      "#!/bin/bash\nB=$(dirname \"$0\")\nfor i in 1 2; do bun \"$B/vc.ts\"; IFS=,; done\n",
 		"sub/self.sh": "#!/bin/bash\n# self.sh <arg>: prints it\necho \"$1\"\n",
 		"gen.sh":      "#!/bin/bash\ncat > out.sh <<'EOF'\naz repos pr create --title x\nEOF\n",
 		"cuu.sh":      "#!/bin/bash\ncurl -s --url \"$@\"\n",
@@ -242,6 +248,10 @@ func TestScriptReadingReviewRound3(t *testing.T) {
 		`X=az; command -p "$X" repos pr create --title x`:                "(az repos pr create",
 		`echo az > x; command -p "$(cat x)" repos pr create --title x`:   "a command name",
 		`bash gen.sh && bash out.sh`:                                     "another script the command runs may make",
+		// an IFS set later in a loop reaches the script's next run
+		`bash pp2.sh; echo "az login"`: "may change before it runs",
+		// a function that runs the script after a later setting
+		`bash pp4.sh; echo "az login"`: "may change before it runs",
 		// review r4 (Opus): a script by the same name in another folder is another script (madeBy keys on the place)
 		`cd sub && ./x.sh .. && bash ../x.sh`: "another script the command runs may make",
 
@@ -280,6 +290,12 @@ func TestScriptReadingReviewRound3(t *testing.T) {
 		`cd sub; ./self.sh x; echo "az login"`,
 		// today's replay: a word before the one cd is in the start folder (review-pass.sh $R/x; cd $S; pr-text-check.sh)
 		`./art/run.sh art/a; cd art; bash ../sub/rd.sh 1`,
+		// live 21:56: pass-post.sh sets b=$(az … | tr …) and IFS in a $(…) after bun verdict-check.ts ran: neither reaches it
+		`bash pp.sh 7770`,
+		// live 21:56: merge.sh has no() { echo; exit; }, a function that runs nothing, then b=$(az … | tr …) after its runs
+		`bash pp3.sh 7798`,
+		// live 21:56: merge.sh's wait loop after its runs (s=$(az repos pr show … | tr …)) runs no program
+		`bash pp6.sh`,
 		// today's replay: command -p readlink "$link" in node_modules/.bin shims reads a link; it runs nothing
 		`bash shim.sh x; echo "az login"`,
 		// today's replay: command -p cygpath -w "$basedir" (line 52 of the shims): its words are cygpath's, not a command

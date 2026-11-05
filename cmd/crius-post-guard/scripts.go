@@ -697,7 +697,7 @@ func namesSelf(w *syntax.Word) bool {
 // changesIn is changes for one text; self: the text is a script's, whose writes count only where they name the script;
 // own: it is the text of the script judged, where $0 names it.
 func changesIn(r runs, script string, rc ctx, self, own bool, fine map[*syntax.Word]bool) bool {
-	if codeVarSet(r.file, r.src) {
+	if codeVarSet(r.file, r.src, afterRuns(r)) {
 		return true
 	}
 	base := strings.ToLower(filepath.Base(script))
@@ -910,7 +910,7 @@ func gitWritesIn(args []word) bool {
 // HOME, GIT_*, …: codeNameRe) in any way bash sets one (NAME=, export, declare, read, printf -v, mapfile, getopts, a for
 // loop, ${NAME:=}, (( NAME=1 )), {NAME}>), sets a name it computes there, or exports a function or all names (set -a).
 // The name inside quoted text (an echo's message) is no setting.
-func codeVarSet(f *syntax.File, src string) bool {
+func codeVarSet(f *syntax.File, src string, late func(syntax.Node) bool) bool {
 	if exportFnRe.MatchString(src) {
 		return true
 	}
@@ -929,6 +929,9 @@ func codeVarSet(f *syntax.File, src string) bool {
 		return true
 	})
 	syntax.Walk(f, func(n syntax.Node) bool {
+		if n != nil && late(n) {
+			return false
+		}
 		switch n := n.(type) {
 		case *syntax.Assign:
 			found = found || n.Name != nil && codeNameRe.MatchString(n.Name.Value) && !ifs[n]
@@ -1035,7 +1038,11 @@ func setsCodeName(name string, args []*syntax.Word) bool {
 // $, ` or \ (bash runs a $(...) in text a script reads as a number: (( n > 0 )) on its $1).
 func handsCode(r runs) bool {
 	var words []*syntax.Word
+	late := afterRuns(r)
 	syntax.Walk(r.file, func(n syntax.Node) bool {
+		if n != nil && late(n) {
+			return false
+		}
 		switch n := n.(type) {
 		case *syntax.Assign:
 			if n.Value != nil {
@@ -1079,6 +1086,78 @@ func handsCode(r runs) bool {
 		}
 	}
 	return false
+}
+
+// afterRuns gives a test for text that runs only after every program this text may start has started: it comes after
+// the last word that runs a script and the last call that may run one (a shell, an interpreter, a wrapper, eval or
+// source, a command name the guard cannot read), outside any loop, in a text with no function. Nothing set there reaches
+// a program already running (live 11-05 21:56: pass-post.sh sets b=$(az … | tr …) and IFS in a $(…) after bun
+// verdict-check.ts ran).
+func afterRuns(r runs) func(syntax.Node) bool {
+	var runs []syntax.Node
+	for w := range r.scripts {
+		runs = append(runs, w)
+	}
+	var loops, funcs [][2]uint
+	syntax.Walk(r.file, func(n syntax.Node) bool {
+		switch n := n.(type) {
+		case *syntax.ForClause, *syntax.WhileClause:
+			loops = append(loops, [2]uint{n.Pos().Offset(), n.End().Offset()})
+		case *syntax.FuncDecl:
+			funcs = append(funcs, [2]uint{n.Pos().Offset(), n.End().Offset()})
+		case *syntax.CallExpr:
+			if len(n.Args) == 0 {
+				break
+			}
+			name, ok := cmdName(n.Args[0])
+			if !ok || shells[name] || interpreters[name] || wrappers[name] && !findReadsOnly(name, n.Args) || runBuiltins[name] {
+				runs = append(runs, n)
+			}
+		}
+		return true
+	})
+	in := func(at uint, spans [][2]uint) bool {
+		return slices.ContainsFunc(spans, func(s [2]uint) bool { return at >= s[0] && at < s[1] })
+	}
+	var last uint
+	inFunc := false        // a function that runs a program may run it after any later line (no() { echo; exit; } runs none)
+	var runLoops [][2]uint // a loop that runs a program runs it again after a later line in it
+	for _, n := range runs {
+		at := n.Pos().Offset()
+		last = max(last, n.End().Offset())
+		inFunc = inFunc || in(at, funcs)
+		for _, l := range loops {
+			if in(at, [][2]uint{l}) {
+				runLoops = append(runLoops, l)
+			}
+		}
+	}
+	return func(n syntax.Node) bool {
+		at := n.Pos().Offset()
+		return last > 0 && !inFunc && at > last && !in(at, runLoops)
+	}
+}
+
+// runBuiltins run text or a file in this shell, or replace it.
+var runBuiltins = map[string]bool{"eval": true, "source": true, ".": true, "builtin": true, "command": true, "exec": true,
+	"trap": true, "enable": true}
+
+// findReadsOnly says whether a find call runs only commands that read (find … -exec grep … {} +).
+func findReadsOnly(name string, args []*syntax.Word) bool {
+	if name != "find" {
+		return false
+	}
+	for i, w := range args {
+		if t := literal(w).text; t == "-exec" || t == "-execdir" || t == "-ok" || t == "-okdir" {
+			if i+1 >= len(args) {
+				return false
+			}
+			if n, ok := cmdName(args[i+1]); !ok || !readCmds[n] {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // readsOnlySubst says whether every command in a $(...) is an az or HTTP call that only reads (a sha or an id that goes
