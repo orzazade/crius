@@ -326,3 +326,73 @@ func TestScriptReadingReviewRound3(t *testing.T) {
 		t.Errorf("%q: want a may-change ask, got %q", cmd, why)
 	}
 }
+
+// Review r5 (Opus, 11-05): az run with its words from a file passed (the az gate needed a command group in the text);
+// a sourced helper library placed by HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd) passed; upper-case AZ runs az on
+// the Mac's case-blind disk; an alias body was never read; a long eval chain held the guard past the hook's limit.
+func TestScriptReadingReviewRound5(t *testing.T) {
+	dir := scriptDir(t, map[string]string{
+		"lib/ado.sh": "post_comment() { az repos pr update --id \"$1\" --description \"$2\"; }\n",
+		"notes2.sh":  "HERE=\"$(cd \"$(dirname \"${BASH_SOURCE[0]}\")\" && pwd)\"\nsource \"$HERE/lib/ado.sh\"\npost_comment 12 \"QA notes\"\n",
+		"notes3.sh":  "source \"$(dirname \"$(realpath \"$0\")\")/lib/ado.sh\"\npost_comment 12 \"QA notes\"\n",
+		"a":          "repos pr create --title x\n",
+		"list.sh":    "#!/bin/bash\necho hi\n",
+		"lib/c.sh":   "X=1\n",
+		"c1.sh":      "DIR=$(dirname \"$0\")\nsource \"$DIR/lib/c.sh\"\naz repos pr list -o table\n",
+	})
+	for cmd, want := range map[string]string{
+		`x=(az); "${x[@]}" $(cat a)`:                     "a command name",
+		`set -- az $(cat a); "$@"`:                       "a command name",
+		`for c in az; do $c $(cat a); done`:              "az",
+		`p=$(brew --prefix)/bin/az; "$p" $(< a)`:         "a command name",
+		`bash notes2.sh`:                                 "lib/ado.sh",
+		`bash notes3.sh`:                                 "lib/ado.sh",
+		`AZ repos pr create --title x`:                   "(az repos pr create",
+		`/opt/homebrew/bin/AZ repos pr create --title x`: "(az repos pr create",
+		"shopt -s expand_aliases\nalias x=\"az repos pr create --title y\"\nx":   "(az repos pr create",
+		"alias x='echo hi; az boards work-item update --id 1 --discussion y'\nx": "(az boards work-item update",
+	} {
+		if why := check(bash(cmd, dir)); !strings.HasPrefix(why, reason) || !strings.Contains(why, want) {
+			t.Errorf("%q: want %q in %q", cmd, want, why)
+		}
+	}
+	execute := "mcp__plugin_context-mode_context-mode__ctx_execute"
+	for lang, codes := range map[string][]string{
+		"javascript": {
+			"const {spawnSync} = require('child_process'); spawnSync('az', process.argv.slice(2))",
+			"require('child_process').execFileSync('az', JSON.parse(require('fs').readFileSync('plan.json')))",
+			"require('child_process').execSync(`az ${require('fs').readFileSync('cmd.txt')}`)",
+		},
+		"python": {
+			"import subprocess, json; subprocess.run(['az', *json.load(open('plan.json'))])",
+			"import os; os.system('az ' + open('cmd.txt').read())",
+		},
+	} {
+		for _, code := range codes {
+			in := hookInput(t, execute, map[string]any{"language": lang, "code": code})
+			in.Cwd = dir
+			if why := check(in); !strings.HasPrefix(why, reason) {
+				t.Errorf("ctx_execute %s %q: not asked: %q", lang, code, why)
+			}
+		}
+	}
+	for _, cmd := range []string{
+		// a language code next to a command name from a variable is no az word of the shell's own
+		`bash -c '"$@"' x ls; echo "loadMessages('az')"`,
+		`alias ll='ls -l'; ll`,
+		// review r5 (P3): command -v only prints where a program is; it runs nothing
+		`command -v ./list.sh; az repos pr list -o table`,
+		// review r5 (P2): a library placed by a variable set before the source, then an az read
+		`bash c1.sh`,
+	} {
+		if why := check(bash(cmd, dir)); why != "" {
+			t.Errorf("%q asked: %s", cmd, why)
+		}
+	}
+	// the time limit holds inside one long command, not only between the scripts it reads
+	deadline = time.Now().Add(-time.Second)
+	defer func() { deadline = time.Time{} }()
+	if why := check(bash(`eval "echo $i"; echo done`, dir)); !strings.Contains(why, "ran out of time") {
+		t.Errorf("late in one command: %q", why)
+	}
+}

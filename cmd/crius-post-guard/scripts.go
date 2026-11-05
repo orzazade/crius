@@ -55,7 +55,7 @@ func cannotRead(c ctx, name, why string) string {
 
 // namesAz: the command, or a script around this one, names az or Azure DevOps.
 func namesAz(c ctx) bool {
-	return namesAzCLI(c.whole) || adoMarkRe.MatchString(c.whole)
+	return namesAzOrADO(c.whole)
 }
 
 // cannotPlace asks, like cannotRead, for a file whose path the guard cannot work out; source keeps its own text (the
@@ -343,8 +343,9 @@ var codeValueOpts = map[string]bool{"-r": true, "--require": true, "--import": t
 	"--preload": true, "--config": true, "--tsconfig-override": true, "-W": true, "-X": true}
 
 // azLineRe finds an az command in code: a string that starts the CLI (az or a path to it), up to the quote that ends the
-// string or the line's end.
-var azLineRe = regexp.MustCompile("(?:^|[\"'`(\\s/])(az\\s+[a-z][^\"'`\\n]*)")
+// string or the line's end. Its words may start with a placeholder (`az ${args}`) or be joined on after the quote
+// ('az ' + open('cmd.txt').read(), review r5).
+var azLineRe = regexp.MustCompile("(?:^|[\"'`(\\s/])(az\\s+(?:[a-z$#{%][^\"'`\\n]*)?)")
 
 // placeholderRe is a value code puts into a string: {url} (f-strings, .format), ${url}, #{url}, %s.
 var placeholderRe = regexp.MustCompile(`[$#]?\{[^{}\n]*\}|%(\([A-Za-z_]+\))?[sdrf]`)
@@ -395,11 +396,11 @@ func codePosts(lang, body string) (string, uint) {
 		for _, m := range azLineRe.FindAllStringSubmatchIndex(l, -1) {
 			text := placeholderRe.ReplaceAllString(l[m[2]:m[3]], `"$$__x"`)
 			cut := false
+			open := byte(0) // the quote the az string starts with, if any
+			if m[0] < m[2] {
+				open = l[m[0]]
+			}
 			if m[3] < len(l) {
-				open := byte(0)
-				if m[0] < m[2] {
-					open = l[m[0]]
-				}
 				rest := strings.TrimLeft(l[m[3]+1:], " \t")
 				cut = l[m[3]] != open || rest != "" && strings.ContainsRune("+.%", rune(rest[0]))
 			}
@@ -409,7 +410,11 @@ func codePosts(lang, body string) (string, uint) {
 				// get the az check, and what follows the quote is a word the guard cannot read
 				var args []word
 				for _, f := range strings.Fields(text)[1:] {
-					args = append(args, word{text: f, src: f, ok: !strings.Contains(f, "$__x")})
+					args = append(args, word{text: f, src: f, ok: !strings.ContainsAny(f, "${")})
+				}
+				if strings.ContainsRune("\"'`", rune(open)) && (len(args) == 0 || !args[0].ok) {
+					// review r5: 'az ' + open('cmd.txt').read(), `az ${args}`: the command words come from elsewhere
+					return asked(lang + " code that runs az with words the guard cannot read"), n
 				}
 				if cut {
 					args = append(args, word{text: "--", src: "…"})
@@ -1194,8 +1199,14 @@ func readsOnlyIn(node syntax.Node) bool {
 	return only
 }
 
-// scriptDirRe is a $(...) that gives the folder of the running script: $(dirname "$0"), $(cd "$(dirname "$0")" && pwd).
-var scriptDirRe = regexp.MustCompile(`^\$\((cd\s+"?\$\(dirname\s+"?\$(\{?0\}?|\{BASH_SOURCE(\[0\])?\})"?\)"?\s*(&&|;)\s*pwd(\s+-P)?|dirname\s+"?\$(\{?0\}?|\{BASH_SOURCE(\[0\])?\})"?)\)$`)
+// scriptDirRe is a $(...) that gives the folder of the running script: $(dirname "$0"), $(cd "$(dirname "$0")" && pwd),
+// also of $(realpath "$0") or $(readlink -f "$0") (review r5: source "$(dirname "$(realpath "$0")")/lib/ado.sh").
+var scriptDirRe = func() *regexp.Regexp {
+	self := `\$(\{?0\}?|\{BASH_SOURCE(\[0\])?\})`
+	arg := `"?(` + self + `|\$\((g?realpath|readlink\s+-f)\s+"?` + self + `"?\))"?`
+	dir := `dirname\s+` + arg
+	return regexp.MustCompile(`^\$\((cd\s+"?\$\(` + dir + `\)"?\s*(&&|;)\s*pwd(\s+-P)?|` + dir + `)\)$`)
+}()
 
 // scriptDirOf gives the running script's folder for a $(...) that scriptDirRe matches.
 func (c ctx) scriptDirOf(cs *syntax.CmdSubst) (string, bool) {
@@ -1204,8 +1215,14 @@ func (c ctx) scriptDirOf(cs *syntax.CmdSubst) (string, bool) {
 	}
 	var b bytes.Buffer
 	syntax.NewPrinter().Print(&b, cs)
-	if !scriptDirRe.MatchString(strings.TrimSpace(b.String())) {
+	t := strings.TrimSpace(b.String())
+	if !scriptDirRe.MatchString(t) {
 		return "", false
+	}
+	if strings.Contains(t, "realpath") || strings.Contains(t, "readlink") {
+		if r, err := filepath.EvalSymlinks(c.script); err == nil {
+			return path.Dir(r), true
+		}
 	}
 	return path.Dir(c.script), true
 }

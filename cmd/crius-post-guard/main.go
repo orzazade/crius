@@ -74,6 +74,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unsafe"
 
 	"mvdan.cc/sh/v3/syntax"
 )
@@ -217,6 +218,9 @@ type setVar struct {
 	end  uint
 	lost bool
 	in   *syntax.Stmt // set after a command in a && chain: known only inside that chain (cd /tmp && S=x && bash $S/y)
+	// until: in a text with eval or source, the value holds only up to the first of them (review r5: HERE=$(cd …
+	// && pwd); source "$HERE/lib/ado.sh" lost HERE); 0: no such limit
+	until uint
 }
 
 // loopVar is a variable that only one for loop over literal words sets: its values inside the loop's body.
@@ -367,7 +371,10 @@ func checkCode(lang, code, file, cwd string, hasFile bool) string {
 	case hasFile && runnerRe.MatchString(code) && (namesAzCLI(text) || adoMarkRe.MatchString(text)):
 		return asked(lang + " code that starts a command and a file that names az or Azure DevOps")
 	}
-	return ""
+	// review r5: az run with its words from a file or a variable names no command group (spawnSync('az', argv)); the
+	// check a code file run by Bash gets judges it
+	why, _ := codePosts(lang, code)
+	return why
 }
 
 // adoMarkRe finds a sign of Azure DevOps in a command: a host, an API path, or a variable that only an ADO call uses.
@@ -379,11 +386,85 @@ var adoRe = regexp.MustCompile(`(?i)(^|[^\w.-])az(\s|$)|` + adoMarkRe.String()[4
 
 func asked(what string) string { return reason + " (" + what + ")" }
 
+// namesAzOrADO says whether a text names the az CLI or Azure DevOps. The answer is kept per text: each word the guard
+// cannot read asks it of the same whole command (review r5: 2000 evals took 11 s, the regexes ran 2000 times over it).
+// The key holds the text's bytes, so they stay alive and no other text gets their address.
+func namesAzOrADO(s string) bool {
+	k := textKey{unsafe.StringData(s), len(s)}
+	v, seen := azTexts[k]
+	if !seen {
+		v = namesAzCLI(s) || adoMarkRe.MatchString(s)
+		azTexts[k] = v
+	}
+	return v
+}
+
+type textKey struct {
+	p *byte
+	n int
+}
+
+var azTexts = map[textKey]bool{}
+
 // unsure asks when text the guard cannot read sits in a command that names az or Azure DevOps.
 func unsure(c ctx, what string) string {
 	// review r4: az next to ), `, ] or " counts too ($(which az), ${commands[az]})
-	if namesAzCLI(c.whole) || adoMarkRe.MatchString(c.whole) {
+	if namesAzOrADO(c.whole) {
 		return asked(what + " the guard cannot read")
+	}
+	return ""
+}
+
+// unsureName asks for a command name the guard cannot read when the text names az, or when a word of the shell's own is
+// az or a path to it (review r5: x=(az); "${x[@]}" $(cat a), for c in az; do $c …, p=$(brew --prefix)/bin/az; "$p" …).
+// az inside a longer quoted word (loadMessages('az')) is no such word.
+func unsureName(c ctx) string {
+	if why := unsure(c, "a command name"); why != "" {
+		return why
+	}
+	if azShellWord(c.files) {
+		return asked("a command name the guard cannot read, and az as a word of the command")
+	}
+	return ""
+}
+
+// azShellWord says whether a word in these parses is az, or ends in a path to az, in any case.
+func azShellWord(fs []runs) bool {
+	found := false
+	for _, r := range fs {
+		if r.file == nil {
+			continue
+		}
+		syntax.Walk(r.file, func(n syntax.Node) bool {
+			if w, ok := n.(*syntax.Word); ok && !found {
+				if l := literal(w); l.ok {
+					found = strings.EqualFold(path.Base(l.text), "az")
+				} else if t := tailLit(w); strings.Contains(t, "/") {
+					found = strings.EqualFold(path.Base(t), "az")
+				}
+			}
+			return !found
+		})
+	}
+	return found
+}
+
+// tailLit gives the literal text at the end of a word ($(brew --prefix)/bin/az: /bin/az), or "".
+func tailLit(w *syntax.Word) string {
+	if len(w.Parts) == 0 {
+		return ""
+	}
+	switch p := w.Parts[len(w.Parts)-1].(type) {
+	case *syntax.Lit:
+		return p.Value
+	case *syntax.SglQuoted:
+		return p.Value
+	case *syntax.DblQuoted:
+		if len(p.Parts) > 0 {
+			if l, ok := p.Parts[len(p.Parts)-1].(*syntax.Lit); ok {
+				return l.Value
+			}
+		}
 	}
 	return ""
 }
@@ -421,6 +502,11 @@ func checkBashAt(command string, c ctx) (string, uint) {
 			ce, ok := n.Cmd.(*syntax.CallExpr)
 			if !ok || len(ce.Args) == 0 {
 				return true
+			}
+			if late() {
+				// review r5: one long command (5000 evals) held the guard past the hook's limit
+				why, line = asked("the guard ran out of time reading the command"), n.Pos().Line()
+				return false
 			}
 			stdin := piped[ce]
 			for _, r := range n.Redirs {
@@ -635,12 +721,13 @@ func checkCall(args []word, stdin bool, c ctx) string {
 			// a command name from text the guard cannot read ($FILE_CONTENT, X=$(cat f); $X), review r2 of the ctx tools check;
 			// in a script, one the script makes from its own text alone asks only when that text names az
 			if args[0].node != nil && c.inner(args[0].node, 0) {
-				return unsure(ctx{whole: c.files[len(c.files)-1].src}, "a command name")
+				return unsureName(ctx{whole: c.files[len(c.files)-1].src, files: c.files[len(c.files)-1:]})
 			}
-			return unsure(c, "a command name")
+			return unsureName(c)
 		}
 	}
-	name := path.Base(args[0].text)
+	// the Mac's disk ignores case: AZ, CURL and BASH run az, curl and bash (review r5)
+	name := strings.ToLower(path.Base(args[0].text))
 	switch {
 	case (name == "source" || name == ".") && len(args) > 1:
 		if args[1].text == "--" && len(args) > 2 {
@@ -727,6 +814,8 @@ func checkCall(args []word, stdin bool, c ctx) string {
 			return why
 		}
 		return ""
+	case name == "command" && looksUp(args[1:]):
+		return ""
 	case wrappers[name]:
 		runsNext := name != "find" // find runs a command only after -exec, -execdir, -ok or -okdir
 		first := runsNext          // the next word that is no option, setting or number is the command it runs
@@ -745,9 +834,9 @@ func checkCall(args []word, stdin bool, c ctx) string {
 					continue
 				}
 				if first && a.node != nil && c.inner(a.node, 0) {
-					return unsure(ctx{whole: c.files[len(c.files)-1].src}, "a command name") // exec "$bin" "$@"
+					return unsureName(ctx{whole: c.files[len(c.files)-1].src, files: c.files[len(c.files)-1:]}) // exec "$bin" "$@"
 				}
-				return unsure(c, "a command name")
+				return unsureName(c)
 			}
 			if name == "find" && (a.text == "-exec" || a.text == "-execdir" || a.text == "-ok" || a.text == "-okdir") {
 				runsNext, first = true, true
@@ -762,7 +851,7 @@ func checkCall(args []word, stdin bool, c ctx) string {
 					return checkCall(args[i:], stdin, c)
 				}
 			}
-			if n := path.Base(a.text); n == "az" || n == "eval" || (n == "source" || n == ".") && (name == "builtin" || name == "command") || shells[n] || httpTools[n] || interpreters[n] {
+			if n := strings.ToLower(path.Base(a.text)); n == "az" || n == "eval" || (n == "source" || n == ".") && (name == "builtin" || name == "command") || shells[n] || httpTools[n] || interpreters[n] {
 				inner := args[i:]
 				if feeders[name] {
 					// xargs adds words from its stdin: they may be the method or the URL
@@ -779,6 +868,18 @@ func checkCall(args []word, stdin bool, c ctx) string {
 		return ""
 	case name == "az":
 		return checkAz(args[1:], c)
+	case name == "alias":
+		// an alias body runs where its name is used later (review r5: alias x="az repos pr create …"; x)
+		for _, a := range args[1:] {
+			if !a.ok {
+				return unsure(c, "alias text")
+			}
+			if _, body, set := strings.Cut(a.text, "="); set && !strings.HasPrefix(a.text, "-") {
+				if why := checkBash(body, c); why != "" {
+					return why
+				}
+			}
+		}
 	case name == "curl":
 		return checkCurl(args[1:], c)
 	case name == "wget":
@@ -1119,7 +1220,7 @@ func cmdName(w *syntax.Word) (string, bool) {
 	if !l.ok || strings.Contains(l.text, "/") && !sysDirs[path.Dir(l.text)] {
 		return "", false
 	}
-	return path.Base(l.text), true
+	return strings.ToLower(path.Base(l.text)), true
 }
 
 // azReads says whether an az command is shown to only read: a readVerb command or devops invoke with GET, every command
@@ -1446,6 +1547,11 @@ func (c ctx) scan(f *syntax.File, src string) ctx {
 	}
 	// in a && b, b's assignment holds after the chain only when every statement before it is one too (false && S=x
 	// leaves S unset); otherwise only inside the chain, where it ran when what follows runs (review of a4106c1)
+	// with eval or source (and no loop that may run one again), a value set before the first of them holds up to it
+	first := uint(0)
+	if all && !loops && len(c.evals) > 0 {
+		first = slices.Min(c.evals)
+	}
 	type stmtIn struct{ st, in *syntax.Stmt }
 	var top []stmtIn
 	for _, st := range f.Stmts {
@@ -1478,8 +1584,8 @@ func (c ctx) scan(f *syntax.File, src string) ctx {
 					v = word{text: s, ok: true} // D=$(dirname "$0"), S=$HOME/x
 				}
 			}
-			if v.ok && count[a.Name.Value] == 1 && !all {
-				c.vars[a.Name.Value] = setVar{text: v.text, end: a.End().Offset(), in: t.in}
+			if v.ok && count[a.Name.Value] == 1 && (!all || first > 0 && a.End().Offset() <= first) {
+				c.vars[a.Name.Value] = setVar{text: v.text, end: a.End().Offset(), in: t.in, until: first}
 			}
 		}
 	}
@@ -1584,6 +1690,19 @@ func slashAfter(parts []syntax.WordPart) bool {
 
 // markRun marks the word that names the file a call runs (bash x.sh, source x.sh, ./x.sh, bun x.ts), also behind a
 // wrapper (timeout 60 bash x.sh).
+// looksUp says whether command's options make it print what a name is (command -v, -V, -pv) instead of running it.
+func looksUp(args []word) bool {
+	for _, a := range args {
+		if !a.ok || !strings.HasPrefix(a.text, "-") || a.text == "--" {
+			return false
+		}
+		if strings.ContainsAny(a.text[1:], "vV") {
+			return true
+		}
+	}
+	return false
+}
+
 func markRun(n *syntax.CallExpr, args []word, k int, scripts map[*syntax.Word]bool) {
 	for j := k; j < len(args); j++ {
 		a := args[j]
@@ -1606,6 +1725,8 @@ func markRun(n *syntax.CallExpr, args []word, k int, scripts map[*syntax.Word]bo
 			}
 		case strings.Contains(a.text, "/") && !sysDirs[path.Dir(a.text)]:
 			scripts[n.Args[j]] = true
+		case name == "command" && looksUp(args[j+1:]):
+			return
 		case wrappers[name]:
 			// the command a wrapper runs is its first word that is no option, setting or number (timeout 60, nice -n 10)
 			for j+1 < len(args) && args[j+1].ok && (strings.HasPrefix(args[j+1].text, "-") || envSetRe.MatchString(args[j+1].text) ||
@@ -1763,7 +1884,8 @@ func (c ctx) resolve(w *syntax.Word) (string, bool) {
 			b.WriteString(home)
 			return err == nil
 		}
-		if !ok || v.lost || v.end > w.Pos().Offset() || v.in != nil && w.End().Offset() > v.in.End().Offset() {
+		if !ok || v.lost || v.end > w.Pos().Offset() || v.in != nil && w.End().Offset() > v.in.End().Offset() ||
+			v.until > 0 && w.End().Offset() > v.until {
 			return false
 		}
 		b.WriteString(v.text)
