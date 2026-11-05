@@ -96,7 +96,7 @@ function engine(
   const ticks: (() => void)[] = []
   on('clock.every', () => new Promise(r => ticks.push(() => r({ value: undefined }))))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
-  // the engine's own band, which the mod leaves when nothing waits
+  // the engine's own band above the prompt, which the mod leaves alone
   on('ui.render', ($, e) => {
     const { Box } = $.ui.resolve(e)
     return <Box />
@@ -158,19 +158,16 @@ test('an answer the queue refuses is a toast and reaches no chat', async ($, on)
   await ui.unmount()
 })
 
-test('empty: "Nothing waits on you" in the pane and the status line, and no band', async ($, on) => {
+test('empty: "Nothing waits on you" in the pane and the status line', async ($, on) => {
   const seen = engine(on, () => EMPTY)
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   expect(seen.status.at(-1)).toBe('✓ nothing waits on you')
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect((await ui.find({ type: 'Text', text: /Nothing waits/ }))?.text).toBe('✓ Nothing waits on you.')
   await ui.unmount()
-  const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
-  expect(await band.find({ type: 'Text', text: /waiting on you/ })).toBeUndefined()
-  await band.unmount()
 })
 
-test('a failed read is said in the status line and the band, never shown as an empty list', async ($, on) => {
+test('a failed read is said in the status line, never shown as an empty list', async ($, on) => {
   const seen = engine(on, () => 'fail')
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   expect(seen.status.at(-1)).toBe('⚑ owner queue FAILED: crius-queue: the owner queue was never set up')
@@ -178,18 +175,32 @@ test('a failed read is said in the status line and the band, never shown as an e
   expect(await ui.find({ type: 'Text', text: /Nothing waits/ })).toBeUndefined()
   expect((await ui.find({ type: 'Text', text: /could not be read/ }))?.text).toMatch(/never set up/)
   await ui.unmount()
-  const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
-  expect((await band.find({ type: 'Text', text: /FAILED/ }))?.text).toMatch(/never set up/)
-  await band.unmount()
 })
 
-test('the band names the count and the oldest item', async ($, on) => {
-  engine(on, () => TWO)
+// Owner 11-05, "we dont need this orange waiting box": the mod draws nothing above the prompt. The status line and the
+// pane carry the count, and a failed read stays loud in the status line.
+test('no band above the prompt: neither waiting items nor a failed read draw one', async ($, on) => {
+  let list: object | 'fail' = TWO
+  engine(on, () => list)
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
-  expect((await band.find({ type: 'Text', text: /waiting on you/ }))?.text).toBe('⚑ 2 waiting on you')
-  expect((await band.find({ type: 'Text', text: /oldest/ }))?.text).toBe('oldest: Restart Chrome (4h)')
+  expect(await band.findAll({ type: 'Text' })).toEqual([])
   await band.unmount()
+  list = 'fail'
+  await $.command.run({ command: 'waiting', args: '' })
+  const failed = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await failed.findAll({ type: 'Text' })).toEqual([])
+  await failed.unmount()
+})
+
+// Owner 11-05, "footer takes too much space": the status line is the count, plus the held count, with no names. Unread
+// GOAL blocks are Crius's own concern (its digest, the pane and /waiting say them), so the footer leaves them out.
+test('the status line is one short count, with no lead names', async ($, on) => {
+  const held = ['marketplace:lead: the owner answered q5 at 2026-10-30T15:18, after its GOAL block (2026-10-30T13:37)']
+  const unread = ['trading:lead: /x/STATUS.md: GOAL block unreadable: line 3: heading needs (YYYY-MM-DD HH:MM)']
+  const seen = engine(on, () => ({ ...TWO, held, unread }))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  expect(seen.status.at(-1)).toBe('⚑ 2 waiting on you · 1 held')
 })
 
 test('/waiting prints the list, and "/waiting 2 any text" answers item 2', async ($, on) => {
@@ -219,16 +230,13 @@ test('an answer the chat does not take is said: recorded, and the line to type',
   await ui.unmount()
 })
 
-test('in any tab but Crius\'s the mod stays off: no pane, status, band or /waiting', async ($, on) => {
+test('in any tab but Crius\'s the mod stays off: no pane, status or /waiting', async ($, on) => {
   const seen = engine(on, () => TWO, 'S-OTHER')
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   expect(seen.status).toEqual([])
   expect(seen.opened).toEqual([])
   expect(seen.commands).toEqual([])
   expect(seen.calls).toEqual([])
-  const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
-  expect(await band.find({ type: 'Text', text: /waiting on you/ })).toBeUndefined()
-  await band.unmount()
 })
 
 // reviews of c898a43 and e2e362d: the list refreshes every 5 s and the pane numbers its cards from it, so a number is
@@ -293,15 +301,16 @@ test('an empty answer sent from the pane is said', async ($, on) => {
 })
 
 // Review of the queue gap, P2: a lead whose GOAL block cannot be read may ask something the queue cannot see, so an
-// empty list with unread blocks is never a plain "nothing waits": the status line, the pane and /waiting say it.
-test('GOAL blocks that cannot be read are said with the list, never shown as nothing waits', async ($, on) => {
+// empty list with unread blocks is never a plain "nothing waits" in the pane and /waiting. The status line leaves them
+// out (owner 11-05): they are Crius's own concern, said in its digest.
+test('GOAL blocks that cannot be read are said in the pane and /waiting, and left out of the status line', async ($, on) => {
   const unread = [
     'trading:lead: /x/STATUS.md: GOAL block unreadable: line 3: heading needs (YYYY-MM-DD HH:MM)',
     'cortex:lead: /y/STATUS.md: GOAL block unreadable: line 9: want Next:',
   ]
   const seen = engine(on, () => ({ ...EMPTY, unread }))
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
-  expect(seen.status.at(-1)).toBe('✓ nothing waits on you · 2 GOAL blocks not read: trading:lead, cortex:lead')
+  expect(seen.status.at(-1)).toBe('✓ nothing waits on you')
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect((await ui.find({ type: 'Text', text: /cannot be read/ }))?.text).toBe(
     '⚑ 2 GOAL blocks cannot be read, so what they ask is not here: trading:lead, cortex:lead',
@@ -319,7 +328,7 @@ test('held GOAL asks are said with the list, never hidden', async ($, on) => {
   const held = ['marketplace:lead: the owner answered q5 at 2026-10-30T15:18, after its GOAL block (2026-10-30T13:37)']
   const seen = engine(on, () => ({ ...EMPTY, held }))
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
-  expect(seen.status.at(-1)).toBe('✓ nothing waits on you · 1 held (maybe answered): marketplace:lead')
+  expect(seen.status.at(-1)).toBe('✓ nothing waits on you · 1 held')
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect((await ui.find({ type: 'Text', text: /^Held/ }))?.text).toBe(
     'Held, as you may have answered them already (1): marketplace:lead: the owner answered q5 at 2026-10-30T15:18, after its GOAL block (2026-10-30T13:37)',

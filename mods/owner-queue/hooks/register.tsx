@@ -1,5 +1,5 @@
 // The owner queue beside the Crius chat (DESIGN.md beside this folder). crius-queue holds the queue; this mod reads it
-// every 5 s and draws it in four places: the pane, the status line, the band above the prompt and /waiting. An answer
+// every 5 s and draws it in three places: the pane, the status line and /waiting. An answer
 // is recorded with crius-queue first, then submitted into the chat as "[queue qN] <answer>" so Crius acts on it.
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
@@ -82,7 +82,6 @@ const cli = (...args: string[]) => ['/bin/sh', '-c', 'exec "$HOME/.crius/bin/cri
 
 // the leads whose GOAL block crius-queue could not read: what they ask is not in the list
 const unreadLeads = (v: View) => (v.unread ?? []).map(u => u.split(': ')[0])
-const heldLeads = (v: View) => (v.held ?? []).map(u => u.split(': ')[0])
 const HELD = 'Held, as you may have answered them already'
 
 // shortAt is a 2006-01-02T15:04 time as the queue shows it: 15:04 on now's day, else 01-02 15:04 (crius-queue's own).
@@ -93,14 +92,15 @@ function shortAt(at: string | undefined, now: string | undefined): string {
   return at.slice(0, 10) === now.slice(0, 10) ? at.slice(11) : `${at.slice(5, 10)} ${at.slice(11)}`
 }
 
+// The status line is one short count (owner 11-05: the footer took too much space): no names, and no unread GOAL
+// blocks, which are Crius's own concern (its digest; the pane and /waiting say them). A failed read stays loud.
 const status = (v: View | null, err: string | null) =>
   err !== null
     ? `⚑ owner queue FAILED: ${err.slice(0, 120)}`
     : v === null
       ? '⚑ owner queue: reading…'
       : (v.open.length === 0 ? '✓ nothing waits on you' : `⚑ ${v.open.length} waiting on you`) +
-        (heldLeads(v).length > 0 ? ` · ${heldLeads(v).length} held (maybe answered): ${heldLeads(v).join(', ')}` : '') +
-        (unreadLeads(v).length > 0 ? ` · ${unreadLeads(v).length} GOAL blocks not read: ${unreadLeads(v).join(', ')}` : '')
+        (v.held?.length ? ` · ${v.held.length} held` : '')
 
 async function refresh($: EngineInterface): Promise<void> {
   let next: View | null = null
@@ -289,37 +289,6 @@ export const register: Register = on => {
       return { text: `No item ${n} in the list; /waiting shows it.` }
     }
     return { text: await answer($, id, text, true) }
-  })
-
-  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    const v = await read($, view)
-    const err = await read($, error)
-    if (!active || e.props.hasSurvey || (err === null && (v === null || v.open.length === 0))) {
-      return next(e)
-    }
-    const { Box, Text } = $.ui.resolve(e)
-    const oldest = v?.open[0]
-
-    return (
-      <Box borderStyle="round" borderColor={C.accent} paddingX={1} flexDirection="row" gap={2}>
-        {err !== null ? (
-          <Text color={C.accentFg} bold wrap="truncate-end">
-            ⚑ owner queue FAILED: {err}
-          </Text>
-        ) : (
-          <Text color={C.accentFg} bold>
-            ⚑ {v?.open.length} waiting on you
-          </Text>
-        )}
-        {oldest && (
-          <Text color={C.soft} wrap="truncate-end">
-            oldest: {oldest.title} ({oldest.age})
-          </Text>
-        )}
-        <Box flexGrow={1} />
-        <Text color={C.dim}>/waiting to see all</Text>
-      </Box>
-    )
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {

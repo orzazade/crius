@@ -3,22 +3,23 @@
 The mod draws one list: what waits on the owner. Approved mockup (owner 10-30, "sounds perfect the design"):
 `~/.crius/state/crius/owner-queue-mockup.html`, screen 1 (pane beside the chat) and screen 2 (band and `/waiting`).
 Owner update 10-30 ~14:00: all four places at once, and every item has its own free-text answer field.
+Owner update 11-05 ("footer takes too much space, we dont need this orange waiting box"): the band above the prompt is
+gone, and the status line is a short count with no names.
 
 ## Where it shows
 
-All four read the same queue (`crius-queue list --json`, every 5 s) and say the same count. They show in Crius's tab
+All three read the same queue (`crius-queue list --json`, every 5 s) and say the same count. They show in Crius's tab
 alone (the cmux surface `~/.crius/roles/crius.lead.json` names); other sessions in the folder load the mod and stay off.
 An off mod looks again every 5 s, since crius-hook may write the role file after the mod started.
 
 | Place | What it shows |
 | --- | --- |
 | Pane beside the chat (`Waiting on you`) | head with count, cards oldest first, "Answered today" at the bottom |
-| Status line | `⚑ N waiting on you`; `✓ nothing waits on you` at 0; `⚑ owner queue FAILED: …` when the read fails |
-| Band above the prompt | `⚑ N waiting on you · oldest: <title> (<age>) · /waiting`; nothing at 0 |
+| Status line | `⚑ N waiting on you`, or `✓ nothing waits on you` at 0, plus ` · N held` when asks are held; no names. `⚑ owner queue FAILED: …` when the read fails. Unread GOAL blocks are left out: they are Crius's own concern (its digest), and the pane and `/waiting` say them |
 | `/waiting` | the list as text; `/waiting 2 <any text>` answers item 2 of the list drawn now (sent by its id). When the list `/waiting` printed is no longer the one drawn, nothing is recorded and the list is printed again. A refused answer is said in the reply, not again as a toast |
 
 The pane opens by itself where the terminal docks it (fullscreen, from about 110-144 columns). Below that it waits,
-and the band and `/waiting` carry everything.
+and `/waiting` carries everything (the status line keeps the count).
 
 ## A card
 
@@ -56,8 +57,8 @@ needs your call."
 | soft | `#c9c5bb` | Why you, Unblocks |
 | dim | `#9a968c` | labels, `from · age`, "oldest first", the answered list |
 | box | `#3a3935` | card border (not text) |
-| accent | `#e08a63` | count badge background, primary button, band border |
-| accent-fg | `#f0a988` | item number, `⚑ N waiting on you` |
+| accent | `#e08a63` | count badge background, primary button |
+| accent-fg | `#f0a988` | item number, "You asked", the pane's `⚑` warnings |
 | ok | `#8fc27e` | the ✓ of the empty state and of answered rows |
 | badge text | `#161615` | the count on the accent badge |
 
