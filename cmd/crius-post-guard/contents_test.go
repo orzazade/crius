@@ -339,6 +339,7 @@ func TestScriptReadingReviewRound5(t *testing.T) {
 		"list.sh":     "#!/bin/bash\necho hi\n",
 		"safe/lib.sh": "echo hi\n",
 		"evil/lib.sh": "az repos pr create --title x\n",
+		"mrg.sh":      "cd \"$1\" && ./node_modules/.bin/tsc -b\naz repos pr update --id 1 --status completed\n",
 		"lib/c.sh":    "X=1\n",
 		"c1.sh":       "DIR=$(dirname \"$0\")\nsource \"$DIR/lib/c.sh\"\naz repos pr list -o table\n",
 	})
@@ -353,6 +354,8 @@ func TestScriptReadingReviewRound5(t *testing.T) {
 		`/opt/homebrew/bin/AZ repos pr create --title x`: "(az repos pr create",
 		"shopt -s expand_aliases\nalias x=\"az repos pr create --title y\"\nx":   "(az repos pr create",
 		"alias x='echo hi; az boards work-item update --id 1 --discussion y'\nx": "(az boards work-item update",
+		// 11-05 replay: merge.sh asked on tsc after a cd (merge-ok.sh line 75); the ask names the line that posts
+		`bash mrg.sh web`: "(az repos pr update; ",
 		// review r5b: a part of an az command in an alias body (bash expands x repos pr create)
 		"shopt -s expand_aliases\nalias x=az\nx repos pr create --title t": "alias",
 		"alias x='az repos'\nx pr create --title t":                        "alias",

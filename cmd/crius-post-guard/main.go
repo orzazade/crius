@@ -508,6 +508,7 @@ func checkBashAt(command string, c ctx) (string, uint) {
 	c = c.scan(f, command)
 	piped := map[*syntax.CallExpr]bool{}
 	why, line := "", uint(0)
+	soft, softLine := "", uint(0) // the first ask for a step the guard cannot read
 	syntax.Walk(f, func(n syntax.Node) bool {
 		if why != "" {
 			return false
@@ -540,13 +541,25 @@ func checkBashAt(command string, c ctx) (string, uint) {
 			for i, w := range ce.Args {
 				args[i] = literal(w)
 			}
-			if why = checkCall(args, stdin, c); why != "" {
-				line = n.Pos().Line()
+			if w := checkCall(args, stdin, c); unsureWhy(w) && soft == "" {
+				soft, softLine = w, n.Pos().Line()
+			} else if w != "" && !unsureWhy(w) {
+				why, line = w, n.Pos().Line()
 			}
 		}
 		return true
 	})
+	if why == "" {
+		why, line = soft, softLine
+	}
 	return why, line
+}
+
+// unsureWhy says whether an ask is for something the guard cannot read rather than a post it found. checkBashAt reads
+// on past such a step, so the ask names the line that posts when there is one (11-05 replay: merge.sh asked on tsc after
+// a cd in merge-ok.sh, not on its az repos pr update --status completed).
+func unsureWhy(w string) bool {
+	return strings.Contains(w, "the guard cannot")
 }
 
 // word is one shell word: its text, the word as written (src), whether the text is all literal (ok), and the word.
