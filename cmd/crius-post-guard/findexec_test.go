@@ -25,6 +25,14 @@ func TestEveryFindExecPartIsJudged(t *testing.T) {
 		`find . -exec cat {} $(printf ';') -exec az repos pr create --title x \;`,
 		`find . -exec cat {} $T -exec az repos pr create --title x \;`,
 		`T='; -exec az repos pr create --title x ;'; find . -exec cat {} $T`,
+		// review of 09070f3: a quoted word that may be ; then a word that may be -exec
+		`T=$(printf ';'); U=$(printf -- -exec); find . -exec echo "$T" "$U" az repos pr create --title x \;`,
+		`T=';'; U=-exec; find . -exec echo "$T" "$U" az repos pr create --title x \;`,
+		`find . -exec grep -q x "$1" "$2" az repos pr create --title x \;`,
+		`find . -exec /usr/bin/grep -l foo "$T" "$U" az repos pr create --title x \;`,
+		`find . -exec echo "$T" \( "$U" az repos pr create --title x \; \)`,
+		// the part goes on past a quoted word that is not ;
+		`find . -exec timeout "$N" az repos pr create --title x \;`,
 	} {
 		if why := check(bash(cmd, dir)); !strings.HasPrefix(why, reason) {
 			t.Errorf("%s\n  passed, want an ask", cmd)

@@ -861,6 +861,21 @@ func checkCall(args []word, stdin bool, c ctx) string {
 					args = append(slices.Clone(args[:i]), append([]word{a}, args[i+1:]...)...)
 				}
 			}
+			if !a.ok && name == "find" && !runsNext {
+				// review of 09070f3: a find word it cannot read may be -exec, so the next word may be the command it runs;
+				// not when that word is a test or option (find "$notes" -path …: an -exec there would run "-path")
+				if i+1 < len(args) && args[i+1].ok && (strings.HasPrefix(args[i+1].text, "-") || args[i+1].text == "(" || args[i+1].text == "!") {
+					continue
+				}
+				if t, known := "", false; a.node != nil {
+					if t, known = c.resolve(a.node); !known || t == "-exec" || t == "-execdir" || t == "-ok" || t == "-okdir" {
+						runsNext, first = true, true
+					}
+				} else {
+					runsNext, first = true, true
+				}
+				continue
+			}
 			if !a.ok {
 				// review r1: a word it cannot read may be the command it runs (exec $X …), so it asks like a command name;
 				// not an env setting (NAME=$v) or a find word before its command
@@ -883,9 +898,15 @@ func checkCall(args []word, stdin bool, c ctx) string {
 						if args[j].node != nil {
 							t, known = c.resolve(args[j].node)
 						}
-						// a quoted word stays one word, so it only matters when it may be ; and an -exec follows
-						if (!known || strings.ContainsAny(t, "; \t\n+")) && (!oneWord(args[j].node) || execAfter(args[j+1:])) {
-							return unsure(c, "find -exec words")
+						if !known || strings.ContainsAny(t, "; \t\n+") {
+							if !oneWord(args[j].node) {
+								return unsure(c, "find -exec words") // it may split into ; -exec …
+							}
+							// review of 09070f3: a quoted word may be the ; that ends the part, or not. Judge both: the
+							// words after it as find's own (here), and the part going on past it (the scan goes on)
+							if why := checkCall(append([]word{args[0]}, args[j+1:]...), stdin, c); why != "" {
+								return why
+							}
 						}
 					}
 					j++
@@ -2630,14 +2651,4 @@ func httpieData(a word) bool {
 		return false // a header, or a header from a file (:@)
 	}
 	return true // a=b or a@file
-}
-
-// execAfter: a readable -exec, -execdir, -ok or -okdir among the words.
-func execAfter(ws []word) bool {
-	for _, w := range ws {
-		if w.ok && (w.text == "-exec" || w.text == "-execdir" || w.text == "-ok" || w.text == "-okdir") {
-			return true
-		}
-	}
-	return false
 }
