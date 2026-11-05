@@ -19,6 +19,12 @@ func TestEveryFindExecPartIsJudged(t *testing.T) {
 		`find . -exec /bin/cat {} \; -exec /bin/bash ./post.sh {} +`,
 		`find . -exec cat {} \; -exec bash ./post.sh {} +`,
 		`find . -exec az repos pr show --id 1 \; -exec az repos pr create --title t \;`,
+		// review of 2153615: a word the shell turns into ; (or into ; -exec …) ends the part early
+		`T=';'; find . -exec cat {} $T -exec az repos pr create --title x \;`,
+		`T=';'; find . -exec cat {} "$T" -exec az repos pr create --title x "$T"`,
+		`find . -exec cat {} $(printf ';') -exec az repos pr create --title x \;`,
+		`find . -exec cat {} $T -exec az repos pr create --title x \;`,
+		`T='; -exec az repos pr create --title x ;'; find . -exec cat {} $T`,
 	} {
 		if why := check(bash(cmd, dir)); !strings.HasPrefix(why, reason) {
 			t.Errorf("%s\n  passed, want an ask", cmd)

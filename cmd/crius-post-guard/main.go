@@ -877,6 +877,17 @@ func checkCall(args []word, stdin bool, c ctx) string {
 				// -exec part as its own words (review of bf78438, P1-a)
 				j := i + 1
 				for j < len(args) && !(args[j].ok && (args[j].text == ";" || args[j].text == "+" && args[j-1].text == "{}")) {
+					if !args[j].ok {
+						// review of 2153615: the shell may turn $T or $(printf ';') into ; or into ; -exec …
+						t, known := "", false
+						if args[j].node != nil {
+							t, known = c.resolve(args[j].node)
+						}
+						// a quoted word stays one word, so it only matters when it may be ; and an -exec follows
+						if (!known || strings.ContainsAny(t, "; \t\n+")) && (!oneWord(args[j].node) || execAfter(args[j+1:])) {
+							return unsure(c, "find -exec words")
+						}
+					}
 					j++
 				}
 				if j < len(args) {
@@ -2619,4 +2630,14 @@ func httpieData(a word) bool {
 		return false // a header, or a header from a file (:@)
 	}
 	return true // a=b or a@file
+}
+
+// execAfter: a readable -exec, -execdir, -ok or -okdir among the words.
+func execAfter(ws []word) bool {
+	for _, w := range ws {
+		if w.ok && (w.text == "-exec" || w.text == "-execdir" || w.text == "-ok" || w.text == "-okdir") {
+			return true
+		}
+	}
+	return false
 }
