@@ -332,13 +332,15 @@ func TestScriptReadingReviewRound3(t *testing.T) {
 // the Mac's case-blind disk; an alias body was never read; a long eval chain held the guard past the hook's limit.
 func TestScriptReadingReviewRound5(t *testing.T) {
 	dir := scriptDir(t, map[string]string{
-		"lib/ado.sh": "post_comment() { az repos pr update --id \"$1\" --description \"$2\"; }\n",
-		"notes2.sh":  "HERE=\"$(cd \"$(dirname \"${BASH_SOURCE[0]}\")\" && pwd)\"\nsource \"$HERE/lib/ado.sh\"\npost_comment 12 \"QA notes\"\n",
-		"notes3.sh":  "source \"$(dirname \"$(realpath \"$0\")\")/lib/ado.sh\"\npost_comment 12 \"QA notes\"\n",
-		"a":          "repos pr create --title x\n",
-		"list.sh":    "#!/bin/bash\necho hi\n",
-		"lib/c.sh":   "X=1\n",
-		"c1.sh":      "DIR=$(dirname \"$0\")\nsource \"$DIR/lib/c.sh\"\naz repos pr list -o table\n",
+		"lib/ado.sh":  "post_comment() { az repos pr update --id \"$1\" --description \"$2\"; }\n",
+		"notes2.sh":   "HERE=\"$(cd \"$(dirname \"${BASH_SOURCE[0]}\")\" && pwd)\"\nsource \"$HERE/lib/ado.sh\"\npost_comment 12 \"QA notes\"\n",
+		"notes3.sh":   "source \"$(dirname \"$(realpath \"$0\")\")/lib/ado.sh\"\npost_comment 12 \"QA notes\"\n",
+		"a":           "repos pr create --title x\n",
+		"list.sh":     "#!/bin/bash\necho hi\n",
+		"safe/lib.sh": "echo hi\n",
+		"evil/lib.sh": "az repos pr create --title x\n",
+		"lib/c.sh":    "X=1\n",
+		"c1.sh":       "DIR=$(dirname \"$0\")\nsource \"$DIR/lib/c.sh\"\naz repos pr list -o table\n",
 	})
 	for cmd, want := range map[string]string{
 		`x=(az); "${x[@]}" $(cat a)`:                     "a command name",
@@ -351,6 +353,9 @@ func TestScriptReadingReviewRound5(t *testing.T) {
 		`/opt/homebrew/bin/AZ repos pr create --title x`: "(az repos pr create",
 		"shopt -s expand_aliases\nalias x=\"az repos pr create --title y\"\nx":   "(az repos pr create",
 		"alias x='echo hi; az boards work-item update --id 1 --discussion y'\nx": "(az boards work-item update",
+		// review r5b: a part of an az command in an alias body (bash expands x repos pr create)
+		"shopt -s expand_aliases\nalias x=az\nx repos pr create --title t": "alias",
+		"alias x='az repos'\nx pr create --title t":                        "alias",
 	} {
 		if why := check(bash(cmd, dir)); !strings.HasPrefix(why, reason) || !strings.Contains(why, want) {
 			t.Errorf("%q: want %q in %q", cmd, want, why)
@@ -366,6 +371,7 @@ func TestScriptReadingReviewRound5(t *testing.T) {
 		"python": {
 			"import subprocess, json; subprocess.run(['az', *json.load(open('plan.json'))])",
 			"import os; os.system('az ' + open('cmd.txt').read())",
+			"import subprocess; subprocess.run(['az'] + open('a').read().split())",
 		},
 	} {
 		for _, code := range codes {
@@ -385,6 +391,35 @@ func TestScriptReadingReviewRound5(t *testing.T) {
 		// review r5 (P2): a library placed by a variable set before the source, then an az read
 		`bash c1.sh`,
 	} {
+		if why := check(bash(cmd, dir)); why != "" {
+			t.Errorf("%q asked: %s", cmd, why)
+		}
+	}
+	// review r5b (P1): a function body runs after the source or eval that comes later in the text, so a value set before
+	// them does not reach it
+	cfg := filepath.Join(dir, "cfg")
+	if err := os.WriteFile(cfg, []byte("HERE="+dir+"/evil\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, cmd := range []string{
+		"HERE=" + dir + "/safe; load() { bash \"$HERE/lib.sh\"; }; source " + cfg + "; load; echo az version",
+		"HERE=" + dir + "/safe; load() { bash \"$HERE/lib.sh\"; }; eval \"HERE=" + dir + "/evil\"; load; echo az version",
+		"HERE=" + dir + "/safe; load() { source \"$HERE/lib.sh\"; }; source " + cfg + "; load; echo az version",
+	} {
+		if why := check(bash(cmd, dir)); !strings.HasPrefix(why, reason) {
+			t.Errorf("%q: not asked: %q", cmd, why)
+		}
+	}
+	// 11-05 23:02, ten Quotes tabs: review-check.sh reads one PR and greps local notes with find -exec /usr/bin/grep
+	// "…${head:0:7}" {} +; a read command by its system path takes the words after it as its own
+	b, err := os.ReadFile(filepath.Join("testdata", "review-check.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "review-check.sh"), b, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, cmd := range []string{`bash review-check.sh 7815`, `./review-check.sh 7815; echo rc=$?`} {
 		if why := check(bash(cmd, dir)); why != "" {
 			t.Errorf("%q asked: %s", cmd, why)
 		}

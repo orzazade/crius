@@ -428,8 +428,29 @@ func unsureName(c ctx) string {
 	return ""
 }
 
-// azShellWord says whether a word in these parses is az, or ends in a path to az, in any case.
+// azShellWord says whether a word in these parses is az, or ends in a path to az, in any case. The answer is kept per
+// parse list: each command name the guard cannot read asks it again (review r5b: 1000 lines took 9 s).
 func azShellWord(fs []runs) bool {
+	if len(fs) == 0 {
+		return false
+	}
+	k := shellKey{&fs[0], len(fs)}
+	if v, seen := azWords[k]; seen {
+		return v
+	}
+	v := azShellWordIn(fs)
+	azWords[k] = v
+	return v
+}
+
+type shellKey struct {
+	first *runs
+	n     int
+}
+
+var azWords = map[shellKey]bool{}
+
+func azShellWordIn(fs []runs) bool {
 	found := false
 	for _, r := range fs {
 		if r.file == nil {
@@ -846,7 +867,11 @@ func checkCall(args []word, stdin bool, c ctx) string {
 				first = false
 				// a program by its path, or a command that runs nothing (command printf %s "$*" in nvm.sh, today's replay):
 				// the rest is its own words, judged as its call (exec "$HOME/.crius/bin/bus-post" …, timeout 60 ./x.sh)
-				if strings.Contains(a.text, "/") && !sysDirs[path.Dir(a.text)] || (noFileCmds[a.text] || readCmds[a.text]) && !feeders[name] ||
+				b := a.text
+				if sysDirs[path.Dir(b)] {
+					b = path.Base(b) // find -exec /usr/bin/grep … "${head:0:7}" {} + (review-check.sh, 11-05 23:02)
+				}
+				if strings.Contains(a.text, "/") && !sysDirs[path.Dir(a.text)] || (noFileCmds[b] || readCmds[b]) && !feeders[name] ||
 					plainWrappers[name] {
 					return checkCall(args[i:], stdin, c)
 				}
@@ -877,6 +902,10 @@ func checkCall(args []word, stdin bool, c ctx) string {
 			if _, body, set := strings.Cut(a.text, "="); set && !strings.HasPrefix(a.text, "-") {
 				if why := checkBash(body, c); why != "" {
 					return why
+				}
+				if f := strings.Fields(body); len(f) > 0 && strings.EqualFold(path.Base(f[0]), "az") {
+					// review r5b: alias x=az; x repos pr create: the words come where the alias is used
+					return asked("an alias for az: the guard does not read the words it gets where it is used")
 				}
 			}
 		}
@@ -1547,9 +1576,10 @@ func (c ctx) scan(f *syntax.File, src string) ctx {
 	}
 	// in a && b, b's assignment holds after the chain only when every statement before it is one too (false && S=x
 	// leaves S unset); otherwise only inside the chain, where it ran when what follows runs (review of a4106c1)
-	// with eval or source (and no loop that may run one again), a value set before the first of them holds up to it
+	// with eval or source (and no loop that may run one again, nor a function whose body runs after them: review r5b),
+	// a value set before the first of them holds up to it
 	first := uint(0)
-	if all && !loops && len(c.evals) > 0 {
+	if all && !loops && !funcs && len(c.evals) > 0 {
 		first = slices.Min(c.evals)
 	}
 	type stmtIn struct{ st, in *syntax.Stmt }

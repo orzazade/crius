@@ -372,6 +372,9 @@ func runsList(before string) bool {
 
 // azArrayHeadRe starts az run with its words as a list; azArrayRe takes the words, which may run over several lines.
 var azArrayHeadRe = regexp.MustCompile(`['"]az['"]\s*,`)
+
+// azJoinRe is a list that holds only az, joined to more words (['az'] + args).
+var azJoinRe = regexp.MustCompile(`\[\s*['"]az['"]\s*\]\s*\+`)
 var azArrayRe = regexp.MustCompile(`['"]az['"]\s*,\s*\[?((?:\s*(?:['"][^'"\n]*['"]|[^'"\s,\]\)]+)\s*,?)*)`)
 
 // codeWriteRe is an HTTP write in code: a method set to POST, PUT, PATCH or DELETE, a client's post or put call, or an
@@ -427,6 +430,10 @@ func codePosts(lang, body string) (string, uint) {
 			if why != "" {
 				return why, n
 			}
+		}
+		if m := azJoinRe.FindStringIndex(lines[i]); m != nil && runsList(strings.Join(lines[:i], "\n")+"\n"+lines[i][:m[0]]) {
+			// review r5b: ['az'] + open('a').read().split(): the words come from elsewhere
+			return asked(lang + " code that runs az with words the guard cannot read"), n
 		}
 		if azArrayHeadRe.MatchString(lines[i]) {
 			more := strings.Join(lines[i:min(i+20, len(lines))], " ")
