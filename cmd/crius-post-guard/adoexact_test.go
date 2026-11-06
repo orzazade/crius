@@ -479,3 +479,19 @@ func TestADOSuitePassingShapesAskOnlyForTheSuiteTheUsualWay(t *testing.T) {
 		}
 	}
 }
+
+// shippedSuiteSHA is the pin as built, read before any test swaps suiteSHA for its fixture.
+var shippedSuiteSHA = suiteSHA
+
+// The pin is the hash of the script kept beside the guard (testdata/ado-suite/ado-suite.ts): installing the guard and
+// that file together keeps the exact shape passing; a change to the copy fails here until the pin moves with it.
+func TestADOSuitePinIsTheShippedCopy(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("testdata", "ado-suite", "ado-suite.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(b)
+	if got := hex.EncodeToString(sum[:]); got != shippedSuiteSHA {
+		t.Fatalf("suiteSHA pins %s, testdata/ado-suite/ado-suite.ts is %s", shippedSuiteSHA, got)
+	}
+}
