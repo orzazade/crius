@@ -427,8 +427,7 @@ func waits(ctx context.Context, conn *sql.Conn, q Query, res *Result) error {
 				return fmt.Errorf("wait %s has a bad time %q", h.ID, h.TS)
 			}
 			var one int
-			err = conn.QueryRowContext(ctx, "select 1 from request where session like ? || '%' and ts_first >= ? limit 1",
-				m[1], stamp(t.Add(time.Minute))).Scan(&one)
+			err = conn.QueryRowContext(ctx, laterCall, laterCallArgs(m[1], t.Add(time.Minute))...).Scan(&one)
 			if err == nil {
 				continue
 			}
@@ -524,4 +523,16 @@ func (h Hit) Line() string {
 		s += " · " + h.Path
 	}
 	return s
+}
+
+// laterCall asks whether a session (named by its id's first 8 characters) made an API call at or after a time; a wait
+// with such a call is closed. The id prefix is a range on session, so request_session answers it: `session like ? || '%'`
+// read every request once per wait (11-06 digest ran 51 min, TestLaterCallUsesTheSessionIndex). sid is sidRe's 8 hex
+// characters, so the prefix with its last byte raised by one sorts after every id that starts with the prefix.
+const laterCall = "select 1 from request where session >= ? and session < ? and ts_first >= ? limit 1"
+
+func laterCallArgs(sid string, at time.Time) []any {
+	next := []byte(sid)
+	next[len(next)-1]++
+	return []any{sid, string(next), stamp(at)}
 }

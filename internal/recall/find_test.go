@@ -325,3 +325,27 @@ func TestFindManyCommitsStayInTheirBlock(t *testing.T) {
 		t.Fatalf("hits %+v more %v commits %d", r.Hits, r.More, len(r.Commits))
 	}
 }
+
+// 11-06 13:55-14:46: crius-rec digest ran 51 min at ~80% CPU in waits. Each wait asked "did this session call again?"
+// with `session like ? || '%'`, which cannot use request_session, so SQLite read all 540k requests once per wait.
+// The question must be answered from the index.
+func TestLaterCallUsesTheSessionIndex(t *testing.T) {
+	db := open(t)
+	rows, err := db.Query("explain query plan "+laterCall, laterCallArgs("aaaa1111", time.Date(2026, 11, 6, 13, 0, 0, 0, time.UTC))...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var plan []string
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		plan = append(plan, detail)
+	}
+	if got := strings.Join(plan, "; "); !strings.Contains(got, "USING INDEX request_session") {
+		t.Fatalf("the later-call query does not use request_session: %s", got)
+	}
+}

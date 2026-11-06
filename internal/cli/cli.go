@@ -13,9 +13,11 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime/pprof"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/orzazade/crius"
@@ -729,16 +731,55 @@ func answer(status string, v any, text string, asJSON bool, stdout, stderr io.Wr
 
 // digestCmd prints the goal report (step 5), compared with the last saved one. With write it saves the report as
 // state/digest/YYYY-MM-DD-HHMM.md, redacted like every sink, and its numbers beside it as .json.
+// digestLimit bounds one digest run, digestExit ends it (a test stands in for os.Exit). 11-06 13:55 a run hung 51 min
+// in the waits query and nobody heard: past the limit the run names the step it was on, prints every goroutine's stack
+// and exits 1, so crius-digest-run posts its ALERT (TestDigestPastItsLimitNamesTheStepAndFails). A normal run takes
+// about 12 s on the 11-06 store.
+var (
+	digestLimit = 10 * time.Minute
+	digestExit  = os.Exit
+)
+
+// stepWatch ends the run when digestLimit passes; at names the step the run is on.
+type stepWatch struct {
+	mu    sync.Mutex
+	step  string
+	timer *time.Timer
+}
+
+func watchSteps(stderr io.Writer) *stepWatch {
+	w := &stepWatch{step: "start"}
+	w.timer = time.AfterFunc(digestLimit, func() {
+		w.mu.Lock()
+		step := w.step
+		w.mu.Unlock()
+		fmt.Fprintf(stderr, "LOUD crius-rec digest: over its time limit (%s) in step %q; stopped. Stacks:\n", digestLimit, step)
+		pprof.Lookup("goroutine").WriteTo(stderr, 1)
+		digestExit(exitError)
+	})
+	return w
+}
+
+func (w *stepWatch) at(step string) {
+	w.mu.Lock()
+	w.step = step
+	w.mu.Unlock()
+}
+
 func digestCmd(home string, now time.Time, write, printPath bool, stdout, stderr io.Writer) int {
 	if fi, err := os.Stat(filepath.Join(home, "state")); err != nil || !fi.IsDir() {
 		fmt.Fprintf(stderr, "unavailable: %s is missing; run crius-rec init\n", home)
 		return exitUnavailable
 	}
+	w := watchSteps(stderr)
+	defer w.timer.Stop()
+	w.at("leads")
 	leads, err := ingest.Leads(home)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return exitError
 	}
+	w.at("open store")
 	db, err := store.Open(home)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
@@ -747,16 +788,19 @@ func digestCmd(home string, now time.Time, write, printPath bool, stdout, stderr
 	defer db.Close()
 	dir := filepath.Join(home, "state", "digest")
 	in := digest.Input{Leads: leads, Digest: filepath.Join(home, "state", "crius", "bus-digest.log")}
+	w.at("known projects")
 	known, err := ingest.KnownProjects(home)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return exitError
 	}
+	w.at("last report")
 	in.Prev, in.Since, in.Lost, err = lastSnapshot(dir)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return exitError
 	}
+	w.at("quota")
 	projects, err := ingest.QuotaProjects(home)
 	if err == nil {
 		in.Quota, err = quota.Build(db, projects, now)
@@ -766,20 +810,24 @@ func digestCmd(home string, now time.Time, write, printPath bool, stdout, stderr
 		exp, err = ingest.Expected(home)
 	}
 	if err == nil {
+		w.at("health")
 		in.Health, err = recall.CheckHealth(db, home, exp, now)
 	}
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return exitError
 	}
+	w.at("build report")
 	r, err := digest.Build(db, in, now)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return exitError
 	}
+	w.at("lead names")
 	text := keepNames(r.Text, leads)
 	partial := r.Status != "complete"
 	if now.Hour() < 12 {
+		w.at("experiments")
 		md, err := morningExperiments(db, home, now, write)
 		if err != nil {
 			md, partial = "## Experiments\n\nExperiments: could not count "+now.AddDate(0, 0, -1).Format("2006-01-02")+": "+err.Error()+"\n", true
@@ -787,6 +835,7 @@ func digestCmd(home string, now time.Time, write, printPath bool, stdout, stderr
 		text += "\n" + keepNames(md, leads)
 	}
 	if write {
+		w.at("write report")
 		snap, err := snapshotJSON(r.Snap, known)
 		if err == nil {
 			err = os.MkdirAll(dir, 0o700)
