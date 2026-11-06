@@ -133,3 +133,39 @@ func TestAScriptRunAfterACdRunsInThatFolder(t *testing.T) {
 		t.Errorf("Crius mode: want allow, got %s %q", d, why)
 	}
 }
+
+// P1-5: a JSON body's escapes (a, -) and number forms (3e0) hid a completion or AI credit from the hard
+// checks, which matched the raw text.
+func TestJSONEscapesDoNotHideACompletionOrAICredit(t *testing.T) {
+	dir := criusDir(t, nil)
+	const pr = "https://dev.azure.com/Appxite/P/_apis/git/repositories/R/pullrequests/9?api-version=7.1"
+	u := string(rune(92)) + "u" // a JSON escape, built here so no tool on the way decodes it
+	bodies := map[string]string{
+		"a.json": `{"st` + u + `0061tus":"completed"}`,
+		"b.json": `{"status":"` + u + `0063ompleted"}`,
+		"c.json": `{"status":3e0}`,
+		"d.json": `{"status":"3"}`,
+		// the lenient reader Azure DevOps uses takes single quotes, comments and hex numbers too
+		"g.json": `{'st` + u + `0061tus':'completed'}`,
+		"h.json": `{"status"/* x */:"completed"}`,
+		"i.json": `{"status":0x3}`,
+		"e.json": `{"description":"Done. ` + strings.Replace(coAuthor, "-", u+"002d", 1) + `"}`,
+		"f.json": `{"description":"Done. ` + strings.Replace(robot, "\U0001F916", u+"d83e"+u+"dd16", 1) + `"}`,
+	}
+	for n, body := range bodies {
+		write(t, filepath.Join(dir, n), body)
+		for _, cmd := range []string{
+			"curl -X PATCH '" + pr + "' -d @" + n,
+			"curl -X PATCH '" + pr + "' -d '" + body + "'",
+		} {
+			if d, why := crius(t, criusSID, dir, cmd); d != "deny" {
+				t.Errorf("Crius mode: want deny, got %s %q\n  %s", d, why, cmd)
+			}
+		}
+	}
+	// control: a clean body goes on
+	write(t, filepath.Join(dir, "ok.json"), `{"title":"Partner quote: regenerated migration"}`)
+	if d, why := crius(t, criusSID, dir, "curl -X PATCH '"+pr+"' -d @ok.json"); d != "" {
+		t.Errorf("Crius mode: want allow, got %s %q", d, why)
+	}
+}

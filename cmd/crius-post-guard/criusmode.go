@@ -8,8 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
+	"unicode/utf16"
 )
 
 // Crius mode (Crius 11-06, owner: the Crius session kept asking him for clicks, so he could not leave it alone). In the
@@ -134,8 +136,9 @@ var (
 	prodRe = regexp.MustCompile(`(?i)[a-z0-9]-prod\b|\bprod-[a-z0-9]|\bprod\.[a-z0-9]|\.prod\.`)
 	// prodHostRe is a URL whose host has the word prod or production (quotes.production.appxite.com, review P3-10).
 	prodHostRe = regexp.MustCompile(`(?i)[a-z][a-z0-9+.-]*://[^/\s"'<>]*\bprod(uction)?\b`)
-	// restCompleteRe is a PR completion in a REST body or query: status completed, or its number 3 (PullRequestStatus).
-	restCompleteRe = regexp.MustCompile(`(?i)\bstatus["']?\s*[:=]\s*(["']?completed\b|3\b)|autoCompleteSetBy`)
+	// restCompleteRe is a PR completion in a REST body or query: status completed, or a number (restCompletes keeps the
+	// ones that are 3, PullRequestStatus completed: 3, 3e0, 0x3, "3").
+	restCompleteRe = regexp.MustCompile(`(?i)\bstatus["']?\s*[:=]\s*["']?(completed\b|[-+]?(0x[0-9a-f]+|[0-9.]+(e[-+]?[0-9]+)?)\b)|autoCompleteSetBy`)
 	protectedRe    = regexp.MustCompile(`^refs/heads/(develop|main|master)$`)
 )
 
@@ -184,6 +187,7 @@ func hardCheck(p postCall) string {
 		text = append(text, body)
 	}
 	all := strings.Join(text, "\n")
+	all += "\n" + jsonDecoded(all)
 	if m := aiCreditRe.FindString(all); m != "" {
 		return what + ": the text carries AI credit (" + m + ")"
 	}
@@ -218,10 +222,62 @@ func hardCheck(p postCall) string {
 			return ""
 		}
 	}
-	if m := restCompleteRe.FindString(all); m != "" {
+	if m := restCompletes(all); m != "" {
 		return what + ": it completes a PR or sets auto-complete through REST (" + m + "), where the guard cannot read the target; use az repos pr update --id <n> --status completed"
 	}
 	return ""
+}
+
+// restCompletes gives the first PR completion or auto-complete restCompleteRe finds in text, or "".
+func restCompletes(text string) string {
+	for _, m := range restCompleteRe.FindAllStringSubmatch(text, -1) {
+		n := strings.ToLower(m[1])
+		if n == "" || n == "completed" {
+			return m[0]
+		}
+		if f, err := strconv.ParseFloat(n, 64); err == nil && f == 3 {
+			return m[0]
+		}
+		if i, err := strconv.ParseInt(n, 0, 64); err == nil && i == 3 {
+			return m[0]
+		}
+	}
+	return ""
+}
+
+var (
+	jsonEscRe     = regexp.MustCompile(`\\u[0-9a-fA-F]{4}|\\[^u]`)
+	jsonCommentRe = regexp.MustCompile(`(?s)/\*.*?\*/`)
+)
+
+// jsonDecoded gives text with the escapes a JSON reader decodes put in (\u0061, a \ud83e\udd16 pair, \", \/) and
+// /* */ comments taken out, as Azure DevOps's lenient JSON reader reads it (review r2 P1-5: {"st\u0061tus":"completed"}
+// and a \u002d in the AI credit passed the checks, which read the raw text).
+func jsonDecoded(text string) string {
+	var hi rune
+	out := jsonEscRe.ReplaceAllStringFunc(text, func(e string) string {
+		if e[1] != 'u' {
+			switch e[1] {
+			case 'n':
+				return "\n"
+			case 't':
+				return "\t"
+			}
+			return e[1:]
+		}
+		r, _ := strconv.ParseUint(e[2:], 16, 32)
+		switch c := rune(r); {
+		case utf16.IsSurrogate(c) && c < 0xdc00:
+			hi = c
+			return ""
+		case utf16.IsSurrogate(c):
+			c, hi = utf16.DecodeRune(hi, c), 0
+			return string(c)
+		default:
+			return string(c)
+		}
+	})
+	return jsonCommentRe.ReplaceAllString(out, "")
 }
 
 // completes says whether an az repos pr update sets --status completed.
