@@ -2182,6 +2182,13 @@ type azOpts struct {
 	unreadCmd bool
 	unreadOpt bool
 	src       []source // the files az reads text from: any word's @file, and --in-file and --file-path
+	seq       []azUse  // each option as written, in command-line order
+}
+
+// azUse is one option on the command line: its name as written (lower case, before any =) and the values after it.
+type azUse struct {
+	name string
+	vals []word
 }
 
 // azLong are the long options the guard reads; az may take an unambiguous prefix of one, down to one letter after the
@@ -2252,6 +2259,9 @@ func parseAz(args []word) azOpts {
 			for _, k := range cur {
 				o.opts[k] = append(o.opts[k], azValue(a))
 			}
+			if len(cur) > 0 {
+				o.seq[len(o.seq)-1].vals = append(o.seq[len(o.seq)-1].vals, azValue(a))
+			}
 			wants = false
 			continue
 		}
@@ -2269,6 +2279,10 @@ func parseAz(args []word) azOpts {
 		}
 		name = strings.ToLower(name)
 		cur = []string{name}
+		o.seq = append(o.seq, azUse{name: name})
+		if has {
+			o.seq[len(o.seq)-1].vals = []word{azValue(word{text: val, src: val, ok: a.ok})}
+		}
 		if strings.HasPrefix(name, "--") && !slices.Contains(azLong, name) && len(name) >= 3 {
 			var hits []string
 			for _, l := range azLong {
@@ -2298,18 +2312,35 @@ func parseAz(args []word) azOpts {
 	return o
 }
 
-// last gives the last value of the first of names that is set: az takes the last copy of an option. set is false when
-// none of names is on the command line; a name with no value gives a literal empty word.
+// last gives the value az takes for one option written as any of names (its aliases: --org and --organization, -t and
+// --target-branch): the last value of its last copy in command-line order, where an unambiguous prefix of a long name is
+// that name and an ambiguous one counts as every option it may be (review r2 P1-1, P1-2: the guard read the first
+// alias it was given, so --org A --organization B was read as A). set is false when none is on the command line; a
+// copy with no value gives a literal empty word.
 func (o azOpts) last(names ...string) (word, bool) {
-	for _, n := range names {
-		if v, ok := o.opts[n]; ok {
-			if len(v) == 0 {
-				return word{ok: true}, true
-			}
-			return v[len(v)-1], true
+	v, set := word{ok: true}, false
+	for _, u := range o.seq {
+		if !u.is(names) {
+			continue
+		}
+		v, set = word{ok: true}, true
+		if len(u.vals) > 0 {
+			v = u.vals[len(u.vals)-1]
 		}
 	}
-	return word{ok: true}, false
+	return v, set
+}
+
+// is says whether the option as written may be one of names: one of them, or a prefix of a long one (down to one letter
+// after the dashes) that is not itself another option the guard knows.
+func (u azUse) is(names []string) bool {
+	if slices.Contains(names, u.name) {
+		return true
+	}
+	if !strings.HasPrefix(u.name, "--") || len(u.name) < 3 || slices.Contains(azLong, u.name) {
+		return false
+	}
+	return slices.ContainsFunc(names, func(n string) bool { return strings.HasPrefix(n, u.name) })
 }
 
 var writeVerbs = map[string]bool{"create": true, "add": true, "update": true, "reply": true, "post": true, "set": true,
