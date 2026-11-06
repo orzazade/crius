@@ -202,16 +202,20 @@ func scriptAt(name string, c ctx, kind runKind, plain, orNone bool, dir string) 
 		return cannotRead(c, name, "it is run 4 scripts down, deeper than the guard reads")
 	}
 	heredocs, written, _ := c.heredocs(name)
-	// the lead allow list: a pinned team script passes unread unless the command may change it first (Crius 11-06 item 5)
+	// the lead allow list: a pinned team script's own posts pass unless the command may change it first (Crius 11-06
+	// item 5); the scripts and code a shell script runs are read as usual, or pass on their own pins (review r2 P1-6:
+	// merge.sh passed unread while it runs merge-ok.sh and review-gate.sh, which no pin covered)
+	pin := false
 	if c.crius != nil && c.crius.lead && plain && len(heredocs) == 0 && !c.changes(name, written) && c.madeBy(name) == "" {
 		why := teamScript(name, c.after, dir)
 		if why == "" && kind == byCode {
 			why = bunRunner(c.runner)
+			if why == "" {
+				return "" // code: the guard reads no file it loads in any case
+			}
 		}
-		if why == "" {
-			return ""
-		}
-		if teamScripts[filepath.Base(name)] {
+		pin = why == ""
+		if why != "" && teamScripts[filepath.Base(name)] {
 			c.crius.pinMiss = append(c.crius.pinMiss, why)
 		}
 	}
@@ -291,7 +295,7 @@ func scriptAt(name string, c ctx, kind runKind, plain, orNone bool, dir string) 
 			continue
 		}
 		sc := ctx{cwd: dir, whole: t.body + "\n" + c.whole, depth: c.depth + 1, reads: c.reads, read: c.read, files: c.files, crius: c.crius,
-			script: name}
+			script: name, pinned: pin}
 		if why, line := checkBashAt(t.body, sc); why != "" {
 			return atLine(why, t.where, line)
 		}

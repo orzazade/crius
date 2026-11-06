@@ -104,7 +104,9 @@ func TestLeadPinnedTeamScripts(t *testing.T) {
 		t.Fatal(err)
 	}
 	pinBody(t, "merge.sh", string(b))
-	leadCheck(t, dir, "bash ~/.crius/state/quotes/build/merge.sh 7848", "")
+	// the shipped copy runs $NS/lead/review-gate.sh, which is not there (review r2 P1-6: it passed unread); a merge.sh whose
+	// nested scripts are pinned passes in TestAPinnedScriptsNestedScriptsAreReadOrPinned
+	leadCheck(t, dir, "bash ~/.crius/state/quotes/build/merge.sh 7848", "review-gate.sh")
 	leadCheck(t, dir, "bash ~/.crius/state/quotes/build/merge.sh 7849", "merge.sh completes PR 7849 into refs/heads/develop")
 
 	// elsewhere

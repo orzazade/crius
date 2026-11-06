@@ -220,6 +220,7 @@ type ctx struct {
 	runner     []word                  // for code run by an interpreter: the interpreter and its words before the file
 	fed        bool                    // run by find -exec or xargs, which fill in words: a post's relative file is not known
 	ifsAt      uint                    // >0: an eval, source or command name from a variable ending here may set IFS (1: anywhere)
+	pinned     bool                    // the text of a pinned team script in a lead session: its own posts pass (allowlist.go)
 }
 
 // cdTo is a cd that runs before what follows it in the command's own text, up to to (the end of the text, or of the

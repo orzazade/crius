@@ -1,7 +1,9 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -169,4 +171,57 @@ func TestJSONEscapesDoNotHideACompletionOrAICredit(t *testing.T) {
 	if d, why := crius(t, criusSID, dir, "curl -X PATCH '"+pr+"' -d @ok.json"); d != "" {
 		t.Errorf("Crius mode: want allow, got %s %q", d, why)
 	}
+}
+
+// P1-6: a pinned team script passed unread, so the scripts it runs passed too, pinned or not, there or not (merge.sh
+// runs $NS/lead/review-gate.sh and $NS/lead/merge-ok.sh). Its own posts still pass on the pin; what it runs is read as
+// usual or passes on its own pin.
+func TestAPinnedScriptsNestedScriptsAreReadOrPinned(t *testing.T) {
+	home, _ := quotesHomePRs(t, map[string]prInfo{"7848": {Status: "active", Target: "refs/heads/integration/96365-b1"}})
+	dir := t.TempDir()
+	shipped, err := os.ReadFile(filepath.Join("testdata", "team", "merge.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	merge := filepath.Join(home, ".crius/state/quotes/build/merge.sh")
+	install := func(p, body string) {
+		t.Helper()
+		write(t, p, body)
+		if err := os.Chmod(p, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		pinBody(t, filepath.Base(p), body)
+	}
+	// the shipped copy: its $NS/lead scripts are not there
+	install(merge, string(shipped))
+	const cmd = "bash ~/.crius/state/quotes/build/merge.sh 7848 1"
+	leadCheck(t, dir, cmd, "review-gate.sh")
+
+	// the same script with $NS in this test's lead scratchpad
+	ns := filepath.Join(scratchRoot(), "-Users-x-Projects-Appxite-svc-quote-channels", "3584a7f4-fcb0-4260-9e8d-e7749735c202", "scratchpad")
+	if err := os.MkdirAll(filepath.Join(ns, "lead"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := regexp.MustCompile(`(?m)^NS=.*$`).ReplaceAllString(string(shipped), "NS="+ns)
+	install(merge, body)
+	read := "#!/bin/bash\naz repos pr show --id \"$1\" --org https://dev.azure.com/Appxite -o none\n"
+	gate, ok := filepath.Join(ns, "lead", "review-gate.sh"), filepath.Join(ns, "lead", "merge-ok.sh")
+	// a nested script that posts and no pin covers
+	write(t, gate, "#!/bin/bash\naz repos pr update --id \"$1\" --title x --org https://dev.azure.com/Appxite\n")
+	install(ok, read)
+	leadCheck(t, dir, cmd, "Not on the allow list")
+	// the shipped merge-ok.sh runs scripts/heavy.ts in a folder the guard does not follow, and the PR's own tests
+	install(gate, read)
+	okShipped, err := os.ReadFile(filepath.Join("testdata", "team", "merge-ok.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	install(ok, string(okShipped))
+	leadCheck(t, dir, cmd, "owner's click")
+	if why := checkIn(bash(cmd, dir), &criusLog{lead: true}); !strings.Contains(why, "merge-ok.sh line 86") {
+		t.Errorf("want the lead reading to stop at merge-ok.sh's bun scripts/heavy.ts (line 86), got %q", why)
+	}
+	// both nested scripts pinned and only reading: merge.sh passes
+	install(ok, read)
+	leadCheck(t, dir, cmd, "")
 }

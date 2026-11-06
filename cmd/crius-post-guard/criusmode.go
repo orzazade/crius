@@ -98,7 +98,7 @@ type postCall struct {
 // criusLog collects the posts of one hook call in Crius mode.
 type criusLog struct {
 	posts   []postCall
-	lead    bool     // the lead allow list's reading: pinned team scripts pass unread (allowlist.go)
+	lead    bool     // the lead allow list's reading: pinned team scripts' own posts pass (allowlist.go)
 	pinMiss []string // why team scripts the command runs did not pass on their pin
 }
 
@@ -107,6 +107,9 @@ type criusLog struct {
 func (c ctx) post(tool string, args []word, stdin bool, why string) string {
 	if c.crius == nil || why == "" || unsureWhy(why) {
 		return why
+	}
+	if c.pinned {
+		return "" // the pin vouches for the script's own text; what it runs is read on its own
 	}
 	a := c.azArgs(args)
 	c.crius.posts = append(c.crius.posts, postCall{tool: tool, args: a, c: c, moved: c.moved || c.cd != nil || c.fed,

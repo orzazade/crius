@@ -7,8 +7,9 @@ import (
 
 // The lead allow list (Crius 11-06 12:16, owner: "we have too much guard"; a click only when a check fails). When the
 // usual reading asks in a lead session, the guard reads the call again as Crius mode does, recording each post and
-// letting a pinned team script pass unread (pins.go: merge.sh, merge-ok.sh, review-gate.sh, pr-build.sh, pass-post.sh,
-// ado-suite.ts report). The call passes when the second reading finds nothing it cannot read and every post is one of:
+// letting a pinned team script's own posts pass (pins.go: merge.sh, merge-ok.sh, review-gate.sh, pr-build.sh, pass-post.sh,
+// ado-suite.ts report); the scripts and code a pinned shell script runs are read as usual or pass on their own pins
+// (review r2 P1-6: today's merge-ok.sh runs scripts/heavy.ts from a repo checkout, so merge.sh asks). The call passes when the second reading finds nothing it cannot read and every post is one of:
 //   - az pipelines run with only --id <digits>, --branch of a feature/96365-*, integration/96365-bN or develop branch,
 //     and --org, --project, --query, --output: no free text. A PR merge build (refs/pull/<n>/merge) is not on the list:
 //     it goes through pr-build.sh, which skips a run that exists (today's 3 declined clicks were such duplicates).
