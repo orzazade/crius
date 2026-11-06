@@ -740,24 +740,33 @@ var (
 	digestExit  = os.Exit
 )
 
-// stepWatch ends the run when digestLimit passes; at names the step the run is on.
+// stepWatch ends the run when digestLimit passes; at names the step the run is on. The limit and stop hold one lock, so
+// a run that stopped the watch is never ended after it (review of b8754c7 P3: a report on disk, then exit 1).
 type stepWatch struct {
-	mu    sync.Mutex
-	step  string
-	timer *time.Timer
+	mu   sync.Mutex
+	step string
+	done bool
 }
 
 func watchSteps(stderr io.Writer) *stepWatch {
 	w := &stepWatch{step: "start"}
-	w.timer = time.AfterFunc(digestLimit, func() {
+	time.AfterFunc(digestLimit, func() {
 		w.mu.Lock()
-		step := w.step
-		w.mu.Unlock()
-		fmt.Fprintf(stderr, "LOUD crius-rec digest: over its time limit (%s) in step %q; stopped. Stacks:\n", digestLimit, step)
+		defer w.mu.Unlock()
+		if w.done {
+			return
+		}
+		fmt.Fprintf(stderr, "LOUD crius-rec digest: over its time limit (%s) in step %q; stopped. Stacks:\n", digestLimit, w.step)
 		pprof.Lookup("goroutine").WriteTo(stderr, 1)
 		digestExit(exitError)
 	})
 	return w
+}
+
+func (w *stepWatch) stop() {
+	w.mu.Lock()
+	w.done = true
+	w.mu.Unlock()
 }
 
 func (w *stepWatch) at(step string) {
@@ -772,7 +781,7 @@ func digestCmd(home string, now time.Time, write, printPath bool, stdout, stderr
 		return exitUnavailable
 	}
 	w := watchSteps(stderr)
-	defer w.timer.Stop()
+	defer w.stop()
 	w.at("leads")
 	leads, err := ingest.Leads(home)
 	if err != nil {
@@ -841,17 +850,24 @@ func digestCmd(home string, now time.Time, write, printPath bool, stdout, stderr
 			err = os.MkdirAll(dir, 0o700)
 		}
 		base := filepath.Join(dir, now.Format("2006-01-02-1504"))
-		if err == nil {
-			err = os.WriteFile(base+".md", []byte(text), 0o600)
-		}
-		if err == nil {
-			err = os.WriteFile(base+".json", snap, 0o600)
+		// each file is whole or absent: a .json cut by the time limit would fail every later run (review of b8754c7 P3)
+		for _, f := range []struct {
+			path string
+			b    []byte
+		}{{base + ".md", []byte(text)}, {base + ".json", snap}} {
+			if err == nil {
+				err = os.WriteFile(f.path+".tmp", f.b, 0o600)
+			}
+			if err == nil {
+				err = os.Rename(f.path+".tmp", f.path)
+			}
 		}
 		if err != nil {
 			fmt.Fprintf(stderr, "error: %v\n", err)
 			return exitError
 		}
 	}
+	w.stop()
 	if printPath {
 		fmt.Fprintln(stdout, filepath.Join(dir, now.Format("2006-01-02-1504"))+".md")
 	} else if w, ok := stdout.(redact.Writer); ok {

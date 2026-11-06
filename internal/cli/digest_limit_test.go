@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -25,22 +26,24 @@ func TestDigestPastItsLimitNamesTheStepAndFails(t *testing.T) {
 	}
 	limit, exit := digestLimit, digestExit
 	t.Cleanup(func() { digestLimit, digestExit = limit, exit })
-	digestLimit = 100 * time.Millisecond
+	// the steps before "last report" take milliseconds; 5 s leaves room on a loaded Mac (review of b8754c7 P3)
+	digestLimit = 5 * time.Second
 	exited := make(chan int, 1)
 	digestExit = func(code int) { exited <- code }
 
-	var out, errb bytes.Buffer
+	var out bytes.Buffer
+	errb := &lockedBuffer{}
 	done := make(chan int, 1)
 	go func() {
-		done <- digestCmd(home, time.Date(2026, 11, 6, 13, 55, 0, 0, time.Local), false, false, &out, &errb)
+		done <- digestCmd(home, time.Date(2026, 11, 6, 13, 55, 0, 0, time.Local), false, false, &out, errb)
 	}()
 	var code int
 	select {
 	case code = <-exited:
 	case rc := <-done:
 		t.Fatalf("the run ended (rc %d) without its limit firing: %s", rc, errb.String())
-	case <-time.After(30 * time.Second):
-		t.Fatal("no time limit: the run is still blocked after 30 s")
+	case <-time.After(60 * time.Second):
+		t.Fatal("no time limit: the run is still blocked after 60 s")
 	}
 	msg := errb.String()
 	if code == 0 || code == exitPartial || !strings.Contains(msg, "time limit") || !strings.Contains(msg, `step "last report"`) {
@@ -51,4 +54,22 @@ func TestDigestPastItsLimitNamesTheStepAndFails(t *testing.T) {
 		f.Close()
 	}
 	<-done
+}
+
+// lockedBuffer is stderr for a run whose time limit and main path both write to it.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
 }
