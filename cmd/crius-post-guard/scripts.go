@@ -791,7 +791,7 @@ func changesIn(r runs, script string, rc ctx, self, own bool, fine map[*syntax.W
 		case *syntax.Stmt:
 			if ce, isCall := n.Cmd.(*syntax.CallExpr); isCall && len(ce.Args) > 0 {
 				// a heredoc is text a command reads (cat > x.sh <<'EOF' … # x.sh usage …), unless code runs it
-				if name, _ := cmdName(ce.Args[0]); !shells[name] && !interpreters[name] {
+				if name, _ := cmdName(ce.Args[0]); !shells[name] && !interp(name) {
 					for _, rd := range n.Redirs {
 						if rd.Hdoc != nil {
 							ok[rd.Hdoc] = true
@@ -897,7 +897,7 @@ func changesIn(r runs, script string, rc ctx, self, own bool, fine map[*syntax.W
 				}
 			case readCmds[name] || noFileCmds[name] || keepCmds[name] || readsOnly[name] || shells[name] || name == "az" ||
 				name == "git" || name == "sed" || name == "find" || name == "sort" && shownNoWrite(name, args) ||
-				self && !interpreters[name]:
+				self && !interp(name):
 				// in a script's own text a named command that writes no file it names leaves the script as it is
 				// (lockf … bash -c '"$HOME/.crius/bin/bus-post" …' runs it); code of another language may write it
 				for _, w := range ce.Args[1:] {
@@ -1174,7 +1174,7 @@ func afterRuns(r runs) func(syntax.Node) bool {
 				break
 			}
 			name, ok := cmdName(n.Args[0])
-			if !ok || shells[name] || interpreters[name] || wrappers[name] && !findReadsOnly(name, n.Args) || runBuiltins[name] {
+			if !ok || shells[name] || interp(name) || wrappers[name] && !findReadsOnly(name, n.Args) || runBuiltins[name] {
 				runs = append(runs, n)
 			}
 		}

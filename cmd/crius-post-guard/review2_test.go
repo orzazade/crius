@@ -225,3 +225,22 @@ func TestAPinnedScriptsNestedScriptsAreReadOrPinned(t *testing.T) {
 	install(ok, read)
 	leadCheck(t, dir, cmd, "")
 }
+
+// P1-8: python -m azure.cli is az; the guard read no code after -m.
+func TestPythonMinusMAzureCLIIsAz(t *testing.T) {
+	dir := criusDir(t, nil)
+	for _, cmd := range []string{
+		"python3 -m azure.cli repos pr update --id 9 --status completed --org https://dev.azure.com/Appxite",
+		"python -m azure.cli.__main__ repos pr create --title t --org https://dev.azure.com/Appxite",
+		"python3 -I -mazure.cli repos pr update --id 9 --title t --org https://dev.azure.com/Appxite",
+		"/usr/bin/python3.12 -B -m azure.cli repos pr update --id 9 --title t --org https://dev.azure.com/Appxite",
+	} {
+		if why := check(bash(cmd, dir)); !strings.Contains(why, "(az repos pr") {
+			t.Errorf("want an ask for az repos pr, got %q\n  %s", why, cmd)
+		}
+	}
+	// another module still runs no az
+	if why := check(bash("python3 -m json.tool x.json", dir)); why != "" {
+		t.Errorf("want pass, got %q", why)
+	}
+}

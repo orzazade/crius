@@ -784,6 +784,41 @@ var shells = map[string]bool{"bash": true, "sh": true, "zsh": true, "dash": true
 var interpreters = map[string]bool{"python": true, "python3": true, "node": true, "bun": true, "deno": true,
 	"ruby": true, "perl": true, "pwsh": true, "powershell": true}
 
+// interp says whether name is one of interpreters, or python with its version (python3.12).
+func interp(name string) bool {
+	return interpreters[name] || pyVerRe.MatchString(name)
+}
+
+var pyVerRe = regexp.MustCompile(`^python[0-9.]*$`)
+
+// pyModule gives the module a python call runs with -m (-m azure.cli, -mazure.cli, -Im azure.cli), where the module's
+// own words start, and whether it has one.
+func pyModule(args []word) (word, int, bool) {
+	for i := 1; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case !a.ok || !strings.HasPrefix(a.text, "-") || strings.HasPrefix(a.text, "--") || a.text == "-":
+			return word{}, 0, false
+		case a.text == "-W" || a.text == "-X":
+			i++ // the option's value
+			continue
+		}
+		flags := a.text[1:]
+		k := strings.IndexByte(flags, 'm')
+		if k < 0 || strings.Trim(flags[:k], "bBdEhiIOPqRsSuvx") != "" {
+			continue
+		}
+		if k+1 < len(flags) {
+			return word{text: flags[k+1:], src: flags[k+1:], ok: true}, i + 1, true
+		}
+		if i+1 < len(args) {
+			return args[i+1], i + 2, true
+		}
+		return word{}, 0, false
+	}
+	return word{}, 0, false
+}
+
 var writeWordRe = regexp.MustCompile(`(?i)\b(post|put|patch|delete)\b`)
 
 var httpTools = map[string]bool{"curl": true, "wget": true, "http": true, "https": true, "xh": true, "xhs": true}
@@ -846,7 +881,16 @@ func checkCall(args []word, stdin bool, c ctx) string {
 		return ""
 	case shells[name]:
 		return checkShell(args, stdin, c)
-	case interpreters[name]:
+	case interp(name):
+		// review r2 P1-8: python -m azure.cli is az
+		if m, k, ok := pyModule(args); ok && pyVerRe.MatchString(name) {
+			switch {
+			case !m.ok:
+				return unsure(c, name+" -m with a module name")
+			case strings.TrimSuffix(m.text, ".__main__") == "azure.cli":
+				return checkCall(append([]word{{text: "az", src: "az", ok: true}}, args[k:]...), stdin, c)
+			}
+		}
 		for i := 1; i+1 < len(args); i++ {
 			switch args[i].text {
 			case "-c", "-e", "--eval", "-Command", "-command", "-p", "--print":
@@ -984,7 +1028,7 @@ func checkCall(args []word, stdin bool, c ctx) string {
 					return checkCall(args[i:], stdin, c)
 				}
 			}
-			if n := strings.ToLower(path.Base(a.text)); n == "az" || n == "eval" || (n == "source" || n == ".") && (name == "builtin" || name == "command") || shells[n] || httpTools[n] || interpreters[n] {
+			if n := strings.ToLower(path.Base(a.text)); n == "az" || n == "eval" || (n == "source" || n == ".") && (name == "builtin" || name == "command") || shells[n] || httpTools[n] || interp(n) {
 				inner := args[i:]
 				if name == "find" || feeders[name] {
 					// review of 2a882aa P2-8: -execdir and -okdir run in each match's folder; -exec and xargs fill in words
@@ -1931,7 +1975,7 @@ func markRun(n *syntax.CallExpr, args []word, k int, scripts map[*syntax.Word]bo
 			if i, sawC, sawS := shellOpts(args[j:]); !sawC && !sawS && j+i < len(args) {
 				scripts[n.Args[j+i]] = true
 			}
-		case interpreters[name]:
+		case interp(name):
 			if i := codeFile(name, args[j:]); i > 0 {
 				scripts[n.Args[j+i]] = true
 			}
