@@ -61,7 +61,8 @@
 // ctx tools: code of another language that runs the file it is handed by a spelling runnerRe lacks (require(path),
 // runpy) or runs a shell command that reads a script (execSync('bash post.sh')); the plugin's project folder is taken
 // to be the session's folder.
-// Output: nothing (the call goes on) or one JSON line with permissionDecision "ask".
+// Output: nothing (the call goes on) or one JSON line with permissionDecision "ask"; in the Crius session "deny" in place
+// of every ask (criusmode.go).
 package main
 
 import (
@@ -87,7 +88,9 @@ type input struct {
 	ToolName  string `json:"tool_name"`
 	Cwd       string `json:"cwd"`
 	SessionID string `json:"session_id"` // names the session's scratchpad (adoexact.go)
-	ToolInput struct {
+	// TranscriptPath under the Crius project folder puts the guard in Crius mode (criusmode.go)
+	TranscriptPath string `json:"transcript_path"`
+	ToolInput      struct {
 		Command  string        `json:"command"`
 		Code     string        `json:"code"`     // ctx_execute, ctx_execute_file
 		Language string        `json:"language"` // of Code: shell, javascript, python, …
@@ -117,6 +120,9 @@ func run(r io.Reader, w io.Writer) error {
 		err := ask(w, why)
 		logAsk(in, why)
 		return err
+	}
+	if criusSession(in.TranscriptPath) {
+		return criusRun(in, w)
 	}
 	if why := check(in); why != "" {
 		err := ask(w, why)
@@ -172,7 +178,10 @@ func logAsk(in input, why string) {
 	}
 }
 
-func ask(w io.Writer, why string) error {
+func ask(w io.Writer, why string) error { return decide(w, "ask", why) }
+
+// decide writes one PreToolUse decision (ask, or deny in Crius mode) with its reason.
+func decide(w io.Writer, decision, why string) error {
 	var out struct {
 		HookSpecificOutput struct {
 			HookEventName            string `json:"hookEventName"`
@@ -181,7 +190,7 @@ func ask(w io.Writer, why string) error {
 		} `json:"hookSpecificOutput"`
 	}
 	out.HookSpecificOutput.HookEventName = "PreToolUse"
-	out.HookSpecificOutput.PermissionDecision = "ask"
+	out.HookSpecificOutput.PermissionDecision = decision
 	out.HookSpecificOutput.PermissionDecisionReason = why
 	return json.NewEncoder(w).Encode(out)
 }
@@ -203,6 +212,7 @@ type ctx struct {
 	own        map[string]*syntax.Word // in a script's text: the variables it sets once, and to what
 	code       bool                    // an az line found in code of another language: its own text, not a command's
 	alt        string                  // the other place the same script word may name (after a cd that may fail)
+	crius      *criusLog               // Crius mode: where the posts found go (criusmode.go); nil elsewhere
 }
 
 // cdTo is a cd that runs before what follows it in the command's own text, up to to (the end of the text, or of the
@@ -253,7 +263,11 @@ type runs struct {
 // by its name's ending, whatever the plugin's server is called. The plugin runs shell code in tool_input.cwd, else in its
 // project folder, and reads ctx_execute_file's path from the project folder (it takes no cwd there): the session's folder
 // stands for the project folder, and a relative cwd is taken from it.
-func check(in input) string {
+func check(in input) string { return checkIn(in, nil) }
+
+// checkIn is check that, in Crius mode (col set), records the posts it finds in col instead of asking on them, and gives
+// an exact shape whose hook-time checks fail the usual reading.
+func checkIn(in input, col *criusLog) string {
 	t := in.ToolInput
 	dir := t.Cwd
 	if !filepath.IsAbs(dir) {
@@ -261,26 +275,26 @@ func check(in input) string {
 	}
 	switch name := in.ToolName; {
 	case name == "Bash":
-		if ok, why := adoExact(t.Command, in.SessionID); ok {
+		if ok, why := adoExact(t.Command, in.SessionID); ok && (col == nil || why == "") {
 			return why
 		}
-		if ok, why := quotesExact(t.Command); ok {
+		if ok, why := quotesExact(t.Command); ok && (col == nil || why == "") {
 			return why
 		}
-		if ok, why := passPostExact(t.Command, in.SessionID); ok {
+		if ok, why := passPostExact(t.Command, in.SessionID); ok && (col == nil || why == "") {
 			return why
 		}
-		return checkBash(t.Command, ctx{cwd: in.Cwd, whole: t.Command, reads: new(int), read: new([]readText)})
+		return checkBash(t.Command, ctx{cwd: in.Cwd, whole: t.Command, reads: new(int), read: new([]readText), crius: col})
 	case strings.HasSuffix(name, "__ctx_batch_execute"):
 		for _, command := range t.Commands {
-			if why := checkBash(command, ctx{cwd: dir, whole: command, reads: new(int), read: new([]readText)}); why != "" {
+			if why := checkBash(command, ctx{cwd: dir, whole: command, reads: new(int), read: new([]readText), crius: col}); why != "" {
 				return why
 			}
 		}
 	case strings.HasSuffix(name, "__ctx_execute"):
-		return checkCode(t.Language, t.Code, "", dir, false)
+		return checkCode(t.Language, t.Code, "", dir, false, col)
 	case strings.HasSuffix(name, "__ctx_execute_file"):
-		return checkCode(t.Language, t.Code, t.Path, in.Cwd, true)
+		return checkCode(t.Language, t.Code, t.Path, in.Cwd, true, col)
 	}
 	return ""
 }
@@ -358,7 +372,7 @@ const unreadFile = "az call (a file the guard cannot read)"
 // them first, so bash or source "$FILE_CONTENT_PATH" reads the file as in Bash, and where the guard cannot read what it
 // runs (eval "$FILE_CONTENT") the file's text counts as part of the command; other code that starts commands asks when
 // the file names az or ADO. A file that is not a regular one of at most 1 MiB is not read (a FIFO would hang the hook).
-func checkCode(lang, code, file, cwd string, hasFile bool) string {
+func checkCode(lang, code, file, cwd string, hasFile bool, col *criusLog) string {
 	text := ""
 	if hasFile {
 		text = unreadFile
@@ -376,7 +390,7 @@ func checkCode(lang, code, file, cwd string, hasFile bool) string {
 			q := "'" + strings.ReplaceAll(file, "'", `'\''`) + "'"
 			code = "FILE_CONTENT_PATH=" + q + "\nfile_path=" + q + "\nFILE_CONTENT=$(cat " + q + ")\n" + code
 		}
-		return checkBash(code, ctx{cwd: cwd, whole: code + "\n" + text, reads: new(int), read: new([]readText)})
+		return checkBash(code, ctx{cwd: cwd, whole: code + "\n" + text, reads: new(int), read: new([]readText), crius: col})
 	}
 	switch {
 	case namesAzCLI(code) || adoMarkRe.MatchString(code):
@@ -971,7 +985,7 @@ func checkCall(args []word, stdin bool, c ctx) string {
 		}
 		return ""
 	case name == "az":
-		return checkAz(args[1:], c)
+		return c.post("az", args[1:], checkAz(args[1:], c))
 	case name == "alias":
 		// an alias body runs where its name is used later (review r5: alias x="az repos pr create …"; x)
 		for _, a := range args[1:] {
@@ -989,11 +1003,11 @@ func checkCall(args []word, stdin bool, c ctx) string {
 			}
 		}
 	case name == "curl":
-		return checkCurl(args[1:], c)
+		return c.post("curl", args[1:], checkCurl(args[1:], c))
 	case name == "wget":
-		return checkWget(args[1:], c)
+		return c.post("wget", args[1:], checkWget(args[1:], c))
 	case httpTools[name]:
-		return checkHTTPie(args[1:], stdin, c)
+		return c.post(name, args[1:], checkHTTPie(args[1:], stdin, c))
 	case name == "trap" && len(args) > 2 && !strings.HasPrefix(args[1].text, "-") || name == "trap" && len(args) > 3 && args[1].text == "--":
 		// the text a trap runs later
 		k := 1
@@ -2147,7 +2161,7 @@ type azOpts struct {
 
 // azLong are the long options the guard reads; az may take an unambiguous prefix of one.
 var azLong = []string{"--http-method", "--resource", "--area", "--in-file", "--discussion", "--fields", "--description",
-	"--method", "--url", "--uri", "--body", "--content", "--file-path"}
+	"--method", "--url", "--uri", "--body", "--content", "--file-path", "--auto-complete", "--status"}
 
 // azGlobals are az's global options, which may come before the command words, with the number of values each takes.
 var azGlobals = map[string]int{"--debug": 0, "--verbose": 0, "--only-show-errors": 0, "-h": 0, "--help": 0,

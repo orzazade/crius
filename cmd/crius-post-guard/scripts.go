@@ -262,7 +262,7 @@ func scriptAt(name string, c ctx, kind runKind, plain, orNone bool, dir string) 
 			}
 			continue
 		}
-		sc := ctx{cwd: dir, whole: t.body + "\n" + c.whole, depth: c.depth + 1, reads: c.reads, read: c.read, files: c.files,
+		sc := ctx{cwd: dir, whole: t.body + "\n" + c.whole, depth: c.depth + 1, reads: c.reads, read: c.read, files: c.files, crius: c.crius,
 			script: name}
 		if why, line := checkBashAt(t.body, sc); why != "" {
 			return atLine(why, t.where, line)
