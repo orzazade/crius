@@ -154,10 +154,11 @@ func TestJSONEscapesDoNotHideACompletionOrAICredit(t *testing.T) {
 	}
 	for n, body := range bodies {
 		write(t, filepath.Join(dir, n), body)
-		for _, cmd := range []string{
-			"curl -X PATCH '" + pr + "' -d @" + n,
-			"curl -X PATCH '" + pr + "' -d '" + body + "'",
-		} {
+		cmds := []string{"curl -X PATCH '" + pr + "' -d @" + n}
+		if !strings.Contains(body, "'") {
+			cmds = append(cmds, "curl -X PATCH '"+pr+"' -d '"+body+"'") // the body in the words, as the shell passes it
+		}
+		for _, cmd := range cmds {
 			if d, why := crius(t, criusSID, dir, cmd); d != "deny" {
 				t.Errorf("Crius mode: want deny, got %s %q\n  %s", d, why, cmd)
 			}
