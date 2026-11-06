@@ -1636,6 +1636,7 @@ func (c ctx) scan(f *syntax.File, src string) ctx {
 	own := map[string]*syntax.Word{}
 	var dyn []*syntax.Word // command names from a variable
 	all := false           // eval or source may set any variable
+	ifsSet := false        // a setter names IFS in a way the text does not show plainly (declare $'\x49FS=:')
 	syntax.Walk(f, func(n syntax.Node) bool {
 		switch n := n.(type) {
 		case *syntax.Assign:
@@ -1647,6 +1648,22 @@ func (c ctx) scan(f *syntax.File, src string) ctx {
 						lits[n.Name.Value] = l.text
 					}
 				}
+			}
+		case *syntax.DeclClause:
+			args := []word{}
+			for _, a := range n.Args {
+				if a.Naked && a.Value != nil {
+					l := literal(a.Value)
+					args = append(args, l)
+					if v, _, _ := strings.Cut(l.text, "="); l.ok {
+						count[v] += 2 // declare "D=x", declare $'D=x': a setting the Assign above does not count
+						ifsSet = ifsSet || v == "IFS"
+					}
+				}
+			}
+			if setsAny(n.Variant.Value, args) {
+				all = true
+				c.evals = append(c.evals, n.End().Offset())
 			}
 		case *syntax.WhileClause:
 			loops = true
@@ -1698,7 +1715,12 @@ func (c ctx) scan(f *syntax.File, src string) ctx {
 				for _, a := range args[k+1:] {
 					if v, _, _ := strings.Cut(a.text, "="); a.ok {
 						count[v] += 2
+						ifsSet = ifsSet || v == "IFS"
 					}
+				}
+				if setsAny(name, args[k+1:]) {
+					all = true
+					c.evals = append(c.evals, n.End().Offset())
 				}
 			}
 			markRun(n, args, k, r.scripts)
@@ -1733,6 +1755,9 @@ func (c ctx) scan(f *syntax.File, src string) ctx {
 	} else if all && len(c.evals) > 0 {
 		c.movedAt = slices.Min(c.evals)
 		c.ifsAt = c.movedAt
+	}
+	if ifsSet {
+		c.ifsAt = 1
 	}
 	// in a && b, b's assignment holds after the chain only when every statement before it is one too (false && S=x
 	// leaves S unset); otherwise only inside the chain, where it ran when what follows runs (review of a4106c1)
@@ -2051,6 +2076,28 @@ func assignOnly(st *syntax.Stmt) bool {
 		return len(x.Args) == 0
 	case *syntax.DeclClause:
 		return true
+	}
+	return false
+}
+
+// setsAny says whether a builtin that sets variables may set one the guard does not know (review r2 P1-7): a nameref
+// (declare, local or typeset -n makes one name stand for another, so setting it sets that one), or a name it cannot read
+// (printf -v "$n", read "$n", declare "$n=x", unset "$n"). args are the words after the builtin's name; for declare and
+// the like, only the bare ones (no NAME=).
+func setsAny(name string, args []word) bool {
+	nameref := name == "declare" || name == "typeset" || name == "local"
+	for i, a := range args {
+		switch {
+		case name == "printf":
+			// only -v sets a variable; the other words are the format and its values
+			if a.ok && a.text == "-v" && i+1 < len(args) && !args[i+1].ok || !a.ok && strings.HasPrefix(a.src, "-v") {
+				return true
+			}
+		case !a.ok:
+			return true
+		case nameref && len(a.text) > 1 && a.text[0] == '-' && strings.Contains(a.text, "n"):
+			return true
+		}
 	}
 	return false
 }

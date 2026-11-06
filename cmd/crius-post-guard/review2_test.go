@@ -60,6 +60,7 @@ func TestAnUnquotedWordIsUnreadableWhenIFSIsSet(t *testing.T) {
 		`O="repos:pr:update:--id:9:--status:completed:--org:https://dev.azure.com/Appxite"; export I\FS=:; az $O`,
 		`O="repos:pr:update:--id:9:--status:completed:--org:https://dev.azure.com/Appxite"; declare "I""FS=:"; az $O`,
 		`O="repos:pr:update:--id:9:--status:completed:--org:https://dev.azure.com/Appxite"; read -r IFS <<< ":"; az $O`,
+		`O="repos:pr:update:--id:9:--status:completed:--org:https://dev.azure.com/Appxite"; declare $'\x49FS=:'; az $O`,
 		`source ./sep.sh; O="repos:pr:update:--id:9:--status:completed:--org:https://dev.azure.com/Appxite"; az $O`,
 	} {
 		if why := check(bash(cmd, dir)); !strings.Contains(why, "owner's click") {
@@ -72,5 +73,34 @@ func TestAnUnquotedWordIsUnreadableWhenIFSIsSet(t *testing.T) {
 	// the default IFS splits as before
 	if why := check(bash(`O="--org https://dev.azure.com/Appxite"; az repos pr list $O`, dir)); why != "" {
 		t.Errorf("want pass, got %q", why)
+	}
+}
+
+// P1-7: a nameref (declare, local or typeset -n) or a setter whose name the guard cannot read (printf -v "$n", read
+// "$n", declare "$n=…", unset "$n") may change any variable, so none keeps the literal value the guard saw.
+func TestANamerefOrAComputedNameMakesVariablesUnknown(t *testing.T) {
+	dir := criusDir(t, nil)
+	const pr = ` --title t --source-branch feature/96365-x --target-branch integration/96365-b1` + allowOrg
+	credit := strings.ReplaceAll(coAuthor, `"`, "")
+	for _, cmd := range []string{
+		`D="Fix"; declare -n R=D; R="` + credit + `"; az repos pr create --description "$D"` + pr,
+		`D="Fix"; typeset -n R=D; R="` + credit + `"; az repos pr create --description "$D"` + pr,
+		`D="Fix"; f() { local -n R=D; R="` + credit + `"; }; f; az repos pr create --description "$D"` + pr,
+		`D="Fix"; builtin declare -n R=D; R="` + credit + `"; az repos pr create --description "$D"` + pr,
+		`D="Fix"; n=D; printf -v "$n" '%s' "` + credit + `"; az repos pr create --description "$D"` + pr,
+		`D="Fix"; n=D; read -r "$n" <<< "` + credit + `"; az repos pr create --description "$D"` + pr,
+		`D="Fix"; n=D; declare "$n=` + credit + `"; az repos pr create --description "$D"` + pr,
+		`D="Fix"; n=D; declare $'D=\x41'; az repos pr create --description "$D"` + pr,
+	} {
+		if d, why := crius(t, criusSID, dir, cmd); d != "deny" {
+			t.Errorf("Crius mode: want deny, got %s %q\n  %s", d, why, cmd)
+		}
+		if why := check(bash(cmd, dir)); !strings.Contains(why, "owner's click") {
+			t.Errorf("lead: want an ask, got %q\n  %s", why, cmd)
+		}
+	}
+	// a plain declare keeps the value
+	if d, why := crius(t, criusSID, dir, `declare D="Fix"; az repos pr create --description "$D"`+pr); d != "" {
+		t.Errorf("Crius mode: want allow, got %s %q", d, why)
 	}
 }
