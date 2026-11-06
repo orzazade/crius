@@ -35,6 +35,8 @@
 // cannot tell (a method, resource or fields value from a variable or @file, eval or bash -c text it cannot read, a
 // command the bash parser cannot read that names az or an ADO host) it asks. Unreadable hook input also asks: a guard
 // on an outward-facing write never lets one through silently.
+// One command shape passes though what it runs writes: the Quotes team's ado-suite.ts report or run, when the whole
+// command is exactly that call with its pinned files and flags (adoexact.go); any other shape gets the usual reading.
 //
 // Known gaps: git push to an Azure DevOps remote passes (not yet a post here); a command name from a variable or a
 // function ($AZ, f() { az "$@"; }) when the command names neither az nor Azure DevOps; a command that makes bash read
@@ -82,6 +84,7 @@ import (
 type input struct {
 	ToolName  string `json:"tool_name"`
 	Cwd       string `json:"cwd"`
+	SessionID string `json:"session_id"` // names the session's scratchpad (adoexact.go)
 	ToolInput struct {
 		Command  string        `json:"command"`
 		Code     string        `json:"code"`     // ctx_execute, ctx_execute_file
@@ -256,6 +259,9 @@ func check(in input) string {
 	}
 	switch name := in.ToolName; {
 	case name == "Bash":
+		if ok, why := adoExact(t.Command, in.SessionID); ok {
+			return why
+		}
 		return checkBash(t.Command, ctx{cwd: in.Cwd, whole: t.Command, reads: new(int), read: new([]readText)})
 	case strings.HasSuffix(name, "__ctx_batch_execute"):
 		for _, command := range t.Commands {
