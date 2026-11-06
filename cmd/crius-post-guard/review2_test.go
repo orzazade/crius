@@ -244,3 +244,62 @@ func TestPythonMinusMAzureCLIIsAz(t *testing.T) {
 		t.Errorf("want pass, got %q", why)
 	}
 }
+
+// P1-9: bun run, npm, pnpm and yarn run package.json scripts, and bun loads the preloads its bunfig.toml (or a flag)
+// names; the guard read none of them.
+func TestPackageScriptsAndPreloadsAreRead(t *testing.T) {
+	dir := criusDir(t, nil)
+	const pr = "az repos pr create --title t --org https://dev.azure.com/Appxite"
+	write(t, filepath.Join(dir, "package.json"), `{"name":"x","scripts":{"pr":"`+pr+`","prebuild":"`+pr+`","build":"tsc -b","test":"`+pr+`","lint":"eslint .","credit":"`+pr+` --description @d.md"}}`)
+	if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	post := "await fetch('https://dev.azure.com/Appxite/P/_apis/git/repositories/R/pullRequests/9/threads?api-version=7.1', { method: 'POST', body: '{}' });\n"
+	write(t, filepath.Join(dir, "p.ts"), post)
+	write(t, filepath.Join(dir, "x.ts"), "console.log(1);\n")
+	pre := t.TempDir()
+	write(t, filepath.Join(pre, "bunfig.toml"), "[test]\npreload = [\n  \"./p.ts\",\n]\n")
+	write(t, filepath.Join(pre, "p.ts"), post)
+	write(t, filepath.Join(pre, "x.ts"), "console.log(1);\n")
+	for _, c := range []struct{ cwd, cmd string }{
+		{dir, "bun run pr"},
+		{dir, "bun pr"},
+		{dir, "npm run pr"},
+		{dir, "npm run-script pr"},
+		{dir, "npm test"},
+		{dir, "npm run build"},
+		{dir, "pnpm run pr"},
+		{dir, "pnpm pr"},
+		{dir, "yarn run pr"},
+		{dir, "yarn pr"},
+		{filepath.Join(dir, "sub"), "npm run pr"}, // npm finds the package.json above
+		{t.TempDir(), "npm --prefix " + dir + " run pr"},
+		{t.TempDir(), "cd " + dir + " && bun run pr"},
+		{pre, "bun x.ts"},
+		{pre, "bun test"},
+		{dir, "bun --preload ./p.ts x.ts"},
+		{dir, "node -r ./p.ts x.ts"},
+	} {
+		if why := check(bash(c.cmd, c.cwd)); !strings.Contains(why, "owner's click") {
+			t.Errorf("want an ask, got %q\n  %s (in %s)", why, c.cmd, c.cwd)
+		}
+	}
+	// Crius mode: a script's post gets the hard checks, and code that posts denies
+	write(t, filepath.Join(dir, "d.md"), "Done.\n\n"+coAuthor+"\n")
+	for _, c := range []struct{ cwd, cmd string }{
+		{dir, "bun run credit"},
+		{dir, "npm run credit"},
+		{pre, "bun x.ts"},
+		{dir, "bun --preload ./p.ts x.ts"},
+	} {
+		if d, why := crius(t, criusSID, c.cwd, c.cmd); d != "deny" {
+			t.Errorf("Crius mode: want deny, got %s %q\n  %s (in %s)", d, why, c.cmd, c.cwd)
+		}
+	}
+	// a script that only builds, and bun with no bunfig, still pass
+	for _, cmd := range []string{"bun run lint", "npm run lint", "bun x.ts"} {
+		if why := check(bash(cmd, dir)); why != "" {
+			t.Errorf("want pass, got %q\n  %s", why, cmd)
+		}
+	}
+}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
 	"io/fs"
@@ -117,6 +118,8 @@ func checkScript(a word, c ctx, kind runKind, plain bool) string {
 // have run yet, the cd's folder where the cd surely went there.
 func (c ctx) runsIn(w *syntax.Word) string {
 	switch {
+	case w == nil && !c.moved && c.movedAt == 0:
+		return c.cwd
 	case w == nil || c.movedAt > 0 && w.End().Offset() > c.movedAt:
 		return ""
 	case !c.moved || c.cd != nil && w.Pos().Offset() >= c.cd.to:
@@ -125,6 +128,18 @@ func (c ctx) runsIn(w *syntax.Word) string {
 		return c.cd.dir
 	}
 	return ""
+}
+
+// runFolders gives the folders a command at w may run in: the one runsIn knows, else after one cd that may fail the cd's
+// folder and the start folder; none when the guard does not know.
+func (c ctx) runFolders(w *syntax.Word) []string {
+	if d := c.runsIn(w); d != "" {
+		return []string{d}
+	}
+	if w == nil || c.movedAt > 0 && w.End().Offset() > c.movedAt || c.cd == nil || c.cwd == "" {
+		return nil
+	}
+	return []string{c.cd.dir, c.cwd}
 }
 
 // readText is a script the guard read for this hook call, and its text.
@@ -1285,3 +1300,323 @@ func (c ctx) scriptDirOf(cs *syntax.CmdSubst) (string, bool) {
 	}
 	return path.Dir(c.script), true
 }
+
+// Package scripts and preloads (review r2 P1-9: npm run pr and bun run pr passed when package.json's pr was an az
+// write, and bun x.ts passed when ./bunfig.toml preloads a file that posts). npm, pnpm, yarn and bun run the scripts
+// of the nearest package.json at or above the folder they run in (with pre and post scripts, and the words after the
+// name joined on); a call that runs no named script (install, ci) may run the lifecycle ones. bun, node and deno load
+// the files --preload, -r, --require and --import name, and bun those in the preload lists of the bunfig.toml it runs
+// with and ~/.bunfig.toml. The guard reads each like a script the command runs.
+// Known gaps: workspaces (-w, --filter, yarn workspace) and a bin from node_modules/.bin are not read; NODE_OPTIONS,
+// BUN_OPTIONS and .npmrc settings are not read.
+
+// pkgManagers run package.json scripts (bun is read with the interpreters).
+var pkgManagers = map[string]bool{"npm": true, "pnpm": true, "yarn": true}
+
+// pkgRunWords are the subcommands that run a script: by the next word (run X) or by their own name (npm test).
+var pkgRunWords = map[string]string{"run": "", "run-script": "", "rum": "", "urn": "", "test": "test", "t": "test",
+	"tst": "test", "start": "start", "stop": "stop", "restart": "restart"}
+
+// lifecycle are the scripts an install, ci, pack or publish may run.
+var lifecycle = []string{"preinstall", "install", "postinstall", "prepublish", "preprepare", "prepare", "postprepare",
+	"prepack", "postpack", "prepublishOnly", "publish", "postpublish"}
+
+// bunBuiltins are bun's own subcommands; any other first word is a script or a file.
+var bunBuiltins = map[string]bool{"test": true, "x": true, "repl": true, "exec": true, "remove": true, "rm": true,
+	"outdated": true, "unlink": true, "pm": true, "build": true, "init": true, "create": true, "c": true, "upgrade": true,
+	"patch": true, "audit": true, "info": true, "why": true}
+
+// pkgFolderOpts are the options that name the folder a package manager works in.
+var pkgFolderOpts = map[string]bool{"--prefix": true, "-C": true, "--dir": true, "--cwd": true}
+
+// checkPkgCall judges the package.json scripts an npm, pnpm, yarn or bun call runs.
+func checkPkgCall(name string, args []word, c ctx) string {
+	dirs := c.runFolders(args[0].node)
+	var script string
+	k := 1
+	for ; k < len(args); k++ {
+		a := args[k]
+		switch {
+		case !a.ok:
+			// a word the guard cannot read may name another folder or workspace
+			return c.pkgUnsure(dirs, name+" words the guard cannot read")
+		case pkgFolderOpts[a.text] && k+1 < len(args):
+			k++
+			dirs = joinDirs(dirs, args[k])
+			continue
+		case strings.HasPrefix(a.text, "--prefix=") || strings.HasPrefix(a.text, "--dir=") || strings.HasPrefix(a.text, "--cwd="):
+			_, v, _ := strings.Cut(a.text, "=")
+			dirs = joinDirs(dirs, word{text: v, ok: true})
+			continue
+		case a.text == "-w" || a.text == "--workspace" || a.text == "-ws" || a.text == "--workspaces" || a.text == "--filter" ||
+			a.text == "-F" || a.text == "-r" || a.text == "--recursive" || a.text == "workspace" || a.text == "workspaces":
+			return c.pkgUnsure(dirs, name+" in a workspace the guard does not read")
+		case strings.HasPrefix(a.text, "-"):
+			continue
+		}
+		break
+	}
+	var names []string
+	if k < len(args) {
+		sub := args[k].text
+		k++
+		fixed, isRun := pkgRunWords[sub]
+		switch {
+		case name == "bun" && sub == "run" || name != "bun" && isRun && fixed == "":
+			for ; k < len(args) && args[k].ok && strings.HasPrefix(args[k].text, "-"); k++ {
+			}
+			if k < len(args) {
+				if !args[k].ok {
+					return c.pkgUnsure(dirs, name+" run with a script name the guard cannot read")
+				}
+				script = args[k].text
+				k++
+			}
+		case name != "bun" && isRun:
+			script = fixed
+		case installWords[sub]:
+			names = lifecycle
+		case name == "npm" || name == "bun" && bunBuiltins[sub]:
+			// another npm or bun command runs no script of the package
+		default:
+			script = sub // bun pr, pnpm pr and yarn pr run the script pr
+		}
+	} else if name == "yarn" {
+		names = lifecycle // yarn alone installs
+	}
+	if script != "" {
+		names = []string{"pre" + script, script, "post" + script}
+	}
+	if len(names) == 0 {
+		return ""
+	}
+	var extra []string
+	for _, a := range args[min(k, len(args)):] {
+		if a.text == "--" && a.ok {
+			continue
+		}
+		extra = append(extra, a.src)
+	}
+	if len(dirs) == 0 {
+		return unsure(c, "a package script in a folder the guard does not know")
+	}
+	for _, d := range dirs {
+		if why := c.pkgScripts(d, names, extra); why != "" {
+			return why
+		}
+	}
+	return ""
+}
+
+// installWords are the package manager commands that may run the package's lifecycle scripts.
+var installWords = map[string]bool{"install": true, "i": true, "ci": true, "add": true, "a": true, "publish": true,
+	"pack": true, "rebuild": true, "link": true, "update": true, "up": true, "install-test": true, "it": true,
+	"install-ci-test": true, "cit": true}
+
+// joinDirs gives the folders w names from each of dirs; none when one is not known.
+func joinDirs(dirs []string, w word) []string {
+	var out []string
+	for _, d := range dirs {
+		j := joinDir(d, w)
+		if j == "" {
+			return nil
+		}
+		out = append(out, j)
+	}
+	return out
+}
+
+// joinDir gives the folder w names from dir, or "" when it is not known.
+func joinDir(dir string, w word) string {
+	switch {
+	case !w.ok:
+		return ""
+	case filepath.IsAbs(w.text):
+		return w.text
+	case dir == "":
+		return ""
+	}
+	return filepath.Join(dir, w.text)
+}
+
+// pkgUnsure asks as unsure does, with the nearest package.json's text counted as the command's.
+func (c ctx) pkgUnsure(dirs []string, what string) string {
+	for _, d := range dirs {
+		if p := findPkg(d); p != "" {
+			if b, err := readHead(p, 1<<20); err == nil {
+				c.whole = string(b) + "\n" + c.whole
+			}
+		}
+	}
+	return unsure(c, what)
+}
+
+// findPkg gives the nearest package.json at or above dir, or "".
+func findPkg(dir string) string {
+	for d := dir; d != "" && filepath.IsAbs(d); d = filepath.Dir(d) {
+		p := filepath.Join(d, "package.json")
+		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+			return p
+		}
+		if d == filepath.Dir(d) {
+			break
+		}
+	}
+	return ""
+}
+
+// pkgScripts judges the scripts by these names in the nearest package.json at or above dir, each with the words after
+// the name joined on.
+func (c ctx) pkgScripts(dir string, names, extra []string) string {
+	p := findPkg(dir)
+	if p == "" {
+		return ""
+	}
+	b, err := readHead(p, 1<<20)
+	if err != nil {
+		return cannotRead(c, p, err.Error())
+	}
+	var pkg struct {
+		Scripts map[string]any `json:"scripts"`
+	}
+	if err := json.Unmarshal(b, &pkg); err != nil {
+		c.whole = string(b) + "\n" + c.whole
+		return cannotRead(c, p, "it is not JSON ("+err.Error()+")")
+	}
+	if c.depth >= 4 {
+		return cannotRead(c, p, "its scripts run 4 scripts down, deeper than the guard reads")
+	}
+	for _, n := range names {
+		v, ok := pkg.Scripts[n]
+		if !ok {
+			continue
+		}
+		s, ok := v.(string)
+		if !ok {
+			c.whole = string(b) + "\n" + c.whole
+			return cannotRead(c, p, "script "+n+" is not text")
+		}
+		if len(extra) > 0 {
+			s += " " + strings.Join(extra, " ")
+		}
+		sc := ctx{cwd: filepath.Dir(p), whole: s + "\n" + c.whole, depth: c.depth + 1, reads: c.reads, read: c.read,
+			files: c.files, crius: c.crius, script: p}
+		if why, line := checkBashAt(s, sc); why != "" {
+			return atLine(why, p+" script "+n, line)
+		}
+	}
+	return ""
+}
+
+// bunfigPreloadRe finds a preload setting in a bunfig.toml: one string or a list of them.
+var bunfigPreloadRe = regexp.MustCompile(`(?s)\bpreload\s*=\s*(\[[^\]]*\]|"[^"]*"|'[^']*')`)
+
+// tomlStringRe finds a TOML string.
+var tomlStringRe = regexp.MustCompile(`"([^"\\]*)"|'([^']*)'`)
+
+// checkPreloads judges the files a bun, node or deno call loads before its code: the values of --preload, -r,
+// --require, --import and the loaders before the code file, and for bun the preload lists of its bunfig.toml (the one
+// --config names, else the run folder's) and ~/.bunfig.toml.
+func checkPreloads(name string, args []word, c ctx) string {
+	c.after, c.runner = nil, nil // a preload is no pinned team script's run
+	end := codeFile(name, args)
+	if end < 0 {
+		end = len(args)
+	}
+	config := ""
+	for i := 1; i < end; i++ {
+		a := args[i]
+		opt, val, eq := strings.Cut(a.text, "=")
+		if !a.ok {
+			continue
+		}
+		var v word
+		switch {
+		case eq && preloadOpts[opt]:
+			v = word{text: val, src: val, ok: true}
+		case preloadOpts[a.text] && i+1 < len(args):
+			i++
+			v = args[i]
+		case name == "bun" && (opt == "--config" || opt == "-c") && eq:
+			config = val
+			continue
+		case name == "bun" && (a.text == "--config" || a.text == "-c") && i+1 < len(args):
+			i++
+			if !args[i].ok {
+				return unsure(c, "bun with a --config the guard cannot read")
+			}
+			config = args[i].text
+			continue
+		default:
+			continue
+		}
+		if why := checkScript(v, c, byCode, true); why != "" {
+			return why
+		}
+	}
+	if name != "bun" {
+		return ""
+	}
+	dirs := c.runFolders(args[0].node)
+	if len(dirs) == 0 {
+		return unsure(c, "bun in a folder the guard does not know, whose bunfig.toml may preload code")
+	}
+	for _, dir := range dirs {
+		if why := c.bunfigPreloads(dir, config); why != "" {
+			return why
+		}
+	}
+	return ""
+}
+
+// bunfigPreloads judges the preloads of the bunfig.toml files bun reads when it runs in dir: the one config names (else
+// dir's) and the user's.
+func (c ctx) bunfigPreloads(dir, config string) string {
+	var configs []string
+	if config != "" {
+		configs = append(configs, joinDir(dir, word{text: config, ok: true}))
+	} else {
+		configs = append(configs, filepath.Join(dir, "bunfig.toml"))
+	}
+	if x := os.Getenv("XDG_CONFIG_HOME"); x != "" {
+		configs = append(configs, filepath.Join(x, ".bunfig.toml"))
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		configs = append(configs, filepath.Join(home, ".bunfig.toml"))
+	}
+	for _, f := range configs {
+		b, err := readHead(f, 1<<20)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		cc := c
+		cc.whole = string(b) + "\n" + c.whole
+		if err != nil {
+			return cannotRead(cc, f, err.Error())
+		}
+		text := string(b)
+		sets := bunfigPreloadRe.FindAllStringSubmatch(text, -1)
+		if len(sets) < strings.Count(text, "preload") {
+			return unsure(cc, f+": a preload setting")
+		}
+		for _, m := range sets {
+			for _, s := range tomlStringRe.FindAllStringSubmatch(m[1], -1) {
+				p := s[1] + s[2]
+				// bun takes a preload path from the folder it runs in; the bunfig's own folder is read too
+				for i, d := range []string{dir, filepath.Dir(f)} {
+					if d == "" || i == 1 && d == dir {
+						continue
+					}
+					if why := checkScript(word{text: joinDir(d, word{text: p, ok: true}), ok: true}, cc, byCode, true); why != "" {
+						return why
+					}
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// preloadOpts are the bun, node and deno options whose value is a file loaded before the code.
+var preloadOpts = map[string]bool{"--preload": true, "-r": true, "--require": true, "--import": true, "--loader": true,
+	"--experimental-loader": true}

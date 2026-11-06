@@ -915,9 +915,25 @@ func checkCall(args []word, stdin bool, c ctx) string {
 				return ""
 			}
 		}
-		if k := codeFile(name, args); k > 0 {
+		k := codeFile(name, args)
+		if k > 0 {
 			c.after, c.runner = args[k+1:], args[:k]
-			return checkScript(args[k], c, byCode, true)
+			if why := checkScript(args[k], c, byCode, true); why != "" {
+				return why
+			}
+		}
+		if name == "bun" || name == "node" || name == "deno" {
+			if why := checkPreloads(name, args, c); why != "" {
+				return why
+			}
+		}
+		if k > 0 {
+			return ""
+		}
+		if name == "bun" {
+			if why := checkPkgCall(name, args, c); why != "" {
+				return why
+			}
 		}
 		// Code comes from stdin only with no module (-m) and no script file, or with the script -.
 		for _, a := range args[1:] {
@@ -939,6 +955,8 @@ func checkCall(args []word, stdin bool, c ctx) string {
 			return why
 		}
 		return ""
+	case pkgManagers[name]:
+		return checkPkgCall(name, args, c)
 	case name == "command" && looksUp(args[1:]):
 		return ""
 	case wrappers[name]:
