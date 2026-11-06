@@ -35,8 +35,9 @@
 // cannot tell (a method, resource or fields value from a variable or @file, eval or bash -c text it cannot read, a
 // command the bash parser cannot read that names az or an ADO host) it asks. Unreadable hook input also asks: a guard
 // on an outward-facing write never lets one through silently.
-// One command shape passes though what it runs writes: the Quotes team's ado-suite.ts report or run, when the whole
-// command is exactly that call with its pinned files and flags (adoexact.go); any other shape gets the usual reading.
+// Three command shapes pass though what they run writes: the Quotes team's ado-suite.ts report or run, when the whole
+// command is exactly that call with its pinned files and flags (adoexact.go), and its pr-build.sh <pr> and approve vote
+// with a QA PASS verdict for the PR's head (quotesexact.go); any other shape gets the usual reading.
 //
 // Known gaps: git push to an Azure DevOps remote passes (not yet a post here); a command name from a variable or a
 // function ($AZ, f() { az "$@"; }) when the command names neither az nor Azure DevOps; a command that makes bash read
@@ -260,6 +261,9 @@ func check(in input) string {
 	switch name := in.ToolName; {
 	case name == "Bash":
 		if ok, why := adoExact(t.Command, in.SessionID); ok {
+			return why
+		}
+		if ok, why := quotesExact(t.Command); ok {
 			return why
 		}
 		return checkBash(t.Command, ctx{cwd: in.Cwd, whole: t.Command, reads: new(int), read: new([]readText)})
