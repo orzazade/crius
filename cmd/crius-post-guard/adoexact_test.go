@@ -22,9 +22,8 @@ func exactHome(t *testing.T) (home, bunfig, sp string) {
 	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("BUN_OPTIONS", "")
 	bin := filepath.Join(home, ".crius/state/quotes/build/bin")
-	wt := filepath.Join(home, "Projects/Appxite/svc_quote/wt/core-2")
 	sp = filepath.Join(root, "claude-501", "-Users-x-Projects-Appxite-svc-quote-channels", "sid-1", "scratchpad")
-	for _, d := range []string{bin, wt, sp, filepath.Join(home, ".crius/state/quotes/build/notes")} {
+	for _, d := range []string{bin, sp, filepath.Join(home, ".crius/state/quotes/build/notes"), filepath.Join(home, ".crius/state/quotes/build/qa")} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -41,7 +40,26 @@ func exactHome(t *testing.T) (home, bunfig, sp string) {
 	suiteSHA, bunfigSHA = sum(suite), sum("# empty\n")
 	scratchRoot = func() string { return filepath.Join(root, "claude-501") }
 	t.Cleanup(func() { suiteSHA, bunfigSHA, scratchRoot = oldSuite, oldBunfig, oldRoot })
+	linkedWT(t, home, "core-2", "feature/96365-partner-quote-detail")
+	linkedWT(t, home, "core-3", "wip/x.y_z-1")
 	return home, bunfig, sp
+}
+
+// linkedWT makes wt/<name> as git worktree add does: a .git file naming svc_quote's .git/worktrees/<name>, which holds
+// commondir (../..) and HEAD on branch.
+func linkedWT(t *testing.T, home, name, branch string) {
+	t.Helper()
+	common := filepath.Join(home, "Projects/Appxite/svc_quote/svc_quote/.git")
+	gitdir := filepath.Join(common, "worktrees", name)
+	wt := filepath.Join(home, "Projects/Appxite/svc_quote/wt", name)
+	for _, d := range []string{gitdir, wt, filepath.Join(common, "objects")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(t, filepath.Join(wt, ".git"), "gitdir: "+gitdir+"\n")
+	write(t, filepath.Join(gitdir, "commondir"), "../..\n")
+	write(t, filepath.Join(gitdir, "HEAD"), "ref: refs/heads/"+branch+"\n")
 }
 
 func exactIn(cmd string) input {
@@ -56,7 +74,7 @@ func TestADOSuiteExactShapesPass(t *testing.T) {
 	home, bunfig, sp := exactHome(t)
 	pre := "bun --no-env-file --config=" + bunfig + " ~/.crius/state/quotes/build/bin/ado-suite.ts"
 	abs := "bun --no-env-file --config=" + bunfig + " " + home + "/.crius/state/quotes/build/bin/ado-suite.ts"
-	run := " run ~/Projects/Appxite/svc_quote/wt/core-2 feature/94123-partner-quote-detail"
+	run := " run ~/Projects/Appxite/svc_quote/wt/core-2 feature/96365-partner-quote-detail"
 	for _, cmd := range []string{
 		pre + " report 126862",
 		abs + " report 126862",
@@ -68,7 +86,8 @@ func TestADOSuiteExactShapesPass(t *testing.T) {
 		pre + run + " 2>&1 | tail -5",
 		pre + run + " > " + sp + "/ado-suite.log 2>&1; echo ado_rc=$?",
 		pre + run + " >> " + sp + "/ado-suite.log 2>&1; echo \"rc=$?\"",
-		pre + " run " + home + "/Projects/Appxite/svc_quote/wt/core-2 wip/x.y_z-1",
+		pre + " run " + home + "/Projects/Appxite/svc_quote/wt/core-3 wip/x.y_z-1",
+		pre + " report 126863 > ~/.crius/state/quotes/build/qa/ado-126863.out 2>&1",
 		pre + run + " 2>&1 | head -40",
 	} {
 		if why := check(exactIn(cmd)); why != "" {
@@ -276,7 +295,7 @@ func TestADOSuiteExactShapeHookTimeChecks(t *testing.T) {
 		"redirect into a missing folder": {cmd: "nothere/out.log", want: "cannot resolve"},
 		"worktree a symlink": {set: func(t *testing.T, home, _, sp string) {
 			p := filepath.Join(home, "Projects/Appxite/svc_quote/wt/core-2")
-			os.Remove(p)
+			os.RemoveAll(p)
 			if err := os.Symlink(sp, p); err != nil {
 				t.Fatal(err)
 			}
@@ -294,7 +313,7 @@ func TestADOSuiteExactShapeHookTimeChecks(t *testing.T) {
 			case "R":
 				cmd += " > " + sp + "/out.log 2>&1"
 			case "RUN":
-				cmd = "bun --no-env-file --config=" + bunfig + " ~/.crius/state/quotes/build/bin/ado-suite.ts run ~/Projects/Appxite/svc_quote/wt/core-2 feature/x"
+				cmd = "bun --no-env-file --config=" + bunfig + " ~/.crius/state/quotes/build/bin/ado-suite.ts run ~/Projects/Appxite/svc_quote/wt/core-2 feature/96365-partner-quote-detail"
 			default:
 				cmd += " > " + sp + "/" + c.cmd
 			}
@@ -326,5 +345,137 @@ func write(t *testing.T, p, body string) {
 	t.Helper()
 	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// review 11-06 part 1, P2: run passes only for a linked svc_quote worktree whose HEAD is the branch named, and only a
+// feature/96365-* or wip/* branch.
+func TestADOSuiteRunNeedsTheSvcQuoteWorktreeAndBranch(t *testing.T) {
+	cases := map[string]struct {
+		set    func(t *testing.T, home, wtDir string)
+		wt, br string
+		want   string
+	}{
+		"a git init folder under wt": {set: func(t *testing.T, home, _ string) {
+			if err := os.MkdirAll(filepath.Join(home, "Projects/Appxite/svc_quote/wt/fresh/.git/objects"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			write(t, filepath.Join(home, "Projects/Appxite/svc_quote/wt/fresh/.git/HEAD"), "ref: refs/heads/feature/96365-x\n")
+		}, wt: "fresh", br: "feature/96365-x", want: "not a linked worktree of svc_quote"},
+		"someone else's branch": {set: func(t *testing.T, home, _ string) {
+			linkedWT(t, home, "pr", "feature/someones-pr")
+		}, wt: "pr", br: "feature/someones-pr"},
+		"a branch other than HEAD's": {wt: "core-2", br: "feature/96365-other", want: "is on feature/96365-partner-quote-detail"},
+		"a detached HEAD": {set: func(t *testing.T, home, _ string) {
+			linkedWT(t, home, "det", "x")
+			write(t, filepath.Join(home, "Projects/Appxite/svc_quote/svc_quote/.git/worktrees/det/HEAD"), "754a722dfc50b2a6166a906e22fc1c4ecfcfe91e\n")
+		}, wt: "det", br: "feature/96365-x", want: "not on a branch"},
+		"a gitfile naming another repo": {set: func(t *testing.T, home, _ string) {
+			other := filepath.Join(home, "other/.git/worktrees/o")
+			if err := os.MkdirAll(other, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			write(t, filepath.Join(other, "HEAD"), "ref: refs/heads/feature/96365-x\n")
+			write(t, filepath.Join(other, "commondir"), "../..\n")
+			linkedWT(t, home, "o", "feature/96365-x")
+			write(t, filepath.Join(home, "Projects/Appxite/svc_quote/wt/o/.git"), "gitdir: "+other+"\n")
+		}, wt: "o", br: "feature/96365-x", want: "not a linked worktree of svc_quote"},
+		"a worktrees entry whose commondir names another repo": {set: func(t *testing.T, home, _ string) {
+			linkedWT(t, home, "cd", "feature/96365-x")
+			if err := os.MkdirAll(filepath.Join(home, "evil/.git"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			write(t, filepath.Join(home, "Projects/Appxite/svc_quote/svc_quote/.git/worktrees/cd/commondir"), filepath.Join(home, "evil/.git")+"\n")
+		}, wt: "cd", br: "feature/96365-x", want: "not a linked worktree of svc_quote"},
+		"a .git symlink": {set: func(t *testing.T, home, _ string) {
+			linkedWT(t, home, "ln", "feature/96365-x")
+			p := filepath.Join(home, "Projects/Appxite/svc_quote/wt/ln/.git")
+			os.Remove(p)
+			if err := os.Symlink(filepath.Join(home, "Projects/Appxite/svc_quote/svc_quote/.git/worktrees/ln"), p); err != nil {
+				t.Fatal(err)
+			}
+		}, wt: "ln", br: "feature/96365-x", want: "not a linked worktree of svc_quote"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			home, bunfig, _ := exactHome(t)
+			if c.set != nil {
+				c.set(t, home, "")
+			}
+			cmd := "bun --no-env-file --config=" + bunfig + " ~/.crius/state/quotes/build/bin/ado-suite.ts run ~/Projects/Appxite/svc_quote/wt/" + c.wt + " " + c.br
+			why := check(exactIn(cmd))
+			if why == "" || c.want != "" && !strings.Contains(why, c.want) {
+				t.Errorf("want an ask naming %q, got %q", c.want, why)
+			}
+		})
+	}
+}
+
+// review 11-06 part 1, P3: output goes only to the session's scratchpad or build/notes and build/qa; never a file named
+// .git, an executable, or into a bare repo folder.
+func TestADOSuiteRedirectPlaces(t *testing.T) {
+	home, bunfig, sp := exactHome(t)
+	build := home + "/.crius/state/quotes/build"
+	write(t, build+"/BUILD-LOG.md", "log\n")
+	write(t, build+"/STATUS.md", "s\n")
+	write(t, build+"/bin/pr-build.sh", "#!/bin/sh\n")
+	write(t, build+"/notes/run.sh", "#!/bin/sh\n")
+	if err := os.Chmod(build+"/notes/run.sh", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(sp+"/bare/objects", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, sp+"/bare/HEAD", "ref: refs/heads/main\n")
+	rep := "bun --no-env-file --config=" + bunfig + " ~/.crius/state/quotes/build/bin/ado-suite.ts report 1 > "
+	for target, want := range map[string]string{
+		build + "/BUILD-LOG.md":         "outside",
+		build + "/STATUS.md":            "outside",
+		build + "/x.log":                "outside",
+		build + "/bin/pr-build.sh":      "outside",
+		build + "/bin/new.log":          "outside",
+		sp + "/.git":                    "named .git",
+		build + "/notes/.git":           "named .git",
+		build + "/notes/run.sh":         "executable",
+		sp + "/bare/out.log":            "a git repository folder",
+		sp + "/bare/objects/out.log":    "a git repository folder",
+		build + "/notes/ado-report.log": "",
+		build + "/qa/ado-report.log":    "",
+		sp + "/ado.log":                 "",
+	} {
+		why := check(exactIn(rep + target))
+		switch {
+		case want == "" && why != "":
+			t.Errorf("want pass for %s, asked: %s", target, why)
+		case want != "" && !strings.Contains(why, want):
+			t.Errorf("want an ask naming %q for %s, got %q", want, target, why)
+		}
+	}
+}
+
+// review 11-06 part 1, P3: each passing shape, read the usual way (a ctx_batch_execute command, or checkBash), asks only
+// for ado-suite.ts's own write: the exact rule hides nothing else the usual reading would find.
+func TestADOSuitePassingShapesAskOnlyForTheSuiteTheUsualWay(t *testing.T) {
+	home, bunfig, sp := exactHome(t)
+	pre := "bun --no-env-file --config=" + bunfig + " ~/.crius/state/quotes/build/bin/ado-suite.ts"
+	run := " run ~/Projects/Appxite/svc_quote/wt/core-2 feature/96365-partner-quote-detail"
+	for _, cmd := range []string{
+		pre + " report 126862 2>&1 | tail -10 | LC_ALL=C cut -c1-220",
+		pre + " report 126863 > ~/.crius/state/quotes/build/notes/ado-126863.out 2>&1; echo rc=$?",
+		pre + run + " > " + sp + "/ado-suite.log 2>&1; echo ado_rc=$?",
+		pre + " run " + home + "/Projects/Appxite/svc_quote/wt/core-3 wip/x.y_z-1 2>&1 | head -40",
+	} {
+		if why := check(exactIn(cmd)); why != "" {
+			t.Errorf("want pass on Bash, asked: %s\n  %s", why, cmd)
+		}
+		why := checkBash(cmd, ctx{cwd: "/", whole: cmd, reads: new(int), read: new([]readText)})
+		if !strings.Contains(why, "a write to Azure DevOps; "+home+"/.crius/state/quotes/build/bin/ado-suite.ts") {
+			t.Errorf("want the usual reading to ask for the suite's write only, got %q\n  %s", why, cmd)
+		}
+		in := input{ToolName: "mcp__plugin_context-mode_context-mode__ctx_batch_execute", Cwd: "/"}
+		in.ToolInput.Commands = batchCommands{cmd}
+		if why := check(in); why == "" {
+			t.Errorf("want ask as a ctx_batch_execute command:\n  %s", cmd)
+		}
 	}
 }

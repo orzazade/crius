@@ -22,11 +22,12 @@ import (
 // hardlink into .git, more git config keys). This rule passes it only when the WHOLE command is one exact shape:
 //
 //	bun --no-env-file --config=<empty-bunfig.toml> <ado-suite.ts> report <digits>
-//	bun --no-env-file --config=<empty-bunfig.toml> <ado-suite.ts> run ~/Projects/Appxite/svc_quote/wt/<name> <feature|wip>/<x>
+//	bun --no-env-file --config=<empty-bunfig.toml> <ado-suite.ts> run ~/Projects/Appxite/svc_quote/wt/<name> <its branch>
 //
-// with both files at the SHA-256 pinned here, optionally followed only by one > or >> into the Quotes build folder or the
-// session's scratchpad (a new file, or a plain one with one link, in no git worktree), 2>&1, `; echo rc=$?` (or ado_rc,
-// quoted or not), and pipes into tail -N, head -N or cut -cA-B (LC_ALL=C allowed on those). Every word is plain text: no
+// with both files at the SHA-256 pinned here, the worktree a linked one of svc_quote on the branch named (feature/96365-*
+// or wip/*), optionally followed only by one > or >> into the Quotes build notes/ or qa/ folder or the session's
+// scratchpad (a new file, or a plain non-executable one with one link, in no git worktree or repo), 2>&1,
+// `; echo rc=$?` (or ado_rc, quoted or not), and pipes into tail -N, head -N or cut -cA-B (LC_ALL=C allowed on those). Every word is plain text: no
 // quote, variable, $(), glob, brace or ~ but a leading ~/ on the suite or worktree path. Anything else falls through to
 // the usual reading. bun 1.3.10 (11-06): --config=<path> stops ./bunfig.toml, but `-c <path>`, `--config <path>` and
 // `-c=<path>` do not (the space forms run <path> as the script); --no-env-file stops .env and .env.local; ~/.bunfig.toml
@@ -34,8 +35,15 @@ import (
 // session env BUN_OPTIONS can add a preload. So at hook time a global .bunfig.toml or BUN_OPTIONS asks. What the run
 // pushes (no submodule, no off-list git config, no AI credit, git with fsmonitor and hooks off) ado-suite.ts checks
 // itself (its ado-suite.test.ts).
-// Known gaps: a file changed between the hook and the run (the suite, the bunfig, a redirect target); bun, git or az
-// found first on PATH, or a bun function or alias from the shell profile the Bash tool loads.
+// Known gaps (the guard reads the command, not the shell that runs it):
+//   - The Bash tool runs zsh from a snapshot of the owner's start-up files (~/.zshenv, ~/.zprofile, ~/.zshrc, ~/.zlogin)
+//     taken when the session starts: an alias, function, hash entry or option set there for bun, tail, head, cut or echo
+//     runs instead, and a command that edits those files passes the guard if it posts nothing (it takes effect in the next
+//     session's snapshot).
+//   - Env the session already has: PATH (which bun, git or az runs), BUN_OPTIONS set after the hook, NODE_OPTIONS-like
+//     variables of git or az, and proxy variables (HTTPS_PROXY, ALL_PROXY, NO_PROXY) that route the push and the ADO calls.
+//   - A file changed between the hook and the run: the suite, the bunfig, the worktree's .git file, gitdir or HEAD, or a
+//     redirect target (a new hardlink or symlink there).
 
 var (
 	// suiteSHA and bunfigSHA are the pinned SHA-256 of ado-suite.ts and empty-bunfig.toml; read the change before
@@ -49,7 +57,7 @@ var (
 var (
 	exactTextRe   = regexp.MustCompile(`^[A-Za-z0-9._/=~ \n>&|;$?"-]+$`)
 	exactWordRe   = regexp.MustCompile(`^[A-Za-z0-9._/=-]+$`)
-	exactBranchRe = regexp.MustCompile(`^(feature|wip)/[A-Za-z0-9._/-]+$`)
+	exactBranchRe = regexp.MustCompile(`^(feature/96365-|wip/)[A-Za-z0-9._/-]+$`)
 	exactNameRe   = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 	exactBuildRe  = regexp.MustCompile(`^[0-9]{1,12}$`)
 	exactFilterRe = regexp.MustCompile(`^(tail|head) -[0-9]{1,6}$|^cut -c[0-9]{1,6}-[0-9]{1,6}$`)
@@ -134,8 +142,8 @@ func adoExact(command, sid string) (ok bool, why string) {
 		return true, asked("ado-suite.ts with BUN_OPTIONS set in the session (" + v + "): it can add code to bun")
 	}
 	if wt != "" {
-		if fi, err := os.Lstat(wt); err != nil || !fi.IsDir() {
-			return true, asked("ado-suite.ts run: " + wt + " is not a folder (missing or a symlink)")
+		if why := svcWorktree(wt, args[6], home); why != "" {
+			return true, why
 		}
 	}
 	if target != "" {
@@ -144,6 +152,50 @@ func adoExact(command, sid string) (ok bool, why string) {
 		}
 	}
 	return true, ""
+}
+
+// svcWorktree asks unless wt is a linked worktree of svc_quote (its .git a file naming svc_quote's .git/worktrees/<x>,
+// whose commondir is svc_quote's .git) on branch. It reads the files git would; it runs no git there.
+func svcWorktree(wt, branch, home string) string {
+	not := func(why string) string {
+		return asked("ado-suite.ts run: " + wt + " is not a linked worktree of svc_quote (" + why + ")")
+	}
+	if fi, err := os.Lstat(wt); err != nil || !fi.IsDir() {
+		return asked("ado-suite.ts run: " + wt + " is not a folder (missing or a symlink)")
+	}
+	if fi, err := os.Lstat(filepath.Join(wt, ".git")); err != nil || !fi.Mode().IsRegular() {
+		return not("its .git is not a plain file")
+	}
+	b, err := os.ReadFile(filepath.Join(wt, ".git"))
+	line := strings.TrimSuffix(string(b), "\n")
+	if err != nil || !strings.HasPrefix(line, "gitdir: /") || strings.Contains(line, "\n") {
+		return not("its .git does not name an absolute gitdir")
+	}
+	common, err := filepath.EvalSymlinks(filepath.Join(home, "Projects/Appxite/svc_quote/svc_quote/.git"))
+	if err != nil {
+		return not("svc_quote's .git cannot be resolved")
+	}
+	gitdir, err := filepath.EvalSymlinks(strings.TrimPrefix(line, "gitdir: "))
+	if err != nil || filepath.Dir(gitdir) != filepath.Join(common, "worktrees") || !exactNameRe.MatchString(filepath.Base(gitdir)) {
+		return not("its gitdir is not in " + filepath.Join(common, "worktrees"))
+	}
+	cd, err := os.ReadFile(filepath.Join(gitdir, "commondir"))
+	c := strings.TrimSpace(string(cd))
+	if err == nil && !filepath.IsAbs(c) {
+		c = filepath.Join(gitdir, c)
+	}
+	if real, rerr := filepath.EvalSymlinks(c); err != nil || rerr != nil || real != common {
+		return not("its commondir is not svc_quote's .git")
+	}
+	head, err := os.ReadFile(filepath.Join(gitdir, "HEAD"))
+	h := strings.TrimSpace(string(head))
+	if err != nil || !strings.HasPrefix(h, "ref: refs/heads/") {
+		return asked("ado-suite.ts run: " + wt + " is not on a branch (detached HEAD): name a branch only from a worktree on it")
+	}
+	if on := strings.TrimPrefix(h, "ref: refs/heads/"); on != branch {
+		return asked("ado-suite.ts run: " + wt + " is on " + on + ", not " + branch)
+	}
+	return ""
 }
 
 // plainStmt is a statement with no !, &, coprocess or redirect.
@@ -275,9 +327,14 @@ func safeTarget(p, home, sid string) string {
 		return asked("ado-suite.ts output to " + p + ": the guard cannot resolve its folder")
 	}
 	full := filepath.Join(dir, filepath.Base(p))
+	if filepath.Base(p) == ".git" {
+		return asked("ado-suite.ts output to " + p + ": a file named .git")
+	}
 	var roots []string
-	if build, err := filepath.EvalSymlinks(filepath.Join(home, ".crius/state/quotes/build")); err == nil {
-		roots = append(roots, build)
+	for _, sub := range []string{"notes", "qa"} {
+		if r, err := filepath.EvalSymlinks(filepath.Join(home, ".crius/state/quotes/build", sub)); err == nil {
+			roots = append(roots, r)
+		}
 	}
 	if exactSidRe.MatchString(sid) {
 		if sr, err := filepath.EvalSymlinks(scratchRoot()); err == nil {
@@ -295,7 +352,7 @@ func safeTarget(p, home, sid string) string {
 		}
 	}
 	if root == "" {
-		return asked("ado-suite.ts output to " + p + ": outside the Quotes build folder and this session's scratchpad")
+		return asked("ado-suite.ts output to " + p + ": outside the Quotes build notes/ and qa/ folders and this session's scratchpad")
 	}
 	for d := dir; ; d = filepath.Dir(d) {
 		if filepath.Base(d) == ".git" {
@@ -303,6 +360,10 @@ func safeTarget(p, home, sid string) string {
 		}
 		if _, err := os.Lstat(filepath.Join(d, ".git")); !errors.Is(err, fs.ErrNotExist) {
 			return asked("ado-suite.ts output to " + p + ": inside a git worktree (" + d + ")")
+		}
+		_, herr := os.Lstat(filepath.Join(d, "HEAD"))
+		if o, err := os.Lstat(filepath.Join(d, "objects")); herr == nil && err == nil && o.IsDir() {
+			return asked("ado-suite.ts output to " + p + ": inside a git repository folder (" + d + ")")
 		}
 		if d == root || len(d) <= len(root) {
 			break
@@ -314,6 +375,8 @@ func safeTarget(p, home, sid string) string {
 		return ""
 	case err != nil || !fi.Mode().IsRegular():
 		return asked("ado-suite.ts output to " + p + ": it is not a plain file")
+	case fi.Mode()&0o111 != 0:
+		return asked("ado-suite.ts output to " + p + ": an executable file")
 	}
 	if st, ok := fi.Sys().(*syscall.Stat_t); !ok || st.Nlink != 1 {
 		n := "an unknown number of"
