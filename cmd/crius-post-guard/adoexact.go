@@ -47,6 +47,7 @@ var (
 )
 
 var (
+	exactTextRe   = regexp.MustCompile(`^[A-Za-z0-9._/=~ \n>&|;$?"-]+$`)
 	exactWordRe   = regexp.MustCompile(`^[A-Za-z0-9._/=-]+$`)
 	exactBranchRe = regexp.MustCompile(`^(feature|wip)/[A-Za-z0-9._/-]+$`)
 	exactNameRe   = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
@@ -59,6 +60,11 @@ var (
 // adoExact says whether command is the exact shape (ok); why is "" when it passes, or the ask when a hook-time check
 // fails. ok false: the usual reading judges the command.
 func adoExact(command, sid string) (ok bool, why string) {
+	// Only the characters the shapes use, $ only as $?: no comment (# that a zsh without interactive comments would not
+	// drop), \ line joins, quotes but echo's "", or \r, whatever the bash parser below makes of them.
+	if !exactTextRe.MatchString(command) || strings.Count(command, "$") != strings.Count(command, "$?") {
+		return false, ""
+	}
 	f, err := syntax.NewParser(syntax.Variant(syntax.LangBash)).Parse(strings.NewReader(command), "")
 	if err != nil || len(f.Stmts) < 1 || len(f.Stmts) > 2 {
 		return false, ""

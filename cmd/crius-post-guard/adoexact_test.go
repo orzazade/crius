@@ -186,6 +186,12 @@ func TestADOSuiteOffShapeAsks(t *testing.T) {
 		rep + " > " + strings.Replace(sp, "sid-1", "sid-2", 1) + "/x.log",
 		rep + " > " + sp,
 		rep + "\n" + "git push",
+		// bash reads # as a comment; a zsh without interactive comments would run what follows
+		rep + " #; git push",
+		rep + " # note",
+		"# note\n" + rep,
+		rep + " \\\n",
+		rep + "\r",
 	} {
 		if ok, why := adoExact(cmd, "sid-1"); ok && why == "" {
 			t.Errorf("the exact rule passed an off-shape command:\n  %s", cmd)
