@@ -2,7 +2,6 @@ package main
 
 import (
 	"regexp"
-	"strings"
 )
 
 // The lead allow list (Crius 11-06 12:16, owner: "we have too much guard"; a click only when a check fails). When the
@@ -13,18 +12,15 @@ import (
 //   - az pipelines run with only --id <digits>, --branch of a feature/96365-*, integration/96365-bN or develop branch,
 //     and --org, --project, --query, --output: no free text. A PR merge build (refs/pull/<n>/merge) is not on the list:
 //     it goes through pr-build.sh, which skips a run that exists (today's 3 declined clicks were such duplicates).
-//     --variables asks until its names are listed in knownRunVars;
+//     --variables asks: it is free text;
 //   - az repos pr create with --source-branch feature/96365-* and --target-branch integration/96365-bN, both given;
 // and passes the hard checks of Crius mode (hardCheck: no AI credit in the words or the files they send, no
 // --auto-complete, no production URL). Everything else asks as before, with the reason the list refused it. The approve
 // vote keeps its own rule (quotesexact.go); reads (pr show/list, runs show/list, ref list, devops invoke GET, account
 // get-access-token) never asked and still do not.
 
-// knownRunVars are the pipeline variables az pipelines run may set here; none is named yet.
-var knownRunVars = map[string]bool{}
-
 var (
-	runOpts        = map[string]bool{"--id": true, "--branch": true, "--variables": true, "--org": true, "--organization": true, "--project": true, "-p": true, "--query": true, "-o": true, "--output": true, "--only-show-errors": true}
+	runOpts        = map[string]bool{"--id": true, "--branch": true, "--org": true, "--organization": true, "--project": true, "-p": true, "--query": true, "-o": true, "--output": true, "--only-show-errors": true}
 	runBranchRe    = regexp.MustCompile(`^(refs/heads/)?(feature/96365-[A-Za-z0-9._/-]+|integration/96365-b[0-9]+|develop)$`)
 	prSourceRe     = regexp.MustCompile(`^(refs/heads/)?feature/96365-[A-Za-z0-9._/-]+$`)
 	prTargetListRe = regexp.MustCompile(`^(refs/heads/)?integration/96365-b[0-9]+$`)
@@ -70,10 +66,6 @@ func leadAllowed(p postCall) string {
 					return "az pipelines run --id " + v.text + " is not a number"
 				case k == "--branch" && !runBranchRe.MatchString(v.text):
 					return "az pipelines run --branch " + v.text + ": a PR merge build goes through pr-build.sh; others only on feature/96365-*, integration/96365-bN or develop"
-				case k == "--variables":
-					if name, _, _ := strings.Cut(v.text, "="); !knownRunVars[name] {
-						return "az pipelines run --variables " + name + " is not a known variable"
-					}
 				}
 			}
 		}

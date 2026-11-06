@@ -25,7 +25,7 @@ func leadCheck(t *testing.T, cwd, cmd, want string) {
 }
 
 // Item 1: az pipelines run with only ids, a known branch and output options passes; free text, a PR merge build, no
-// branch or an unknown variable asks.
+// branch or --variables asks.
 func TestLeadAllowListPipelinesRun(t *testing.T) {
 	dir := t.TempDir()
 	for _, cmd := range []string{
@@ -39,7 +39,7 @@ func TestLeadAllowListPipelinesRun(t *testing.T) {
 		"az pipelines run --id 1119 --branch refs/pull/7848/merge" + allowOrg:          "a PR merge build goes through pr-build.sh",
 		"az pipelines run --id 1119" + allowOrg:                                        "without --branch",
 		"az pipelines run --id 1119 --branch develop --parameters a=b" + allowOrg:      "only --id, --branch",
-		"az pipelines run --id 1119 --branch develop --variables x=1" + allowOrg:       "not a known variable",
+		"az pipelines run --id 1119 --branch develop --variables x=1" + allowOrg:       "only --id, --branch",
 		"az pipelines run --name quotes --branch develop" + allowOrg:                   "only --id, --branch",
 		"az pipelines run --id 1119 --branch main" + allowOrg:                          "a PR merge build goes through pr-build.sh",
 		"az pipelines run --id 1119 --branch develop --org https://x-prod.example.com": "production URL",
