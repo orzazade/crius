@@ -748,6 +748,10 @@ var httpTools = map[string]bool{"curl": true, "wget": true, "http": true, "https
 
 // stdin: the command reads a pipe, a file or a heredoc on its standard input.
 func checkCall(args []word, stdin bool, c ctx) string {
+	if late() {
+		// final review of cf0673c, P1-2: one statement can hold enough find words to outlast the hook's limit
+		return asked("the guard ran out of time reading the command")
+	}
 	if !args[0].ok {
 		if name, ok := c.resolve(args[0].node); ok {
 			args = append([]word{{text: name, src: args[0].src, ok: true, node: args[0].node}}, args[1:]...)
@@ -856,27 +860,30 @@ func checkCall(args []word, stdin bool, c ctx) string {
 		for i := 1; i < len(args); i++ {
 			a := args[i]
 			if !a.ok && a.node != nil {
-				if t, known := c.resolve(a.node); known {
+				t, known := c.resolve(a.node)
+				// final review of cf0673c: one of find's own words that may split into several may hold -exec and its
+				// command (X='-exec az repos pr create … ;'; find . $X)
+				if name == "find" && !runsNext && !oneWord(a.node) && (!known || strings.ContainsAny(t, " \t\n*?[")) {
+					if why := unsure(c, "find words that may split"); why != "" {
+						return why
+					}
+				}
+				if known {
 					a = word{text: t, src: a.src, ok: true, node: a.node}
 					args = append(slices.Clone(args[:i]), append([]word{a}, args[i+1:]...)...)
 				}
 			}
+			standIn := false
 			if !a.ok && name == "find" && !runsNext {
 				// review of 09070f3: a find word it cannot read may be -exec, so the next word may be the command it runs;
 				// not when that word is a test or option (find "$notes" -path …: an -exec there would run "-path")
 				if i+1 < len(args) && args[i+1].ok && (strings.HasPrefix(args[i+1].text, "-") || args[i+1].text == "(" || args[i+1].text == "!") {
 					continue
 				}
-				if t, known := "", false; a.node != nil {
-					if t, known = c.resolve(a.node); !known || t == "-exec" || t == "-execdir" || t == "-ok" || t == "-okdir" {
-						runsNext, first = true, true
-					}
-				} else {
-					runsNext, first = true, true
-				}
-				continue
+				// final review of cf0673c, P1-1: as an -exec, its part ends at ; or {} + (find . "$1" echo hi \; -exec az …)
+				standIn = true
 			}
-			if !a.ok {
+			if !a.ok && !standIn {
 				// review r1: a word it cannot read may be the command it runs (exec $X …), so it asks like a command name;
 				// not an env setting (NAME=$v) or a find word before its command
 				if !runsNext || envSetRe.MatchString(a.src) {
@@ -887,7 +894,7 @@ func checkCall(args []word, stdin bool, c ctx) string {
 				}
 				return unsureName(c)
 			}
-			if name == "find" && (a.text == "-exec" || a.text == "-execdir" || a.text == "-ok" || a.text == "-okdir") {
+			if name == "find" && (standIn || a.text == "-exec" || a.text == "-execdir" || a.text == "-ok" || a.text == "-okdir") {
 				// each -exec part ends at ; or {} + and is judged alone: a read command there must not take a later
 				// -exec part as its own words (review of bf78438, P1-a)
 				j := i + 1
@@ -904,7 +911,7 @@ func checkCall(args []word, stdin bool, c ctx) string {
 							}
 							// review of 09070f3: a quoted word may be the ; that ends the part, or not. Judge both: the
 							// words after it as find's own (here), and the part going on past it (the scan goes on)
-							if why := checkCall(append([]word{args[0]}, args[j+1:]...), stdin, c); why != "" {
+							if why := findRest(args[0], args[j+1:], stdin, c); why != "" {
 								return why
 							}
 						}
@@ -912,7 +919,7 @@ func checkCall(args []word, stdin bool, c ctx) string {
 					j++
 				}
 				if j < len(args) {
-					if why := checkCall(append([]word{args[0], a}, args[i+1:j]...), stdin, c); why != "" {
+					if why := findRest(args[0], append([]word{a}, args[i+1:j]...), stdin, c); why != "" {
 						return why
 					}
 					i = j
@@ -994,6 +1001,33 @@ func checkCall(args []word, stdin bool, c ctx) string {
 	}
 	return ""
 }
+
+// findRest judges find with these words after it, once per run of words of one parse: a quoted word that may be the ;
+// that ends an -exec part has the words after it judged both ways, and without this each such word doubled the work
+// (final review of cf0673c, P1-2: 22 words took 43 s). The first and last word and the count name the run.
+func findRest(find word, rest []word, stdin bool, c ctx) string {
+	all := append([]word{find}, rest...)
+	if len(rest) == 0 || rest[0].node == nil || rest[len(rest)-1].node == nil {
+		return checkCall(all, stdin, c)
+	}
+	k := findKey{rest[0].node, rest[len(rest)-1].node, len(rest), stdin, c.cwd, c.script, c.depth}
+	if why, seen := findSeen[k]; seen {
+		return why
+	}
+	why := checkCall(all, stdin, c)
+	findSeen[k] = why
+	return why
+}
+
+type findKey struct {
+	first, last *syntax.Word
+	n           int
+	stdin       bool
+	cwd, script string
+	depth       int
+}
+
+var findSeen = map[findKey]string{}
 
 // checkText checks a word that bash runs as a command line (bash -c, trap): each text it may hold, or it is unsure.
 func checkText(a word, c ctx, what string) string {

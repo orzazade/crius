@@ -3,6 +3,7 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // Review of bf78438 (Opus, 11-05 23:46), P1-a: in find, a read command at -exec took the rest of the line as its own
@@ -59,5 +60,64 @@ func TestADollarWordInAShellRunAzStringAsks(t *testing.T) {
 		if why := check(bash(cmd, dir)); !strings.HasPrefix(why, reason) {
 			t.Errorf("%s\n  passed, want an ask", cmd)
 		}
+	}
+}
+
+// Final review of cf0673c, P1-1: a find word the guard cannot read that may be -exec started a command there, but the
+// part did not end at its ; or {} +, so a read command (echo, cat) took the rest of the line as its words and a later
+// -exec part went unjudged (bash -c 'find . -maxdepth 0 "$1" echo hi \; -exec echo SECOND \;' _ -exec runs both).
+// Pre-existing: find's own words were not checked for word splitting (X='-exec az … ;'; find . $X).
+func TestAFindWordThatMayBeExecEndsItsPart(t *testing.T) {
+	dir := t.TempDir()
+	for _, cmd := range []string{
+		`find . "$1" echo hi \; -exec az repos pr create --title x \;`,
+		`find . "$1" cat {} \; -exec az repos pr create --title x \;`,
+		`find . -name x "$1" echo hi \; -exec az repos pr create --title x \;`,
+		`find . "$1" /usr/bin/grep -l foo {} + -exec az repos pr create --title x \;`,
+		`X='-exec az repos pr create --title x ;'; find . $X`,
+		`X="-exec az repos pr create --title x ;"; find . -name y $X`,
+		`find . $1 -name y; az repos pr list`,
+	} {
+		if why := check(bash(cmd, dir)); !strings.HasPrefix(why, reason) {
+			t.Errorf("%s\n  passed, want an ask", cmd)
+		}
+	}
+	for _, cmd := range []string{
+		`d=/tmp; find $d -name x; az repos pr list --status active`,
+		`find . "$1" echo hi \; -exec wc -l {} +`,
+		`find "$notes" -path '*x*' -exec /usr/bin/grep -l foo {} +; az repos pr show --id 1`,
+	} {
+		if why := check(bash(cmd, dir)); why != "" {
+			t.Errorf("%s\n  asked: %s", cmd, why)
+		}
+	}
+}
+
+// Final review of cf0673c, P1-2: each quoted word that may be ; judged the words after it again, both ways, so the work
+// doubled per word (22 words took 43 s; past the hook's 60 s limit the call goes through). Each part is judged once, and
+// checkCall itself stops at the deadline.
+func TestManyFindWordsThatMayEndAPartAskInTime(t *testing.T) {
+	dir := t.TempDir()
+	cmd := `find . -maxdepth 0 -exec echo` + strings.Repeat(` "$1" -exec echo`, 40) + ` \; ; az repos pr create --title x --description hi`
+	deadline = time.Now().Add(time.Second)
+	defer func() { deadline = time.Time{} }()
+	done := make(chan string, 1)
+	go func() { done <- check(bash(cmd, dir)) }()
+	select {
+	case why := <-done:
+		if !strings.HasPrefix(why, reason) {
+			t.Errorf("passed, want an ask")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("still judging 40 find words after 3 s (deadline 1 s)")
+	}
+}
+
+func TestCheckCallAsksPastTheDeadline(t *testing.T) {
+	deadline = time.Now().Add(-time.Second)
+	defer func() { deadline = time.Time{} }()
+	args := []word{{text: "find", ok: true}, {text: ".", ok: true}}
+	if why := checkCall(args, false, ctx{cwd: t.TempDir()}); !strings.Contains(why, "ran out of time") {
+		t.Errorf("checkCall past the deadline gave %q, want a time-out ask", why)
 	}
 }
