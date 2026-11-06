@@ -104,3 +104,32 @@ func TestANamerefOrAComputedNameMakesVariablesUnknown(t *testing.T) {
 		t.Errorf("Crius mode: want allow, got %s %q", d, why)
 	}
 }
+
+// P1-3 (and the P2 test gap): a script named by its full path after a cd runs in the cd's folder, so the relative
+// files and scripts it names are that folder's. The guard read them in the start folder.
+func TestAScriptRunAfterACdRunsInThatFolder(t *testing.T) {
+	dir := criusDir(t, nil)
+	moved, bin := t.TempDir(), t.TempDir()
+	write(t, filepath.Join(dir, "d.md"), "Clean text.\n")
+	write(t, filepath.Join(moved, "d.md"), "Done.\n\n"+coAuthor+"\n")
+	write(t, filepath.Join(dir, "inner.sh"), "#!/bin/bash\necho hi\n")
+	write(t, filepath.Join(moved, "inner.sh"), "#!/bin/bash\naz repos pr update --id 9 --status completed --org https://dev.azure.com/Appxite\n")
+	write(t, filepath.Join(bin, "post.sh"), "#!/bin/bash\naz repos pr create --title t --description @d.md --source-branch feature/96365-x --target-branch integration/96365-b1 --org https://dev.azure.com/Appxite --project P\n")
+	write(t, filepath.Join(bin, "outer.sh"), "#!/bin/bash\nbash inner.sh\n")
+	for _, cmd := range []string{
+		"cd " + moved + " && bash " + bin + "/post.sh",
+		"cd " + moved + "; bash " + bin + "/post.sh",
+		"cd " + moved + " && bash " + bin + "/outer.sh",
+	} {
+		if d, why := crius(t, criusSID, dir, cmd); d != "deny" {
+			t.Errorf("Crius mode: want deny, got %s %q\n  %s", d, why, cmd)
+		}
+		if why := check(bash(cmd, dir)); !strings.Contains(why, "owner's click") {
+			t.Errorf("lead: want an ask, got %q\n  %s", why, cmd)
+		}
+	}
+	// control: the same script with no cd reads the start folder's clean file
+	if d, why := crius(t, criusSID, dir, "bash "+bin+"/post.sh"); d != "" {
+		t.Errorf("Crius mode: want allow, got %s %q", d, why)
+	}
+}

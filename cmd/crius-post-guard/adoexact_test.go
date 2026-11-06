@@ -101,13 +101,17 @@ func TestADOSuiteOffShapeAsks(t *testing.T) {
 	rep := pre + " report 126862"
 	run := pre + " run ~/Projects/Appxite/svc_quote/wt/core-2 feature/x"
 	wtGit := home + "/Projects/Appxite/svc_quote/wt/core-2/.git"
+	// a folder with a bunfig.toml: bun run after a cd there reads it (review r2 P1-3: the guard now reads the cd's folder,
+	// where it read the start folder, which here does not exist)
+	withBunfig := t.TempDir()
+	write(t, withBunfig+"/bunfig.toml", "preload = [\"/tmp/p.ts\"]\n")
 	for _, cmd := range []string{
 		// P1-1: a bunfig.toml, .env or ~/.bunfig.toml written earlier in the same command
 		`printf 'preload = ["/tmp/p.ts"]\n' > bunfig.toml; ` + rep,
 		`printf 'preload = ["/tmp/p.ts"]\n' > bunfig.toml && ` + rep,
 		`echo X=1 > .env; ` + rep,
 		`printf 'preload = ["/tmp/p.ts"]\n' > ~/.bunfig.toml; ` + rep,
-		`cd /tmp && ` + rep,
+		`cd ` + withBunfig + ` && ` + rep,
 		// P1-2: a function, zsh functions[], hash or alias redefines bun
 		`bun() { /tmp/evil "$@"; }; ` + rep,
 		`function bun { /tmp/evil; }; ` + rep,

@@ -92,7 +92,7 @@ func checkScript(a word, c ctx, kind runKind, plain bool) string {
 	changed := "the command changes folder in a way the guard does not follow"
 	switch {
 	case filepath.IsAbs(name):
-		return scriptAt(name, c, kind, plain, false, c.cwd)
+		return scriptAt(name, c, kind, plain, false, c.runsIn(a.node))
 	case c.movedAt > 0 && (a.node == nil || a.node.End().Offset() > c.movedAt):
 		return unplaced(a, name, c, kind, plain, changed)
 	case c.cwd != "" && (!c.moved || c.cd != nil && a.node != nil && a.node.Pos().Offset() >= c.cd.to):
@@ -110,6 +110,21 @@ func checkScript(a word, c ctx, kind runKind, plain bool) string {
 	}
 	c.alt = filepath.Join(c.cd.dir, name)
 	return scriptAt(filepath.Join(c.cwd, name), c, kind, plain, true, c.cwd)
+}
+
+// runsIn gives the folder a command at w runs in, or "" when the guard does not know it (review r2 P1-3: a script named
+// by its full path after cd D runs in D, and its relative files and scripts are D's): the start folder where no cd may
+// have run yet, the cd's folder where the cd surely went there.
+func (c ctx) runsIn(w *syntax.Word) string {
+	switch {
+	case w == nil || c.movedAt > 0 && w.End().Offset() > c.movedAt:
+		return ""
+	case !c.moved || c.cd != nil && w.Pos().Offset() >= c.cd.to:
+		return c.cwd
+	case c.cd != nil && w.Pos().Offset() >= c.cd.at && w.End().Offset() <= c.cd.sure:
+		return c.cd.dir
+	}
+	return ""
 }
 
 // readText is a script the guard read for this hook call, and its text.
