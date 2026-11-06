@@ -29,7 +29,11 @@ console.log(`rulings cited (${need.size}): ${[...need].sort().join(' ') || 'none
 const faults: string[] = [];
 for (const r of missing) {
   const near = verdict.split('\n').filter((l) => new RegExp(`(^|[^\\d.])${r.replace('.', '\\.')}(?![\\d.])`).test(l));
-  if (near.length === 0) { faults.push(`${r}: no line`); continue; }
+  if (near.length === 0) {
+    const base = r.split('.')[0];
+    const bare = r.includes('.') && verdict.split('\n').some((l) => new RegExp(`\\b${base}(?![\\d.])`).test(l));
+    faults.push(`${r}: no line${bare ? ` (a bare "${base}" line does not count: ${base} has numbered points, give each its own line)` : ''}`); continue;
+  }
   for (const l of near) {
     const why = !/:\s*/.test(l.slice(l.indexOf(r) + r.length, l.indexOf(r) + r.length + 2)) ? `"${r}" must be followed by ":"`
       : !/:\s*(met|not met|n\/a)\b/i.test(l) ? 'status must be met, not met or n/a'
@@ -37,5 +41,11 @@ for (const r of missing) {
     faults.push(`${r}: ${why}: ${l.trim().slice(0, 120)}`);
   }
 }
+// Crius 11-06 13:33 (old line 1 on 7852, 7833, 7827): line 1 is "# QA verdict: PR <id> (<what>) @ <head8> — PASS";
+// with --head (pass-post.sh passes the PR head) the sha must be that head.
+const head = get('--head'); const l1 = verdict.split('\n')[0];
+const m1 = l1.match(new RegExp(`^# QA verdict: PR ${pr} \\(.+\\) @ ([0-9a-f]{8}) — PASS$`));
+if (!m1) faults.push(`line 1 must read "# QA verdict: PR ${pr} (<what>) @ <head8> — PASS", it reads: ${l1.slice(0, 120)}`);
+else if (head && m1[1] !== head.slice(0, 8)) faults.push(`line 1 names ${m1[1]}, the PR head is ${head.slice(0, 8)}`);
 if (faults.length) { console.log(`REFUSED rc 6: ${faults.length} fault(s), each needs a "Bn.k: met|not met|n/a — evidence" line:`); for (const f of faults) console.log(`  - ${f}`); process.exit(6); }
 console.log('verdict-check ok');

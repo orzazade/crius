@@ -17,7 +17,10 @@ IFS=', ' read -r -a to <<< "${TO:-}"
 for t in "${to[@]}"; do [ "$t" = LEADER ] || cut -f1 "$B/board/members.tsv" | /usr/bin/grep -qx -- "$t" || fault 10 "TO name '$t' is not in board/members.tsv"; done
 [ ${#to[@]} -ge 2 ] || fault 10 "TO='${TO:-}' names no builder besides LEADER"
 srcs=(); for f in "$@"; do srcs+=(--src "$f"); done
-bun "$B/qa/tools/verdict-check.ts" --pr "$PR" --verdict "$V" "${srcs[@]}" || fault 6 "verdict-check refused (its faults are listed above)"
+# Crius 11-06 13:33: verdict-check also checks line 1 names this head.
+head=$(az repos pr show --org https://dev.azure.com/Appxite --id "$PR" --query lastMergeSourceCommit.commitId -o tsv) || head=""
+[ ${#head} -eq 40 ] || fault 11 "cannot read PR $PR head"
+bun "$B/qa/tools/verdict-check.ts" --pr "$PR" --verdict "$V" ${head:+--head "$head"} "${srcs[@]}" || fault 6 "verdict-check refused (its faults are listed above)"
 if /usr/bin/grep -q -E "build [0-9]+ green" "$M"; then
   # rc 9 (11-05 19:3x, 7785 named branch build 126884): the named build must be this PR's merge build and green.
   bid=$(/usr/bin/grep -o -E "build [0-9]+ green" "$M" | head -1 | /usr/bin/grep -o -E "[0-9]+")
@@ -27,9 +30,9 @@ if /usr/bin/grep -q -E "build [0-9]+ green" "$M"; then
 else fault 7 "message has no 'build <id> green' (B105)"; fi
 # rc 11 (lead 11-05 21:40: 7798 and earlier 7789 got PASS with no review record, so merge.sh refused them): a
 # notes/*-evidence/*/deep-review.md must hold "Reviewed: <base>..<PR head>" (same rule as the lead's review-gate.sh).
-if head=$(az repos pr show --org https://dev.azure.com/Appxite --id "$PR" --query lastMergeSourceCommit.commitId -o tsv); then
+if [ ${#head} -eq 40 ]; then
   find "$B/notes" -path '*-evidence/*' -name deep-review.md -exec /usr/bin/grep -h -o -E '^Reviewed: [0-9a-f]{7,40}\.\.[0-9a-f]{8,40}' {} + | sed 's/.*\.\.//' | while read -r s; do [[ $head == "$s"* ]] && echo hit; done | /usr/bin/grep -q hit || fault 11 "no deep-review.md has 'Reviewed: <base>..${head:0:8}' for PR $PR; the builder's codex review writes it"
-else fault 11 "cannot read PR $PR head"; fi
+fi
 if [ ${#faults[@]} -gt 0 ]; then
   echo "REFUSED: ${#faults[@]} fault(s)${CHECK:+ (check only, nothing posted)}:"; printf '  - %s\n' "${faults[@]}"; exit $rc
 fi
