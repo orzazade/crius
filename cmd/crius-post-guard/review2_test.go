@@ -1,6 +1,7 @@
 package main
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -47,5 +48,29 @@ func TestAzOptionLastCopyInOrderWinsOverAliasesAndPrefixes(t *testing.T) {
 		if why := check(bash(cmd, dir)); !strings.Contains(why, "az rest PATCH") {
 			t.Errorf("want an ask for az rest PATCH, got %q\n  %s", why, cmd)
 		}
+	}
+}
+
+// P1-4: bash splits an unquoted $O on IFS, so with IFS set anywhere in the text the guard does not know the words.
+func TestAnUnquotedWordIsUnreadableWhenIFSIsSet(t *testing.T) {
+	dir := criusDir(t, nil)
+	write(t, filepath.Join(dir, "sep.sh"), "IFS=:\n")
+	for _, cmd := range []string{
+		`IFS=:; O="repos:pr:update:--id:9:--status:completed:--org:https://dev.azure.com/Appxite"; az $O`,
+		`O="repos:pr:update:--id:9:--status:completed:--org:https://dev.azure.com/Appxite"; export I\FS=:; az $O`,
+		`O="repos:pr:update:--id:9:--status:completed:--org:https://dev.azure.com/Appxite"; declare "I""FS=:"; az $O`,
+		`O="repos:pr:update:--id:9:--status:completed:--org:https://dev.azure.com/Appxite"; read -r IFS <<< ":"; az $O`,
+		`source ./sep.sh; O="repos:pr:update:--id:9:--status:completed:--org:https://dev.azure.com/Appxite"; az $O`,
+	} {
+		if why := check(bash(cmd, dir)); !strings.Contains(why, "owner's click") {
+			t.Errorf("want an ask, got %q\n  %s", why, cmd)
+		}
+		if d, why := crius(t, criusSID, dir, cmd); d != "deny" {
+			t.Errorf("Crius mode: want deny, got %s %q\n  %s", d, why, cmd)
+		}
+	}
+	// the default IFS splits as before
+	if why := check(bash(`O="--org https://dev.azure.com/Appxite"; az repos pr list $O`, dir)); why != "" {
+		t.Errorf("want pass, got %q", why)
 	}
 }

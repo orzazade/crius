@@ -219,6 +219,7 @@ type ctx struct {
 	after      []word                  // the words after the script this call runs (teamScript)
 	runner     []word                  // for code run by an interpreter: the interpreter and its words before the file
 	fed        bool                    // run by find -exec or xargs, which fill in words: a post's relative file is not known
+	ifsAt      uint                    // >0: an eval, source or command name from a variable ending here may set IFS (1: anywhere)
 }
 
 // cdTo is a cd that runs before what follows it in the command's own text, up to to (the end of the text, or of the
@@ -1620,6 +1621,7 @@ func (c ctx) scan(f *syntax.File, src string) ctx {
 	c.vars = map[string]setVar{}
 	c.loops = map[string]loopVar{}
 	c.evals = nil
+	c.ifsAt = 0
 	if c.movedAt > 0 {
 		c.moved = true // the text of a call after the parent's eval or source
 	}
@@ -1727,8 +1729,10 @@ func (c ctx) scan(f *syntax.File, src string) ctx {
 	// with no loop or function, what comes after it in the text
 	if all && (funcs || loops) {
 		c.moved = true
+		c.ifsAt = 1
 	} else if all && len(c.evals) > 0 {
 		c.movedAt = slices.Min(c.evals)
+		c.ifsAt = c.movedAt
 	}
 	// in a && b, b's assignment holds after the chain only when every statement before it is one too (false && S=x
 	// leaves S unset); otherwise only inside the chain, where it ran when what follows runs (review of a4106c1)
@@ -1766,7 +1770,7 @@ func (c ctx) scan(f *syntax.File, src string) ctx {
 			v := word{ok: true}
 			if a.Value != nil {
 				v = literal(a.Value)
-				if s, known := c.resolve(a.Value); !v.ok && known {
+				if s, known := c.resolveWord(a.Value, false); !v.ok && known {
 					v = word{text: s, ok: true} // D=$(dirname "$0"), S=$HOME/x
 				}
 			}
@@ -2053,6 +2057,11 @@ func assignOnly(st *syntax.Stmt) bool {
 
 // resolve gives a word's value when its only expansions are plain $X or ${X} of variables the command set before it.
 func (c ctx) resolve(w *syntax.Word) (string, bool) {
+	return c.resolveWord(w, true)
+}
+
+// resolveWord is resolve; split says bash splits the word's unquoted expansions on IFS (every word but an assigned value).
+func (c ctx) resolveWord(w *syntax.Word, split bool) (string, bool) {
 	var b strings.Builder
 	param := func(pe *syntax.ParamExp) bool {
 		if pe.Excl || pe.Length || pe.Width || pe.Index != nil || pe.Slice != nil || pe.Repl != nil || pe.Names != 0 ||
@@ -2092,10 +2101,13 @@ func (c ctx) resolve(w *syntax.Word) (string, bool) {
 			}
 			b.WriteString(p.Value)
 		case *syntax.ParamExp:
-			if !param(p) {
+			if split && c.ifsMaySet(w) || !param(p) {
 				return "", false
 			}
 		case *syntax.CmdSubst:
+			if split && c.ifsMaySet(w) {
+				return "", false
+			}
 			d, ok := c.scriptDirOf(p)
 			if !ok {
 				return "", false
@@ -2125,6 +2137,26 @@ func (c ctx) resolve(w *syntax.Word) (string, bool) {
 		}
 	}
 	return b.String(), true
+}
+
+// ifsMaySet says whether IFS may not be bash's default where this text runs, so bash may split an unquoted $X or $(…)
+// where the guard does not (review r2 P1-4: IFS=:; O="repos:pr:update:…"; az $O): the name anywhere in the texts around
+// the call, with quotes and backslashes taken out (I\FS=:, "I""FS"=:), or an eval, source or command name from a
+// variable that may set it before w.
+func (c ctx) ifsMaySet(w *syntax.Word) bool {
+	if c.ifsAt == 1 || c.ifsAt > 0 && w.End().Offset() > c.ifsAt {
+		return true
+	}
+	texts := []string{c.whole}
+	for _, r := range c.files {
+		texts = append(texts, r.src)
+	}
+	for _, t := range texts {
+		if strings.Contains(t, "FS") && strings.Contains(strings.NewReplacer(`"`, "", `'`, "", `\`, "").Replace(t), "IFS") {
+			return true
+		}
+	}
+	return false
 }
 
 // isADO says whether a word that names a URL points at Azure DevOps: an ADO host or API path as written, or a URL from a
