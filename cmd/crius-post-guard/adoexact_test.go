@@ -453,6 +453,48 @@ func TestADOSuiteRedirectPlaces(t *testing.T) {
 	}
 }
 
+// review 11-06 round 2. P2-1: notes/ or qa/ as a symlink would make its target (a home folder) a place to write, so
+// the roots count only as their own real path. P3-1: .git in any case, and a folder holding HEAD and commondir (a
+// linked worktree's git folder), are git places too.
+func TestADOSuiteRedirectRootsAndGitFoldersRound2(t *testing.T) {
+	home, bunfig, sp := exactHome(t)
+	build := home + "/.crius/state/quotes/build"
+	other := t.TempDir()
+	if err := os.RemoveAll(build + "/qa"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(other, build+"/qa"); err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []string{sp + "/wtgit", sp + "/up/.GIT"} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(t, sp+"/wtgit/HEAD", "ref: refs/heads/feature/x\n")
+	write(t, sp+"/wtgit/commondir", "../..\n")
+	write(t, sp+"/up/.GIT/keep", "x\n")
+	rep := "bun --no-env-file --config=" + bunfig + " ~/.crius/state/quotes/build/bin/ado-suite.ts report 1 > "
+	for target, want := range map[string]string{
+		build + "/qa/.zshenv":           "outside",
+		build + "/qa/ado-report.log":    "outside",
+		sp + "/.GIT":                    "named .git",
+		build + "/notes/.Git":           "named .git",
+		sp + "/wtgit/out.log":           "a git repository folder",
+		sp + "/up/.GIT/out.log":         "git worktree",
+		build + "/notes/ado-report.log": "",
+		sp + "/ado.log":                 "",
+	} {
+		why := check(exactIn(rep + target))
+		switch {
+		case want == "" && why != "":
+			t.Errorf("want pass for %s, asked: %s", target, why)
+		case want != "" && !strings.Contains(why, want):
+			t.Errorf("want an ask naming %q for %s, got %q", want, target, why)
+		}
+	}
+}
+
 // review 11-06 part 1, P3: each passing shape, read the usual way (a ctx_batch_execute command, or checkBash), asks only
 // for ado-suite.ts's own write: the exact rule hides nothing else the usual reading would find.
 func TestADOSuitePassingShapesAskOnlyForTheSuiteTheUsualWay(t *testing.T) {

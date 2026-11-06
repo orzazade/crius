@@ -319,6 +319,9 @@ func pinned(p, sum string) string {
 	return ""
 }
 
+// isDotGit is true for .git in any case: the Mac's disk does not tell .GIT from .git.
+func isDotGit(name string) bool { return strings.EqualFold(name, ".git") }
+
 // safeTarget asks unless the redirect target is in the Quotes build folder or this session's scratchpad (by its real
 // folder), in no git worktree or .git folder below there, and is new or a plain file with one link.
 func safeTarget(p, home, sid string) string {
@@ -327,12 +330,14 @@ func safeTarget(p, home, sid string) string {
 		return asked("ado-suite.ts output to " + p + ": the guard cannot resolve its folder")
 	}
 	full := filepath.Join(dir, filepath.Base(p))
-	if filepath.Base(p) == ".git" {
+	if isDotGit(filepath.Base(p)) {
 		return asked("ado-suite.ts output to " + p + ": a file named .git")
 	}
 	var roots []string
 	for _, sub := range []string{"notes", "qa"} {
-		if r, err := filepath.EvalSymlinks(filepath.Join(home, ".crius/state/quotes/build", sub)); err == nil {
+		// only a real folder: a symlinked notes/ or qa/ would make its target (say a home folder) a root
+		r := filepath.Join(home, ".crius/state/quotes/build", sub)
+		if real, err := filepath.EvalSymlinks(r); err == nil && real == r {
 			roots = append(roots, r)
 		}
 	}
@@ -355,14 +360,15 @@ func safeTarget(p, home, sid string) string {
 		return asked("ado-suite.ts output to " + p + ": outside the Quotes build notes/ and qa/ folders and this session's scratchpad")
 	}
 	for d := dir; ; d = filepath.Dir(d) {
-		if filepath.Base(d) == ".git" {
+		if isDotGit(filepath.Base(d)) {
 			return asked("ado-suite.ts output to " + p + ": inside a git worktree's .git")
 		}
 		if _, err := os.Lstat(filepath.Join(d, ".git")); !errors.Is(err, fs.ErrNotExist) {
 			return asked("ado-suite.ts output to " + p + ": inside a git worktree (" + d + ")")
 		}
 		_, herr := os.Lstat(filepath.Join(d, "HEAD"))
-		if o, err := os.Lstat(filepath.Join(d, "objects")); herr == nil && err == nil && o.IsDir() {
+		_, cerr := os.Lstat(filepath.Join(d, "commondir"))
+		if o, err := os.Lstat(filepath.Join(d, "objects")); herr == nil && (cerr == nil || err == nil && o.IsDir()) {
 			return asked("ado-suite.ts output to " + p + ": inside a git repository folder (" + d + ")")
 		}
 		if d == root || len(d) <= len(root) {
