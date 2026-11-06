@@ -96,21 +96,27 @@ func quotesExact(command string) (ok bool, why string) {
 		if why := pinned(script, prBuildSHA); why != "" {
 			return true, why
 		}
-		if v := os.Getenv("BASH_ENV"); v != "" {
-			return true, asked("pr-build.sh with BASH_ENV set in the session (" + v + "): bash runs it first")
-		}
-		for _, kv := range os.Environ() {
-			if strings.HasPrefix(kv, "BASH_FUNC_") {
-				name, _, _ := strings.Cut(kv, "=")
-				return true, asked("pr-build.sh with an exported bash function in the session (" + name + "): bash runs it in place of a command")
-			}
-		}
-		return true, ""
+		return true, bashEnv("pr-build.sh")
 	case len(args) == 12 && strings.Join(args[:5], " ") == "az repos pr set-vote --id" && prIDRe.MatchString(args[5]) &&
 		strings.Join(args[6:], " ") == "--vote approve --org "+adoOrg+" -o none":
 		return true, qaPassed(args[5], filepath.Join(build, "qa"))
 	}
 	return false, ""
+}
+
+// bashEnv asks when the hook's env has BASH_ENV or an exported bash function (BASH_FUNC_*), which bash would run for
+// the script who.
+func bashEnv(who string) string {
+	if v := os.Getenv("BASH_ENV"); v != "" {
+		return asked(who + " with BASH_ENV set in the session (" + v + "): bash runs it first")
+	}
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, "BASH_FUNC_") {
+			name, _, _ := strings.Cut(kv, "=")
+			return asked(who + " with an exported bash function in the session (" + name + "): bash runs it in place of a command")
+		}
+	}
+	return ""
 }
 
 // qaPassed asks unless qa/*-<head8>/verdict.md says on its first line PR <id> and PASS for the PR's current head.

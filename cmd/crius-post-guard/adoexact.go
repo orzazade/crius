@@ -129,17 +129,8 @@ func adoExact(command, sid string) (ok bool, why string) {
 			return true, why
 		}
 	}
-	globals := []string{filepath.Join(home, ".bunfig.toml"), filepath.Join(home, ".config/.bunfig.toml")}
-	if x := os.Getenv("XDG_CONFIG_HOME"); x != "" {
-		globals = append(globals, filepath.Join(x, ".bunfig.toml"))
-	}
-	for _, g := range globals {
-		if _, err := os.Lstat(g); !errors.Is(err, fs.ErrNotExist) {
-			return true, asked("ado-suite.ts with a global bun config at " + g + ": bun may read it, so the exact shape does not pass")
-		}
-	}
-	if v := os.Getenv("BUN_OPTIONS"); v != "" {
-		return true, asked("ado-suite.ts with BUN_OPTIONS set in the session (" + v + "): it can add code to bun")
+	if why := bunEnv(home, "ado-suite.ts"); why != "" {
+		return true, why
 	}
 	if wt != "" {
 		if why := svcWorktree(wt, args[6], home); why != "" {
@@ -152,6 +143,23 @@ func adoExact(command, sid string) (ok bool, why string) {
 		}
 	}
 	return true, ""
+}
+
+// bunEnv asks when a global .bunfig.toml or the session's BUN_OPTIONS could add code to bun, for the script who.
+func bunEnv(home, who string) string {
+	globals := []string{filepath.Join(home, ".bunfig.toml"), filepath.Join(home, ".config/.bunfig.toml")}
+	if x := os.Getenv("XDG_CONFIG_HOME"); x != "" {
+		globals = append(globals, filepath.Join(x, ".bunfig.toml"))
+	}
+	for _, g := range globals {
+		if _, err := os.Lstat(g); !errors.Is(err, fs.ErrNotExist) {
+			return asked(who + " with a global bun config at " + g + ": bun may read it, so the exact shape does not pass")
+		}
+	}
+	if v := os.Getenv("BUN_OPTIONS"); v != "" {
+		return asked(who + " with BUN_OPTIONS set in the session (" + v + "): it can add code to bun")
+	}
+	return ""
 }
 
 // svcWorktree asks unless wt is a linked worktree of svc_quote (its .git a file naming svc_quote's .git/worktrees/<x>,

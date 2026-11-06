@@ -37,7 +37,8 @@
 // on an outward-facing write never lets one through silently.
 // Three command shapes pass though what they run writes: the Quotes team's ado-suite.ts report or run, when the whole
 // command is exactly that call with its pinned files and flags (adoexact.go), and its pr-build.sh <pr> and approve vote
-// with a QA PASS verdict for the PR's head (quotesexact.go); any other shape gets the usual reading.
+// with a QA PASS verdict for the PR's head (quotesexact.go), and its QA's pass-post.sh line (passpost.go); any other
+// shape gets the usual reading.
 //
 // Known gaps: git push to an Azure DevOps remote passes (not yet a post here); a command name from a variable or a
 // function ($AZ, f() { az "$@"; }) when the command names neither az nor Azure DevOps; a command that makes bash read
@@ -264,6 +265,9 @@ func check(in input) string {
 			return why
 		}
 		if ok, why := quotesExact(t.Command); ok {
+			return why
+		}
+		if ok, why := passPostExact(t.Command, in.SessionID); ok {
 			return why
 		}
 		return checkBash(t.Command, ctx{cwd: in.Cwd, whole: t.Command, reads: new(int), read: new([]readText)})
