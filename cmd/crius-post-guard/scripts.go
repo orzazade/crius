@@ -186,7 +186,7 @@ func scriptAt(name string, c ctx, kind runKind, plain, orNone bool, dir string) 
 	if c.depth >= 4 {
 		return cannotRead(c, name, "it is run 4 scripts down, deeper than the guard reads")
 	}
-	heredocs, written := c.heredocs(name)
+	heredocs, written, _ := c.heredocs(name)
 	// the lead allow list: a pinned team script passes unread unless the command may change it first (Crius 11-06 item 5)
 	if c.crius != nil && c.crius.lead && plain && len(heredocs) == 0 && !c.changes(name, written) && c.madeBy(name) == "" {
 		why := teamScript(name, c.after, dir)
@@ -485,10 +485,10 @@ func codePosts(lang, body string) (string, uint) {
 
 // heredocs gives the texts a heredoc in the command writes into the script (cat > x.sh <<'EOF', cat >> x.sh, tee [-a]
 // x.sh), and the words that name the script there. Only a cat or tee that is no function, reads only the heredoc and
-// writes the script by a path the guard reads counts; any other write to it is a change (changes).
-func (c ctx) heredocs(script string) ([]string, map[*syntax.Word]bool) {
-	var texts []string
-	words := map[*syntax.Word]bool{}
+// writes the script by a path the guard reads counts; any other write to it is a change (changes). open: a text holds an
+// expansion the guard did not put in ($(…), a variable not set to a literal), so the file will not hold the text as read.
+func (c ctx) heredocs(script string) (texts []string, words map[*syntax.Word]bool, open bool) {
+	words = map[*syntax.Word]bool{}
 	for i := range c.files {
 		r := &c.files[i]
 		rc := ctx{cwd: r.cwd, vars: r.vars, moved: r.moved, movedAt: r.movedAt, script: c.script, cd: r.cd}
@@ -541,21 +541,25 @@ func (c ctx) heredocs(script string) ([]string, map[*syntax.Word]bool) {
 				return true
 			}
 			if p, ok := rc.place(target); ok && samePath(p, script) {
-				texts = append(texts, heredocBody(doc, rc))
+				t, all := heredocBody(doc, rc)
+				texts = append(texts, t)
+				open = open || !all
 				words[target] = true
 			}
 			return true
 		})
 	}
-	return texts, words
+	return texts, words, open
 }
 
 // heredocBody gives the text a heredoc writes: as written when its end word is quoted; else with \$, \` and \\ undone
 // and each $X the command set to a literal put in (other expansions stay as written, so the check reads them as such).
-func heredocBody(rd *syntax.Redirect, c ctx) string {
+// all: no expansion stayed as written.
+func heredocBody(rd *syntax.Redirect, c ctx) (string, bool) {
 	if rd.Hdoc == nil {
-		return ""
+		return "", true
 	}
+	all := true
 	quoted := false
 	for _, p := range rd.Word.Parts {
 		switch p := p.(type) {
@@ -579,12 +583,14 @@ func heredocBody(rd *syntax.Redirect, c ctx) string {
 				b.WriteString(s)
 				continue
 			}
+			all = false
 			syntax.NewPrinter().Print(&b, p)
 		default:
+			all = false
 			syntax.NewPrinter().Print(&b, p)
 		}
 	}
-	return b.String()
+	return b.String(), all
 }
 
 // place gives the path a word names, from the folder the command started in when it is relative and the command did
@@ -791,8 +797,17 @@ func changesIn(r runs, script string, rc ctx, self, own bool, fine map[*syntax.W
 				if l := literal(rd.Word); l.ok && devFiles[l.text] {
 					continue
 				}
-				// a redirect writes the one file it names: the script when it is that file (by name, path or link)
-				if _, known := rc.resolve(rd.Word); names(rd.Word) || !self && !known {
+				// a redirect writes the one file it names: the script when it is that file (by name, path or link). Where
+				// the guard places the word, the place decides, not the name (Crius 11-06 13:36: cd D && cat > x.ts <<'EOF'
+				// wrote D/x.ts, and the start folder's x.ts counted as made)
+				// only for a plain literal path: ~user, ~+ and .. through a link are placed wrong, and their name still counts
+				hits := names(rd.Word)
+				l := literal(rd.Word)
+				plainPath := l.ok && !strings.HasPrefix(l.text, "~") && !slices.Contains(strings.Split(l.text, "/"), "..")
+				if ps := rc.places(rd.Word); plainPath && ps != nil && !(own && namesSelf(rd.Word)) {
+					hits = slices.ContainsFunc(ps, func(p string) bool { return samePath(p, script) })
+				}
+				if _, known := rc.resolve(rd.Word); hits || !self && !known {
 					changed = true
 				}
 			}
@@ -837,6 +852,9 @@ func changesIn(r runs, script string, rc ctx, self, own bool, fine map[*syntax.W
 			case writes:
 				for _, w := range ce.Args[1:] {
 					ok[w] = true
+					if fine[w] {
+						continue // a word known to leave it as it is (a post's own words read the file it sends)
+					}
 					at := w
 					t, known := rc.resolve(w)
 					if known && t == "" {

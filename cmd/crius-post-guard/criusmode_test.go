@@ -10,6 +10,8 @@ import (
 )
 
 const (
+	criusSID        = "43e3c11e-7d5e-486e-8356-990c414d0be6" // the main session and its subagents share it
+	leadSID         = "9f1d0c2a-0000-4000-8000-000000000001"
 	criusTranscript = "/Users/o/.claude-max2-personal/projects/-Users-orkhanrzazade-Projects-scifi-crius/43e3c11e.jsonl"
 	criusSubagent   = "/Users/o/.claude/projects/-Users-orkhanrzazade-Projects-scifi-crius/43e3c11e/subagents/agent-a1.jsonl"
 	leadTranscript  = "/Users/o/.claude-work/projects/-Users-orkhanrzazade-Projects-Appxite-svc-quote/9f1.jsonl"
@@ -27,11 +29,20 @@ var (
 	comLink  = "see https://claude" + ".com/x"
 )
 
-// crius runs the hook on a Bash command with transcript and cwd, and gives the decision ("" when it writes nothing) and
-// the reason.
-func crius(t *testing.T, transcript, cwd, cmd string) (string, string) {
+// crius runs the hook on a Bash command in session sid (with that session's transcript) and cwd, and gives the decision
+// ("" when it writes nothing) and the reason.
+func crius(t *testing.T, sid, cwd, cmd string) (string, string) {
 	t.Helper()
-	b, err := json.Marshal(map[string]any{"tool_name": "Bash", "cwd": cwd, "transcript_path": transcript,
+	transcript := leadTranscript
+	if sid == criusSID {
+		transcript = criusTranscript
+	}
+	return hook(t, sid, transcript, cwd, cmd)
+}
+
+func hook(t *testing.T, sid, transcript, cwd, cmd string) (string, string) {
+	t.Helper()
+	b, err := json.Marshal(map[string]any{"tool_name": "Bash", "cwd": cwd, "session_id": sid, "transcript_path": transcript,
 		"tool_input": map[string]any{"command": cmd}})
 	if err != nil {
 		t.Fatal(err)
@@ -52,11 +63,15 @@ func crius(t *testing.T, transcript, cwd, cmd string) (string, string) {
 	return v.HookSpecificOutput.PermissionDecision, v.HookSpecificOutput.PermissionDecisionReason
 }
 
-// criusDir is a folder for the call with a guard log of its own and PRs read from targets instead of ADO.
+// criusDir is a folder for the call with a guard log of its own, criusSID as the Crius session and PRs read from targets
+// instead of ADO.
 func criusDir(t *testing.T, targets map[string]string) string {
 	t.Helper()
 	home := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(home, "state"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(home, "state", "crius"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "state", "crius", "session-id"), []byte(criusSID+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("CRIUS_HOME", home)
@@ -72,24 +87,45 @@ func criusDir(t *testing.T, targets map[string]string) string {
 	return t.TempDir()
 }
 
-func TestCriusModeIsTheCriusProjectFolder(t *testing.T) {
-	for p, want := range map[string]bool{
-		criusTranscript: true,
-		criusSubagent:   true,
-		leadTranscript:  false,
-		"/Users/o/.claude/projects/-Users-orkhanrzazade-Projects-scifi-crius-build/1.jsonl": false,
-		"/Users/o/.claude/projects/-Users-orkhanrzazade-Projects-scifi-crius":               false,
-		"/Users/o/.claude/projects/x/../-Users-orkhanrzazade-Projects-scifi-crius/1.jsonl":  true,
-		"/tmp/-Users-orkhanrzazade-Projects-scifi-crius/1.jsonl":                            false,
-		"projects/-Users-orkhanrzazade-Projects-scifi-crius/1.jsonl":                        false,
-		"": false,
-		"/Users/o/.claude/projects/-Users-orkhanrzazade-Projects-Appxite-svc-quote/crius/1.jsonl":      false,
-		"/Users/o/.claude/projects/-Users-orkhanrzazade-Projects-scifi-crius/43e3c11e/tool-results/x":  true,
-		"/Users/o/.claude/projects/-Users-orkhanrzazade-Projects-scifi-crius-build/-Users-orkhanrzaza": false,
+// Crius mode is the session whose id Crius writes to $CRIUS_HOME/state/crius/session-id (review of 2a882aa, P2-7: a
+// folder name is not a session); its subagents share the id. No file, another id or none means the lead rules.
+func TestCriusModeIsTheCriusSession(t *testing.T) {
+	const unreadable = "$AZ repos pr create --title t" + adoO
+	dir := criusDir(t, nil)
+	for _, c := range []struct {
+		sid, transcript, want string
+	}{
+		{criusSID, criusTranscript, "deny"},
+		{criusSID, criusSubagent, "deny"},
+		{criusSID, leadTranscript, "deny"},
+		{leadSID, criusTranscript, "ask"},
+		{"", criusTranscript, "ask"},
+		{criusSID[:8], criusTranscript, "ask"},
 	} {
-		if got := criusSession(p); got != want {
-			t.Errorf("criusSession(%q) = %v, want %v", p, got, want)
+		if d, why := hook(t, c.sid, c.transcript, dir, unreadable); d != c.want {
+			t.Errorf("session %q, transcript %s: want %s, got %s %q", c.sid, c.transcript, c.want, d, why)
 		}
+	}
+	home := os.Getenv("CRIUS_HOME")
+	idFile := filepath.Join(home, "state", "crius", "session-id")
+	for name, body := range map[string]string{"another id": leadSID + "\n", "empty": "", "two lines": criusSID + "\n" + leadSID + "\n"} {
+		write(t, idFile, body)
+		if d, why := hook(t, criusSID, criusTranscript, dir, unreadable); d != "ask" {
+			t.Errorf("session-id file %s: want ask, got %s %q", name, d, why)
+		}
+	}
+	write(t, idFile, criusSID+"\n")
+	if err := os.Chmod(idFile, 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if d, why := hook(t, criusSID, criusTranscript, dir, unreadable); d != "ask" {
+		t.Errorf("a world-writable session-id file: want ask, got %s %q", d, why)
+	}
+	if err := os.Remove(idFile); err != nil {
+		t.Fatal(err)
+	}
+	if d, why := hook(t, criusSID, criusTranscript, dir, unreadable); d != "ask" {
+		t.Errorf("no session-id file: want ask, got %s %q", d, why)
 	}
 }
 
@@ -104,16 +140,14 @@ func TestCriusModeAllowsAReadablePostAndALeadStillAsks(t *testing.T) {
 		"az repos pr create --title 'Quotes: regenerated migration' --description @d.md --source-branch feature/96365-x --target-branch integration/96365-b1" + adoO,
 		"az repos pr update --id 7848 --status completed" + adoO,
 		"az repos pr set-vote --id 7848 --vote approve" + adoO + " -o none",
-		"cd /tmp && az repos pr update --id 7848 --title 'Generation two'" + adoO,
+		// a cd before the post leaves an absolute file readable (only a relative one is not known)
+		"cd /tmp && az repos pr update --id 7848 --title 'Generation two' --description @" + dir + "/d.md" + adoO,
 	} {
-		if d, why := crius(t, criusTranscript, dir, cmd); d != "" {
+		if d, why := crius(t, criusSID, dir, cmd); d != "" {
 			t.Errorf("Crius mode: want allow, got %s %q\n  %s", d, why, cmd)
 		}
-		if d, _ := crius(t, criusSubagent, dir, cmd); d != "" {
-			t.Errorf("Crius subagent: want allow, got %s\n  %s", d, cmd)
-		}
 		// a lead passes the PR create from feature/96365-* into bN on the allow list (item 3); the rest keep the click
-		if d, _ := crius(t, leadTranscript, dir, cmd); (d == "ask") == strings.HasPrefix(cmd, "az repos pr create") {
+		if d, _ := crius(t, leadSID, dir, cmd); (d == "ask") == strings.HasPrefix(cmd, "az repos pr create") {
 			t.Errorf("lead session: got %q\n  %s", d, cmd)
 		}
 	}
@@ -146,7 +180,7 @@ func TestCriusModeDeniesEachHardCheck(t *testing.T) {
 		thread + "prod.json": "production URL",
 		"curl -X POST -H 'Content-Type: application/json' -d @prod.json https://dev.azure.com/Appxite/P/_apis/git/repositories/R/pullRequests/7848/threads?api-version=7.1": "production URL",
 	} {
-		d, why := crius(t, criusTranscript, dir, cmd)
+		d, why := crius(t, criusSID, dir, cmd)
 		if d != "deny" || !strings.Contains(why, want) {
 			t.Errorf("want deny naming %q, got %s %q\n  %s", want, d, why, cmd)
 		}
@@ -158,30 +192,36 @@ func TestCriusModeDeniesEachHardCheck(t *testing.T) {
 	write(t, filepath.Join(dir, "ok.json"), `{"comments":[{"content":"Generation 2: migration regenerated, see https://quote-p3-test.appxite.com"}]}`)
 	for _, cmd := range []string{thread + "ok.json", "az repos pr update --id 7850 --status completed" + adoO,
 		"az repos pr create --title t --source-branch feature/96365-x --target-branch integration/96365-b1" + adoO} {
-		if d, why := crius(t, criusTranscript, dir, cmd); d != "" {
+		if d, why := crius(t, criusSID, dir, cmd); d != "" {
 			t.Errorf("want allow, got %s %q\n  %s", d, why, cmd)
 		}
 	}
 }
 
-// What the guard cannot read denies and says to rewrite it; it never asks.
+// What the guard cannot read denies, names why and says to rewrite it; it never asks (review of 2a882aa, P3-12: each
+// case is checked for its own reason).
 func TestCriusModeDeniesWhatTheGuardCannotRead(t *testing.T) {
 	dir := criusDir(t, nil)
-	for _, cmd := range []string{
-		"az repos pr create --title t --description \"$(git log -1 --format=%B)\" --source-branch feature/96365-x --target-branch integration/96365-b1" + adoO,
-		"$AZ repos pr create --title t" + adoO,
-		"az repos pr $VERB --id 7848" + adoO,
-		thread + "missing.json",
-		thread + "/dev/stdin",
-		"cd sub && " + thread + "c.json",
-		"python3 -c \"import subprocess; subprocess.run(['az','repos','pr','create','--title','t'])\"",
-		"echo '{}' | az devops invoke --in-file - --http-method POST --area git --resource pullRequestThreads" + adoO,
+	write(t, filepath.Join(dir, "c.json"), `{"comments":[{"content":"ok"}]}`)
+	if err := os.Mkdir(filepath.Join(dir, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(dir, "sub", "c.json"), `{"comments":[{"content":"ok"}]}`)
+	for cmd, want := range map[string]string{
+		"az repos pr create --title t --description \"$(git log -1 --format=%B)\" --source-branch feature/96365-x --target-branch integration/96365-b1" + adoO: "a word the guard cannot read",
+		"$AZ repos pr create --title t" + adoO: "the guard cannot read",
+		"az repos pr $VERB --id 7848" + adoO:   "the guard cannot read",
+		thread + "missing.json":                "cannot read the file it sends",
+		thread + "/dev/stdin":                  "stdin or a device",
+		"cd sub && " + thread + "c.json":       "after a folder change",
+		"python3 -c \"import subprocess; subprocess.run(['az','repos','pr','create','--title','t'])\"":                "az repos pr create",
+		"echo '{}' | az devops invoke --in-file - --http-method POST --area git --resource pullRequestThreads" + adoO: "stdin",
 	} {
-		d, why := crius(t, criusTranscript, dir, cmd)
-		if d != "deny" || !strings.Contains(why, "write it so the guard can read it") {
-			t.Errorf("want deny with the rewrite hint, got %s %q\n  %s", d, why, cmd)
+		d, why := crius(t, criusSID, dir, cmd)
+		if d != "deny" || !strings.Contains(why, want) || !strings.Contains(why, "write it so the guard can read it") {
+			t.Errorf("want deny naming %q with the rewrite hint, got %s %q\n  %s", want, d, why, cmd)
 		}
-		if d, _ := crius(t, leadTranscript, dir, cmd); d != "ask" {
+		if d, _ := crius(t, leadSID, dir, cmd); d != "ask" {
 			t.Errorf("lead session: want ask, got %q\n  %s", d, cmd)
 		}
 	}
@@ -192,10 +232,102 @@ func TestCriusModeChecksPostsInsideScripts(t *testing.T) {
 	dir := criusDir(t, map[string]string{"7848": "refs/heads/develop", "7850": "refs/heads/integration/96365-b1"})
 	write(t, filepath.Join(dir, "ok.sh"), "#!/bin/bash\naz repos pr update --id 7850 --status completed --org https://dev.azure.com/Appxite\n")
 	write(t, filepath.Join(dir, "bad.sh"), "#!/bin/bash\naz repos pr update --id 7850 --title t --org https://dev.azure.com/Appxite\naz repos pr update --id 7848 --status completed --org https://dev.azure.com/Appxite\n")
-	if d, why := crius(t, criusTranscript, dir, "bash ok.sh"); d != "" {
+	if d, why := crius(t, criusSID, dir, "bash ok.sh"); d != "" {
 		t.Errorf("ok.sh: want allow, got %s %q", d, why)
 	}
-	if d, why := crius(t, criusTranscript, dir, "bash bad.sh"); d != "deny" || !strings.Contains(why, "merges into refs/heads/develop") {
+	if d, why := crius(t, criusSID, dir, "bash bad.sh"); d != "deny" || !strings.Contains(why, "merges into refs/heads/develop") {
 		t.Errorf("bad.sh: want deny naming develop, got %s %q", d, why)
+	}
+}
+
+// Review of 2a882aa, P1 1-6, P2-8, P2-9, P3-10, P3-11: hardCheck reads every source a post takes text from, as the
+// parser that found the post sees it, and denies any source it did not read.
+func TestCriusModeReadsEveryBodySource(t *testing.T) {
+	dir := criusDir(t, map[string]string{"7848": "refs/heads/develop", "7850": "refs/heads/integration/96365-b1"})
+	if err := os.Mkdir(filepath.Join(dir, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for n, body := range map[string]string{"credit.md": coAuthor + "\n", "done.json": `{"status":"completed"}`,
+		"done3.json": `{"status": 3}`, "clean.md": "Clean text.\n", "title.json": `{"title":"Quotes: b1"}`,
+		"c.cfg": "data = \"{\\\"status\\\":\\\"completed\\\"}\"\n", "sub/clean.md": coAuthor + "\n",
+		"prodhost.json": `{"comments":[{"content":"see https://quotes.production.appxite.com/health"}]}`} {
+		write(t, filepath.Join(dir, n), body)
+	}
+	const (
+		pr     = " --source-branch feature/96365-x --target-branch integration/96365-b1" + adoO
+		prURL  = "https://dev.azure.com/Appxite/P/_apis/git/repositories/R/pullRequests/7848?api-version=7.1"
+		invoke = "az devops invoke --area git --resource pullRequests --route-parameters project=P repositoryId=R pullRequestId=7848 --http-method PATCH --api-version 7.1" + adoO
+	)
+	for cmd, want := range map[string]string{
+		// P1-1: az expands --opt=@file (and any word's value after its first =)
+		"az repos pr create --title t --description=@credit.md" + pr:       "AI credit",
+		"az boards work-item update --id 1 --discussion=@credit.md" + adoO: "AI credit",
+		"az rest --method patch --uri " + prURL + " --body=@done.json":     "completes a PR",
+		// P1-2: az takes a prefix of --in-file
+		invoke + " --in-fi done.json": "completes a PR",
+		invoke + " --in done.json":    "completes a PR",
+		invoke + " --i done.json":     "completes a PR",
+		// P1-3: and of --auto-complete
+		"az repos pr update --id 7850 --a true" + adoO:  "--auto-complete",
+		"az repos pr update --id 7850 --au true" + adoO: "--auto-complete",
+		// P1-4: a file the same command writes first
+		"printf '" + coAuthor + "' > clean.md && az repos pr create --title t --description @clean.md" + pr:        "the command writes",
+		"cat > clean.md <<'EOF'\n" + coAuthor + "\nEOF\naz repos pr create --title t --description @clean.md" + pr: "AI credit",
+		// P1-5: a body on stdin
+		"http PATCH " + prURL + " < done.json":          "stdin",
+		"cat done.json | http PATCH " + prURL:           "stdin",
+		"curl -X PATCH -d @- " + prURL + " < done.json": "stdin",
+		// P1-6: curl's config file, -T in a cluster or attached, --data-urlencode name@file
+		"curl -K c.cfg -X PATCH " + prURL:                          "config",
+		"curl -sT credit.md " + prURL:                              "AI credit",
+		"curl -Tcredit.md " + prURL:                                "AI credit",
+		"curl -X POST --data-urlencode content@credit.md " + prURL: "AI credit",
+		// P2-8: find -execdir runs in each match's folder; -exec and xargs fill in words
+		"find sub -execdir az repos pr create --title t --description @clean.md" + pr + " ';'":        "folder change",
+		"find . -maxdepth 0 -exec az repos pr create --title t --description @clean.md" + pr + " ';'": "folder change",
+		// P2-9: the PR status as its number
+		invoke + " --in-file done3.json": "completes a PR",
+		// P3-10: a production host word
+		thread + "prodhost.json": "production URL",
+		// P3-11: the target is read in the command's own org, which must be Appxite's
+		"az repos pr update --id 7850 --status completed --org https://dev.azure.com/Other": "Appxite",
+		"az repos pr update --id 7850 --status completed":                                   "--org",
+	} {
+		d, why := crius(t, criusSID, dir, cmd)
+		if d != "deny" || !strings.Contains(why, want) {
+			t.Errorf("want deny naming %q, got %s %q\n  %s", want, d, why, cmd)
+		}
+	}
+	// the allow side: the same sources with clean text, an absolute file after a move (outside the tree find may write
+	// in), the heredoc's own clean text
+	other := t.TempDir()
+	write(t, filepath.Join(other, "clean.md"), "Clean text.\n")
+	for _, cmd := range []string{
+		"az repos pr create --title t --description=@clean.md" + pr,
+		invoke + " --in-fi title.json",
+		"curl -sT clean.md " + prURL,
+		"curl -X POST --data-urlencode content@clean.md " + prURL,
+		"cat > fresh.md <<'EOF'\nClean.\nEOF\naz repos pr create --title t --description @fresh.md" + pr,
+		"find . -maxdepth 0 -exec az repos pr create --title t --description @" + other + "/clean.md" + pr + " ';'",
+		"az repos pr update --id 7850 --status completed --org https://dev.azure.com/appxite/",
+	} {
+		if d, why := crius(t, criusSID, dir, cmd); d != "" {
+			t.Errorf("want allow, got %s %q\n  %s", d, why, cmd)
+		}
+	}
+}
+
+// Review of 2a882aa, P3-13: Crius-mode allows go to their own log, so the ask log counts asks only.
+func TestCriusModeLogsAllowsApart(t *testing.T) {
+	dir := criusDir(t, map[string]string{"7850": "refs/heads/integration/96365-b1"})
+	if d, why := crius(t, criusSID, dir, "az repos pr update --id 7850 --status completed"+adoO); d != "" {
+		t.Fatalf("want allow, got %s %q", d, why)
+	}
+	state := filepath.Join(os.Getenv("CRIUS_HOME"), "state")
+	if b, err := os.ReadFile(filepath.Join(state, "post-guard-asks.log")); err == nil && len(b) > 0 {
+		t.Errorf("the ask log holds an allow: %s", b)
+	}
+	if b, err := os.ReadFile(filepath.Join(state, "post-guard-allows.log")); err != nil || !strings.Contains(string(b), "repos pr update") {
+		t.Errorf("the allow log: %v %q", err, b)
 	}
 }

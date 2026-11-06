@@ -339,3 +339,24 @@ func TestScriptPassNeedsAShownRead(t *testing.T) {
 		}
 	}
 }
+
+// Crius 11-06 13:36: `cd <scratchpad> && cat > edit5.ts <<'EOF' … EOF` then `bun edit5.ts …` on the next line asked as "a
+// script the command makes before it runs (<session folder>/edit5.ts)". The heredoc writes inside the cd's && chain, so
+// it writes the cd folder's file only; when the cd fails nothing makes the session folder's one. A cd to a folder the
+// guard cannot read, or code that posts, still asks.
+func TestAHeredocAfterALeadingCdWritesTheCdFolder(t *testing.T) {
+	t.Setenv("CRIUS_HOME", t.TempDir())
+	start, dir := t.TempDir(), t.TempDir()
+	clean := "cd " + dir + " && cat > edit5.ts <<'EOF'\n// the files az reads text from: any word's @file, and --in-file and --file-path\nconst fs = require('fs');\nconsole.log(fs.readFileSync(process.argv[2], 'utf8').length);\nEOF\nbun edit5.ts pg-exact/main.go"
+	if why := check(bash(clean, start)); why != "" {
+		t.Errorf("a heredoc script after a leading cd: want pass, got %q", why)
+	}
+	for name, cmd := range map[string]string{
+		"code that posts":           "cd " + dir + " && cat > edit6.ts <<'EOF'\nBun.spawnSync(['az', 'repos', 'pr', 'create', '--title', 't']);\nEOF\nbun edit6.ts",
+		"a write outside the chain": "cd " + dir + " && true\necho \"Bun.spawnSync(['az', 'repos', 'pr', 'create'])\" > edit7.ts\nbun edit7.ts",
+	} {
+		if why := check(bash(cmd, start)); !strings.Contains(why, "owner's click") {
+			t.Errorf("%s: want ask, got %q\n  %s", name, why, cmd)
+		}
+	}
+}

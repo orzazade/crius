@@ -87,10 +87,8 @@ import (
 type input struct {
 	ToolName  string `json:"tool_name"`
 	Cwd       string `json:"cwd"`
-	SessionID string `json:"session_id"` // names the session's scratchpad (adoexact.go)
-	// TranscriptPath under the Crius project folder puts the guard in Crius mode (criusmode.go)
-	TranscriptPath string `json:"transcript_path"`
-	ToolInput      struct {
+	SessionID string `json:"session_id"` // names the session's scratchpad (adoexact.go), and Crius mode's session (criusmode.go)
+	ToolInput struct {
 		Command  string        `json:"command"`
 		Code     string        `json:"code"`     // ctx_execute, ctx_execute_file
 		Language string        `json:"language"` // of Code: shell, javascript, python, …
@@ -121,7 +119,7 @@ func run(r io.Reader, w io.Writer) error {
 		logAsk(in, why)
 		return err
 	}
-	if criusSession(in.TranscriptPath) {
+	if criusSession(in.SessionID) {
 		return criusRun(in, w)
 	}
 	if why := check(in); why != "" {
@@ -138,6 +136,11 @@ func run(r io.Reader, w io.Writer) error {
 // not a regular one is not written (review: a log that blocks would hang the hook and lose the ask). A log that cannot
 // be written is said on stderr; the ask goes out either way.
 func logAsk(in input, why string) {
+	logTo(in, why, "post-guard-asks.log")
+}
+
+// logTo is logAsk for the log file named (Crius mode's allows go to post-guard-allows.log, review of 2a882aa P3-13).
+func logTo(in input, why, file string) {
 	t := in.ToolInput
 	var parts []string
 	for _, p := range append([]string{t.Command, t.Path, t.Code}, t.Commands...) {
@@ -159,7 +162,7 @@ func logAsk(in input, why string) {
 		}
 		home = filepath.Join(u, ".crius")
 	}
-	f, err := os.OpenFile(filepath.Join(home, "state", "post-guard-asks.log"), os.O_WRONLY|os.O_APPEND|os.O_CREATE|syscall.O_NONBLOCK, 0o600)
+	f, err := os.OpenFile(filepath.Join(home, "state", file), os.O_WRONLY|os.O_APPEND|os.O_CREATE|syscall.O_NONBLOCK, 0o600)
 	if err == nil {
 		if fi, serr := f.Stat(); serr != nil {
 			err = serr
@@ -215,6 +218,7 @@ type ctx struct {
 	crius      *criusLog               // Crius mode and the lead allow list: where the posts found go (criusmode.go); nil elsewhere
 	after      []word                  // the words after the script this call runs (teamScript)
 	runner     []word                  // for code run by an interpreter: the interpreter and its words before the file
+	fed        bool                    // run by find -exec or xargs, which fill in words: a post's relative file is not known
 }
 
 // cdTo is a cd that runs before what follows it in the command's own text, up to to (the end of the text, or of the
@@ -980,6 +984,15 @@ func checkCall(args []word, stdin bool, c ctx) string {
 			}
 			if n := strings.ToLower(path.Base(a.text)); n == "az" || n == "eval" || (n == "source" || n == ".") && (name == "builtin" || name == "command") || shells[n] || httpTools[n] || interpreters[n] {
 				inner := args[i:]
+				if name == "find" || feeders[name] {
+					// review of 2a882aa P2-8: -execdir and -okdir run in each match's folder; -exec and xargs fill in words
+					c.fed = true
+					for _, w := range args[1:i] {
+						if w.text == "-execdir" || w.text == "-okdir" {
+							c.moved = true
+						}
+					}
+				}
 				if feeders[name] {
 					// xargs adds words from its stdin: they may be the method or the URL
 					inner = append(slices.Clone(inner), word{src: "$XARGS"})
@@ -994,7 +1007,7 @@ func checkCall(args []word, stdin bool, c ctx) string {
 		}
 		return ""
 	case name == "az":
-		return c.post("az", args[1:], checkAz(args[1:], c))
+		return c.post("az", args[1:], stdin, checkAz(args[1:], c))
 	case name == "alias":
 		// an alias body runs where its name is used later (review r5: alias x="az repos pr create …"; x)
 		for _, a := range args[1:] {
@@ -1012,11 +1025,11 @@ func checkCall(args []word, stdin bool, c ctx) string {
 			}
 		}
 	case name == "curl":
-		return c.post("curl", args[1:], checkCurl(args[1:], c))
+		return c.post("curl", args[1:], stdin, checkCurl(args[1:], c))
 	case name == "wget":
-		return c.post("wget", args[1:], checkWget(args[1:], c))
+		return c.post("wget", args[1:], stdin, checkWget(args[1:], c))
 	case httpTools[name]:
-		return c.post(name, args[1:], checkHTTPie(args[1:], stdin, c))
+		return c.post(name, args[1:], stdin, checkHTTPie(args[1:], stdin, c))
 	case name == "trap" && len(args) > 2 && !strings.HasPrefix(args[1].text, "-") || name == "trap" && len(args) > 3 && args[1].text == "--":
 		// the text a trap runs later
 		k := 1
@@ -2168,9 +2181,11 @@ type azOpts struct {
 	opts      map[string][]word
 	unreadCmd bool
 	unreadOpt bool
+	src       []source // the files az reads text from: any word's @file, and --in-file and --file-path
 }
 
-// azLong are the long options the guard reads; az may take an unambiguous prefix of one.
+// azLong are the long options the guard reads; az may take an unambiguous prefix of one, down to one letter after the
+// dashes (--a for --auto-complete, review of 2a882aa P1-3), and a prefix counts as every one it may be.
 var azLong = []string{"--http-method", "--resource", "--area", "--in-file", "--discussion", "--fields", "--description",
 	"--method", "--url", "--uri", "--body", "--content", "--file-path", "--auto-complete", "--status"}
 
@@ -2186,8 +2201,25 @@ func azValue(w word) word {
 	return w
 }
 
+// azAtFile gives the file az reads a word's text from (az 2.82 _expand_file_prefix): the part after the word's first =
+// when it starts with @, else the word when it does; "@" alone is no file.
+func azAtFile(w string) (string, bool) {
+	if _, v, eq := strings.Cut(w, "="); eq {
+		w = v
+	}
+	if len(w) > 1 && w[0] == '@' {
+		return w[1:], true
+	}
+	return "", false
+}
+
 func parseAz(args []word) azOpts {
 	o := azOpts{opts: map[string][]word{}}
+	for _, a := range args {
+		if f, ok := azAtFile(a.text); ok && a.ok {
+			o.src = append(o.src, source{file: f})
+		}
+	}
 	i := 0
 	var words []string
 	for ; i < len(args); i++ {
@@ -2237,7 +2269,7 @@ func parseAz(args []word) azOpts {
 		}
 		name = strings.ToLower(name)
 		cur = []string{name}
-		if strings.HasPrefix(name, "--") && !slices.Contains(azLong, name) && len(name) >= 4 {
+		if strings.HasPrefix(name, "--") && !slices.Contains(azLong, name) && len(name) >= 3 {
 			var hits []string
 			for _, l := range azLong {
 				if strings.HasPrefix(l, name) {
@@ -2253,6 +2285,13 @@ func parseAz(args []word) azOpts {
 				o.opts[k] = append(o.opts[k], azValue(word{text: val, src: val, ok: a.ok}))
 			} else if _, seen := o.opts[k]; !seen {
 				o.opts[k] = []word{}
+			}
+		}
+	}
+	for _, k := range []string{"--in-file", "--file-path"} {
+		for _, v := range o.opts[k] {
+			if v.ok {
+				o.src = append(o.src, source{file: v.text}) // a value from @file is that file's text, read above
 			}
 		}
 	}
@@ -2507,11 +2546,76 @@ func isCurlData(name string) bool {
 		strings.HasPrefix(name, "--expand-data") || strings.HasPrefix(name, "--expand-json")
 }
 
-func checkCurl(args []word, c ctx) string {
-	var m method
-	var urls []word
-	data, upload, get := false, false, false
-	spread := slices.ContainsFunc(args, spreads) // an option's value too (curl --url "$@", review r3b)
+// source is one place a post takes text from beyond its own words, as the tool reads it (review of 2a882aa: the hard
+// checks must see every one, and one the guard does not read denies).
+type source struct {
+	file   string // a file the tool reads: "-" is stdin
+	unread string // when set, why the guard does not read this source (a config file, an env value)
+}
+
+// firstFile gives the first of these files (under home when relative) that exists, or "".
+func firstFile(paths ...string) string {
+	home, _ := os.UserHomeDir()
+	for _, p := range paths {
+		if p == "" || !filepath.IsAbs(p) && home == "" {
+			continue
+		}
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(home, p)
+		}
+		if _, err := os.Lstat(p); err == nil {
+			return p
+		}
+	}
+	return ""
+}
+
+func envDir(name, file string) string {
+	if d := os.Getenv(name); d != "" {
+		return filepath.Join(d, file)
+	}
+	return ""
+}
+
+// curlRead is what curl's words say: the method, the URLs, whether data or a file goes out, and the sources of that text.
+type curlRead struct {
+	m                 method
+	urls              []word
+	data, upload, get bool
+	src               []source
+}
+
+// curlDataSrc gives the file a data option's value makes curl read: @file for --data, --data-binary, --json and the
+// like; name@file or @file for --data-urlencode and --url-query; name=@file or name=<file for --form; none for
+// --data-raw and --form-string.
+func curlDataSrc(name, v string) []source {
+	switch {
+	case name == "--data-raw" || name == "--form-string":
+		return nil
+	case name == "--data-urlencode" || name == "--url-query":
+		if i := strings.IndexAny(v, "=@"); i >= 0 && v[i] == '@' {
+			return []source{{file: v[i+1:]}}
+		}
+		return nil
+	case name == "--form":
+		if _, f, ok := strings.Cut(v, "="); ok && (strings.HasPrefix(f, "@") || strings.HasPrefix(f, "<")) {
+			f, _, _ = strings.Cut(f[1:], ";")
+			return []source{{file: f}}
+		}
+		return nil
+	case strings.HasPrefix(v, "@"):
+		return []source{{file: v[1:]}}
+	}
+	return nil
+}
+
+func readCurl(args []word) curlRead {
+	var r curlRead
+	if len(args) == 0 || args[0].text != "-q" && args[0].text != "--disable" {
+		if rc := firstFile(envDir("CURL_HOME", ".curlrc"), envDir("XDG_CONFIG_HOME", ".curlrc"), ".curlrc"); rc != "" {
+			r.src = append(r.src, source{unread: "curl reads " + rc + " first (no -q)"})
+		}
+	}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		next := func() word {
@@ -2522,7 +2626,7 @@ func checkCurl(args []word, c ctx) string {
 			return word{ok: true}
 		}
 		if !strings.HasPrefix(a.text, "-") || a.text == "-" {
-			urls = append(urls, a)
+			r.urls = append(r.urls, a)
 			continue
 		}
 		if strings.HasPrefix(a.text, "--") {
@@ -2535,17 +2639,32 @@ func checkCurl(args []word, c ctx) string {
 			}
 			switch {
 			case name == "--request":
-				m = methodOf(value())
+				r.m = methodOf(value())
 			case isCurlData(name):
-				value()
-				data = true
+				r.src = append(r.src, curlDataSrc(name, value().text)...)
+				r.data = true
 			case name == "--upload-file":
-				value()
-				upload = true
+				r.src = append(r.src, source{file: value().text})
+				r.upload = true
 			case name == "--get":
-				get = true
+				r.get = true
 			case name == "--url":
-				urls = append(urls, value())
+				r.urls = append(r.urls, value())
+			case name == "--config":
+				r.src = append(r.src, source{unread: "curl reads the config file " + value().text})
+			case name == "--url-query":
+				r.src = append(r.src, curlDataSrc(name, value().text)...)
+			case name == "--header":
+				if v := value().text; strings.HasPrefix(v, "@") {
+					r.src = append(r.src, source{file: v[1:]})
+				}
+			case name == "--variable":
+				v := value().text
+				if strings.HasPrefix(v, "%") {
+					r.src = append(r.src, source{unread: "curl --variable " + v + " takes an environment value"})
+				} else if k := strings.IndexAny(v, "=@"); k >= 0 && v[k] == '@' {
+					r.src = append(r.src, source{file: v[k+1:]})
+				}
 			case curlLongArg[name]:
 				value()
 			}
@@ -2554,7 +2673,7 @@ func checkCurl(args []word, c ctx) string {
 		for j := 1; j < len(a.text); j++ {
 			ch := a.text[j]
 			if ch == 'G' {
-				get = true
+				r.get = true
 			}
 			if strings.IndexByte(curlShortArg, ch) < 0 {
 				continue
@@ -2565,17 +2684,33 @@ func checkCurl(args []word, c ctx) string {
 			}
 			switch ch {
 			case 'X':
-				m = methodOf(v)
-			case 'd', 'F':
-				data = true
+				r.m = methodOf(v)
+			case 'd':
+				r.src = append(r.src, curlDataSrc("--data", v.text)...)
+				r.data = true
+			case 'F':
+				r.src = append(r.src, curlDataSrc("--form", v.text)...)
+				r.data = true
 			case 'T':
-				upload = true
+				r.src = append(r.src, source{file: v.text})
+				r.upload = true
+			case 'K':
+				r.src = append(r.src, source{unread: "curl reads the config file " + v.text})
+			case 'H':
+				if strings.HasPrefix(v.text, "@") {
+					r.src = append(r.src, source{file: v.text[1:]})
+				}
 			}
 			break
 		}
 	}
+	return r
+}
+
+func checkCurl(args []word, c ctx) string {
+	r := readCurl(args)
 	var ado []word
-	for _, u := range urls {
+	for _, u := range r.urls {
 		if isADO(u, c) {
 			ado = append(ado, u)
 		}
@@ -2583,14 +2718,15 @@ func checkCurl(args []word, c ctx) string {
 	if len(ado) == 0 {
 		return ""
 	}
-	if spread {
+	if slices.ContainsFunc(args, spreads) { // an option's value too (curl --url "$@", review r3b)
 		return asked("curl with words the guard cannot read, to Azure DevOps")
 	}
+	m := r.m
 	if !m.set {
 		switch {
-		case upload:
+		case r.upload:
 			m = methodOf(word{text: "PUT", ok: true})
-		case data && !get:
+		case r.data && !r.get:
 			m = methodOf(word{text: "POST", ok: true})
 		default:
 			return ""
@@ -2602,41 +2738,75 @@ func checkCurl(args []word, c ctx) string {
 	return ""
 }
 
-func checkWget(args []word, c ctx) string {
-	var m method
-	var ado []word
-	spread := slices.ContainsFunc(args, spreads)
+// wgetRead is what wget's words say: the method, the ADO URLs, and the sources of the text it sends.
+type wgetRead struct {
+	m   method
+	ado []word
+	src []source
+}
+
+func readWget(args []word, c ctx) wgetRead {
+	var r wgetRead
+	noConfig := false
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if !strings.HasPrefix(a.text, "-") {
 			if isADO(a, c) {
-				ado = append(ado, a)
+				r.ado = append(r.ado, a)
 			}
 			continue
 		}
 		name, val, eq := strings.Cut(a.text, "=")
+		value := func() string {
+			if eq {
+				return val
+			}
+			if i+1 < len(args) {
+				i++
+				return args[i].text
+			}
+			return ""
+		}
 		switch {
+		case name == "--no-config":
+			noConfig = true
 		case len(name) >= 5 && strings.HasPrefix("--method", name):
 			if eq {
-				m = methodOf(word{text: val, ok: a.ok})
+				r.m = methodOf(word{text: val, ok: a.ok})
 			} else if i+1 < len(args) {
 				i++
-				m = methodOf(args[i])
+				r.m = methodOf(args[i])
 			}
-		case len(name) >= 7 && (strings.HasPrefix("--post-data", name) || strings.HasPrefix("--post-file", name)):
-			if !m.set {
-				m = methodOf(word{text: "POST", ok: true})
+		case len(name) >= 7 && strings.HasPrefix("--post-data", name):
+			value()
+			if !r.m.set {
+				r.m = methodOf(word{text: "POST", ok: true})
 			}
-			if !eq {
-				i++
+		case len(name) >= 7 && strings.HasPrefix("--post-file", name):
+			r.src = append(r.src, source{file: value()})
+			if !r.m.set {
+				r.m = methodOf(word{text: "POST", ok: true})
 			}
+		case len(name) >= 7 && strings.HasPrefix("--body-file", name):
+			r.src = append(r.src, source{file: value()})
+		case len(name) >= 5 && strings.HasPrefix("--config", name) || name == "-e" || len(name) >= 4 && strings.HasPrefix("--execute", name):
+			r.src = append(r.src, source{unread: "wget " + name + " reads settings the guard does not read"})
+			value()
 		}
 	}
-	if len(ado) > 0 && spread {
+	if !noConfig {
+		r.src = append(r.src, source{unread: "wget reads its config files (wgetrc) without --no-config"})
+	}
+	return r
+}
+
+func checkWget(args []word, c ctx) string {
+	r := readWget(args, c)
+	if len(r.ado) > 0 && slices.ContainsFunc(args, spreads) {
 		return asked("wget with words the guard cannot read, to Azure DevOps")
 	}
-	if len(ado) > 0 && m.set && writesTo(m, ado) {
-		return asked("wget " + methodName(m) + " to Azure DevOps")
+	if len(r.ado) > 0 && r.m.set && writesTo(r.m, r.ado) {
+		return asked("wget " + methodName(r.m) + " to Azure DevOps")
 	}
 	return ""
 }
@@ -2651,22 +2821,28 @@ var httpieArg = map[string]bool{"-a": true, "--auth": true, "-A": true, "--auth-
 
 var httpMethods = []string{"GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE"}
 
-// checkHTTPie reads httpie and xh: [METHOD] URL [items]. A data item (a=b, a:=b, a@file), --form, --raw or a body on
+// httpieRead is what an httpie or xh call says: the method, the URL, whether it sends data, and the sources of it.
+type httpieRead struct {
+	m    method
+	url  *word
+	data bool
+	src  []source
+}
+
+// readHTTPie reads httpie and xh: [METHOD] URL [items]. A data item (a=b, a:=b, a@file), --form, --raw or a body on
 // stdin makes it a POST; a header (a:b) or query item (a==b) does not.
-func checkHTTPie(args []word, stdin bool, c ctx) string {
-	var m method
-	var url *word
-	data, ignoreStdin := false, false
-	spread := slices.ContainsFunc(args, spreads)
+func readHTTPie(args []word, stdin bool, c ctx) httpieRead {
+	var r httpieRead
+	ignoreStdin := false
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if strings.HasPrefix(a.text, "-") && a.text != "-" {
 			name, _, eq := strings.Cut(a.text, "=")
 			switch {
 			case name == "--form" || name == "-f" || name == "--multipart":
-				data = true
+				r.data = true
 			case name == "--raw":
-				data = true
+				r.data = true
 				if !eq {
 					i++
 				}
@@ -2679,30 +2855,65 @@ func checkHTTPie(args []word, stdin bool, c ctx) string {
 		}
 		// The URL is the first ADO word: the value of an option the guard does not know comes before it.
 		switch {
-		case url == nil && a.ok && slices.Contains(httpMethods, strings.ToUpper(a.text)):
-			m = methodOf(a)
-		case url == nil && isADO(a, c):
-			url = &args[i]
-		case url != nil && httpieData(a):
-			data = true
+		case r.url == nil && a.ok && slices.Contains(httpMethods, strings.ToUpper(a.text)):
+			r.m = methodOf(a)
+		case r.url == nil && isADO(a, c):
+			r.url = &args[i]
+		case r.url != nil:
+			if httpieData(a) {
+				r.data = true
+			}
+			if f, ok := httpieFile(a.text); ok {
+				r.src = append(r.src, source{file: f})
+			}
 		}
 	}
-	if url == nil {
+	if stdin && !ignoreStdin {
+		r.src = append(r.src, source{file: "-"}) // httpie and xh send what comes on stdin as the body
+	}
+	if rc := firstFile(envDir("HTTPIE_CONFIG_DIR", "config.json"), ".config/httpie/config.json", envDir("XH_CONFIG_DIR", "config.json"),
+		".config/xh/config.json", "Library/Application Support/xh/config.json"); rc != "" {
+		r.src = append(r.src, source{unread: "httpie or xh reads default options from " + rc})
+	}
+	return r
+}
+
+func checkHTTPie(args []word, stdin bool, c ctx) string {
+	r := readHTTPie(args, stdin, c)
+	if r.url == nil {
 		return ""
 	}
-	if spread {
+	if slices.ContainsFunc(args, spreads) {
 		return asked("HTTP request with words the guard cannot read, to Azure DevOps")
 	}
+	m := r.m
 	if !m.set {
-		if !data && (!stdin || ignoreStdin) {
+		if !r.data && !slices.Contains(r.src, source{file: "-"}) {
 			return ""
 		}
 		m = methodOf(word{text: "POST", ok: true})
 	}
-	if writesTo(m, []word{*url}) {
+	if writesTo(m, []word{*r.url}) {
 		return asked("HTTP " + methodName(m) + " to Azure DevOps")
 	}
 	return ""
+}
+
+// httpieFile gives the file a request item reads: a=@file and a:=@file (text and JSON), a@file (an upload), H:@file (a
+// header).
+func httpieFile(item string) (string, bool) {
+	for _, sep := range []string{":=@", "=@", ":@"} {
+		if _, f, ok := strings.Cut(item, sep); ok {
+			if i := strings.IndexAny(item, ":=@"); strings.HasPrefix(item[i:], sep) {
+				return f, true
+			}
+		}
+	}
+	if i := strings.IndexAny(item, ":=@"); i >= 0 && item[i] == '@' {
+		f, _, _ := strings.Cut(item[i+1:], ";")
+		return f, true
+	}
+	return "", false
 }
 
 // httpieData says whether a request item sends data: its first separator decides (a:b header, a==b query).
