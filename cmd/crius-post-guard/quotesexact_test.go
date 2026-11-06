@@ -147,6 +147,15 @@ func TestSetVoteApprovePassesWithAPassVerdictForTheCurrentHead(t *testing.T) {
 	passes(t, voteCmd("7848")+"; echo rc=$?")
 }
 
+// Replay 11-06: PR 7831's real first line "... retry or close a failed order slot ... — PASS" asked: only the verdict
+// words FAIL and BLOCK in capitals count against a PASS, not "failed" in the PR's title.
+func TestSetVoteFailedInTheTitleIsNotAFailVerdict(t *testing.T) {
+	_, qa := quotesHome(t, map[string]string{"7831": "dbe638f10123456789abcdef0123456789abcdef"})
+	verdict(t, qa, "96365-order-retry-close-dbe638f1", "# QA verdict: PR 7831 (AC101 retry or close a failed order slot, "+
+		"server, to integration/96365-b1) @ dbe638f1 — PASS (re-merge of my PASS at 81887777)\n")
+	passes(t, voteCmd("7831"))
+}
+
 func TestSetVoteApproveAsksWithoutAMatchingVerdict(t *testing.T) {
 	_, qa := quotesHome(t, map[string]string{
 		"7848": head7848, "784": head7848, "7820": head7820, "7849": head7820, "7851": head7848, "7852": head7848,

@@ -50,7 +50,7 @@ var (
 	prIDRe       = regexp.MustCompile(`^[0-9]{1,9}$`)
 	sha40Re      = regexp.MustCompile(`^[0-9a-f]{40}$`)
 	passRe       = regexp.MustCompile(`\bPASS\b`)
-	failRe       = regexp.MustCompile(`(?i)\b(FAIL|FAILED|BLOCK|BLOCKED)\b`)
+	failRe       = regexp.MustCompile(`\b(FAIL|FAILED|BLOCK|BLOCKED)\b`)
 )
 
 // quotesExact is adoExact's twin for pr-build.sh and the approve vote: ok when command is one of the shapes; why is ""
