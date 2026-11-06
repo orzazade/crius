@@ -187,6 +187,19 @@ func scriptAt(name string, c ctx, kind runKind, plain, orNone bool, dir string) 
 		return cannotRead(c, name, "it is run 4 scripts down, deeper than the guard reads")
 	}
 	heredocs, written := c.heredocs(name)
+	// the lead allow list: a pinned team script passes unread unless the command may change it first (Crius 11-06 item 5)
+	if c.crius != nil && c.crius.lead && plain && len(heredocs) == 0 && !c.changes(name, written) && c.madeBy(name) == "" {
+		why := teamScript(name, c.after, dir)
+		if why == "" && kind == byCode {
+			why = bunRunner(c.runner)
+		}
+		if why == "" {
+			return ""
+		}
+		if teamScripts[filepath.Base(name)] {
+			c.crius.pinMiss = append(c.crius.pinMiss, why)
+		}
+	}
 	var texts []scriptText
 	fi, err := os.Stat(name)
 	switch {

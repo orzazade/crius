@@ -17,18 +17,11 @@ import (
 //
 // optionally with `2>&1 | tail -N` and then `&& echo <text> >> ../../notes/<name>.md`. The echo text is plain words and
 // quoted text; the whole line has no $, backtick, backslash, line break or # outside quotes, so bash's parser here and
-// the zsh that runs it read the same line. At hook time pass-post.sh and verdict-check.ts must have the SHA-256 pinned
-// here; qa/tools must hold no bunfig.toml or .env file (bun reads them in its folder: a .env PATH would swap the az
+// the zsh that runs it read the same line. At hook time pass-post.sh and verdict-check.ts must have a SHA-256 the pin
+// file lists; qa/tools must hold no bunfig.toml or .env file (bun reads them in its folder: a .env PATH would swap the az
 // that verdict-check.ts runs); no global bunfig, BUN_OPTIONS, BASH_ENV or exported bash function; the notes file is
 // one safeTarget accepts. Known gaps: those of adoexact.go (zsh snapshot, PATH for bash, bun and az, files changed
 // after the hook).
-
-var (
-	// passPostSHA and verdictCheckSHA are the pinned SHA-256 of qa/tools/pass-post.sh and verdict-check.ts
-	// (testdata/pass-post/); read the change before pinning.
-	passPostSHA     = "39085ff207de2f3aba3b6f2d978e4b7419a09afb9d3609c5ddecfa287b1dcdf5"
-	verdictCheckSHA = "434e22738e76821f189e1c983b4ed19a500f447c15385641c93a20a71e999db8"
-)
 
 var (
 	ppSenderRe = regexp.MustCompile(`^qa-[a-z0-9-]+$`)
@@ -143,7 +136,7 @@ func passPostExact(command, sid string) (ok bool, why string) {
 		return false, ""
 	}
 	// The shape is exact; now what it relies on must hold at hook time.
-	for _, p := range [][2]string{{filepath.Join(tools, "pass-post.sh"), passPostSHA}, {filepath.Join(tools, "verdict-check.ts"), verdictCheckSHA}} {
+	for _, p := range [][2]string{{filepath.Join(tools, "pass-post.sh"), "pass-post.sh"}, {filepath.Join(tools, "verdict-check.ts"), "verdict-check.ts"}} {
 		if why := pinned(p[0], p[1]); why != "" {
 			return true, why
 		}

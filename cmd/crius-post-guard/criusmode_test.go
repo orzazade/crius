@@ -112,8 +112,9 @@ func TestCriusModeAllowsAReadablePostAndALeadStillAsks(t *testing.T) {
 		if d, _ := crius(t, criusSubagent, dir, cmd); d != "" {
 			t.Errorf("Crius subagent: want allow, got %s\n  %s", d, cmd)
 		}
-		if d, _ := crius(t, leadTranscript, dir, cmd); d != "ask" {
-			t.Errorf("lead session: want ask, got %q\n  %s", d, cmd)
+		// a lead passes the PR create from feature/96365-* into bN on the allow list (item 3); the rest keep the click
+		if d, _ := crius(t, leadTranscript, dir, cmd); (d == "ask") == strings.HasPrefix(cmd, "az repos pr create") {
+			t.Errorf("lead session: got %q\n  %s", d, cmd)
 		}
 	}
 }

@@ -1,0 +1,10 @@
+{
+  "ado-suite.ts": ["ba3dd043debb398919eb75facd32dcf3079704c013826df8dce8fb70c6c4b080"],
+  "empty-bunfig.toml": ["7b5ecbbb78b71e9215cba3ac970668f792d9422141188d48227b31e40a19154c"],
+  "pr-build.sh": ["bbfc3d2f18fa7cadc5a03852eb7abd9c1cfe040119135963a4b0cd1115b781d4"],
+  "pass-post.sh": ["39085ff207de2f3aba3b6f2d978e4b7419a09afb9d3609c5ddecfa287b1dcdf5"],
+  "verdict-check.ts": ["434e22738e76821f189e1c983b4ed19a500f447c15385641c93a20a71e999db8"],
+  "merge.sh": ["bc2b401ed0e2d13d22db82287f5248d0ff1da4bd55e8ab9676e57b8a1f8a9588"],
+  "merge-ok.sh": ["8e92e3567a56c60c30ead6c3ba45b6f4e4f1f5981d253e5ec4e9e9f529f4a50f"],
+  "review-gate.sh": ["c667b4b9a9622beeb1e5e5b103d286d43f45c62971cbe7893c3f37282e17a5bd"]
+}

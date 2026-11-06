@@ -55,7 +55,11 @@ type postCall struct {
 }
 
 // criusLog collects the posts of one hook call in Crius mode.
-type criusLog struct{ posts []postCall }
+type criusLog struct {
+	posts   []postCall
+	lead    bool     // the lead allow list's reading: pinned team scripts pass unread (allowlist.go)
+	pinMiss []string // why team scripts the command runs did not pass on their pin
+}
 
 // post records a post the reading found and gives "" in Crius mode, so the reading goes on; elsewhere it gives why.
 func (c ctx) post(tool string, args []word, why string) string {

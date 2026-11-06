@@ -21,7 +21,7 @@ import (
 //	bash ~/.crius/state/quotes/build/bin/pr-build.sh <digits>
 //	az repos pr set-vote --id <digits> --vote approve --org https://dev.azure.com/Appxite -o none
 //
-// pr-build.sh only queues a PR merge build and posts no text; it passes while it has the SHA-256 pinned here (it refuses
+// pr-build.sh only queues a PR merge build and posts no text; it passes while it has a SHA-256 the pin file lists (it refuses
 // a PR whose azure-pipelines.yml is not the team's) and the hook's env has none of BASH_ENV, ENV, SHELLOPTS, BASHOPTS,
 // PS4 or an exported bash function (BASH_FUNC_*), which bash would run or obey. The approve vote passes only when the PR,
 // read at hook time with one `az repos pr show` (a GET, its process group killed after 10 s), is active, targets develop
@@ -35,8 +35,6 @@ import (
 //   - The verdict names the head by its first 8 hex characters: another commit with the same 8 would match.
 
 var (
-	// prBuildSHA is the pinned SHA-256 of pr-build.sh (testdata/pr-build/pr-build.sh); read the change before pinning.
-	prBuildSHA = "bbfc3d2f18fa7cadc5a03852eb7abd9c1cfe040119135963a4b0cd1115b781d4"
 	// prState reads the PR at hook time (readPR; tests swap it).
 	prState = readPR
 	// bashStartupVars are the env names bash reads code or options from.
@@ -48,7 +46,26 @@ type prInfo struct{ Head, Status, Target, Auto string }
 
 // readPR reads the PR's source head (the commit QA judged), status, target and auto-complete with one GET. az is a bash
 // wrapper whose python keeps stdout open, so a timeout kills the whole process group and stops waiting for the pipe.
+// prRead keeps each PR read for this hook call: the allow list reads the call a second time, and a hung az must cost its
+// 10 s once.
+var prRead = map[string]struct {
+	p   prInfo
+	err error
+}{}
+
 func readPR(id string) (prInfo, error) {
+	if r, seen := prRead[id]; seen {
+		return r.p, r.err
+	}
+	p, err := readPROnce(id)
+	prRead[id] = struct {
+		p   prInfo
+		err error
+	}{p, err}
+	return p, err
+}
+
+func readPROnce(id string) (prInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "az", "repos", "pr", "show", "--id", id, "--org", adoOrg, "--query",
@@ -127,7 +144,7 @@ func quotesExact(command string) (ok bool, why string) {
 	script := filepath.Join(build, "bin/pr-build.sh")
 	switch {
 	case len(args) == 3 && args[0] == "bash" && args[1] == script && prIDRe.MatchString(args[2]):
-		if why := pinned(script, prBuildSHA); why != "" {
+		if why := pinned(script, "pr-build.sh"); why != "" {
 			return true, why
 		}
 		return true, bashEnv("pr-build.sh")

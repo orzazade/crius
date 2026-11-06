@@ -1,8 +1,6 @@
 package main
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -35,16 +33,15 @@ func quotesHomePRs(t *testing.T, prs map[string]prInfo) (home, qa string) {
 	}
 	script := "#!/bin/bash\naz pipelines run --org https://dev.azure.com/Appxite --project P --id 1119 --branch \"refs/pull/$1/merge\"\n"
 	write(t, filepath.Join(home, ".crius/state/quotes/build/bin/pr-build.sh"), script)
-	h := sha256.Sum256([]byte(script))
-	oldSHA, oldState := prBuildSHA, prState
-	prBuildSHA = hex.EncodeToString(h[:])
+	pinBody(t, "pr-build.sh", script)
+	oldState := prState
 	prState = func(id string) (prInfo, error) {
 		if v, ok := prs[id]; ok {
 			return v, nil
 		}
 		return prInfo{}, errors.New("az: PR not found")
 	}
-	t.Cleanup(func() { prBuildSHA, prState = oldSHA, oldState })
+	t.Cleanup(func() { prState = oldState })
 	return home, filepath.Join(home, ".crius/state/quotes/build/qa")
 }
 
@@ -112,6 +109,8 @@ func TestPRBuildAsksForAWrongShaOrBashStartupEnv(t *testing.T) {
 	})
 }
 
+// Crius 11-06 item 5: the exact rule still refuses each off shape, and the lead allow list passes them on the pin (the
+// script checks its own words); a path through ".." is not the script's real folder and asks.
 func TestPRBuildOffShapeAsks(t *testing.T) {
 	home, _ := quotesHome(t, nil)
 	p := "~/.crius/state/quotes/build/bin/pr-build.sh"
@@ -141,7 +140,11 @@ func TestPRBuildOffShapeAsks(t *testing.T) {
 		if ok, why := quotesExact(cmd); ok && why == "" {
 			t.Errorf("exact rule passed an off shape:\n  %s", cmd)
 		}
-		asks(t, cmd, "")
+		if strings.Contains(cmd, "/../") {
+			asks(t, cmd, "Not on the allow list")
+		} else {
+			passes(t, cmd)
+		}
 	}
 }
 
@@ -258,32 +261,19 @@ func TestSetVoteOffShapeAndOtherPRWritesAsk(t *testing.T) {
 	}
 }
 
-// Each passing shape still asks as a ctx_batch_execute command: the exact rule is for the Bash tool only.
+// The vote still asks as a ctx_batch_execute command: the exact rule is for the Bash tool only. pr-build.sh passes there on
+// its pin, as in Bash (item 5).
 func TestQuotesExactShapesAreForBashOnly(t *testing.T) {
 	_, qa := quotesHome(t, map[string]string{"7848": head7848})
 	verdict(t, qa, "x-1fa0a77f", "# PR 7848 @ 1fa0a77f — PASS\n")
 	for _, cmd := range []string{voteCmd("7848"), "bash ~/.crius/state/quotes/build/bin/pr-build.sh 7848"} {
 		in := input{ToolName: "mcp__plugin_context-mode_context-mode__ctx_batch_execute", Cwd: "/"}
 		in.ToolInput.Commands = batchCommands{cmd}
-		if why := check(in); why == "" {
-			t.Errorf("want ask as a ctx_batch_execute command:\n  %s", cmd)
+		if why := check(in); (why == "") == (cmd == voteCmd("7848")) {
+			t.Errorf("ctx_batch_execute: want the vote to ask and pr-build.sh to pass, got %q:\n  %s", why, cmd)
 		}
 	}
 }
-
-// The pin is the hash of the pr-build.sh kept beside the guard, as for ado-suite.ts.
-func TestPRBuildPinIsTheShippedCopy(t *testing.T) {
-	b, err := os.ReadFile(filepath.Join("testdata", "pr-build", "pr-build.sh"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	sum := sha256.Sum256(b)
-	if got := hex.EncodeToString(sum[:]); got != shippedPRBuildSHA {
-		t.Fatalf("prBuildSHA pins %s, testdata/pr-build/pr-build.sh is %s", shippedPRBuildSHA, got)
-	}
-}
-
-var shippedPRBuildSHA = prBuildSHA
 
 // review 11-06 P2-1: PASS anywhere on line 1 let other verdicts through. Line 1 names PR <id> and holds
 // "@ <head8> — PASS", PASS the first word after the dash after the head, then the end, a space or "(".

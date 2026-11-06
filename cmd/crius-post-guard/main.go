@@ -212,7 +212,9 @@ type ctx struct {
 	own        map[string]*syntax.Word // in a script's text: the variables it sets once, and to what
 	code       bool                    // an az line found in code of another language: its own text, not a command's
 	alt        string                  // the other place the same script word may name (after a cd that may fail)
-	crius      *criusLog               // Crius mode: where the posts found go (criusmode.go); nil elsewhere
+	crius      *criusLog               // Crius mode and the lead allow list: where the posts found go (criusmode.go); nil elsewhere
+	after      []word                  // the words after the script this call runs (teamScript)
+	runner     []word                  // for code run by an interpreter: the interpreter and its words before the file
 }
 
 // cdTo is a cd that runs before what follows it in the command's own text, up to to (the end of the text, or of the
@@ -263,7 +265,13 @@ type runs struct {
 // by its name's ending, whatever the plugin's server is called. The plugin runs shell code in tool_input.cwd, else in its
 // project folder, and reads ctx_execute_file's path from the project folder (it takes no cwd there): the session's folder
 // stands for the project folder, and a relative cwd is taken from it.
-func check(in input) string { return checkIn(in, nil) }
+func check(in input) string {
+	why := checkIn(in, nil)
+	if why == "" {
+		return ""
+	}
+	return allowList(in, why)
+}
 
 // checkIn is check that, in Crius mode (col set), records the posts it finds in col instead of asking on them, and gives
 // an exact shape whose hook-time checks fail the usual reading.
@@ -275,13 +283,13 @@ func checkIn(in input, col *criusLog) string {
 	}
 	switch name := in.ToolName; {
 	case name == "Bash":
-		if ok, why := adoExact(t.Command, in.SessionID); ok && (col == nil || why == "") {
+		if ok, why := adoExact(t.Command, in.SessionID); ok && (col == nil || col.lead || why == "") {
 			return why
 		}
-		if ok, why := quotesExact(t.Command); ok && (col == nil || why == "") {
+		if ok, why := quotesExact(t.Command); ok && (col == nil || col.lead || why == "") {
 			return why
 		}
-		if ok, why := passPostExact(t.Command, in.SessionID); ok && (col == nil || why == "") {
+		if ok, why := passPostExact(t.Command, in.SessionID); ok && (col == nil || col.lead || why == "") {
 			return why
 		}
 		return checkBash(t.Command, ctx{cwd: in.Cwd, whole: t.Command, reads: new(int), read: new([]readText), crius: col})
@@ -858,6 +866,7 @@ func checkCall(args []word, stdin bool, c ctx) string {
 			}
 		}
 		if k := codeFile(name, args); k > 0 {
+			c.after, c.runner = args[k+1:], args[:k]
 			return checkScript(args[k], c, byCode, true)
 		}
 		// Code comes from stdin only with no module (-m) and no script file, or with the script -.
@@ -1025,6 +1034,7 @@ func checkCall(args []word, stdin bool, c ctx) string {
 		}
 	case strings.Contains(args[0].text, "/") && !sysDirs[path.Dir(args[0].text)]:
 		// a script or program run by its path (./x.sh, $S/x.sh)
+		c.after = args[1:]
 		return checkScript(args[0], c, byPath, true)
 	}
 	return ""
@@ -1166,6 +1176,7 @@ func checkShell(args []word, stdin bool, c ctx) string {
 		// zsh reads a start-up file (.zshenv, ZDOTDIR) whatever its options; bash and sh only with -i, -l or BASH_ENV
 		plain := plainShell(args[1:i]) && !strings.Contains(path.Base(args[0].text), "zsh") &&
 			!strings.Contains(path.Base(args[0].text), "ksh")
+		c.after = args[i+1:]
 		return checkScript(args[i], c, byShell, plain)
 	case stdin:
 		return unsure(c, "a script on the shell's stdin")

@@ -1,8 +1,6 @@
 package main
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -24,7 +22,7 @@ import (
 //	bun --no-env-file --config=<empty-bunfig.toml> <ado-suite.ts> report <digits>
 //	bun --no-env-file --config=<empty-bunfig.toml> <ado-suite.ts> run ~/Projects/Appxite/svc_quote/wt/<name> <its branch>
 //
-// with both files at the SHA-256 pinned here, the worktree a linked one of svc_quote on the branch named (feature/96365-*
+// with both files at a SHA-256 the pin file lists (pins.go), the worktree a linked one of svc_quote on the branch named (feature/96365-*
 // or wip/*), optionally followed only by one > or >> into the Quotes build notes/ or qa/ folder or the session's
 // scratchpad (a new file, or a plain non-executable one with one link, in no git worktree or repo), 2>&1,
 // `; echo rc=$?` (or ado_rc, quoted or not), and pipes into tail -N, head -N or cut -cA-B (LC_ALL=C allowed on those). Every word is plain text: no
@@ -46,10 +44,6 @@ import (
 //     redirect target (a new hardlink or symlink there).
 
 var (
-	// suiteSHA and bunfigSHA are the pinned SHA-256 of ado-suite.ts and empty-bunfig.toml; read the change before
-	// pinning a new one.
-	suiteSHA  = "ba3dd043debb398919eb75facd32dcf3079704c013826df8dce8fb70c6c4b080"
-	bunfigSHA = "7b5ecbbb78b71e9215cba3ac970668f792d9422141188d48227b31e40a19154c"
 	// scratchRoot holds every session's scratchpad: <root>/<project>/<session id>/scratchpad.
 	scratchRoot = func() string { return fmt.Sprintf("/private/tmp/claude-%d", os.Getuid()) }
 )
@@ -124,7 +118,7 @@ func adoExact(command, sid string) (ok bool, why string) {
 		return false, ""
 	}
 	// The shape is exact; now what it relies on must hold at hook time.
-	for _, p := range [][2]string{{suite, suiteSHA}, {bunfig, bunfigSHA}} {
+	for _, p := range [][2]string{{suite, "ado-suite.ts"}, {bunfig, "empty-bunfig.toml"}} {
 		if why := pinned(p[0], p[1]); why != "" {
 			return true, why
 		}
@@ -304,27 +298,6 @@ func redirects(st *syntax.Stmt, home string) (string, bool) {
 		}
 	}
 	return target, true
-}
-
-// pinned asks unless p is a plain file (no symlink on its path) whose SHA-256 is sum.
-func pinned(p, sum string) string {
-	name := filepath.Base(p)
-	fi, err := os.Lstat(p)
-	if err != nil || !fi.Mode().IsRegular() {
-		return asked(name + " at " + p + " is not a plain file (missing or a symlink)")
-	}
-	if real, err := filepath.EvalSymlinks(p); err != nil || real != p {
-		return asked(name + " at " + p + " is reached through a symlink")
-	}
-	b, err := os.ReadFile(p)
-	if err != nil {
-		return asked(name + " cannot be read: " + err.Error())
-	}
-	h := sha256.Sum256(b)
-	if got := hex.EncodeToString(h[:]); got != sum {
-		return asked(name + " does not match the SHA-256 the guard pins (" + got[:12] + "): read the change, then pin the new hash")
-	}
-	return ""
 }
 
 // isDotGit is true for .git in any case: the Mac's disk does not tell .GIT from .git.

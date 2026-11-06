@@ -1,8 +1,6 @@
 package main
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,11 +33,11 @@ func exactHome(t *testing.T) (home, bunfig, sp string) {
 			t.Fatal(err)
 		}
 	}
-	sum := func(s string) string { h := sha256.Sum256([]byte(s)); return hex.EncodeToString(h[:]) }
-	oldSuite, oldBunfig, oldRoot := suiteSHA, bunfigSHA, scratchRoot
-	suiteSHA, bunfigSHA = sum(suite), sum("# empty\n")
+	pinBody(t, "ado-suite.ts", suite)
+	pinBody(t, "empty-bunfig.toml", "# empty\n")
+	oldRoot := scratchRoot
 	scratchRoot = func() string { return filepath.Join(root, "claude-501") }
-	t.Cleanup(func() { suiteSHA, bunfigSHA, scratchRoot = oldSuite, oldBunfig, oldRoot })
+	t.Cleanup(func() { scratchRoot = oldRoot })
 	linkedWT(t, home, "core-2", "feature/96365-partner-quote-detail")
 	linkedWT(t, home, "core-3", "wip/x.y_z-1")
 	return home, bunfig, sp
@@ -516,25 +514,10 @@ func TestADOSuitePassingShapesAskOnlyForTheSuiteTheUsualWay(t *testing.T) {
 		}
 		in := input{ToolName: "mcp__plugin_context-mode_context-mode__ctx_batch_execute", Cwd: "/"}
 		in.ToolInput.Commands = batchCommands{cmd}
-		if why := check(in); why == "" {
+		// report passes there on its pin (item 5); run posts and keeps the click
+		if why := check(in); why == "" && strings.Contains(cmd, " run ") {
 			t.Errorf("want ask as a ctx_batch_execute command:\n  %s", cmd)
 		}
-	}
-}
-
-// shippedSuiteSHA is the pin as built, read before any test swaps suiteSHA for its fixture.
-var shippedSuiteSHA = suiteSHA
-
-// The pin is the hash of the script kept beside the guard (testdata/ado-suite/ado-suite.ts): installing the guard and
-// that file together keeps the exact shape passing; a change to the copy fails here until the pin moves with it.
-func TestADOSuitePinIsTheShippedCopy(t *testing.T) {
-	b, err := os.ReadFile(filepath.Join("testdata", "ado-suite", "ado-suite.ts"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	sum := sha256.Sum256(b)
-	if got := hex.EncodeToString(sum[:]); got != shippedSuiteSHA {
-		t.Fatalf("suiteSHA pins %s, testdata/ado-suite/ado-suite.ts is %s", shippedSuiteSHA, got)
 	}
 }
 
