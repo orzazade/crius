@@ -537,3 +537,28 @@ func TestADOSuitePinIsTheShippedCopy(t *testing.T) {
 		t.Fatalf("suiteSHA pins %s, testdata/ado-suite/ado-suite.ts is %s", shippedSuiteSHA, got)
 	}
 }
+
+// review 11-06 round 3, P3: a git folder whose objects is a symlink, or one with refs, is a git folder too.
+func TestADOSuiteRedirectGitFolderWithSymlinkedObjectsOrRefs(t *testing.T) {
+	_, bunfig, sp := exactHome(t)
+	elsewhere := t.TempDir()
+	for _, d := range []string{sp + "/symobj", sp + "/withrefs/refs"} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(t, sp+"/symobj/HEAD", "ref: refs/heads/main\n")
+	if err := os.Symlink(elsewhere, sp+"/symobj/objects"); err != nil {
+		t.Fatal(err)
+	}
+	write(t, sp+"/withrefs/HEAD", "ref: refs/heads/main\n")
+	rep := "bun --no-env-file --config=" + bunfig + " ~/.crius/state/quotes/build/bin/ado-suite.ts report 1 > "
+	for _, target := range []string{sp + "/symobj/out.log", sp + "/withrefs/out.log"} {
+		if why := check(exactIn(rep + target)); !strings.Contains(why, "a git repository folder") {
+			t.Errorf("want an ask naming a git repository folder for %s, got %q", target, why)
+		}
+	}
+	if why := check(exactIn(rep + sp + "/plain.log")); why != "" {
+		t.Errorf("want pass for a plain scratchpad file, asked: %s", why)
+	}
+}

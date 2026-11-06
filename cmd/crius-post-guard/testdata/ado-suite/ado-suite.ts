@@ -137,7 +137,7 @@ export function checkWorktree(wt: string, branchArg?: string): { sha: string; br
   if (git(wt, ['rev-parse', '--verify', '-q', 'refs/remotes/origin/develop^{commit}']).rc !== 0)
     throw new Refuse(2, `${wt} has no origin/develop to check the commits against`);
   checkPipeline(wt, sha);
-  const log =git(wt, ['log', '--format=%H%n%an <%ae>%n%cn <%ce>%n%B', `refs/remotes/origin/develop..${sha}`]);
+  const log = git(wt, ['log', '--format=%H%n%an <%ae>%n%cn <%ce>%n%B', `refs/remotes/origin/develop..${sha}`]);
   if (log.rc !== 0) throw new Refuse(2, `git log origin/develop..${sha.slice(0, 8)} failed in ${wt}`);
   const hit = log.out.split('\n').find((l) => creditRe.test(l));
   if (hit) throw new Refuse(2, `AI credit in origin/develop..${sha.slice(0, 8)} ("${hit.trim().slice(0, 80)}"): refused, remove it first`);

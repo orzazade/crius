@@ -48,7 +48,7 @@ import (
 var (
 	// suiteSHA and bunfigSHA are the pinned SHA-256 of ado-suite.ts and empty-bunfig.toml; read the change before
 	// pinning a new one.
-	suiteSHA  = "d4bd5ecef59a31865893ae6c8821b3f8952baf634aea809de11a67b70e907253"
+	suiteSHA  = "ba3dd043debb398919eb75facd32dcf3079704c013826df8dce8fb70c6c4b080"
 	bunfigSHA = "7b5ecbbb78b71e9215cba3ac970668f792d9422141188d48227b31e40a19154c"
 	// scratchRoot holds every session's scratchpad: <root>/<project>/<session id>/scratchpad.
 	scratchRoot = func() string { return fmt.Sprintf("/private/tmp/claude-%d", os.Getuid()) }
@@ -374,9 +374,15 @@ func safeTarget(p, home, sid string) string {
 		if _, err := os.Lstat(filepath.Join(d, ".git")); !errors.Is(err, fs.ErrNotExist) {
 			return asked("ado-suite.ts output to " + p + ": inside a git worktree (" + d + ")")
 		}
+		// HEAD with commondir, objects or refs of any kind (a symlinked objects included) is a git folder
 		_, herr := os.Lstat(filepath.Join(d, "HEAD"))
-		_, cerr := os.Lstat(filepath.Join(d, "commondir"))
-		if o, err := os.Lstat(filepath.Join(d, "objects")); herr == nil && (cerr == nil || err == nil && o.IsDir()) {
+		gitLike := false
+		for _, n := range []string{"commondir", "objects", "refs"} {
+			if _, err := os.Lstat(filepath.Join(d, n)); err == nil {
+				gitLike = true
+			}
+		}
+		if herr == nil && gitLike {
 			return asked("ado-suite.ts output to " + p + ": inside a git repository folder (" + d + ")")
 		}
 		if d == root || len(d) <= len(root) {

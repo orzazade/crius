@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const (
@@ -15,24 +16,35 @@ const (
 	head7820 = "88b5ae310123456789abcdef0123456789abcdef"
 )
 
-// quotesHome is exactHome plus a pinned pr-build.sh that queues a build, and PR heads the guard reads from a map
-// instead of ADO.
+// quotesHome is exactHome plus a pinned pr-build.sh that queues a build, and PRs the guard reads from a map instead of
+// ADO: each an active PR to develop at the head given, with no auto-complete.
 func quotesHome(t *testing.T, heads map[string]string) (home, qa string) {
 	t.Helper()
+	prs := map[string]prInfo{}
+	for id, h := range heads {
+		prs[id] = prInfo{Head: h, Status: "active", Target: "refs/heads/develop"}
+	}
+	return quotesHomePRs(t, prs)
+}
+
+func quotesHomePRs(t *testing.T, prs map[string]prInfo) (home, qa string) {
+	t.Helper()
 	home, _, _ = exactHome(t)
-	t.Setenv("BASH_ENV", "")
+	for _, v := range bashStartupVars {
+		t.Setenv(v, "")
+	}
 	script := "#!/bin/bash\naz pipelines run --org https://dev.azure.com/Appxite --project P --id 1119 --branch \"refs/pull/$1/merge\"\n"
 	write(t, filepath.Join(home, ".crius/state/quotes/build/bin/pr-build.sh"), script)
 	h := sha256.Sum256([]byte(script))
-	oldSHA, oldHead := prBuildSHA, prHead
+	oldSHA, oldState := prBuildSHA, prState
 	prBuildSHA = hex.EncodeToString(h[:])
-	prHead = func(id string) (string, error) {
-		if v, ok := heads[id]; ok {
+	prState = func(id string) (prInfo, error) {
+		if v, ok := prs[id]; ok {
 			return v, nil
 		}
-		return "", errors.New("az: PR not found")
+		return prInfo{}, errors.New("az: PR not found")
 	}
-	t.Cleanup(func() { prBuildSHA, prHead = oldSHA, oldHead })
+	t.Cleanup(func() { prBuildSHA, prState = oldSHA, oldState })
 	return home, filepath.Join(home, ".crius/state/quotes/build/qa")
 }
 
@@ -272,3 +284,101 @@ func TestPRBuildPinIsTheShippedCopy(t *testing.T) {
 }
 
 var shippedPRBuildSHA = prBuildSHA
+
+// review 11-06 P2-1: PASS anywhere on line 1 let other verdicts through. Line 1 names PR <id> and holds
+// "@ <head8> — PASS", PASS the first word after the dash after the head, then the end, a space or "(".
+func TestSetVoteLineOneFormat(t *testing.T) {
+	prs := map[string]prInfo{}
+	lines := map[string]string{
+		// review's five: each asks
+		"7901": "# PR 7901 @ 1fa0a77f — BUG (2 survivors); everything else PASS",
+		"7902": "# PR 7902 @ 1fa0a77f — HOLD: PASS once rebased",
+		"7903": "# PR 7903 @ 1fa0a77f — NOT PASS: 3 FAILS",
+		"7904": "# PR 7904 @ 1fa0a77f — Fail (unit PASS, e2e red)",
+		"7905": "# PR 7905 @ 1fa0a77f — BLOCKER: PASS pending",
+		"7906": "# PR 7906 @ 1fa0a77f — PASSED",
+		"7907": "# PR 7907 @ 1fa0a77f PASS",
+		"7908": "# PR 7908 @ 1fa0a77e — PASS",
+		// real lines (qa folder, 11-06)
+		"7849": "# QA verdict: PR 7849 (AC79 server, K1 part 1: line custom property fields from RethinkBack, per object; to integration/96365-b1) @ 1fa0a77f — PASS",
+		"7831": "# QA verdict: PR 7831 (AC101 retry or close a failed order slot, server, to integration/96365-b1) @ 1fa0a77f — PASS (re-merge of my PASS at 81887777)",
+		"7845": "# PR 7845 (Select Customer keeps the page asked for when the list opens) @ 1fa0a77f — qa-frontend-2 2026-11-06",
+		"7909": "# PR 7909 @ 1fa0a77f — PASS for the code",
+	}
+	for id := range lines {
+		prs[id] = prInfo{Head: head7848, Status: "active", Target: "refs/heads/develop"}
+	}
+	_, qa := quotesHomePRs(t, prs)
+	for id, l := range lines {
+		verdict(t, qa, "v"+id+"-1fa0a77f", l+"\n\nbody PASS\n")
+	}
+	for id, pass := range map[string]bool{"7901": false, "7902": false, "7903": false, "7904": false, "7905": false,
+		"7906": false, "7907": false, "7908": false, "7849": true, "7831": true, "7845": false, "7909": true} {
+		if pass {
+			passes(t, voteCmd(id))
+		} else {
+			asks(t, voteCmd(id), "no QA verdict")
+		}
+	}
+}
+
+// review 11-06 P2-4: an approve on a PR that is not active, targets another branch, or has auto-complete set would
+// complete it; those ask.
+func TestSetVoteAsksUnlessActiveOnDevelopOrIntegrationWithoutAutoComplete(t *testing.T) {
+	base := prInfo{Head: head7848, Status: "active", Target: "refs/heads/develop"}
+	with := func(f func(*prInfo)) prInfo { p := base; f(&p); return p }
+	prs := map[string]prInfo{
+		"7801": base,
+		"7802": with(func(p *prInfo) { p.Target = "refs/heads/integration/96365-b1" }),
+		"7803": with(func(p *prInfo) { p.Target = "refs/heads/integration/96365-b12" }),
+		"7811": with(func(p *prInfo) { p.Status = "completed" }),
+		"7812": with(func(p *prInfo) { p.Status = "abandoned" }),
+		"7813": with(func(p *prInfo) { p.Target = "refs/heads/main" }),
+		"7814": with(func(p *prInfo) { p.Target = "refs/heads/integration/96365-b1x" }),
+		"7815": with(func(p *prInfo) { p.Target = "refs/heads/integration/96364-b1" }),
+		"7816": with(func(p *prInfo) { p.Auto = "a2c9f7e0-0000-0000-0000-000000000000" }),
+	}
+	_, qa := quotesHomePRs(t, prs)
+	for id := range prs {
+		verdict(t, qa, "v"+id+"-1fa0a77f", "# PR "+id+" @ 1fa0a77f — PASS\n")
+	}
+	for _, id := range []string{"7801", "7802", "7803"} {
+		passes(t, voteCmd(id))
+	}
+	for id, want := range map[string]string{"7811": "status completed", "7812": "status abandoned", "7813": "targets refs/heads/main",
+		"7814": "targets refs/heads/integration/96365-b1x", "7815": "targets refs/heads/integration/96364-b1", "7816": "auto-complete"} {
+		asks(t, voteCmd(id), want)
+	}
+}
+
+// review 11-06 P2-2: az is a bash wrapper whose python keeps stdout open, so a plain context timeout did not stop the
+// read (a sleep 25 stub took 25 s). The guard kills the process group and asks within 12 s.
+func TestSetVoteAsksWhenTheHeadReadHangs(t *testing.T) {
+	_, qa := quotesHome(t, nil)
+	prState = readPR // the real reader, with az a stub on PATH
+	verdict(t, qa, "x-1fa0a77f", "# PR 7848 @ 1fa0a77f — PASS\n")
+	stubs := t.TempDir()
+	write(t, filepath.Join(stubs, "az"), "#!/bin/bash\n(sleep 25; echo late) &\nsleep 25\n")
+	if err := os.Chmod(filepath.Join(stubs, "az"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", stubs+":"+os.Getenv("PATH"))
+	start := time.Now()
+	asks(t, voteCmd("7848"), "cannot read")
+	if d := time.Since(start); d > 12*time.Second {
+		t.Fatalf("the hung head read took %s, want under 12 s", d)
+	}
+}
+
+// review 11-06 P3: bash also runs code from SHELLOPTS/BASHOPTS (xtrace with a PS4 command substitution) and ENV (sh
+// mode); any of them set asks, as BASH_ENV and BASH_FUNC_* do.
+func TestPRBuildAsksForEveryBashStartupVariable(t *testing.T) {
+	quotesHome(t, nil)
+	cmd := "bash ~/.crius/state/quotes/build/bin/pr-build.sh 7848"
+	for _, v := range []string{"SHELLOPTS", "BASHOPTS", "PS4", "ENV", "BASH_ENV"} {
+		t.Run(v, func(t *testing.T) {
+			t.Setenv(v, "xtrace")
+			asks(t, cmd, v)
+		})
+	}
+}
