@@ -303,3 +303,38 @@ func TestPackageScriptsAndPreloadsAreRead(t *testing.T) {
 		}
 	}
 }
+
+// P2: a program the guard does not know to leave files as they are (make) may write the body file before the post
+// sends it; the guard read the file as it is now. Such a program before a post with a body file denies in Crius mode
+// and asks for a lead.
+func TestAnUnknownProgramBeforeAPostMayWriteItsBody(t *testing.T) {
+	dir := criusDir(t, nil)
+	write(t, filepath.Join(dir, "d.md"), "Clean text.\n")
+	write(t, filepath.Join(dir, "gen.sh"), "#!/bin/bash\nmake docs\n")
+	const pr = "az repos pr create --title t --description @d.md --source-branch feature/96365-x --target-branch integration/96365-b1 --org https://dev.azure.com/Appxite --project P"
+	for _, cmd := range []string{
+		"make docs && " + pr,
+		"make docs; " + pr,
+		"python3 gen.py && " + pr,
+		"$M docs && " + pr,
+		"bash gen.sh && " + pr, // the guard reads gen.sh for posts, not for what it writes
+		"printf 'all:\\n' | make -f - && " + pr,
+	} {
+		if d, why := crius(t, criusSID, dir, cmd); d != "deny" {
+			t.Errorf("Crius mode: want deny, got %s %q\n  %s", d, why, cmd)
+		}
+		if why := check(bash(cmd, dir)); !strings.Contains(why, "owner's click") {
+			t.Errorf("lead: want an ask, got %q\n  %s", why, cmd)
+		}
+	}
+	// a command that leaves files as they are, or one after the post, still passes
+	for _, cmd := range []string{
+		"echo go && " + pr,
+		"cat d.md && " + pr,
+		pr + " && make docs",
+	} {
+		if d, why := crius(t, criusSID, dir, cmd); d != "" {
+			t.Errorf("Crius mode: want allow, got %s %q\n  %s", d, why, cmd)
+		}
+	}
+}

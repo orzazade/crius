@@ -12,6 +12,8 @@ import (
 	"strings"
 	"syscall"
 	"unicode/utf16"
+
+	"mvdan.cc/sh/v3/syntax"
 )
 
 // Crius mode (Crius 11-06, owner: the Crius session kept asking him for clicks, so he could not leave it alone). In the
@@ -320,6 +322,9 @@ func (p postCall) readBody(name string) (string, string) {
 	if p.c.changes(name, fine) || p.c.madeBy(name) != "" {
 		return "", "the command writes " + name + " before it sends it, in a way the guard does not read (write the file in a call of its own first)"
 	}
+	if prog := p.unknownBefore(); prog != "" {
+		return "", prog + " runs before the post and may write " + name + " (write the file in a call of its own first)"
+	}
 	if open {
 		return "", "a heredoc writes " + name + " with text the guard does not put in ($(…) or a variable)"
 	}
@@ -337,4 +342,50 @@ func (p postCall) readBody(name string) (string, string) {
 		return "", "the guard cannot read the file it sends (" + name + ")"
 	}
 	return strings.Join(docs, "\n"), ""
+}
+
+// unknownBefore names a program that runs before the post and is not known to leave files as they are (make docs &&
+// az … --description @d.md: make may write d.md, review r2 P2), or "". It reads the post's own text up to the post,
+// and the texts that run it (a script's callers) up to their last script call; a call that holds the post is not before it.
+func (p postCall) unknownBefore() string {
+	for i, r := range p.c.files {
+		at := uint(len(r.src)) + 1
+		if i == len(p.c.files)-1 {
+			for _, a := range p.args {
+				if a.node != nil && a.node.Pos().Offset() < at {
+					at = a.node.Pos().Offset()
+				}
+			}
+		} else if len(r.scripts) > 0 {
+			at = 0
+			for w := range r.scripts {
+				at = max(at, w.Pos().Offset())
+			}
+		}
+		prog := ""
+		syntax.Walk(r.file, func(n syntax.Node) bool {
+			ce, ok := n.(*syntax.CallExpr)
+			// a call that holds the post (find … -exec az …, timeout 60 az …) is the post's own
+			if prog != "" || !ok || len(ce.Args) == 0 || ce.Pos().Offset() >= at || ce.End().Offset() > at {
+				return prog == ""
+			}
+			if name, known := cmdName(ce.Args[0]); !known || !leavesFiles(name, literalWords(ce.Args[1:])) {
+				prog = literal(ce.Args[0]).src
+			}
+			return true
+		})
+		if prog != "" {
+			return prog
+		}
+	}
+	return ""
+}
+
+// leavesFiles says whether a named command is known to write no file but those it names, which changes judges: a
+// reader, a builtin that sets shell state, a writer of the files it names (cp, sed -i, curl -o, git checkout, az
+// download --path). A script run before the post is not: the guard reads it for posts, not for what it writes.
+func leavesFiles(name string, args []word) bool {
+	return readCmds[name] || noFileCmds[name] || keepCmds[name] || readsOnly[name] || fileWriters[name] ||
+		stateBuiltins[name] && !runBuiltins[name] || name == "pwd" || name == "wget" || name == "curl" ||
+		name == "sed" || name == "git" || name == "az" || (name == "find" || name == "sort") && shownNoWrite(name, args)
 }
