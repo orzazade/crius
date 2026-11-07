@@ -185,9 +185,10 @@ func TestAModelNameInAnyTextWordIsRefused(t *testing.T) {
 	guardCall(t, dir, `az devops invoke --area git --resource pullRequests --http-method PATCH --in-file `+pr+` --org https://dev.azure.com/Appxite`, "")
 }
 
-// Review of 1a2069f: zsh can make "cat" another program in ways a list of tricks misses (path=(…), functions[cat]=…,
-// hash cat=/x), so a "$(cat FILE)" word is read only when no statement of the command may change the shell; a wiki
-// page's --path is its title; a value glued to a short option is text.
+// Reviews of 1a2069f and 3a9092d: zsh can make "cat" another program in ways no list of tricks covers (path=(…),
+// functions[cat]=…, hash cat=/x, a glob qualifier *(e:…:) in any word, printf -v path, for path in, repeat 1 hash), so
+// a "$(cat FILE)" word is read only when the command is the post alone, or cd DIR && the post, with plain words; else
+// the reason says to pass @FILE. A wiki page's --path is its title; a value glued to a short option is text.
 func TestCatIsReadOnlyWhenNothingMayChangeTheShell(t *testing.T) {
 	dir := criusDir(t, map[string]string{"7890": "refs/heads/integration/96365-b4"})
 	good := filepath.Join(dir, "good.md")
@@ -203,15 +204,27 @@ func TestCatIsReadOnlyWhenNothingMayChangeTheShell(t *testing.T) {
 		"cat() { printf x; }; ",
 		"source env.sh; ",
 		"eval \"$S\"; ",
+		"echo /*(e:'path=(/x $path)':) >/dev/null; ",
+		"cd /tmp && : /*(e:'path=(/x $path)':); ",
+		"printf -v path /x; ",
+		"for path in /x; do :; done; ",
+		"repeat 1 hash cat=/x; ",
+		"echo go; ",
+		"set -e; ",
 	} {
-		guardCall(t, dir, before+post, "deny", `--description "$(cat file)"`)
+		guardCall(t, dir, before+post, "deny") // some for an earlier reason (an unknown program, eval); the rest say "pass @FILE"
 	}
-	for _, before := range []string{"", "cd " + dir + " && ", "echo go; ", "git -C " + dir + " status >/dev/null; "} {
-		guardCall(t, dir, before+post, "")
+	guardCall(t, dir, "echo go; "+post, "deny", "pass @FILE")
+	guardCall(t, dir, `az repos pr update --id 7890 /*(e:'path=(/x $path)':) --description "$(cat `+good+`)"`+adoO, "deny", "pass @FILE")
+	for _, cmd := range []string{post, "cd " + dir + " && " + post, post + " -o none 2>/dev/null", post + ` --query "[id, title]"`} {
+		guardCall(t, dir, cmd, "")
 	}
 	for _, cmd := range []string{
 		`az devops wiki page create --wiki W --path "Claude review notes" --content "Fix the list."` + adoO,
 		`az repos pr update --id 7890 -d"Opus review: no findings"` + adoO,
+		`az repos pr update --id 7890 -d"Opus review: LGTM (score=9)"` + adoO,
+		`curl -X POST https://dev.azure.com/Appxite/P/_apis/git/repositories/R/pullRequests/7890/threads?api-version=7.1 -sdOpus-says-LGTM`,
+		`wget --no-config --post-data x -OdOpus-says https://dev.azure.com/Appxite/P/_apis/git/repositories/R/pullRequests/7890/threads?api-version=7.1`,
 		`curl -X POST https://dev.azure.com/Appxite/P/_apis/git/repositories/R/pullRequests/7890/threads?api-version=7.1 -d'{"comments":[{"content":"Opus: LGTM"}]}'`,
 	} {
 		guardCall(t, dir, cmd, "deny", "names a model or tool")

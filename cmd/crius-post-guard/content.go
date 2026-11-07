@@ -31,18 +31,6 @@ var (
 	}{
 		{[]string{"Projects/Appxite/svc_quote", ".crius/state/quotes"}, "svc_quote", "d88331ee-60dc-4f15-b236-b1790c6fdeaa", "AB#96365"},
 	}
-	// plainBuiltins are the shell builtins that cannot change what "cat" runs; every other builtin (alias, hash, eval,
-	// source, functions, typeset, …) may.
-	plainBuiltins = map[string]bool{"cd": true, "pushd": true, "popd": true, "echo": true, "printf": true, "print": true,
-		"true": true, "false": true, "test": true, "[": true, "pwd": true, ":": true, "exit": true, "return": true,
-		"sleep": true, "wait": true, "shift": true}
-	// shellBuiltins are bash's and zsh's builtins: a call by one of these names runs in the shell itself and may change it.
-	shellBuiltins = strings.Fields(`. : [ alias autoload bg bindkey break builtin bye caller cap cd chdir clone command
-		compgen complete compopt continue coproc declare dirs disable disown echo emulate enable eval exec exit export false
-		fc fg float functions getln getopts hash history integer jobs kill let limit local logout mapfile noglob popd print
-		printf pushd pushln pwd r read readarray readonly rehash return sched set setopt shift shopt source suspend test
-		times trap true type typeset ulimit umask unalias unfunction unhash unlimit unset unsetopt vared wait whence where
-		which zcompile zformat zle zmodload zparseopts zstyle`)
 	// pathOpts are options whose value is a path, branch, URL, id or query rather than text people read.
 	pathOpts = map[string][]string{
 		"az": {"--org", "--organization", "--url", "--uri", "-u", "--in-file", "--file", "--file-path", "--source-branch", "-s",
@@ -104,15 +92,19 @@ func catWord(w *syntax.Word) (prefix, file string, ok bool) {
 // Other words the guard cannot read stay as they are (hardCheck refuses them).
 func (p postCall) resolve() ([]word, string) {
 	out := make([]word, 0, len(p.args))
-	shadow := mayShadowCat(p.c.whole) // cat may not be cat: no word is read as a file
+	alone := catShape(p.c.whole)
 	for _, a := range p.args {
 		prefix, file, ok := "", "", false
-		if !a.ok && !shadow {
+		if !a.ok {
 			prefix, file, ok = catWord(a.node)
 		}
 		if !ok {
 			out = append(out, a)
 			continue
+		}
+		if !alone {
+			return nil, p.tool + ": the guard reads \"$(cat FILE)\" (" + a.src + ") only in a command that is the post " +
+				"alone, or cd DIR && the post, with plain words; pass @FILE instead (az reads it itself)"
 		}
 		body, why := p.readBody(file)
 		if why != "" {
@@ -126,36 +118,75 @@ func (p postCall) resolve() ([]word, string) {
 	return out, ""
 }
 
-// mayShadowCat says whether a command text may change what "cat" runs in its shell before the post: any function, any
-// assignment that runs no program (zsh path=(…), functions[cat]=…, PATH=…), PATH on a call, a declaration, or a shell
-// builtin other than plain ones (hash cat=/x, alias, eval, source). A program the shell starts cannot change it. The
-// test is on what each statement is, not on known tricks (review of 1a2069f P1: zsh's path=() and functions[cat]).
-func mayShadowCat(text string) bool {
+// catShape says whether a command text is one post alone, or cd DIR && the post, whose words are all plain or
+// "$(cat FILE)": only then does "$(cat FILE)" give FILE's text as the guard reads it. Anything else before or around the
+// post (zsh's path=(…), functions[cat]=…, hash cat=/x, a glob qualifier *(e:…:) that runs code, a script around it) may
+// make cat another program, and a list of such forms is never complete (reviews of 1a2069f and 3a9092d: the same cause
+// twice), so the shape is what is checked.
+func catShape(text string) bool {
 	f, err := syntax.NewParser(syntax.Variant(syntax.LangBash)).Parse(strings.NewReader(text), "")
-	if err != nil {
-		return true
+	if err != nil || len(f.Stmts) != 1 {
+		return false
 	}
-	shadow := false
-	syntax.Walk(f, func(n syntax.Node) bool {
-		switch n := n.(type) {
-		case *syntax.FuncDecl, *syntax.DeclClause, *syntax.LetClause:
-			shadow = true
-		case *syntax.CallExpr:
-			for _, as := range n.Assigns {
-				if len(n.Args) == 0 || as.Name == nil || strings.EqualFold(as.Name.Value, "path") {
-					shadow = true
-				}
-			}
-			if len(n.Args) > 0 {
-				name := literal(n.Args[0])
-				if !name.ok || slices.Contains(shellBuiltins, name.text) && !plainBuiltins[name.text] {
-					shadow = true
-				}
+	plainStmt := func(st *syntax.Stmt) (*syntax.CallExpr, bool) {
+		if st == nil || st.Background || st.Coprocess || st.Negated {
+			return nil, false
+		}
+		for _, r := range st.Redirs {
+			if r.Word != nil && !asWritten(r.Word) || r.Hdoc != nil {
+				return nil, false
 			}
 		}
-		return !shadow
-	})
-	return shadow
+		ce, ok := st.Cmd.(*syntax.CallExpr)
+		if !ok || len(ce.Assigns) != 0 || len(ce.Args) == 0 {
+			return nil, false
+		}
+		return ce, true
+	}
+	st := f.Stmts[0]
+	if b, ok := st.Cmd.(*syntax.BinaryCmd); ok && b.Op == syntax.AndStmt && !st.Background && !st.Negated && len(st.Redirs) == 0 {
+		cd, ok := plainStmt(b.X)
+		if !ok || len(cd.Args) != 2 || !asWritten(cd.Args[0]) || !asWritten(cd.Args[1]) || literal(cd.Args[0]).text != "cd" {
+			return false
+		}
+		st = b.Y
+	}
+	ce, ok := plainStmt(st)
+	if !ok {
+		return false
+	}
+	for _, w := range ce.Args {
+		if _, _, cat := catWord(w); !cat && !asWritten(w) { // catWord takes only a file name with no glob or ~user
+			return false
+		}
+	}
+	return true
+}
+
+// asWritten says whether a word is text the shell passes as written: literal parts with no glob or zsh qualifier, and
+// quotes that hold only literal text.
+func asWritten(w *syntax.Word) bool {
+	for _, p := range w.Parts {
+		switch p := p.(type) {
+		case *syntax.Lit:
+			if strings.ContainsAny(p.Value, "*?[]()") {
+				return false
+			}
+		case *syntax.SglQuoted:
+			if p.Dollar {
+				return false
+			}
+		case *syntax.DblQuoted:
+			for _, q := range p.Parts {
+				if _, lit := q.(*syntax.Lit); !lit {
+					return false
+				}
+			}
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // notText says whether a word of the tool's is not text people read: an @file (its text is read as a file), a URL, or
@@ -165,7 +196,10 @@ func notText(tool, opt, s string, wiki bool) bool {
 	if strings.HasPrefix(s, "@") || strings.Contains(s, "://") && !strings.ContainsAny(s, " \t\r\n") {
 		return true
 	}
-	o := strings.ToLower(opt)
+	o := opt
+	if strings.HasPrefix(o, "--") {
+		o = strings.ToLower(o) // short options keep their case: wget -O is a path, -o a log file
+	}
 	if wiki && (o == "--path" || o == "-p") {
 		return false
 	}
@@ -184,12 +218,15 @@ func contentCheck(p postCall, in input) string {
 		if strings.HasPrefix(t, "-") {
 			o, v, eq := strings.Cut(t, "=")
 			switch {
+			case !strings.HasPrefix(t, "--") && len(t) > 2:
+				// a value glued to a short option (-d"Opus: LGTM (score=9)", curl -d'{…}'), or behind joined flags
+				// (curl -sdOpus): each tail after the first letters may be the value (reviews of 1a2069f and 3a9092d)
+				for i := 3; i < len(t) && i <= 8; i++ {
+					read = append(read, t[i:])
+				}
+				t, opt = t[2:], t[:2]
 			case eq:
 				t, opt = v, o
-			case !strings.HasPrefix(t, "--") && len(t) > 2:
-				// a value glued to a short option (-d"Opus: LGTM", curl -d'{…}'): the rest is its value (review of
-				// 1a2069f P2); joined flags (-fsS) read as harmless text
-				t, opt = t[2:], t[:2]
 			default:
 				prev = t
 				continue
