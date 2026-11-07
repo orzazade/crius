@@ -288,3 +288,28 @@ func TestAResumeWithNoRoleFileSaysHow(t *testing.T) {
 		t.Errorf("no launch folder: %v", err)
 	}
 }
+
+// Owner 11-08: a role closed on purpose (its goal done, /exit) is marked so wakewatch's dead-role check skips it. -close
+// marks the role's current session; a role with no file is refused, naming it; -resume wants the role back and opens it.
+func TestCloseMarksTheRolesSessionAndResumeOpensIt(t *testing.T) {
+	home := t.TempDir()
+	roles := filepath.Join(home, "roles")
+	if err := closeRole(home, "rig-refresh", "lead"); err == nil || !strings.Contains(err.Error(), filepath.Join(roles, "rig-refresh.lead.json")) {
+		t.Errorf("no role file: %v, want a refusal naming it", err)
+	}
+	s := sessionstate.State{SessionID: "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b", Cwd: "/Users/o/x", Project: "rig-refresh", Role: "lead", Config: t.TempDir()}
+	if err := sessionstate.WriteRole(roles, s, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := closeRole(home, "rig-refresh", "lead"); err != nil {
+		t.Fatal(err)
+	}
+	if id, err := sessionstate.ClosedRole(roles, "rig-refresh", "lead"); err != nil || id != s.SessionID {
+		t.Fatalf("closed %q %v, want %s", id, err, s.SessionID)
+	}
+	d := launch.Deps{Lock: filepath.Join(home, "launch.lock"), Cmux: func(args ...string) (string, error) { return "", errors.New("stop here") }}
+	_ = resume(home, "rig-refresh", "lead", d)
+	if id, err := sessionstate.ClosedRole(roles, "rig-refresh", "lead"); err != nil || id != "" {
+		t.Errorf("after -resume: closed %q %v, want open", id, err)
+	}
+}

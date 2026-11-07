@@ -1920,13 +1920,14 @@ func TestASessionRestoredOnTheDefaultFolderIsCaught(t *testing.T) {
 	if err := Run(f.deps(home, t0.Add(100*time.Minute))); err != nil {
 		t.Fatal(err)
 	}
-	wakes := 0
+	wakes, unread := 0, false
 	for _, m := range f.sent {
 		if strings.Contains(m, " runs in ") {
 			wakes++
 		}
+		unread = unread || strings.Contains(m, "could not read its role file")
 	}
-	if wakes != 1 || !strings.Contains(f.sent[len(f.sent)-1], "could not read its role file") {
+	if wakes != 1 || !unread {
 		t.Fatalf("sent %q, want the first wake and the unread role file only", f.sent)
 	}
 	f.sent = nil

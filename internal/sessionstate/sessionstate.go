@@ -485,6 +485,48 @@ func ReadRole(dir, project, role string) (State, error) {
 	return s, nil
 }
 
+// closedPath is the mark crius-spawn -close leaves beside a role's file, <project>.<role>.closed: the id of the session
+// closed on purpose.
+func closedPath(dir, project, role string) (string, error) {
+	p, err := RolePath(dir, project, role)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSuffix(p, ".json") + ".closed", nil
+}
+
+// CloseRole marks session id of a role closed on purpose (owner 11-08: rig-refresh and appinsights-e2e ended with
+// their goals done), so wakewatch's dead-role check skips it. Another session of the role, or OpenRole, opens it again.
+func CloseRole(dir, project, role, id string) error {
+	p, err := closedPath(dir, project, role)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(p, []byte(id+"\n"), 0o600)
+}
+
+// ClosedRole gives the session id a role was closed with, "" when it is not closed.
+func ClosedRole(dir, project, role string) (string, error) {
+	p, err := closedPath(dir, project, role)
+	if err != nil {
+		return "", err
+	}
+	b, err := os.ReadFile(p)
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", nil
+	}
+	return strings.TrimSpace(string(b)), err
+}
+
+// OpenRole removes a role's closed mark, if it has one.
+func OpenRole(dir, project, role string) error {
+	p, err := closedPath(dir, project, role)
+	if err != nil {
+		return err
+	}
+	return ignoreGone(os.Remove(p))
+}
+
 // Process finds the live process that has session id open, from Claude Code's own status files,
 // <config>/sessions/<pid>.json: its pid and -n name, or pid 0 when no live process's file names the session (a crashed
 // one leaves its file behind, and after /clear the same process names the new id).

@@ -46,11 +46,13 @@ func main() {
 	parent := flag.String("parent", "", "the leader's session id, for the provenance tag")
 	item := flag.String("item", "", "the work item, <project>#<n>, for the provenance tag")
 	again := flag.Bool("resume", false, "bring the role's current session back: <project> <role>, nothing else")
+	closed := flag.Bool("close", false, "mark the role's current session closed on purpose: <project> <role>, nothing else; wakewatch's dead-role check skips it until another session of the role starts or -resume brings it back")
 	move := flag.Bool("move", false, "start the role afresh in its current session's folder on another Max account (-account, default the one whose week resets soonest under 95%); its Claude must have stopped")
 	flag.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: crius-spawn [-account max|<name>] [-parent id] [-item project#n] <project> <role> <first prompt…>")
 		fmt.Fprintln(os.Stderr, "       crius-spawn -move [-account max|<name>] [-parent id] [-item project#n] <project> <role> <first prompt…>")
 		fmt.Fprintln(os.Stderr, "       crius-spawn -resume <project> <role>")
+		fmt.Fprintln(os.Stderr, "       crius-spawn -close <project> <role>")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -69,6 +71,17 @@ func main() {
 		Wait:  time.Second,
 		Front: outbox.Front,
 		Typed: outbox.Typed,
+	}
+	if *closed {
+		if flag.NArg() != 2 || *again || *account != "" || *move || *parent != "" || *item != "" {
+			flag.Usage()
+			os.Exit(2)
+		}
+		if err := closeRole(store.Home(), flag.Arg(0), flag.Arg(1)); err != nil {
+			fmt.Fprintln(os.Stderr, "crius-spawn:", err)
+			os.Exit(1)
+		}
+		return
 	}
 	if *again {
 		if flag.NArg() != 2 || *account != "" || *move || *parent != "" || *item != "" {
@@ -109,6 +122,9 @@ func resume(home, project, role string, d launch.Deps) error {
 	if err != nil {
 		return err
 	}
+	if err := sessionstate.OpenRole(filepath.Join(home, "roles"), project, role); err != nil { // wanted back: no longer closed
+		return err
+	}
 	acct, dir, err := sessionAccount(home, s.FiledConfig()) // its account, wherever a restore put it
 	if err != nil {
 		return err
@@ -118,6 +134,20 @@ func resume(home, project, role string, d launch.Deps) error {
 		return err
 	}
 	fmt.Printf("OK %s %s resumed %s\n", ws, surface, s.SessionID)
+	return nil
+}
+
+// closeRole marks the role's current session closed on purpose (owner 11-08), and prints which.
+func closeRole(home, project, role string) error {
+	dir := filepath.Join(home, "roles")
+	s, err := sessionstate.ReadRole(dir, project, role)
+	if err != nil {
+		return fmt.Errorf("no session to close for %s %s: %w", project, role, err)
+	}
+	if err := sessionstate.CloseRole(dir, project, role, s.SessionID); err != nil {
+		return err
+	}
+	fmt.Printf("OK %s %s closed: session %s\n", project, role, s.SessionID)
 	return nil
 }
 

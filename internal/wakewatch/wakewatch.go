@@ -138,6 +138,8 @@ type state struct {
 	Disk        diskAlarm            // the last disk alarm sent; zero once disk is back over the line
 	Unwaited    map[string]waitGap   // project -> its bus log's gap with no waiter, while it lasts
 	BusSizes    map[string]int64     // project -> its bus log's size when the waiter check last looked: a gap seen now began after it
+	Roles       map[string]roleSeen  // <project>.<role> -> when its session was last seen live (deadRoles)
+	RolesAt     time.Time            // when deadRoles last looked at every role: a role started after it may have died unseen
 }
 
 // waitGap is when a bus log was first seen with no waiter, and whether that gap was said to Crius. From is the log's size
@@ -180,6 +182,9 @@ func Run(d Deps) error {
 	if st.Typed == nil {
 		st.Typed = map[string]time.Time{}
 	}
+	if st.Roles == nil {
+		st.Roles = map[string]roleSeen{}
+	}
 	for k, at := range st.Typed {
 		if d.Now.Sub(at) > window+resend {
 			delete(st.Typed, k)
@@ -198,6 +203,7 @@ func Run(d Deps) error {
 	hv, ha := readHooks(d, st.Views, ss, sesErr)
 	alerts = append(alerts, ha...)
 	alerts = append(alerts, wrongFolder(d, hv)...)
+	alerts = append(alerts, deadRoles(d, &st, ss, sesErr)...)
 	screens, err := d.Screens()
 	if err != nil {
 		alerts = append(alerts, [2]string{screensFailed, "the tab check failed to look: " + err.Error()})
@@ -247,7 +253,7 @@ func Run(d Deps) error {
 		if err != nil {
 			sendErr = err
 		}
-		if (strings.HasPrefix(a[0], "bus:") || strings.HasPrefix(a[0], "folder:") || strings.HasPrefix(a[0], "restore:") || strings.HasPrefix(a[0], "handed:")) && (err == nil || d.HandedOver != nil && d.HandedOver(err)) {
+		if (strings.HasPrefix(a[0], "bus:") || strings.HasPrefix(a[0], "folder:") || strings.HasPrefix(a[0], "restore:") || strings.HasPrefix(a[0], "handed:") || strings.HasPrefix(a[0], "dead:")) && (err == nil || d.HandedOver != nil && d.HandedOver(err)) {
 			st.Typed[a[0]] = d.Now
 		}
 		// Crius's waiter wakes on a bus line: a wake that cannot be typed goes there, so none is lost (S2, 10-22).
@@ -283,14 +289,15 @@ func Run(d Deps) error {
 	}
 	// A wrong folder can clear and come back (review of item 8: a second restore on it was silent for 12 h): once a run
 	// that saw the sessions finds it gone, it wakes Crius again when it returns.
-	// The same for a tab's restore folder, once a run also read the tabs' restore records.
+	// The same for a tab's restore folder, once a run also read the tabs' restore records, and for a dead role, once a run
+	// read every role: a resumed session that dies again wakes Crius again.
 	// A handed-back line and the same line with unsent text in the box (":typed") are one: either keeps both, so a box
 	// cleared, typed again or not checked says nothing new (review r2 of X10).
 	for k := range st.Typed {
 		base := strings.TrimSuffix(k, ":typed")
 		kind, rest, _ := strings.Cut(base, ":")
 		id, _, _ := strings.Cut(rest, ":")
-		seen := kind == "folder" || kind == "restore" && !active["restore-unread"] || kind == "handed" && !active[screensFailed] && !active["screen-failed:"+rest[:max(0, strings.LastIndex(rest, ":"))]]
+		seen := kind == "folder" || kind == "restore" && !active["restore-unread"] || kind == "dead" && !active["roles-failed"] || kind == "handed" && !active[screensFailed] && !active["screen-failed:"+rest[:max(0, strings.LastIndex(rest, ":"))]]
 		if seen && !active[base] && !active[base+":typed"] && !hv.blind && !active["role-unread:"+id] {
 			delete(st.Typed, k)
 		}
