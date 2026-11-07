@@ -75,64 +75,42 @@ func (r *rig) bus(t *testing.T) []string {
 	return strings.Split(strings.TrimSpace(string(b)), "\n")
 }
 
-// Owner 11-08: the 5-min load over 28 for 15 min drops the heavy slots to 1, with one bus line; 14 min over is not
-// enough, and the count then stays 1 with no more lines.
-func TestFifteenMinutesOverDropsToOneSlot(t *testing.T) {
+// The Mac load rule (crius AGENTS.md; crius:lead DECISION 11-08): the 5-min load over 28 drops the heavy slots to 1
+// at once, with one bus line; at exactly 28 it is not over. The count then stays 1 with no more lines.
+func TestFiveMinuteLoadOverDropsToOneAtOnce(t *testing.T) {
 	r := newRig(t, "2")
-	if rc := r.minutes(15, 30, 29); rc != 0 || r.slots(t) != "2" || r.bus(t) != nil {
-		t.Fatalf("after 14 min over: rc %d slots %s bus %q", rc, r.slots(t), r.bus(t))
+	if rc := r.minutes(3, 28, 29); rc != 0 || r.slots(t) != "2" || r.bus(t) != nil {
+		t.Fatalf("load5 28 is not over: rc %d slots %s bus %q", rc, r.slots(t), r.bus(t))
 	}
-	if rc := r.minutes(1, 31.5, 29); rc != 0 || r.slots(t) != "1" {
-		t.Fatalf("at 15 min over: rc %d slots %s", rc, r.slots(t))
+	if rc := r.minutes(1, 28.5, 29); rc != 0 || r.slots(t) != "1" {
+		t.Fatalf("first minute over: rc %d slots %s", rc, r.slots(t))
 	}
 	r.minutes(10, 30, 29)
-	want := "2026-11-08T03:15 INFO crius:loadwatch -> all — heavy slots 2 -> 1 (load5 31.50, load15 29.00)"
+	want := "2026-11-08T03:03 INFO crius:loadwatch -> all — heavy slots 2 -> 1 (load5 28.50, load15 29.00)"
 	if b := r.bus(t); len(b) != 1 || b[0] != want || r.slots(t) != "1" {
 		t.Fatalf("bus %q, want one line %q; slots %s", b, want, r.slots(t))
 	}
 }
 
-// The 15-min load under 28 gives 2 slots at once; between the two rules (load15 at 28 or over, load5 not over long
-// enough) the count stays.
-func TestFifteenMinuteLoadUnderTheLimitGivesTwo(t *testing.T) {
-	r := newRig(t, "1")
-	if r.minutes(5, 25, 28); r.slots(t) != "1" || r.bus(t) != nil {
-		t.Fatalf("load15 28 is not under: slots %s bus %q", r.slots(t), r.bus(t))
+// Back to 2 only when the 15-min load is under 28: the 5-min load falling back is not enough (easing on it flipped 4
+// times on 11-05). Between the two rules the count stays.
+func TestBackToTwoOnlyWhenTheFifteenMinuteLoadIsUnder(t *testing.T) {
+	r := newRig(t, "2")
+	r.minutes(1, 35, 29)
+	if r.minutes(10, 20, 28); r.slots(t) != "1" || len(r.bus(t)) != 1 {
+		t.Fatalf("load5 back under, load15 28: slots %s bus %q", r.slots(t), r.bus(t))
 	}
 	r.minutes(1, 20, 27.9)
-	if b := r.bus(t); r.slots(t) != "2" || len(b) != 1 || !strings.HasSuffix(b[0], "heavy slots 1 -> 2 (load5 20.00, load15 27.90)") {
+	if b := r.bus(t); r.slots(t) != "2" || len(b) != 2 || !strings.HasSuffix(b[1], "heavy slots 1 -> 2 (load5 20.00, load15 27.90)") {
 		t.Fatalf("slots %s bus %q", r.slots(t), b)
 	}
 }
 
-// Both rules hold (the 5-min load over 28 for 15 min while the 15-min load is still under 28): 1 wins, and it stays 1
-// while the 5-min load stays over. Once it drops, 2 comes back.
+// Both hold (the 5-min load over 28 while the 15-min load is still under 28): 1 wins.
 func TestTheOverRuleWins(t *testing.T) {
 	r := newRig(t, "2")
-	r.minutes(16, 40, 27)
-	if r.slots(t) != "1" {
-		t.Fatalf("slots %s", r.slots(t))
-	}
-	r.minutes(5, 40, 27)
-	if r.slots(t) != "1" || len(r.bus(t)) != 1 {
+	if r.minutes(5, 40, 27); r.slots(t) != "1" || len(r.bus(t)) != 1 {
 		t.Fatalf("slots %s bus %q", r.slots(t), r.bus(t))
-	}
-	r.minutes(1, 20, 27)
-	if r.slots(t) != "2" || len(r.bus(t)) != 2 {
-		t.Fatalf("slots %s bus %q", r.slots(t), r.bus(t))
-	}
-}
-
-// A gap of more than 3 min between runs (the Mac slept) is not time over the limit: the 15 min start again.
-func TestAGapBetweenRunsStartsTheCountAgain(t *testing.T) {
-	r := newRig(t, "2")
-	r.minutes(10, 30, 29)
-	r.now = r.now.Add(20 * time.Minute)
-	if r.minutes(15, 30, 29); r.slots(t) != "2" {
-		t.Fatalf("a slept gap counted as over: slots %s", r.slots(t))
-	}
-	if r.minutes(1, 30, 29); r.slots(t) != "1" {
-		t.Fatalf("slots %s", r.slots(t))
 	}
 }
 

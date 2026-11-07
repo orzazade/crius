@@ -1,14 +1,13 @@
 // Command crius-loadwatch sets the heavy-slot count of the Appxite rig from the machine load; launchd runs it every
-// minute (owner 11-08, the Quotes slots-load-guard made generic):
+// minute. It follows the Mac load rule in Crius's AGENTS.md (owner 11-08; crius:lead DECISION 11-08):
 //
-//   - the 5-min load has been over 28 for 15 min: 1 slot;
+//   - the 5-min load is over 28: 1 slot, at once;
 //   - else the 15-min load is under 28: 2 slots;
-//   - else the count stays.
+//   - else the count stays (easing on the 5-min load flipped 4 times on 11-05).
 //
 // It writes the slots file (~/AppxiteRig/heavy/slots) only on a change, and then posts one INFO line on the Crius bus.
 // A file that holds another whole number was set by hand: it is left alone and said in the log; an empty or broken
-// one is a failure. "Over for 15 min" is
-// counted over runs that follow each other: a gap of more than 3 min between runs (the Mac slept) starts it again.
+// one is a failure.
 // A load, state or slots file it cannot read or write is posted once as an ALERT (and again after it recovered), and
 // the run exits 2.
 package main
@@ -30,18 +29,11 @@ import (
 	"github.com/orzazade/crius/internal/watchdog"
 )
 
-const (
-	limit   = 28.0
-	overFor = 15 * time.Minute
-	maxGap  = 3 * time.Minute
-)
+const limit = 28.0
 
-// state is what one run leaves the next: when the 5-min load went over the limit (zero while it is not), when the
-// last run was, and whether a failure was already posted.
+// state is what one run leaves the next: whether a failure was already posted.
 type state struct {
-	OverSince time.Time `json:"over_since"`
-	Last      time.Time `json:"last"`
-	Failed    bool      `json:"failed,omitempty"`
+	Failed bool `json:"failed,omitempty"`
 }
 
 type deps struct {
@@ -75,17 +67,10 @@ func sysLoad() (float64, float64, error) {
 	return l5, l15, nil
 }
 
-// want gives the slot count the load asks for, cur when it asks for no change, and moves st on to now.
-func want(st *state, now time.Time, l5, l15 float64, cur string) string {
+// want gives the slot count the load asks for, cur when it asks for no change.
+func want(l5, l15 float64, cur string) string {
 	switch {
-	case l5 <= limit:
-		st.OverSince = time.Time{}
-	case st.OverSince.IsZero() || now.Sub(st.Last) > maxGap:
-		st.OverSince = now
-	}
-	st.Last = now
-	switch {
-	case !st.OverSince.IsZero() && now.Sub(st.OverSince) >= overFor:
+	case l5 > limit:
 		return "1"
 	case l15 < limit:
 		return "2"
@@ -118,10 +103,9 @@ func run(d deps) int {
 	}
 	if cur != "1" && cur != "2" {
 		fmt.Fprintf(d.out, "%s slots file %s holds %q, not 1 or 2: left alone (%s)\n", now.Format(time.RFC3339), d.slots, cur, loads)
-		st.OverSince, st.Last = time.Time{}, now
 		return save(d, &st, now)
 	}
-	w := want(&st, now, l5, l15, cur)
+	w := want(l5, l15, cur)
 	if w != cur {
 		if err := writeAtomic(d.slots, w+"\n"); err != nil {
 			return failed(d, &st, now, err)
