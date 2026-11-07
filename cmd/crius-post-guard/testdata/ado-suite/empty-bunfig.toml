@@ -1,3 +1,0 @@
-# Empty on purpose. ado-suite.ts runs as `bun --no-env-file --config=<this file> …` so that no bunfig.toml in the folder
-# can preload code into it (bun 1.3.10 reads ./bunfig.toml unless --config=<path> names another). crius-post-guard pins
-# this file's SHA-256: any edit makes ado-suite.ts calls ask again.
