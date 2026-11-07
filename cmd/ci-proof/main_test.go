@@ -13,7 +13,8 @@ import (
 // fakeAz answers each az call from a testdata file: the PR, its policy list (policy), each build by id (builds), the
 // build's timeline (timeline) and its logs. calls records every call.
 type fakeAz struct {
-	pr, policy, timeline string // pr defaults to pr.json
+	pr, policy, timeline string            // pr defaults to pr.json
+	timelines            map[string]string // a timeline per build id, over timeline
 	builds               map[string]string
 	fail                 string // an az call whose args contain this fails
 	calls                []string
@@ -40,7 +41,9 @@ func (f *fakeAz) az(args ...string) ([]byte, error) {
 			return nil, errors.New("no project")
 		}
 	case strings.Contains(a, "--resource timeline"):
-		file = f.timeline
+		_, id, _ := strings.Cut(a, "buildId=")
+		id, _, _ = strings.Cut(id, " ")
+		file = cmp.Or(f.timelines[id], f.timeline)
 	case strings.Contains(a, "--resource logs"):
 		_, id, _ := strings.Cut(a, "logId=")
 		id, _, _ = strings.Cut(id, " ")
@@ -174,5 +177,23 @@ func TestTheBuildItselfMustMatch(t *testing.T) {
 		if rc != 1 || line != c.want {
 			t.Errorf("%s %s: rc %d\n got %q\nwant %q", c.build, c.timeline, rc, line, c.want)
 		}
+	}
+}
+
+// Review r2 P3-2: with two blocking Build policies that both pass, the tests of each build are read; failed tests in
+// the second one make the line FAIL and name that build.
+func TestEveryPassingPolicyBuildsTestsAreRead(t *testing.T) {
+	f := &fakeAz{policy: "policy-two-pass.json", timeline: "timeline.json", timelines: map[string]string{"411": "timeline-failedtests.json"},
+		builds: map[string]string{"407": "build-407.json", "411": "build-411.json"}}
+	line, rc := proof(t, f)
+	want := "FAIL pr=7001 head=9a0c47e1 merge=5d2e8a41 build=411 result=succeeded suites=Example.Api.Tests 1427/1429 (2 failed)"
+	if rc != 1 || line != want {
+		t.Fatalf("rc %d\n got %q\nwant %q", rc, line, want)
+	}
+	f.timelines = nil
+	line, rc = proof(t, f)
+	want = "PASS pr=7001 head=9a0c47e1 merge=5d2e8a41 build=407,411 result=succeeded suites=407: Example.Core.Tests 391/391, Example.Api.Tests 1429/1429; 411: Example.Core.Tests 391/391, Example.Api.Tests 1429/1429"
+	if rc != 0 || line != want {
+		t.Fatalf("rc %d\n got %q\nwant %q", rc, line, want)
 	}
 }

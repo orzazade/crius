@@ -4,6 +4,8 @@
 //	ci-proof <pr-id>
 //	PASS|FAIL|STALE|NONE pr=<id> head=<sha8> merge=<sha8> build=<id> result=<result> suites=<name passed/total,…>
 //
+// A PASS from several passing policies names each build: build=<id>,<id> suites=<id>: <suites>; <id>: <suites>.
+//
 // Only the build the PR's blocking Build policy names counts: a manual run on the same merge commit is no proof (owner
 // 11-08: a manual run was taken for the policy build).
 //
@@ -13,8 +15,9 @@
 //     merge, or the policy marks it expired or not current.
 //   - FAIL: it finished on the right commit with any result but succeeded, or its test step shows failed tests.
 //
-// With several blocking Build policies the worst one is printed. Suites are the test projects the build's test-step
-// logs name (dotnet's "Passed!  - ... - X.Tests.dll" lines); "none-named" when they name none.
+// With several blocking Build policies the worst one is printed; when all pass, the tests of each build are read.
+// Suites are the test projects the build's test-step logs name (dotnet's "Passed!  - ... - X.Tests.dll" lines);
+// "none-named" when they name none.
 //
 // head is the source commit Azure DevOps last merged for the PR: in the seconds after a push, before Azure DevOps has
 // seen it, the line still names the old head and merge. Run it once the push shows on the PR.
@@ -31,6 +34,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -140,6 +144,7 @@ func run(args []string, az func(...string) ([]byte, error), out io.Writer) int {
 		return loud("cannot read its policies", err)
 	}
 	var worst *verdict
+	var passes []int // each passing policy's build, once
 	for _, e := range evs {
 		c := e.Configuration
 		if c.Type.DisplayName != "Build" || !c.IsBlocking || !c.IsEnabled {
@@ -166,6 +171,9 @@ func run(args []string, az func(...string) ([]byte, error), out io.Writer) int {
 				v.state = "FAIL"
 			}
 		}
+		if v.state == "PASS" && !slices.Contains(passes, v.build) {
+			passes = append(passes, v.build)
+		}
 		if worst == nil || rank[v.state] > rank[worst.state] {
 			worst = &v
 		}
@@ -173,20 +181,34 @@ func run(args []string, az func(...string) ([]byte, error), out io.Writer) int {
 	if worst == nil {
 		worst = &verdict{state: "NONE", result: "no-blocking-build-policy"}
 	}
-	line := fmt.Sprintf("%s pr=%d head=%s merge=%s build=%s result=%s", worst.state, id, short(head), short(merge), buildRef(worst.build), worst.result)
-	if worst.state == "PASS" || worst.state == "FAIL" {
-		named, failed, err := suites(az, proj, worst.build)
-		if err != nil { // a PASS whose test logs were not read could hide failed tests (review r2 P2-1)
+	pre := fmt.Sprintf("pr=%d head=%s merge=%s", id, short(head), short(merge))
+	switch worst.state {
+	case "PASS": // every blocking policy passed: the tests of each of their builds are read (review r2 P3-2)
+		var named, ids []string
+		for _, b := range passes {
+			n, failed, err := suites(az, proj, b)
+			if err != nil { // a PASS whose test logs were not read could hide failed tests (review r2 P2-1)
+				return loud(fmt.Sprintf("cannot read the test logs of build %d", b), err)
+			}
+			if failed { // a build that succeeded with failed tests (a "|| true" step) proves nothing (review P3-4)
+				fmt.Fprintf(out, "FAIL %s build=%d result=succeeded suites=%s\n", pre, b, n)
+				return 1
+			}
+			if len(passes) > 1 {
+				n = strconv.Itoa(b) + ": " + n
+			}
+			named, ids = append(named, n), append(ids, strconv.Itoa(b))
+		}
+		fmt.Fprintf(out, "PASS %s build=%s result=succeeded suites=%s\n", pre, strings.Join(ids, ","), strings.Join(named, "; "))
+		return 0
+	case "FAIL":
+		named, _, err := suites(az, proj, worst.build)
+		if err != nil {
 			return loud(fmt.Sprintf("cannot read the test logs of build %d", worst.build), err)
 		}
-		if failed && worst.state == "PASS" { // a build that succeeded with failed tests (a "|| true" step) proves nothing (review P3-4)
-			worst.state = "FAIL"
-		}
-		line = fmt.Sprintf("%s pr=%d head=%s merge=%s build=%s result=%s suites=%s", worst.state, id, short(head), short(merge), buildRef(worst.build), worst.result, named)
-	}
-	fmt.Fprintln(out, line)
-	if worst.state == "PASS" {
-		return 0
+		fmt.Fprintf(out, "FAIL %s build=%d result=%s suites=%s\n", pre, worst.build, worst.result, named)
+	default:
+		fmt.Fprintf(out, "%s %s build=%s result=%s\n", worst.state, pre, buildRef(worst.build), worst.result)
 	}
 	return 1
 }
