@@ -112,6 +112,29 @@ fi
 # MOK_SCAN=1 (postmerge-scan.sh, Crius 11-06 13:28): stop before any trial; rc 0 here means "no rebuild by the file rules,
 # a trial still runs at merge time".
 if [ -n "${MOK_SCAN:-}" ]; then echo "merge-ok scan: PR $pr passes the file rules on $TB ${dev:0:8}$( [ -n "$full" ] && echo "; full trial at merge time ($full)" || { [ -n "$oapi$contract" ] && echo '; trial at merge time'; })"; exit 0; fi
+# Crius DECISION 11-08 02:13: reuse the green ADO PR build when it built exactly this merge: its sourceVersion is the PR's
+# lastMergeCommit, whose target side is $dev and source side is $head. Pipeline 1119 runs dotnet test on the whole solution
+# and web npm run check (lint, tsc -b, vitest, build): more than the local trial below. Both jobs must have succeeded.
+if [ -n "$full$oapi" ] && [ -z "${MOK_NO_REUSE:-}" ]; then
+  mm=$(az repos pr show --org $O --id "$pr" --query "[lastMergeCommit.commitId,lastMergeTargetCommit.commitId,lastMergeSourceCommit.commitId]" -o tsv 2>/dev/null)
+  lmc=$(echo "$mm" | sed -n 1p); lmt=$(echo "$mm" | sed -n 2p); lms=$(echo "$mm" | sed -n 3p)
+  why=""
+  if [ -z "$lmc" ]; then why="cannot read the PR's merge commit"
+  elif [ "$lmt" != "$dev" ] || [ "$lms" != "$head" ]; then why="ADO merge commit ${lmc:0:8} is PR ${lms:0:8} on ${lmt:0:8}, not ${head:0:8} on $TB ${dev:0:8}"
+  else
+    rb=$(az pipelines runs list --org $O --project "AppXite Platform" --pipeline-ids 1119 --branch "refs/pull/$pr/merge" --query "[?sourceVersion=='$lmc' && result=='succeeded'].id | [0]" -o tsv 2>/dev/null)
+    if [ -z "$rb" ]; then why="no green pipeline 1119 build on ${lmc:0:8}"
+    else
+      jobs=$(az devops invoke --org $O --area build --resource timeline --route-parameters project="AppXite Platform" buildId="$rb" --api-version 7.1 --query "records[?type=='Job' && result=='succeeded'].name" -o tsv 2>/dev/null)
+      if echo "$jobs" | /usr/bin/grep -q -x '.NET tests (Testcontainers)' && echo "$jobs" | /usr/bin/grep -q -x 'Web checks (lint, types, unit, build)'; then
+        echo "merge-ok: PR $pr build $bid on ${base:0:8}; $TB ${dev:0:8}: ${full:-openapi change}; local trial skipped: ADO build $rb green on the merge commit ${lmc:0:8} (PR ${head:0:8} on $TB ${dev:0:8}), .NET tests and web checks jobs succeeded (Crius 11-08 02:13)"
+        exit 0
+      fi
+      why="build $rb lacks a succeeded .NET tests or Web checks job"
+    fi
+  fi
+  echo "MOK no ADO reuse ($why): local trial runs"
+fi
 if [ -n "$full" ]; then
   D=/private/tmp/claude-501/-Users-orkhanrzazade-Projects-Appxite-svc-quote-channels/3584a7f4-fcb0-4260-9e8d-e7749735c202/scratchpad/mok-trial
   L=$D.log; H=~/Projects/Appxite/svc_quote/channels/poc/ui-app
