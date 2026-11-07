@@ -27,10 +27,11 @@ type roleSeen struct {
 
 // deadRoles names each role in home/roles whose current session has had no live Claude (ss) for deadAfter, once per
 // session: typed into Crius's tab, and posted as an ALERT to the project's leads on its bus log (a dead lead tells Crius
-// alone). Only a death seen happen counts: the role was live on a run, or started after the last run. A role that was
-// already dead when the check began stays quiet, as do roles closed on purpose (crius-spawn -close). With no session
+// alone; so does one whose leads projects.toml cannot name). Only a death seen happen counts: the role was live on a run, or started after the last run. A role that was
+// already dead when the check began stays quiet, as do roles closed on purpose (crius-spawn -close) and roles of a
+// parked or unwatched team. Crius's line stays typed while the role stays dead (Run never ages a dead: key out). With no session
 // list it cannot look: readHooks says so, and every role keeps what it last had.
-func deadRoles(d Deps, st *state, ss []Session, sesErr error) [][2]string {
+func deadRoles(d Deps, st *state, ss []Session, sesErr error, watch projects, park parked) [][2]string {
 	if sesErr != nil {
 		return nil
 	}
@@ -51,12 +52,17 @@ func deadRoles(d Deps, st *state, ss []Session, sesErr error) [][2]string {
 	for _, f := range files {
 		project, role, _ := strings.Cut(strings.TrimSuffix(filepath.Base(f), ".json"), ".")
 		k := project + "." + role
+		seen[k] = true // a file that does not read for one run keeps what it had (review P3-2)
+		// a parked or unwatched team wakes no one, as in every other check; it starts afresh once back (review P2-2)
+		if !watch.has(project) || park.has(project+":"+role, project) {
+			delete(st.Roles, k)
+			continue
+		}
 		r, err := sessionstate.ReadRole(dir, project, role)
 		if err != nil {
 			failed = append(failed, err.Error())
 			continue
 		}
-		seen[k] = true
 		if live[r.SessionID] {
 			st.Roles[k] = roleSeen{Live: d.Now}
 			continue
@@ -86,7 +92,7 @@ func deadRoles(d Deps, st *state, ss []Session, sesErr error) [][2]string {
 			_, _, _, leads, leadErr = finishedLeads(d.Home)
 		}
 		var told []string
-		if !leads[project+":"+role] {
+		if leadErr == nil && !leads[project+":"+role] { // with no projects.toml no lead is known: Crius alone (review P3-3)
 			to := leadsOf(leads, project)
 			if e.Told != r.SessionID {
 				if ok, err := tellLeads(d, project, to, what); err != nil {

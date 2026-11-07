@@ -339,7 +339,7 @@ func Resume(project, role, id, cwd, acct, dir string, d Deps) (ws, surface strin
 	// Its background jobs, monitors and bus waiter died with the old process: it is told so at once, as no hook says it
 	// (crius:lead ORDER 11-07 19:59: 15 moved tabs sat idle until Crius nudged each).
 	if err := d.Send(ws, surface, ResumedPrompt); err != nil {
-		return ws, surface, fmt.Errorf("%s resumed in %s %s, but the restart prompt was not typed: %w", name, ws, surface, err)
+		return ws, surface, fmt.Errorf("%s resumed in %s %s, but its restart prompt did not surely go (look at the tab before typing it again): %w", name, ws, surface, err)
 	}
 	return ws, surface, nil
 }

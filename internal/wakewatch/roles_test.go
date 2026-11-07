@@ -187,3 +187,106 @@ func TestARoleFileThatDoesNotReadIsSaid(t *testing.T) {
 		t.Fatalf("%q", f.sent)
 	}
 }
+
+// Review P2-1 of f616d39: Run aged every typed key out after 12 h 20 min, so a role left dead was typed again twice a
+// day. A dead role's line is typed once for as long as it stays dead.
+func TestALongDeadRoleIsTypedOnce(t *testing.T) {
+	home := roleHome(t, role("qa", "s1", t0.Add(-time.Hour)))
+	f := &fake{}
+	var minutes []int
+	for m := 0; m <= 25*60; m += 30 {
+		minutes = append(minutes, m)
+	}
+	deadAt(t, home, f, func(m int) []Session {
+		if m == 0 {
+			return []Session{{ID: "s1"}}
+		}
+		return nil
+	}, minutes...)
+	if w, l := deadWakes(f), leadLines(t, home); len(w) != 1 || len(l) != 1 {
+		t.Fatalf("over 25 h: %d wakes %q, %d lead lines", len(w), w, len(l))
+	}
+}
+
+// Review P2-2: a parked or unwatched team wakes no one, as in every other check.
+func TestAParkedOrUnwatchedTeamsDeadRoleWakesNoOne(t *testing.T) {
+	for name, file := range map[string][2]string{"parked team": {"parked", "quotes"}, "parked role": {"parked", "quotes:qa"},
+		"unwatched": {"wakewatch-projects", "cortex"}} {
+		home := roleHome(t, role("qa", "s1", t0.Add(-time.Hour)))
+		testutil.Write(t, filepath.Join(home, file[0]), file[1]+"\n")
+		f := &fake{}
+		deadAt(t, home, f, func(m int) []Session {
+			if m == 0 {
+				return []Session{{ID: "s1"}}
+			}
+			return nil
+		}, 0, 20, 40)
+		if w, l := deadWakes(f), leadLines(t, home); len(w) != 0 || len(l) != 0 {
+			t.Errorf("%s: %q %q", name, w, l)
+		}
+	}
+}
+
+// Review P3-1: the ALERT to a lead is no work: a lead parked on the bus stays parked.
+func TestTheDeadRoleAlertDoesNotUnparkALead(t *testing.T) {
+	home := roleHome(t, role("qa", "s1", t0.Add(-time.Hour)))
+	testutil.Write(t, filepath.Join(home, "bus", "quotes.log"), stamp(t0)+" PARKED crius:lead -> quotes:lead — Park now, nothing to do until the owner answers.\n")
+	if p, _, err := parkedOnBus(home, "quotes:lead", t0); err != nil || !p {
+		t.Fatalf("not parked before: %v %v", p, err)
+	}
+	f := &fake{}
+	deadAt(t, home, f, func(m int) []Session {
+		if m == 0 {
+			return []Session{{ID: "s1"}}
+		}
+		return nil
+	}, 0, 16)
+	if len(leadLines(t, home)) != 1 {
+		t.Fatalf("no ALERT to the lead: %q", leadLines(t, home))
+	}
+	if p, _, err := parkedOnBus(home, "quotes:lead", t0.Add(16*time.Minute)); err != nil || !p {
+		t.Errorf("the ALERT unparked the lead: %v %v", p, err)
+	}
+}
+
+// Review P3-2: a role file that does not read for one run keeps what the check knew: its death is still seen.
+func TestARoleFileUnreadForOneRunKeepsItsDeath(t *testing.T) {
+	r := role("qa", "s1", t0.Add(-time.Hour))
+	home := roleHome(t, r)
+	f := &fake{}
+	none := func(m int) []Session {
+		if m == 0 {
+			return []Session{{ID: "s1"}}
+		}
+		return nil
+	}
+	deadAt(t, home, f, none, 0)
+	testutil.Write(t, filepath.Join(home, "roles", "quotes.qa.json"), "{")
+	deadAt(t, home, f, none, 5)
+	fileRole(t, home, r)
+	deadAt(t, home, f, none, 10, 30)
+	if w := deadWakes(f); len(w) != 1 || !strings.Contains(w[0], "since 22:00") {
+		t.Fatalf("%q", w)
+	}
+}
+
+// Review P3-3: with no projects.toml no lead is known, so nothing goes on the bus (a dead lead was told of itself); Crius
+// is told, and the failure is said.
+func TestNoProjectsTomlTellsCriusAlone(t *testing.T) {
+	home := roleHome(t, role("lead", "L", t0.Add(-time.Hour)))
+	testutil.Write(t, filepath.Join(home, "projects.toml"), "[[[")
+	f := &fake{}
+	deadAt(t, home, f, func(m int) []Session {
+		if m == 0 {
+			return []Session{{ID: "L"}}
+		}
+		return nil
+	}, 0, 16)
+	failed := false
+	for _, s := range f.sent {
+		failed = failed || strings.Contains(s, "the dead-role check failed to look: projects.toml")
+	}
+	if w := deadWakes(f); len(w) != 1 || len(leadLines(t, home)) != 0 || !failed {
+		t.Fatalf("%q %q", f.sent, leadLines(t, home))
+	}
+}

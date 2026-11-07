@@ -186,7 +186,8 @@ func Run(d Deps) error {
 		st.Roles = map[string]roleSeen{}
 	}
 	for k, at := range st.Typed {
-		if d.Now.Sub(at) > window+resend {
+		// a dead role's line stays raised as long as the role is dead, so its key goes only when the alert does (review P2-1)
+		if d.Now.Sub(at) > window+resend && !strings.HasPrefix(k, "dead:") {
 			delete(st.Typed, k)
 		}
 	}
@@ -203,7 +204,7 @@ func Run(d Deps) error {
 	hv, ha := readHooks(d, st.Views, ss, sesErr)
 	alerts = append(alerts, ha...)
 	alerts = append(alerts, wrongFolder(d, hv)...)
-	alerts = append(alerts, deadRoles(d, &st, ss, sesErr)...)
+	alerts = append(alerts, deadRoles(d, &st, ss, sesErr, watch, park)...)
 	screens, err := d.Screens()
 	if err != nil {
 		alerts = append(alerts, [2]string{screensFailed, "the tab check failed to look: " + err.Error()})
@@ -1183,6 +1184,9 @@ func parkedOnBus(home, who string, now time.Time) (parked bool, unparked time.Ti
 	lines, _, err := busLines(home, who)
 	project := strings.SplitN(who, ":", 2)[0]
 	for _, m := range lines {
+		if m[3] == "crius:wakewatch" { // a machine alert gives no work: it neither parks nor un-parks (review P3-1)
+			continue
+		}
 		from, to := busName(project, m[3]), recipients(m[4])
 		for i, r := range to {
 			to[i] = busName(project, r)

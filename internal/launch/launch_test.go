@@ -694,7 +694,7 @@ func TestAResumedSessionIsToldItsBackgroundJobsDied(t *testing.T) {
 	}
 	f := &fake{trees: []string{tree}, sayErr: errors.New("the box holds a draft")}
 	if _, _, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/quotes", "", "", f.deps()); err == nil ||
-		!strings.Contains(err.Error(), "the restart prompt was not typed") || !strings.Contains(err.Error(), "the box holds a draft") {
+		!strings.Contains(err.Error(), "its restart prompt did not surely go (look at the tab before typing it again)") || !strings.Contains(err.Error(), "the box holds a draft") {
 		t.Errorf("err %v, want the resume to fail naming the untyped prompt", err)
 	}
 }
