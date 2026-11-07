@@ -139,3 +139,48 @@ func leadCheck(t *testing.T, cwd, cmd, want string) {
 	}
 	guardCall(t, cwd, cmd, "deny", want)
 }
+
+// Review of 07f23bd P2-2: the Quotes rule keys on the PR's repository too (an update by id from another folder, the
+// repository's id on create), and a svc_quote PR links work item 96365 and no other.
+func TestTheQuotesRuleKeysOnThePRsRepository(t *testing.T) {
+	dir := criusDir(t, nil)
+	old := prState
+	prState = func(id string) (prInfo, error) {
+		return prInfo{Head: head7848, Status: "active", Target: "refs/heads/integration/96365-b4", Repo: map[string]string{"7890": "svc_quote", "7892": "svc_other"}[id]}, nil
+	}
+	t.Cleanup(func() { prState = old })
+	none, with := filepath.Join(dir, "none.md"), filepath.Join(dir, "with.md")
+	write(t, none, "Fix the list.\n")
+	write(t, with, "Fix the list.\n\nAB#96365\n")
+	const create = `az repos pr create --project "AppXite Platform" --source-branch feature/96365-x --target-branch integration/96365-b4 --title t`
+	guardCall(t, dir, `az repos pr update --id 7890 --description @`+none+adoO, "deny", "AB#96365")
+	guardCall(t, dir, `az repos pr update --id 7890 --description @`+with+adoO, "")
+	guardCall(t, dir, `az repos pr update --id 7892 --description @`+none+adoO, "")
+	guardCall(t, dir, create+` --repository d88331ee-60dc-4f15-b236-b1790c6fdeaa --description @`+none+adoO, "deny", "AB#96365")
+	guardCall(t, dir, create+` --repository D88331EE-60DC-4F15-B236-B1790C6FDEAA --description @`+with+adoO, "")
+	guardCall(t, dir, create+` --repository svc_quote --work-items 94205`+adoO, "deny", "94205")
+	guardCall(t, dir, create+` --repository svc_quote --work-items 96365`+adoO, "")
+	guardCall(t, dir, `az repos pr work-item add --id 7890 --work-items 94205`+adoO, "deny", "94205")
+	guardCall(t, dir, `az repos pr work-item add --id 7892 --work-items 94205`+adoO, "")
+}
+
+// Review of 07f23bd P2-1: a model or tool name in one word with a slash is text people read; paths, URLs and @files
+// are not.
+func TestAModelNameInAnyTextWordIsRefused(t *testing.T) {
+	dir := criusDir(t, map[string]string{"7890": "refs/heads/integration/96365-b4"})
+	for _, cmd := range []string{
+		`az repos pr update --id 7890 --title "Codex/Opus-findings"` + adoO,
+		`az repos pr update --id 7890 --title=fix/claude` + adoO,
+		`az boards work-item update --id 96365 --discussion Reviewed-by-Opus/Codex` + adoO,
+		`az rest --method post --uri https://dev.azure.com/Appxite/P/_apis/git/repositories/R/pullRequests/7890/threads?api-version=7.1 --body {"comments":[{"content":"Opus/Codex:LGTM"}]}`,
+	} {
+		guardCall(t, dir, cmd, "deny", "names a model or tool")
+	}
+	pr := filepath.Join(dir, "claude-501", "pr.md")
+	if err := os.MkdirAll(filepath.Dir(pr), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, pr, "Fix the list.\n")
+	guardCall(t, dir, `az repos pr update --id 7890 --source-branch feature/claude-fix --description @`+pr+adoO, "")
+	guardCall(t, dir, `az devops invoke --area git --resource pullRequests --http-method PATCH --in-file `+pr+` --org https://dev.azure.com/Appxite`, "")
+}

@@ -46,7 +46,7 @@
 // function ($AZ, f() { az "$@"; }) when the command names neither az nor Azure DevOps; a command that makes bash read
 // quoted code as a number or a name ((( 'a[$(az …)]' )), printf -v $'a[\x24(az …)]' x, (( $(printf …) ))); a script
 // that hides az (a'z', a PS4 prompt) when neither it nor the command names az, as for a command itself (and
-// PS4='$(az ...)' bash -xc : with no script); a script past the 16th one a call reads or 4 levels down; a command that
+// PS4='$(az ...)' bash -xc : with no script); a script past the 32nd one a call reads or 4 levels down; a command that
 // rewrites a script without naming it (tar, rsync, git checkout, a glob), and python, node or other code (-c text or a
 // file) that writes a script, which is not read for writes; a relative redirect after a cd through a symlink of
 // another name; a compiled program run by its path (it is not read); a script copied, moved or linked into place in the
@@ -200,7 +200,7 @@ type ctx struct {
 	cd         *cdTo                   // the one cd of this command's text the guard follows for a script's name
 	movedAt    uint                    // >0: an eval, source, trap or $X ending here may change folder for what follows
 	depth      int                     // scripts read to get here (a script that runs itself stops at 4)
-	reads      *int                    // scripts read for this hook call, at most 16 (15 lines of bash self.sh took 19 s)
+	reads      *int                    // scripts read for this hook call, at most 32 (15 lines of bash self.sh took 19 s)
 	read       *[]readText             // the scripts read so far for this hook call, and their text
 	script     string                  // the script whose text this is ($0), or ""
 	own        map[string]*syntax.Word // in a script's text: the variables it sets once, and to what

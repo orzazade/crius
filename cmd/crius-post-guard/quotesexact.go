@@ -42,7 +42,7 @@ var (
 )
 
 // prInfo is what the vote rule reads of a PR.
-type prInfo struct{ Head, Status, Target, Auto string }
+type prInfo struct{ Head, Status, Target, Auto, Repo string }
 
 // readPR reads the PR's source head (the commit QA judged), status, target and auto-complete with one GET. az is a bash
 // wrapper whose python keeps stdout open, so a timeout kills the whole process group and stops waiting for the pipe.
@@ -69,7 +69,7 @@ func readPROnce(id string) (prInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "az", "repos", "pr", "show", "--id", id, "--org", adoOrg, "--query",
-		"{head: lastMergeSourceCommit.commitId, status: status, target: targetRefName, auto: autoCompleteSetBy.id}", "-o", "json")
+		"{head: lastMergeSourceCommit.commitId, status: status, target: targetRefName, auto: autoCompleteSetBy.id, repo: repository.name}", "-o", "json")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.WaitDelay = time.Second
@@ -78,13 +78,13 @@ func readPROnce(id string) (prInfo, error) {
 		return prInfo{}, err
 	}
 	var v struct {
-		Head, Status, Target string
-		Auto                 *string
+		Head, Status, Target, Repo string
+		Auto                       *string
 	}
 	if err := json.Unmarshal(out, &v); err != nil {
 		return prInfo{}, err
 	}
-	p := prInfo{Head: v.Head, Status: v.Status, Target: v.Target}
+	p := prInfo{Head: v.Head, Status: v.Status, Target: v.Target, Repo: v.Repo}
 	if v.Auto != nil {
 		p.Auto = *v.Auto
 		if p.Auto == "" {

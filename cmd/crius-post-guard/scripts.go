@@ -48,7 +48,7 @@ type scriptText struct {
 // cannotRead asks for a file the guard could not read, with the reason, when the command or a script that runs it names
 // az or Azure DevOps, as before 11-05 (a missing ./build/app or bun x.ts in other work is no post).
 func cannotRead(c ctx, name, why string) string {
-	if c.pinned || !namesAz(c) { // a pinned script's text vouches for the files it runs that the guard cannot read (unsure)
+	if !namesAz(c) {
 		return ""
 	}
 	return asked("the guard cannot read " + name + ": " + why)
@@ -63,7 +63,10 @@ func namesAz(c ctx) bool {
 // start-up files of tools: . "$NVM_DIR/nvm.sh").
 func cannotPlace(a word, c ctx, kind runKind, why string) string {
 	if c.pinned {
-		return "" // as cannotRead
+		// a pinned script's text names a file the guard cannot place (merge-ok.sh: bun scripts/heavy.ts and tsc after a cd
+		// in a function): the pin vouches for its own text's steps. Known gap: such a file, if the session changed it
+		// before, is not read (as any session can change the pinned scripts themselves)
+		return ""
 	}
 	what := "the shell script "
 	if kind == byCode {
@@ -146,7 +149,10 @@ func (c ctx) runFolders(w *syntax.Word) []string {
 }
 
 // readText is a script the guard read for this hook call, and its text.
-type readText struct{ name, body string }
+type readText struct {
+	name, body string
+	pinned     bool // a pinned script's text: what it writes is part of what its pin stands for (as changes skips it)
+}
 
 // madeBy gives the text of a script read before for this hook call that names name's file and is neither name itself
 // nor a script that runs it (whose writes changes reads): it ran before and may have written name.
@@ -159,7 +165,7 @@ next:
 		// the same word's file at its other place (after a cd that may fail the word names a file in either folder:
 		// kq.sh's usage line names kq.sh, today's replay) never ran there, so it made nothing; another file by the same
 		// name did (review r4: cd sub && ./x.sh .. && bash ../x.sh)
-		if samePath(t.name, name) || c.alt != "" && samePath(t.name, c.alt) || !strings.Contains(t.body, filepath.Base(name)) {
+		if t.pinned || samePath(t.name, name) || c.alt != "" && samePath(t.name, c.alt) || !strings.Contains(t.body, filepath.Base(name)) {
 			continue
 		}
 		for _, r := range c.files {
@@ -208,12 +214,18 @@ var shebangCode = regexp.MustCompile(`^#!.*\b(node|bun|deno|tsx|ts-node|python[0
 // scriptAt judges the file at name; orNone: when no file is there and nothing in the command writes one, nothing runs.
 // plain: the shell reads no start-up file of its own (zsh, bash -i or -l do). dir is the folder it runs in.
 func scriptAt(name string, c ctx, kind runKind, plain, orNone bool, dir string) string {
+	// the file judged here is not the pinned text that names it: only its own pin vouches for it (review of 07f23bd P1-2:
+	// a pinned merge.sh let an unpinned, unreadable or freshly written postmerge-scan.sh through). The pinned text vouches
+	// only for where it runs a file the guard does not find (merge-ok.sh runs tsc and scripts/heavy.ts after a cd in a
+	// function): the file is not read (known gap, as any session can change the pinned scripts themselves).
+	fromPin := c.pinned
+	c.pinned = false
 	if late() {
 		return asked("the guard ran out of time reading the scripts the command runs")
 	}
 	if c.reads != nil {
-		if *c.reads++; *c.reads > 16 {
-			return cannotRead(c, name, "the command runs more than 16 scripts, the most the guard reads")
+		if *c.reads++; *c.reads > 32 {
+			return cannotRead(c, name, "the command runs more than 32 scripts, the most the guard reads")
 		}
 	}
 	if c.depth >= 4 {
@@ -289,11 +301,11 @@ func scriptAt(name string, c ctx, kind runKind, plain, orNone bool, dir string) 
 			switch made := c.madeBy(name); {
 			case made != "":
 				// a script the command ran before names this one: it may write it (gen.sh && bash out.sh, review r3b)
-				return unsure(ctx{whole: made + "\n" + c.whole, pinned: c.pinned}, "a script or program another script the command runs may make:")
+				return unsure(ctx{whole: made + "\n" + c.whole}, "a script or program another script the command runs may make:")
 			case c.changes(name, written):
 				// made by the command in a way the guard does not read (go build -o x, cp a.sh x.sh)
 				return unsure(c, "a script or program the command makes before it runs ("+name+"):")
-			case orNone:
+			case orNone, fromPin:
 				return ""
 			}
 			return cannotRead(c, name, "it does not exist")
@@ -317,7 +329,7 @@ func scriptAt(name string, c ctx, kind runKind, plain, orNone bool, dir string) 
 	made := c.madeBy(name)
 	if c.read != nil {
 		for _, t := range texts {
-			*c.read = append(*c.read, readText{name: name, body: t.body})
+			*c.read = append(*c.read, readText{name: name, body: t.body, pinned: pin})
 		}
 	}
 	for _, t := range texts {

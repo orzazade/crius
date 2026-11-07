@@ -22,13 +22,24 @@ var (
 	workItemRe = regexp.MustCompile(`AB#[0-9]+`)
 	// textOpts are the az options whose value is text people read.
 	textOpts = []string{"--description", "-d", "--title", "--discussion", "--comment", "--content", "--text", "--message"}
-	// teamRules: a PR description from a team's folders (under the home folder) or for its repository names the team's
-	// work item and no other (Quotes: TEAM.md "one work item only, AB#96365", pr-text-check.sh rc 5).
+	// teamRules: a PR description from a team's folders (under the home folder) or for its repository (by name or id)
+	// names the team's work item and no other, and the PR links no other (Quotes: TEAM.md "one work item only,
+	// AB#96365", pr-text-check.sh rc 5).
 	teamRules = []struct {
-		dirs       []string
-		repo, item string
+		dirs               []string
+		repo, repoID, item string
 	}{
-		{[]string{"Projects/Appxite/svc_quote", ".crius/state/quotes"}, "svc_quote", "AB#96365"},
+		{[]string{"Projects/Appxite/svc_quote", ".crius/state/quotes"}, "svc_quote", "d88331ee-60dc-4f15-b236-b1790c6fdeaa", "AB#96365"},
+	}
+	// catShadowRe is a command text that may make "cat" run something else: a function or alias named cat, or a new PATH.
+	catShadowRe = regexp.MustCompile(`(^|[^A-Za-z0-9_-])(function\s+cat\b|cat\s*\(\s*\)|alias\s+cat=|PATH\+?=|hash\s+-p)`)
+	// pathOpts are options whose value is a path, branch, URL, id or query rather than text people read.
+	pathOpts = map[string][]string{
+		"az": {"--org", "--organization", "--url", "--uri", "-u", "--in-file", "--file", "--file-path", "--source-branch", "-s",
+			"--target-branch", "-t", "--branch", "--path", "--repository", "-r", "--project", "-p", "-o", "--output", "--query",
+			"--id", "--ids", "--pipeline-ids", "--route-parameters", "--query-parameters"},
+		"curl": {"-o", "--output", "-K", "--config", "--cacert", "--cert", "--key", "-T", "--upload-file", "-u", "--user"},
+		"wget": {"-O", "--output-document", "-o", "--output-file", "--ca-certificate", "--certificate", "--private-key"},
 	}
 )
 
@@ -70,7 +81,10 @@ func catWord(w *syntax.Word) (prefix, file string, ok bool) {
 		return "", "", false
 	}
 	f := literal(ce.Args[1])
-	if !f.ok || f.text == "" || strings.HasPrefix(f.text, "-") {
+	// the shell globs, brace-expands and expands ~user in the name; the guard reads it as written, so such a name is not
+	// read (review of 07f23bd P1-3)
+	if !f.ok || f.text == "" || strings.HasPrefix(f.text, "-") || strings.ContainsAny(f.text, "*?[{") ||
+		strings.HasPrefix(f.text, "~") && !strings.HasPrefix(f.text, "~/") {
 		return "", "", false
 	}
 	return prefix, f.text, true
@@ -80,9 +94,10 @@ func catWord(w *syntax.Word) (prefix, file string, ok bool) {
 // Other words the guard cannot read stay as they are (hardCheck refuses them).
 func (p postCall) resolve() ([]word, string) {
 	out := make([]word, 0, len(p.args))
+	shadow := catShadowRe.MatchString(p.c.whole) // cat may not be cat: no word is read as a file
 	for _, a := range p.args {
 		prefix, file, ok := "", "", false
-		if !a.ok {
+		if !a.ok && !shadow {
 			prefix, file, ok = catWord(a.node)
 		}
 		if !ok {
@@ -101,25 +116,32 @@ func (p postCall) resolve() ([]word, string) {
 	return out, ""
 }
 
-// pathLike says whether a word is a path, a branch or a URL rather than text people read: one word with a slash.
-func pathLike(s string) bool {
-	return strings.Contains(s, "/") && !strings.ContainsAny(s, " \t\r\n")
+// notText says whether a word of the tool's is not text people read: an @file (its text is read as a file), a URL, or
+// the value of an option that takes a path, branch, URL, id or query (after opt, the option word before it, if any).
+func notText(tool, opt, s string) bool {
+	if strings.HasPrefix(s, "@") || strings.Contains(s, "://") && !strings.ContainsAny(s, " \t\r\n") {
+		return true
+	}
+	return opt != "" && slices.Contains(pathOpts[tool], strings.ToLower(opt))
 }
 
 // contentCheck gives why the text of one post (its words resolved, hardCheck passed) may not go on, or "".
 func contentCheck(p postCall, in input) string {
 	what := p.tool
-	var read []string // the text people read: words that are not options or paths, and the files the post sends
+	var read []string // the text people read: every word but options and paths, and the files the post sends
+	prev := ""
 	for _, a := range p.args {
-		t := a.text
+		t, opt := a.text, prev
+		prev = ""
 		if strings.HasPrefix(t, "-") {
-			_, v, eq := strings.Cut(t, "=")
+			o, v, eq := strings.Cut(t, "=")
 			if !eq {
+				prev = t
 				continue
 			}
-			t = v
+			t, opt = v, o
 		}
-		if !pathLike(t) {
+		if !notText(p.tool, opt, t) {
 			read = append(read, t)
 		}
 	}
@@ -165,6 +187,23 @@ func contentCheck(p postCall, in input) string {
 			return what + " " + k + " is empty: write the text, or leave the option out"
 		}
 	}
+	repo := ""
+	if id, set := o.last("--id"); set && (o.cmd == "repos pr update" || o.cmd == "repos pr work-item add") {
+		if pr, err := prState(id.text); err == nil {
+			repo = pr.Repo
+		}
+	}
+	item, team := teamItem(o, repo, p.c.cwd, in.Cwd)
+	if team != "" && (o.cmd == "repos pr create" || o.cmd == "repos pr work-item add") {
+		for _, v := range o.opts["--work-items"] {
+			for _, id := range strings.Fields(v.text) {
+				if "AB#"+strings.TrimPrefix(id, "#") != item {
+					return what + ": a " + team + " PR links its work item " + strings.TrimPrefix(item, "AB#") +
+						" and no other (--work-items " + v.text + ")"
+				}
+			}
+		}
+	}
 	if o.cmd != "repos pr create" && o.cmd != "repos pr update" {
 		return ""
 	}
@@ -179,7 +218,7 @@ func contentCheck(p postCall, in input) string {
 		return what + ": the description is " + strconv.Itoa(n) + " characters; Azure DevOps keeps " +
 			strconv.Itoa(maxPRDescription) + ": trim it"
 	}
-	if item, team := teamItem(o, p.c.cwd, in.Cwd); team != "" {
+	if team != "" {
 		var ids []string
 		for _, id := range workItemRe.FindAllString(desc, -1) {
 			if !slices.Contains(ids, id) {
@@ -195,13 +234,19 @@ func contentCheck(p postCall, in input) string {
 }
 
 // teamItem gives the work item a PR's team requires and the team's repository, when the PR is for a team's repository
-// (--repository) or the call runs in one of the team's folders; else "", "".
-func teamItem(o azOpts, dirs ...string) (item, team string) {
+// (--repository, or the repository of the PR it changes, by name or id) or the call runs in one of the team's folders;
+// else "", "".
+func teamItem(o azOpts, prRepo string, dirs ...string) (item, team string) {
 	home, _ := os.UserHomeDir()
-	repo, rset := o.last("--repository", "-r")
+	repos := []string{prRepo}
+	if r, set := o.last("--repository", "-r"); set {
+		repos = append(repos, r.text)
+	}
 	for _, r := range teamRules {
-		if rset && strings.EqualFold(repo.text, r.repo) {
-			return r.item, r.repo
+		for _, name := range repos {
+			if name != "" && (strings.EqualFold(name, r.repo) || strings.EqualFold(name, r.repoID)) {
+				return r.item, r.repo
+			}
 		}
 		for _, d := range dirs {
 			for _, td := range r.dirs {

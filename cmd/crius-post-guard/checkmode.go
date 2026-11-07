@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"io/fs"
@@ -80,6 +81,7 @@ type postCall struct {
 	args  []word
 	c     ctx
 	moved bool // the command may have changed folder before it, so a relative file name is not known
+	stdin bool // the post reads stdin
 	src   []source
 	why   string
 }
@@ -101,7 +103,7 @@ func (c ctx) post(tool string, args []word, stdin bool, why string) string {
 	}
 	a := c.azArgs(args)
 	c.crius.posts = append(c.crius.posts, postCall{tool: tool, args: a, c: c, moved: c.moved || c.cd != nil || c.fed,
-		src: bodySources(tool, a, stdin, c), why: why})
+		stdin: stdin, src: bodySources(tool, a, stdin, c), why: why})
 	return ""
 }
 
@@ -155,6 +157,8 @@ func checkRun(in input, w io.Writer) error {
 	for _, p := range col.posts {
 		why := ""
 		if p.args, why = p.resolve(); why == "" {
+			// a resolved word may name a file itself (@x.json, an --in-file path): find the files again (review of 07f23bd P1-1)
+			p.src = bodySources(p.tool, p.args, p.stdin, p.c)
 			if why = hardCheck(p); why == "" {
 				why = contentCheck(p, in)
 			}
@@ -334,6 +338,10 @@ func (p postCall) readBody(name string) (string, string) {
 		b, err := os.ReadFile(name)
 		if err != nil {
 			return "", "the guard cannot read the file it sends (" + name + ")"
+		}
+		if bytes.IndexByte(b, 0) >= 0 {
+			// a NUL splits words the checks look for (Cla\x00ude), and is no text people read (review of 07f23bd P1-3)
+			return "", name + " holds a NUL byte, so it is not text the guard can check"
 		}
 		docs = append(docs, string(b))
 	case errors.Is(err, fs.ErrNotExist) && len(docs) > 0:

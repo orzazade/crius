@@ -203,8 +203,8 @@ func TestAPinnedScriptsNestedScriptsAreReadOrPinned(t *testing.T) {
 	merge, gate, ok := filepath.Join(lead, "merge.sh"), filepath.Join(lead, "review-gate.sh"), filepath.Join(lead, "merge-ok.sh")
 	install(merge, read("merge.sh"), true)
 	const cmd = "bash ~/.crius/state/quotes/build/bin/lead/merge.sh 7848 1"
-	// the scripts it runs are not there: nothing runs (bash fails, merge.sh stops with rc 10), and the pin vouches for
-	// merge.sh's own text
+	// the scripts it runs are not there: nothing runs (bash fails, merge.sh stops with rc 10); the pin vouches for where
+	// merge.sh's text runs a file the guard does not find, and for nothing else of the files it runs (review of 07f23bd P1-2)
 	leadCheck(t, dir, cmd, "")
 	// a nested script that posts with a word the guard cannot read, and no pin covers it
 	readOnly := "#!/bin/bash\naz repos pr show --id \"$1\" --org https://dev.azure.com/Appxite -o none\n"
@@ -215,9 +215,10 @@ func TestAPinnedScriptsNestedScriptsAreReadOrPinned(t *testing.T) {
 	install(gate, readOnly, true)
 	install(ok, read("merge-ok.sh"), false)
 	leadCheck(t, dir, cmd, "merge-ok.sh")
-	// all three shipped scripts, pinned: merge.sh passes
+	// the shipped scripts, pinned, and postmerge-scan.sh (read: it only lists PRs and runs merge-ok.sh): merge.sh passes
 	install(gate, read("review-gate.sh"), true)
 	install(ok, read("merge-ok.sh"), true)
+	install(filepath.Join(lead, "postmerge-scan.sh"), read("postmerge-scan.sh"), false)
 	leadCheck(t, dir, cmd, "")
 }
 
