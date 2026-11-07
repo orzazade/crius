@@ -56,7 +56,7 @@ func TestCriusWaitStartsWhereTheOldCursorsStopped(t *testing.T) {
 		return string(out)
 	}
 	out := run()
-	want := "--mode crius --role crius --alias crius:lead --digest " + c + "/state/crius/bus-digest.log --cursor " + c +
+	want := "--mode crius --role crius --alias crius:lead --digest " + c + "/state/crius/bus-digest.log --ops crius:ops --cursor " + c +
 		"/wait-cursor-all --watch-dir " + bus + " --max-hours 1\n"
 	if !strings.HasPrefix(out, want) {
 		t.Fatalf("want args %q, got\n%s", want, out)

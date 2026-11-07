@@ -1,0 +1,22 @@
+#!/bin/bash
+# Decline a prompt in a lead's tab and send the tab back to work in one step.
+# Escape alone ends the tab's turn and a bus line does not wake it, so the tab sat idle
+# (qa-backend 19:38, crius:build 19:18 on 2026-11-01).
+# Usage: crius-decline <workspace:N> <surface:N> <project> <to-role> "<reason and what to do next>"
+set -o pipefail
+[ $# -eq 5 ] || { echo "usage: crius-decline <workspace:N> <surface:N> <project> <to> <text>" >&2; exit 2; }
+ws=$1; sf=$2; proj=$3; to=$4; text=$5
+# The bus line goes first: bus-post refuses a text it cannot take (over 300 chars), and a refusal after Escape left
+# the tab idle with no reason (ops 11-06 15:47). A refusal sends nothing to the tab.
+~/.crius/bin/bus-post ~/.crius/bus/"$proj".log INFO crius:lead "$to" "Declined your prompt: $text" ||
+  { echo "FAIL bus-post: nothing sent to the tab" >&2; exit 1; }
+cmux send-key --workspace "$ws" --surface "$sf" --force Escape < /dev/null || { echo "FAIL escape (the bus line is posted)" >&2; exit 1; }
+# The dialog takes a moment to close after Escape; send refuses while it is open (seen 21:48).
+sent=0
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  if cmux send --workspace "$ws" --surface "$sf" "Crius: I declined your last prompt. $text" < /dev/null 2>/dev/null; then sent=1; break; fi
+  sleep 1
+done
+[ $sent -eq 1 ] || { echo "FAIL send: dialog still open after 10 s" >&2; exit 1; }
+cmux send-key --workspace "$ws" --surface "$sf" Enter < /dev/null || { echo "FAIL enter" >&2; exit 1; }
+echo "declined and resumed $sf"
