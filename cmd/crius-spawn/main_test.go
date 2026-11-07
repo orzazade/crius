@@ -166,7 +166,8 @@ func TestPickReadsTheAccountsTheStoreAndTheProject(t *testing.T) {
 }
 
 // Owner 10-23: a session that ran in a Max row's folder of accounts.toml resumes there, titled with the row; one that
-// ran elsewhere (or on an enterprise row) resumes through aitch's route as before.
+// ran elsewhere resumes through aitch's route as before. Owner 11-07: one that ran in an enterprise row's folder never
+// resumes there; aitch's route places it (review of 3237a52).
 func TestResumeKeepsTheSessionsMaxAccount(t *testing.T) {
 	home, d := t.TempDir(), t.TempDir()
 	m2, ent, other := filepath.Join(d, ".claude-max2"), filepath.Join(d, ".claude-work"), filepath.Join(d, ".claude")
@@ -174,9 +175,7 @@ func TestResumeKeepsTheSessionsMaxAccount(t *testing.T) {
 	testutil.Write(t, filepath.Join(ent, ".claude.json"), `{"oauthAccount":{"accountUuid":"acct-ent"}}`)
 	testutil.Write(t, filepath.Join(home, "accounts.toml"), "[[account]]\nname = \"max2\"\nplan = \"max\"\ndirs = [\""+m2+
 		"\"]\n[[account]]\nname = \"ent\"\nplan = \"enterprise\"\ndirs = [\""+ent+"\"]\n")
-	// Crius 10-30 22:44: an enterprise session resumed through aitch's route ran on Max (Appxite's route starts on
-	// .claude-work-max), so it resumes in its own folder too
-	for config, want := range map[string][2]string{m2: {"max2", m2}, ent: {"ent", ent}, other: {}} {
+	for config, want := range map[string][2]string{m2: {"max2", m2}, ent: {}, other: {}} {
 		if acct, dir, err := sessionAccount(home, config); err != nil || acct != want[0] || dir != want[1] {
 			t.Errorf("%s: %q %q %v, want %q", config, acct, dir, err, want)
 		}

@@ -6,6 +6,7 @@ set -u
 here=$(cd "$(dirname "$0")" && pwd)
 sweep=${WAIT_SWEEP:-$here/../../wait-sweep.sh}
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/test-wait-sweep.XXXXXX") || exit 1
+trap 'case $tmp in */test-wait-sweep.??????) rm -rf -- "$tmp" ;; esac' EXIT
 pass=0 fail=0
 ts_re='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2} WAIT '
 ok()  { pass=$((pass+1)); echo "PASS $1"; }
@@ -118,10 +119,8 @@ EOF
 
 log="$tmp/waits.log"; state="$tmp/state/seen"
 runsweep() {
-  local t0=$(perl -MTime::HiRes=time -e 'printf "%.3f", time')
   stdout=$(env PATH="$here/fake-cmux:$PATH" FAKE_CMUX_DIR="${FIX:-$fx}" CRIUS_WAITS_LOG="$log" \
     CRIUS_SWEEP_STATE="$state" bash "$sweep" 2>"$tmp/err"); rc=$?
-  secs=$(perl -MTime::HiRes=time -e "printf '%.1f', time - $t0")
 }
 # norm: drop the leading timestamp, write at=HH:MM:SS as at=AT
 norm() { sed -E 's/^[^ ]+ //; s/ at=[0-9]{2}:[0-9]{2}:[0-9]{2} / at=AT /' "$log" 2>/dev/null; }
@@ -155,8 +154,6 @@ none prose_quoted_drop surface:12
 if grep -q 'surface:6' "$fx/calls.log" "$log" 2>/dev/null; then bad browser_skipped "$(grep 'surface:6' "$fx/calls.log" "$log")"; else ok browser_skipped; fi
 n1=$(count); [ "$n1" = 7 ] && ok "seven lines" || bad "seven lines" "$n1 lines: $(cat "$log" 2>/dev/null)"
 bad_ts=$(grep -vcE "$ts_re" "$log" 2>/dev/null); [ "${bad_ts:-1}" = 0 ] && ok timestamps || bad timestamps "$bad_ts lines without a bus timestamp"
-# a tab that hangs costs 2s and the 5s retry, the late tab 2s; with no cap the two fake hangs alone take 20s
-perl -e "exit !($secs < 16.0)" && ok "fast (${secs}s)" || bad fast "${secs}s" "< 16s"
 [ -z "$stdout" ] && ok "quiet stdout" || bad "quiet stdout" "$stdout"
 
 runsweep

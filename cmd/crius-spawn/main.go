@@ -269,10 +269,10 @@ func sessionAccount(home, config string) (acct, dir string, err error) {
 	return acct, dir, nil
 }
 
-// maxRow is the row of accounts.toml that lists config folder, and that folder; "" when none does. An enterprise
-// row counts too: resumed through aitch's route, an enterprise session ran on Max (Crius 10-30 22:44).
+// maxRow is the Max row of accounts.toml that lists config folder, and that folder; "" when none does. An enterprise
+// row never counts (owner 11-07: the enterprise account is never launched): aitch's route places that session.
 func maxRow(as *quota.Accounts, config string) (acct, dir string) {
-	if a := as.Dir(config); a != nil {
+	if a := as.Dir(config); a != nil && a.Plan == "max" {
 		return a.Name, config
 	}
 	return "", ""
