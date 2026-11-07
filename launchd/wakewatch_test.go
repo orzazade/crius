@@ -56,3 +56,17 @@ func TestOwnerClickJobRunsEveryMinute(t *testing.T) {
 		}
 	}
 }
+
+// Owner 11-08: the heavy-slot load watcher reads the load every minute, from load on, and logs to its own file.
+func TestLoadwatchJobRunsEveryMinute(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join(testutil.RepoRoot(t), "launchd", "space.scifilab.crius.loadwatch.plist.in"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"<string>@HOME@/.crius/bin/crius-loadwatch</string>", "<key>StartInterval</key>\n\t<integer>60</integer>",
+		"<key>RunAtLoad</key>\n\t<true/>", "@HOME@/.crius/logs/loadwatch.log"} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("plist lacks %q", want)
+		}
+	}
+}

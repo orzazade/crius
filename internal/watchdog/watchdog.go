@@ -170,11 +170,11 @@ func Check(home string, now, wake time.Time, maxAge time.Duration) error {
 
 // Post appends one ALERT line from the watchdog to Crius's bus, redacted (an error can quote a config value).
 func Post(home string, now time.Time, text string) error {
-	return PostOn(home, "crius", "crius:watchdog", "crius", now, text)
+	return PostOn(home, "crius", "ALERT", "crius:watchdog", "crius", now, text)
 }
 
-// PostOn appends one ALERT line from one bus name to another on a project's bus log, <home>/bus/<log>.log, redacted.
-func PostOn(home, log, from, to string, now time.Time, text string) error {
+// PostOn appends one line of type typ from one bus name to another on a project's bus log, <home>/bus/<log>.log, redacted.
+func PostOn(home, log, typ, from, to string, now time.Time, text string) error {
 	text, _ = redact.Redact(text)
 	text = strings.Join(strings.Fields(text), " ")
 	if r := []rune(text); len(r) > 300 {
@@ -190,7 +190,7 @@ func PostOn(home, log, from, to string, now time.Time, text string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(f, "%s%s ALERT %s -> %s — %s\n", lead, now.Format("2006-01-02T15:04"), from, to, text); err != nil {
+	if _, err := fmt.Fprintf(f, "%s%s %s %s -> %s — %s\n", lead, now.Format("2006-01-02T15:04"), typ, from, to, text); err != nil {
 		f.Close()
 		return err
 	}

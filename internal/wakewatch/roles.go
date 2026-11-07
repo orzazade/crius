@@ -149,5 +149,5 @@ func tellLeads(d Deps, project string, to []string, what string) (bool, error) {
 	} else if err != nil {
 		return false, err
 	}
-	return true, watchdog.PostOn(d.Home, project, "crius:wakewatch", strings.Join(to, ", "), d.Now, what)
+	return true, watchdog.PostOn(d.Home, project, "ALERT", "crius:wakewatch", strings.Join(to, ", "), d.Now, what)
 }
