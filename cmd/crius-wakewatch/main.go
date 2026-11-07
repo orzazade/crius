@@ -1,7 +1,8 @@
 // Command crius-wakewatch runs one missed-wake check (internal/wakewatch) and exits 1 when it could not finish or not
 // reach Crius's tab. launchd starts it every 5 min. "crius-wakewatch after-boot" checks the helpers in
 // ~/.crius/helpers.toml instead and names the dead ones to Crius (wakewatch.AfterBoot); launchd starts it once per login.
-// "crius-wakewatch clicks" posts each tab that waits on a prompt only the owner may answer (wakewatch.Clicks); launchd
+// "crius-wakewatch clicks" posts each tab that waits on a prompt only the owner may answer (wakewatch.Clicks) and times
+// every open prompt (wakewatch.Prompts: crius:ops at 2 min, Crius at 3 or 10 min); launchd
 // starts it every minute.
 package main
 
@@ -44,7 +45,13 @@ func main() {
 		return
 	}
 	if len(os.Args) == 2 && os.Args[1] == "clicks" {
-		err := wakewatch.Clicks(wakewatch.ClickDeps{Home: store.Home(), Now: time.Now(), Screens: func() ([]wakewatch.Screen, error) { return readScreens(clickLines) }})
+		// one read of every tab serves both watches: the owner clicks and the prompt watch (wakewatch.Prompts)
+		home, now := store.Home(), time.Now()
+		tabs, terr := readScreens(clickLines)
+		read := func() ([]wakewatch.Screen, error) { return tabs, terr }
+		err := errors.Join(wakewatch.Clicks(wakewatch.ClickDeps{Home: home, Now: now, Screens: read}),
+			wakewatch.Prompts(wakewatch.PromptDeps{Home: home, Now: now, Screens: read, SendCrius: send,
+				SendTab: func(title, text string) error { return outbox.Send(home, title, text) }, HandedOver: handedOver, Live: live}))
 		if err != nil {
 			fmt.Fprintln(os.Stderr, time.Now().Format(time.RFC3339), "crius-wakewatch clicks:", err)
 			os.Exit(1)
@@ -298,6 +305,28 @@ func launchd(label string) (bool, error) {
 // titled "crius" (a file naming it went stale when Crius handed over to a new tab). Text held by a draft in Crius's
 // box stays stored, and the next run types it first.
 func send(text string) error { return outbox.Send(store.Home(), wakewatch.CriusTitle, text) }
+
+// live says why the tab has no Claude in front, nil when it has: the check the outbox makes before it types.
+func live(surface string) error {
+	tabs, err := outbox.Terminals()
+	if err != nil {
+		return err
+	}
+	for _, t := range tabs {
+		if t.Surface != surface {
+			continue
+		}
+		front, err := outbox.Front(t.TTY)
+		if err != nil {
+			return err
+		}
+		if filepath.Base(front) != "claude" {
+			return fmt.Errorf("runs %q in front, not Claude", front)
+		}
+		return nil
+	}
+	return fmt.Errorf("cmux tree --all lists no terminal %s", surface)
+}
 
 // handedOver: outbox.Send kept the text (typed by a later run) or set it aside after it may have gone.
 func handedOver(err error) bool {

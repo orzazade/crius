@@ -14,7 +14,6 @@ import (
 	"unicode"
 
 	"github.com/BurntSushi/toml"
-	"github.com/orzazade/crius/internal/redact"
 	"github.com/orzazade/crius/internal/store"
 	"github.com/orzazade/crius/internal/watchdog"
 )
@@ -55,37 +54,9 @@ type flagged struct {
 // it runs, may answer: the post-guard's ask or an Azure DevOps MCP tool's. prompt is the dialog's text (the same prompt gives the same text), what says what it
 // asks for, with the PR's title (else its id and repo) when the dialog shows one.
 func OwnerClick(text string) (prompt, what string, ok bool) {
-	lines := strings.Split(text, "\n")
-	end := -1
-	for i := len(lines) - 1; i >= 0; i-- {
-		if optionRe.MatchString(lines[i]) {
-			end = i
-			break
-		}
-	}
-	if end < 0 {
+	if prompt, ok = openDialog(text); !ok {
 		return "", "", false
 	}
-	for end > 0 && menuRe.MatchString(lines[end-1]) { // the options above the cursor: the prompt is the same wherever it sits
-		end--
-	}
-	for i := end + 1; i < len(lines)-1; i++ { // an input box below it: the dialog was answered, this is history
-		if borderRe.MatchString(strings.TrimSpace(lines[i])) && strings.HasPrefix(strings.TrimSpace(lines[i+1]), "❯") {
-			return "", "", false
-		}
-	}
-	start := 0 // the dialog's top border, or the screen's top when the dialog is taller than what was read
-	for i := end - 1; i >= 0; i-- {
-		if m := borderRe.FindStringSubmatch(strings.TrimSpace(lines[i])); m != nil && m[1] == "" {
-			start = i + 1
-			break
-		}
-	}
-	var words []string
-	for _, l := range lines[start:end] {
-		words = append(words, strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(l), "│")))
-	}
-	prompt = strings.Join(strings.Fields(strings.Join(words, " ")), " ")
 	if m := clickHookRe.FindStringSubmatch(prompt); m != nil {
 		what = "post-guard ask"
 		if m[1] != "" {
@@ -105,6 +76,42 @@ func OwnerClick(text string) (prompt, what string, ok bool) {
 		}
 	}
 	return prompt, what, true
+}
+
+// openDialog gives the text of a screen's open Claude Code dialog (permission or choice), on one line: what lies between
+// its top border (or the top of what was read) and its options. A dialog with an input box below it was answered.
+func openDialog(text string) (prompt string, ok bool) {
+	lines := strings.Split(text, "\n")
+	end := -1
+	for i := len(lines) - 1; i >= 0; i-- {
+		if optionRe.MatchString(lines[i]) {
+			end = i
+			break
+		}
+	}
+	if end < 0 {
+		return "", false
+	}
+	for end > 0 && menuRe.MatchString(lines[end-1]) { // the options above the cursor: the prompt is the same wherever it sits
+		end--
+	}
+	for i := end + 1; i < len(lines)-1; i++ { // an input box below it: the dialog was answered, this is history
+		if borderRe.MatchString(strings.TrimSpace(lines[i])) && strings.HasPrefix(strings.TrimSpace(lines[i+1]), "❯") {
+			return "", false
+		}
+	}
+	start := 0 // the dialog's top border, or the screen's top when the dialog is taller than what was read
+	for i := end - 1; i >= 0; i-- {
+		if m := borderRe.FindStringSubmatch(strings.TrimSpace(lines[i])); m != nil && m[1] == "" {
+			start = i + 1
+			break
+		}
+	}
+	var words []string
+	for _, l := range lines[start:end] {
+		words = append(words, strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(l), "│")))
+	}
+	return strings.Join(strings.Fields(strings.Join(words, " ")), " "), true
 }
 
 // tabName is the session name on the dialog's own border (dialogBorder), else the tab's title.
@@ -146,25 +153,8 @@ func dialogBorder(s Screen) string {
 // A run that fails says so on the bus as an ALERT, once per error (kept in state/owner-clicks.error): its log is read by
 // nobody.
 func Clicks(d ClickDeps) error {
-	last := filepath.Join(d.Home, "state", "owner-clicks.error")
 	crius, cerr := criusRuns(d.Home)
-	err := errors.Join(clicks(d, crius), cerr)
-	if err == nil {
-		if rerr := os.Remove(last); rerr != nil && !os.IsNotExist(rerr) {
-			return rerr
-		}
-		return nil
-	}
-	msg, _ := redact.Redact(err.Error())
-	if b, rerr := os.ReadFile(last); rerr != nil || strings.TrimSuffix(string(b), "\n") != msg {
-		if perr := watchdog.Post(d.Home, d.Now, "owner-click watch failed: "+msg); perr != nil {
-			return fmt.Errorf("%w; the ALERT was not posted: %v", err, perr)
-		}
-		if werr := os.WriteFile(last, []byte(msg+"\n"), 0o600); werr != nil {
-			return fmt.Errorf("%w; %v", err, werr)
-		}
-	}
-	return err
+	return alertOnce(d.Home, d.Now, "owner-clicks.error", "owner-click watch failed: ", errors.Join(clicks(d, crius), cerr))
 }
 
 func clicks(d ClickDeps, crius map[string]bool) error {
