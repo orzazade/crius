@@ -1,0 +1,9 @@
+{
+  "count": 4,
+  "value": [
+    "2026-11-07T22:20:01.1Z   Determining projects to restore...",
+    "2026-11-07T22:21:10.2Z Passed!  - Failed:     0, Passed:   391, Skipped:     0, Total:   391, Duration: 1 s - Example.Core.Tests.dll (net10.0)",
+    "2026-11-07T22:27:52.3Z Passed!  - Failed:     0, Passed:  1429, Skipped:     0, Total:  1429, Duration: 5 m 42 s - Example.Api.Tests.dll (net10.0)",
+    "2026-11-07T22:28:00.4Z ##[section]Finishing: dotnet test"
+  ]
+}

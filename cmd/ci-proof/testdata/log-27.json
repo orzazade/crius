@@ -1,0 +1,6 @@
+{
+  "count": 1,
+  "value": [
+    "2026-11-07T22:27:52.3Z Failed!  - Failed:     0, Passed:    40, Skipped:     0, Total:   120, Duration: 9 m - Example.Api.Tests.dll (net10.0)"
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "id": 407,
+  "buildNumber": "20261108.1",
+  "status": "completed",
+  "result": "succeeded",
+  "reason": "pullRequest",
+  "sourceBranch": "refs/pull/7001/merge",
+  "sourceVersion": "0f4b9e27d1c85a3360b2e9f7c4d1a86e5b03c9d2",
+  "definition": {
+    "id": 12,
+    "name": "example-service CI Pipeline"
+  },
+  "triggerInfo": {
+    "pr.number": "7001"
+  }
+}

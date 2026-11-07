@@ -1,0 +1,11 @@
+{
+  "records": [
+    {
+      "type": "Task",
+      "name": "dotnet test",
+      "log": {
+        "id": 25
+      }
+    }
+  ]
+}

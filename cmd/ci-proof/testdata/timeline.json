@@ -1,0 +1,37 @@
+{
+  "records": [
+    {
+      "type": "Task",
+      "name": "dotnet test",
+      "log": {
+        "id": 21
+      }
+    },
+    {
+      "type": "Task",
+      "name": "Restore & Build",
+      "log": {
+        "id": 12
+      }
+    },
+    {
+      "type": "Task",
+      "name": "Publish test results",
+      "log": {
+        "id": 23
+      }
+    },
+    {
+      "type": "Job",
+      "name": "Tests",
+      "log": {
+        "id": 3
+      }
+    },
+    {
+      "type": "Task",
+      "name": "Checkout",
+      "log": null
+    }
+  ]
+}

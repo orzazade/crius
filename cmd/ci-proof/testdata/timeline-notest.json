@@ -1,0 +1,18 @@
+{
+  "records": [
+    {
+      "type": "Task",
+      "name": "Restore & Build",
+      "log": {
+        "id": 12
+      }
+    },
+    {
+      "type": "Task",
+      "name": "Angular build",
+      "log": {
+        "id": 10
+      }
+    }
+  ]
+}

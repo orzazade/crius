@@ -1,0 +1,21 @@
+{
+  "pullRequestId": 7001,
+  "status": "abandoned",
+  "mergeStatus": "notSet",
+  "targetRefName": "refs/heads/develop",
+  "lastMergeCommit": null,
+  "lastMergeSourceCommit": {
+    "commitId": "9a0c47e1b2d36f58e4c1a7b9d03e62f5a8c4b17e"
+  },
+  "lastMergeTargetCommit": {
+    "commitId": "c81e5f02a9d47b63e0f1d8c2b5a94e7036d1f8ab"
+  },
+  "repository": {
+    "id": "3c5f1e0a-7b2d-4c8e-9f61-0d2a4b6c8e10",
+    "name": "example-service",
+    "project": {
+      "id": "p1",
+      "name": "Example Project"
+    }
+  }
+}

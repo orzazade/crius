@@ -1,0 +1,40 @@
+[
+  {
+    "configuration": {
+      "isBlocking": true,
+      "isEnabled": true,
+      "type": {
+        "displayName": "Minimum number of reviewers"
+      }
+    },
+    "context": null,
+    "status": "approved"
+  },
+  {
+    "configuration": {
+      "isBlocking": true,
+      "isEnabled": true,
+      "type": {
+        "displayName": "Build"
+      },
+      "settings": {
+        "buildDefinitionId": 12,
+        "queueOnSourceUpdateOnly": true,
+        "validDuration": 0.0
+      }
+    },
+    "context": {
+      "buildAfterMerge": false,
+      "buildDefinitionId": 12,
+      "buildId": 407,
+      "buildIsNotCurrent": false,
+      "isExpired": true,
+      "lastMergeCommitId": "5d2e8a41c09f3b7716e4a2d8f0c95b13e7a6d402",
+      "lastMergeSourceCommitId": "9a0c47e1b2d36f58e4c1a7b9d03e62f5a8c4b17e",
+      "lastMergeTargetCommitId": "c81e5f02a9d47b63e0f1d8c2b5a94e7036d1f8ab",
+      "wasAutoRequeued": false
+    },
+    "evaluationId": "0e7a1c55-3b9d-4f20-a6c8-91d4e2f0b7a3",
+    "status": "approved"
+  }
+]
