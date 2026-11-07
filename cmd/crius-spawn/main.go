@@ -1,6 +1,6 @@
 // Command crius-spawn opens a team session and starts it:
 //
-//	crius-spawn [-account max|<name>|enterprise] [-parent <leader session id>] [-item <project>#<n>] <project> <role> <first prompt…>
+//	crius-spawn [-account max|<name>] [-parent <leader session id>] [-item <project>#<n>] <project> <role> <first prompt…>
 //	crius-spawn -move [-account max|<name>] [-parent <leader session id>] [-item <project>#<n>] <project> <role> <first prompt…>
 //	crius-spawn -resume <project> <role>
 //
@@ -42,13 +42,13 @@ import (
 )
 
 func main() {
-	account := flag.String("account", "", "max (the Max account whose week resets soonest, under 95%; it prints the pick and why), an accounts.toml Max row name, or enterprise (default: the project's first account in projects.toml)")
+	account := flag.String("account", "", "max (the Max account whose week resets soonest, under 95%; it prints the pick and why), or an accounts.toml Max row name (default: the project's first account in projects.toml); never the enterprise account (owner 11-07)")
 	parent := flag.String("parent", "", "the leader's session id, for the provenance tag")
 	item := flag.String("item", "", "the work item, <project>#<n>, for the provenance tag")
 	again := flag.Bool("resume", false, "bring the role's current session back: <project> <role>, nothing else")
 	move := flag.Bool("move", false, "start the role afresh in its current session's folder on another Max account (-account, default the one whose week resets soonest under 95%); its Claude must have stopped")
 	flag.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: crius-spawn [-account max|<name>|enterprise] [-parent id] [-item project#n] <project> <role> <first prompt…>")
+		fmt.Fprintln(os.Stderr, "usage: crius-spawn [-account max|<name>] [-parent id] [-item project#n] <project> <role> <first prompt…>")
 		fmt.Fprintln(os.Stderr, "       crius-spawn -move [-account max|<name>] [-parent id] [-item project#n] <project> <role> <first prompt…>")
 		fmt.Fprintln(os.Stderr, "       crius-spawn -resume <project> <role>")
 		flag.PrintDefaults()
@@ -235,7 +235,7 @@ func runCmux(args ...string) (string, error) {
 }
 
 // pick is the account a session of project starts on, its folder and why: want is "max" for the Max one whose week
-// resets soonest, a Max row's name (quota.Pick), or "enterprise" (quota.Enterprise). The figures are the record
+// resets soonest, or a Max row's name (quota.Pick); never the enterprise account (owner 11-07). The figures are the record
 // store's, as crius-rec quota reads them.
 func pick(home, project, want string) (name, dir, why string, err error) {
 	root, pauseAt, err := ingest.ForSpawn(home, project)
@@ -245,10 +245,6 @@ func pick(home, project, want string) (name, dir, why string, err error) {
 	projects, err := ingest.QuotaProjects(home)
 	if err != nil {
 		return "", "", "", err
-	}
-	if want == "enterprise" {
-		name, dir, err = quota.Enterprise(projects.Accounts, root)
-		return name, dir, "", err
 	}
 	db, err := store.Open(home)
 	if err != nil {

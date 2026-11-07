@@ -133,27 +133,6 @@ func Pick(r *Report, as *Accounts, root, want string, pauseAt int) (name, dir, w
 	return "", "", "", nil
 }
 
-// Enterprise is the enterprise row a session of the persona whose transcript folder is root starts on, and its folder:
-// the first plan enterprise row with a folder linked to root (as in Pick). None is an error: a launch with no folder
-// goes through aitch's route, which may start it on Max under an enterprise tag (Crius 10-30 22:44).
-func Enterprise(as *Accounts, root string) (name, dir string, err error) {
-	if as != nil {
-		for _, a := range as.Rows {
-			if a.Plan != "enterprise" {
-				continue
-			}
-			d, err := linked(a, root)
-			if err != nil {
-				return "", "", err
-			}
-			if d != "" {
-				return a.Name, d, nil
-			}
-		}
-	}
-	return "", "", fmt.Errorf("accounts.toml has no signed-in enterprise folder whose projects/ is %s", root)
-}
-
 // linked is the first of the row's folders that is signed into the row's login and whose projects/ is root; "" if
 // none is.
 func linked(a Acct, root string) (string, error) {

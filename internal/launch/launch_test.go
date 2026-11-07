@@ -302,7 +302,7 @@ func TestAProjectWithNoWorkspaceGetsOneNamedAndColored(t *testing.T) {
 `
 	// Live run 10-22: the tree read just after new-workspace did not list it yet.
 	f := &fake{trees: []string{tree, tree, tree, newTree}}
-	ws, surface, _, err := Run(Spawn{Project: "cortex", Role: "lead", Account: "enterprise", Prompt: "Read your brief."}, f.deps())
+	ws, surface, _, err := Run(Spawn{Project: "cortex", Role: "lead", Prompt: "Read your brief."}, f.deps())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -902,19 +902,13 @@ func TestAPickedAccountStartsInItsFolderAndIsNotInTheTitle(t *testing.T) {
 		t.Errorf("tag %q", tag)
 	}
 
-	// A named row is asked for by name, and enterprise too: Crius 10-30 22:44, -account enterprise launched with no
-	// folder, aitch's Appxite route started the quotes sessions on Max, and their tags said enterprise. Every launch
-	// starts in the folder of the account its tag names.
+	// A named row is asked for by name. Every launch starts in the folder of the account its tag names.
 	byName := func(project, want string) (string, string, error) {
 		asked = append(asked, project+" "+want)
-		if want == "enterprise" {
-			return "work", "/Users/o/.claude-work", nil
-		}
 		return want, "/Users/o/.claude-" + want, nil
 	}
 	for _, c := range []struct{ account, asked, primary, tag string }{
 		{"max3", "quotes max3", "/Users/o/.claude-max3", "max"},
-		{"enterprise", "quotes enterprise", "/Users/o/.claude-work", "enterprise"},
 	} {
 		asked = nil
 		f := &fake{trees: []string{tree}, picked: byName}
@@ -930,7 +924,7 @@ func TestAPickedAccountStartsInItsFolderAndIsNotInTheTitle(t *testing.T) {
 		}
 	}
 	// no folder for the account: refused, as a launch on aitch's route could run on another account than its tag says
-	for _, account := range []string{"", "enterprise"} {
+	for _, account := range []string{"", "max3"} {
 		f = &fake{trees: []string{tree}, picked: func(string, string) (string, string, error) { return "", "", nil }}
 		_, _, _, err := Run(Spawn{Project: "quotes", Role: "lead", Account: account, Prompt: "go"}, f.deps())
 		if err == nil || !strings.Contains(err.Error(), "no signed-in folder") || len(f.called("new-surface")) != 0 {
@@ -1051,8 +1045,8 @@ func TestAMoveStartsTheRoleInItsFolderOnAnotherAccountAndClosesTheOldTab(t *test
 		{&fake{trees: []string{tree}, picked: func(string, string) (string, string, error) { return "", "", nil }}, s, "no signed-in folder"},
 		{&fake{trees: []string{tree}, picked: func(string, string) (string, string, error) { return "max1", "/Users/o/.claude-work-max", nil }}, s, "on max1 already"},
 		{&fake{trees: []string{tree}, picked: to}, Spawn{Project: "quotes", Role: "lead", Prompt: "go", Move: &Moved{Cwd: "rel/dir", From: "max1"}}, "bad folder"},
-		// review of 9c52394: enterprise is picked now, and a move goes to another Max account only
-		{&fake{trees: []string{tree}, picked: to}, Spawn{Project: "quotes", Role: "lead", Prompt: "go", Account: "enterprise", Move: s.Move}, "goes to another Max account"},
+		// a move goes to another Max account only; the enterprise account is never launched (owner 11-07)
+		{&fake{trees: []string{tree}, picked: to}, Spawn{Project: "quotes", Role: "lead", Prompt: "go", Account: "enterprise", Move: s.Move}, "never launched"},
 		{&fake{trees: []string{treeWith("quotes · lead · max1")}, picked: to, front: "claude"}, s, "left alone"},
 	} {
 		_, _, _, err := Run(c.s, c.f.deps())
@@ -1180,6 +1174,25 @@ func TestOnlyTheSamePromptFoldedCountsAsIt(t *testing.T) {
 	} {
 		if got := holds(c.draft, "[crius x]Read the brief."); got != c.want {
 			t.Errorf("holds(%q) = %v", c.draft, got)
+		}
+	}
+}
+
+// Owner 11-07 ("never the enterprise account"): no session starts on the enterprise account, whether -account names it
+// or projects.toml places the project there; nothing in cmux is touched. A move off such a project still goes to Max.
+func TestTheEnterpriseAccountIsNeverLaunched(t *testing.T) {
+	picked := func(string, string) (string, string, error) { return "work", "/Users/o/.claude-work", nil }
+	for _, c := range []struct {
+		f *fake
+		s Spawn
+	}{
+		{&fake{trees: []string{tree}, picked: picked}, Spawn{Project: "quotes", Role: "lead", Account: "enterprise", Prompt: "go"}},
+		{&fake{trees: []string{tree}}, Spawn{Project: "quotes", Role: "lead", Account: "enterprise", Prompt: "go"}},
+		{&fake{trees: []string{tree}, picked: picked, account: "enterprise"}, Spawn{Project: "quotes", Role: "lead", Prompt: "go"}},
+	} {
+		_, _, _, err := Run(c.s, c.f.deps())
+		if err == nil || !strings.Contains(err.Error(), "the enterprise account is never launched") || len(c.f.calls) != 0 {
+			t.Errorf("%+v: err %v, calls %q", c.s, err, c.f.calls)
 		}
 	}
 }

@@ -68,8 +68,8 @@ type Deps struct {
 	Wait    time.Duration                                                  // between two reads of the new tab
 	Front   func(tty string) (string, error)                               // the command in front on a tty, as ps shows it
 	Typed   func(surface string) (bool, error)                             // whether a tab's box holds typed text, not grey text (cmux input state)
-	// Pick is the account a session starts on, "max" for the Max one whose week resets soonest, a row's name or
-	// "enterprise", and its config folder (crius-spawn pick); no name refuses the launch. Nil: no accounts.
+	// Pick is the account a session starts on, "max" for the Max one whose week resets soonest or a Max row's name, and
+	// its config folder (crius-spawn pick); no name refuses the launch. Nil: no accounts.
 	Pick func(project, want string) (name, dir string, err error)
 }
 
@@ -112,17 +112,19 @@ func Run(s Spawn, d Deps) (ws, surface, tag string, err error) {
 	} else if s.Move != nil {
 		account = "max" // a move goes to the Max account picked by reset, whatever the project starts on
 	}
+	if account == "enterprise" {
+		// owner 11-07: never the enterprise account, whether -account or projects.toml names it
+		return "", "", "", fmt.Errorf("%s %s: the enterprise account is never launched (owner 11-07): start it on max", s.Project, s.Role)
+	}
 	var acct, dir string
 	switch {
 	case d.Pick != nil && slugRe.MatchString(account):
 		if acct, dir, err = d.Pick(s.Project, account); err != nil {
 			return "", "", "", err
 		}
-		if account != "enterprise" {
-			account = "max"
-		}
-	case account != "max" && account != "enterprise":
-		return "", "", "", fmt.Errorf("bad account %q: want max or enterprise", account)
+		account = "max"
+	case account != "max":
+		return "", "", "", fmt.Errorf("bad account %q: want max", account)
 	}
 	switch {
 	case d.Pick != nil && acct == "": // aitch's route could start it on another account than its tag names (Crius 10-30 22:44)
@@ -183,8 +185,6 @@ func Run(s Spawn, d Deps) (ws, surface, tag string, err error) {
 // old tab and its terminal ("" when there is none). Anything wrong is refused before a tab is touched.
 func move(d Deps, s Spawn, acct, name string) (cwd, ws, surface, tty string, err error) {
 	switch {
-	case s.Account == "enterprise":
-		return "", "", "", "", fmt.Errorf("%s %s: a move goes to another Max account, not enterprise", s.Project, s.Role)
 	case !safeDir(s.Move.Cwd):
 		return "", "", "", "", fmt.Errorf("bad folder %q: want an absolute path with no quote, backslash or control character", s.Move.Cwd)
 	case acct == "":
