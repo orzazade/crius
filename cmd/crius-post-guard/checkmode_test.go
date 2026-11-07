@@ -184,3 +184,37 @@ func TestAModelNameInAnyTextWordIsRefused(t *testing.T) {
 	guardCall(t, dir, `az repos pr update --id 7890 --source-branch feature/claude-fix --description @`+pr+adoO, "")
 	guardCall(t, dir, `az devops invoke --area git --resource pullRequests --http-method PATCH --in-file `+pr+` --org https://dev.azure.com/Appxite`, "")
 }
+
+// Review of 1a2069f: zsh can make "cat" another program in ways a list of tricks misses (path=(…), functions[cat]=…,
+// hash cat=/x), so a "$(cat FILE)" word is read only when no statement of the command may change the shell; a wiki
+// page's --path is its title; a value glued to a short option is text.
+func TestCatIsReadOnlyWhenNothingMayChangeTheShell(t *testing.T) {
+	dir := criusDir(t, map[string]string{"7890": "refs/heads/integration/96365-b4"})
+	good := filepath.Join(dir, "good.md")
+	write(t, good, "Fix the list.\n")
+	post := `az repos pr update --id 7890 --description "$(cat ` + good + `)"` + adoO
+	for _, before := range []string{
+		"path=(/x $path); ",
+		"functions[cat]='print -r -- x'; ",
+		"hash cat=/x; ",
+		"PATH=/x:$PATH; ",
+		"export PATH=/x; ",
+		"alias cat=/x; ",
+		"cat() { printf x; }; ",
+		"source env.sh; ",
+		"eval \"$S\"; ",
+	} {
+		guardCall(t, dir, before+post, "deny", `--description "$(cat file)"`)
+	}
+	for _, before := range []string{"", "cd " + dir + " && ", "echo go; ", "git -C " + dir + " status >/dev/null; "} {
+		guardCall(t, dir, before+post, "")
+	}
+	for _, cmd := range []string{
+		`az devops wiki page create --wiki W --path "Claude review notes" --content "Fix the list."` + adoO,
+		`az repos pr update --id 7890 -d"Opus review: no findings"` + adoO,
+		`curl -X POST https://dev.azure.com/Appxite/P/_apis/git/repositories/R/pullRequests/7890/threads?api-version=7.1 -d'{"comments":[{"content":"Opus: LGTM"}]}'`,
+	} {
+		guardCall(t, dir, cmd, "deny", "names a model or tool")
+	}
+	guardCall(t, dir, `az devops wiki page create --wiki W --path "Quote list notes" --content "Fix the list."`+adoO, "")
+}

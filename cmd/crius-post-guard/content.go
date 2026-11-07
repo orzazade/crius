@@ -31,8 +31,18 @@ var (
 	}{
 		{[]string{"Projects/Appxite/svc_quote", ".crius/state/quotes"}, "svc_quote", "d88331ee-60dc-4f15-b236-b1790c6fdeaa", "AB#96365"},
 	}
-	// catShadowRe is a command text that may make "cat" run something else: a function or alias named cat, or a new PATH.
-	catShadowRe = regexp.MustCompile(`(^|[^A-Za-z0-9_-])(function\s+cat\b|cat\s*\(\s*\)|alias\s+cat=|PATH\+?=|hash\s+-p)`)
+	// plainBuiltins are the shell builtins that cannot change what "cat" runs; every other builtin (alias, hash, eval,
+	// source, functions, typeset, …) may.
+	plainBuiltins = map[string]bool{"cd": true, "pushd": true, "popd": true, "echo": true, "printf": true, "print": true,
+		"true": true, "false": true, "test": true, "[": true, "pwd": true, ":": true, "exit": true, "return": true,
+		"sleep": true, "wait": true, "shift": true}
+	// shellBuiltins are bash's and zsh's builtins: a call by one of these names runs in the shell itself and may change it.
+	shellBuiltins = strings.Fields(`. : [ alias autoload bg bindkey break builtin bye caller cap cd chdir clone command
+		compgen complete compopt continue coproc declare dirs disable disown echo emulate enable eval exec exit export false
+		fc fg float functions getln getopts hash history integer jobs kill let limit local logout mapfile noglob popd print
+		printf pushd pushln pwd r read readarray readonly rehash return sched set setopt shift shopt source suspend test
+		times trap true type typeset ulimit umask unalias unfunction unhash unlimit unset unsetopt vared wait whence where
+		which zcompile zformat zle zmodload zparseopts zstyle`)
 	// pathOpts are options whose value is a path, branch, URL, id or query rather than text people read.
 	pathOpts = map[string][]string{
 		"az": {"--org", "--organization", "--url", "--uri", "-u", "--in-file", "--file", "--file-path", "--source-branch", "-s",
@@ -94,7 +104,7 @@ func catWord(w *syntax.Word) (prefix, file string, ok bool) {
 // Other words the guard cannot read stay as they are (hardCheck refuses them).
 func (p postCall) resolve() ([]word, string) {
 	out := make([]word, 0, len(p.args))
-	shadow := catShadowRe.MatchString(p.c.whole) // cat may not be cat: no word is read as a file
+	shadow := mayShadowCat(p.c.whole) // cat may not be cat: no word is read as a file
 	for _, a := range p.args {
 		prefix, file, ok := "", "", false
 		if !a.ok && !shadow {
@@ -116,32 +126,76 @@ func (p postCall) resolve() ([]word, string) {
 	return out, ""
 }
 
+// mayShadowCat says whether a command text may change what "cat" runs in its shell before the post: any function, any
+// assignment that runs no program (zsh path=(…), functions[cat]=…, PATH=…), PATH on a call, a declaration, or a shell
+// builtin other than plain ones (hash cat=/x, alias, eval, source). A program the shell starts cannot change it. The
+// test is on what each statement is, not on known tricks (review of 1a2069f P1: zsh's path=() and functions[cat]).
+func mayShadowCat(text string) bool {
+	f, err := syntax.NewParser(syntax.Variant(syntax.LangBash)).Parse(strings.NewReader(text), "")
+	if err != nil {
+		return true
+	}
+	shadow := false
+	syntax.Walk(f, func(n syntax.Node) bool {
+		switch n := n.(type) {
+		case *syntax.FuncDecl, *syntax.DeclClause, *syntax.LetClause:
+			shadow = true
+		case *syntax.CallExpr:
+			for _, as := range n.Assigns {
+				if len(n.Args) == 0 || as.Name == nil || strings.EqualFold(as.Name.Value, "path") {
+					shadow = true
+				}
+			}
+			if len(n.Args) > 0 {
+				name := literal(n.Args[0])
+				if !name.ok || slices.Contains(shellBuiltins, name.text) && !plainBuiltins[name.text] {
+					shadow = true
+				}
+			}
+		}
+		return !shadow
+	})
+	return shadow
+}
+
 // notText says whether a word of the tool's is not text people read: an @file (its text is read as a file), a URL, or
 // the value of an option that takes a path, branch, URL, id or query (after opt, the option word before it, if any).
-func notText(tool, opt, s string) bool {
+// A wiki page's --path is its title, so it is text (review of 1a2069f P2).
+func notText(tool, opt, s string, wiki bool) bool {
 	if strings.HasPrefix(s, "@") || strings.Contains(s, "://") && !strings.ContainsAny(s, " \t\r\n") {
 		return true
 	}
-	return opt != "" && slices.Contains(pathOpts[tool], strings.ToLower(opt))
+	o := strings.ToLower(opt)
+	if wiki && (o == "--path" || o == "-p") {
+		return false
+	}
+	return o != "" && slices.Contains(pathOpts[tool], o)
 }
 
 // contentCheck gives why the text of one post (its words resolved, hardCheck passed) may not go on, or "".
 func contentCheck(p postCall, in input) string {
 	what := p.tool
 	var read []string // the text people read: every word but options and paths, and the files the post sends
+	wiki := p.tool == "az" && strings.HasPrefix(parseAz(p.args).cmd, "devops wiki")
 	prev := ""
 	for _, a := range p.args {
 		t, opt := a.text, prev
 		prev = ""
 		if strings.HasPrefix(t, "-") {
 			o, v, eq := strings.Cut(t, "=")
-			if !eq {
+			switch {
+			case eq:
+				t, opt = v, o
+			case !strings.HasPrefix(t, "--") && len(t) > 2:
+				// a value glued to a short option (-d"Opus: LGTM", curl -d'{…}'): the rest is its value (review of
+				// 1a2069f P2); joined flags (-fsS) read as harmless text
+				t, opt = t[2:], t[:2]
+			default:
 				prev = t
 				continue
 			}
-			t, opt = v, o
 		}
-		if !notText(p.tool, opt, t) {
+		if !notText(p.tool, opt, t, wiki) {
 			read = append(read, t)
 		}
 	}
