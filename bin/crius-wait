@@ -1,8 +1,9 @@
 #!/bin/bash
 # Crius's one bus waiter (owner 10-30, "too much noise"): one team-wait over every bus log in place of one per project.
-# It wakes Crius only for DONE, NEED and NEED-*, BLOCKED, S1, owner lines, the first answer to what Crius wrote and
-# the watch channels (ALERT, ASK, CLEAR-READY, waits:*); every other line that would have woken it goes to the digest
-# file the 09:00/18:00 report counts. --watch-dir reads every bus log, a log born while it waits from line 1. Arm it
+# It wakes Crius only on an allow-list (Crius 11-06): DONE, NEED and NEED-*, BLOCKED, ALERT, ASK, CORRECTED,
+# CLEAR-READY, S1, OWNER, OWNER-CLICK, owner lines, an idle_prompt wait, crius:ops lines other than "click …" receipts,
+# and the first answer to what Crius wrote. Every other line (other waits:* kinds, CRIUS-CLICK: the ops tab clicks
+# those) goes to the digest file the 09:00/18:00 report counts. --watch-dir reads every bus log, a log born while it waits from line 1. Arm it
 # again after each wake, like any waiter. Extra arguments go to team-wait (e.g. --max-hours 12).
 # The first run starts each log where the old crius-role cursors (~/.crius/wait-cursor-<p>) stopped, the furthest one
 # of them, and every other bus log at its end; it joins their asks (who Crius waits on, the latest per sender). Other
@@ -32,4 +33,4 @@ if [ ! -e "$cur" ]; then
   mv "$cur.tmp" "$cur" || exit 4
 fi
 exec bash "$HOME/.claude/skills/cmux-team/scripts/team-wait.sh" --mode crius --role crius --alias crius:lead \
-  --digest "$c/state/crius/bus-digest.log" --cursor "$cur" --watch-dir "$bus" "$@"
+  --digest "$c/state/crius/bus-digest.log" --ops crius:ops --cursor "$cur" --watch-dir "$bus" "$@"
