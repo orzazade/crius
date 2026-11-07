@@ -67,6 +67,8 @@ type fake struct {
 	picked   func(project, want string) (name, dir string, err error) // the Max account picker; nil: none
 	account  string                                                   // the project's account in projects.toml; "" means max
 	paste    int                                                      // a send longer than this shows its end as "[Pasted text #1]", as Claude Code folds a long burst
+	said     []string                                                 // what Send typed into a tab, as "<ws> <surface> <text>"
+	sayErr   error                                                    // what Send fails with
 }
 
 const statusBar = "  %s │ main │ ██░░░░░░░░ ctx 2%%\n"
@@ -75,6 +77,10 @@ func (f *fake) deps() Deps {
 	return Deps{
 		Lock: filepath.Join(os.TempDir(), "crius-launch-test.lock"),
 		Pick: f.picked,
+		Send: func(ws, surface, text string) error {
+			f.said = append(f.said, ws+" "+surface+" "+text)
+			return f.sayErr
+		},
 		Cmux: func(args ...string) (string, error) {
 			f.calls = append(f.calls, strings.Join(args, " "))
 			switch args[0] {
@@ -669,6 +675,27 @@ func TestResumeOpensANewTabWhenTheTabIsGone(t *testing.T) {
 	}
 	if got := f.called("rename-tab "); len(got) != 1 || !strings.HasSuffix(got[0], "-- quotes · lead") {
 		t.Errorf("rename-tab %q", got)
+	}
+}
+
+// crius:lead ORDER 11-07 19:59: moved tabs sat idle, their background jobs dead with the old process, until Crius
+// nudged all 15. A resumed session is told so in its own tab, once its box is up, in a crashed tab or a new one; a
+// prompt that cannot be typed fails the resume loudly.
+func TestAResumedSessionIsToldItsBackgroundJobsDied(t *testing.T) {
+	for _, c := range []struct{ tree, ws, surface string }{{treeWith("quotes · lead"), "workspace:2", "surface:22"}, {tree, "workspace:2", "surface:99"}} {
+		f := &fake{trees: []string{c.tree}}
+		if _, _, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/quotes", "", "", f.deps()); err != nil {
+			t.Fatal(err)
+		}
+		if len(f.said) != 1 || !strings.HasPrefix(f.said[0], c.ws+" "+c.surface+" ") || !strings.Contains(f.said[0], "background jobs") ||
+			!strings.Contains(f.said[0], "bus waiter") || !strings.Contains(f.said[0], "last task") {
+			t.Errorf("%s: typed %q, want one restart prompt in %s %s", c.surface, f.said, c.ws, c.surface)
+		}
+	}
+	f := &fake{trees: []string{tree}, sayErr: errors.New("the box holds a draft")}
+	if _, _, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/quotes", "", "", f.deps()); err == nil ||
+		!strings.Contains(err.Error(), "the restart prompt was not typed") || !strings.Contains(err.Error(), "the box holds a draft") {
+		t.Errorf("err %v, want the resume to fail naming the untyped prompt", err)
 	}
 }
 

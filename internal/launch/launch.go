@@ -71,6 +71,8 @@ type Deps struct {
 	// Pick is the account a session starts on, "max" for the Max one whose week resets soonest or a Max row's name, and
 	// its config folder (crius-spawn pick); no name refuses the launch. Nil: no accounts.
 	Pick func(project, want string) (name, dir string, err error)
+	// Send types one line into the Claude tab at ws and surface and presses Enter, proving it went (outbox.SendTo).
+	Send func(ws, surface, text string) error
 }
 
 // Spawn is one session to open: Parent (the leader's session id) and Item ("quotes#41") go in the provenance tag when
@@ -249,12 +251,18 @@ func tab(d Deps, project, persona, name, cwd, cmd string) (ws, surface string, e
 	return ws, surface, nil
 }
 
+// ResumedPrompt is typed into a resumed session once its box is up.
+const ResumedPrompt = "You were resumed in a new Claude process (crius-spawn -resume: a move to another account, a crash or a restart). " +
+	"Your background jobs, monitors and bus waiter died with the old process. Re-arm your bus waiter, restart the background " +
+	"jobs you still need, and go on with your last task."
+
 // Resume brings a role's session back after a crash or a reboot: claude --resume <id> in the session's own folder,
 // typed into the role's tab when the tab is still there with a shell in front (a crash), else in a new tab of the
 // project's workspace named as before (a reboot). A tab with anything else in front, Claude itself, is left alone. It
 // waits for Claude's input box, so a resume that finds no conversation, or a new tab whose command ended, fails with what
 // the screen said. A session that
 // ran on a Max account of accounts.toml (acct, its config folder dir) comes back in that folder; acct "" goes through aitch's own route as before.
+// Once its box is up it is sent ResumedPrompt.
 func Resume(project, role, id, cwd, acct, dir string, d Deps) (ws, surface string, err error) {
 	line, err := ResumeLine(project, role, id, cwd, acct, dir)
 	if err != nil {
@@ -327,6 +335,11 @@ func Resume(project, role, id, cwd, acct, dir string, d Deps) (ws, surface strin
 	}
 	if err != nil {
 		return "", "", fmt.Errorf("%s in %s %s: %v", name, ws, surface, err)
+	}
+	// Its background jobs, monitors and bus waiter died with the old process: it is told so at once, as no hook says it
+	// (crius:lead ORDER 11-07 19:59: 15 moved tabs sat idle until Crius nudged each).
+	if err := d.Send(ws, surface, ResumedPrompt); err != nil {
+		return ws, surface, fmt.Errorf("%s resumed in %s %s, but the restart prompt was not typed: %w", name, ws, surface, err)
 	}
 	return ws, surface, nil
 }

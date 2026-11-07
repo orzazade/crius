@@ -71,6 +71,7 @@ func main() {
 		Wait:  time.Second,
 		Front: outbox.Front,
 		Typed: outbox.Typed,
+		Send:  func(ws, surface, text string) error { return outbox.SendTo(store.Home(), ws, surface, text) },
 	}
 	if *closed {
 		if flag.NArg() != 2 || *again || *account != "" || *move || *parent != "" || *item != "" {
