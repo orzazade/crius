@@ -60,6 +60,16 @@ func defaultBranch(repo string) (name, sha string, err error) {
 		return n, local, fmt.Errorf("%w: %s and origin/%s have diverged (or the fetch is shallow); read %s only", errDiverged,
 			n, n, n)
 	}
+	// a repo with no remote at all (svc_marketplace works on wip/baseline) has no origin default: its line is the branch
+	// it has checked out (docs audit 11-08: every run since 10-30 ended partial on it)
+	if out, err := gitRun(repo, "remote"); err == nil && strings.TrimSpace(out) == "" {
+		if b, err := gitRun(repo, "symbolic-ref", "--short", "-q", "HEAD"); err == nil && strings.TrimSpace(b) != "" {
+			n := strings.TrimSpace(b)
+			if sha, err := gitRun(repo, "rev-parse", "--verify", "-q", "refs/heads/"+n); err == nil {
+				return n, strings.TrimSpace(sha), nil
+			}
+		}
+	}
 	return "", "", fmt.Errorf("no default branch (origin HEAD, main, master)")
 }
 

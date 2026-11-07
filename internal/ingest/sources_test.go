@@ -71,6 +71,25 @@ func TestACommitLandingDuringTheRunIsNotSkipped(t *testing.T) {
 	eq(t, x.one("select count(*) from git_commit"), "2")
 }
 
+// Docs audit 11-08: svc_marketplace is a local repo with no remote and no main or master (it works on wip/baseline), so
+// every run since 10-30 warned "no default branch" and ended partial (exit 3, no heartbeat). A repo with no remote at all
+// reads the branch it has checked out; one with a remote still needs origin's default, main or master.
+func TestARepoWithNoRemoteReadsItsCheckedOutBranch(t *testing.T) {
+	x, repo := gitCase(t)
+	testutil.Git(t, repo, "checkout", "-q", "-b", "wip/baseline")
+	testutil.Write(t, filepath.Join(repo, "a.txt"), "1\n")
+	testutil.CommitAll(t, repo)
+	if st := x.run(); st.Status != "complete" {
+		t.Fatalf("want complete, got %+v", st)
+	}
+	eq(t, x.one("select count(*) from git_commit"), "1")
+	// with a remote, a missing default is still a warning
+	testutil.Git(t, repo, "remote", "add", "origin", filepath.Join(x.root, "nowhere"))
+	if st := x.run(); st.Status != "partial" || !strings.Contains(strings.Join(st.Warnings, "\n"), "no default branch") {
+		t.Fatalf("with a remote: %+v", st)
+	}
+}
+
 func TestAMissingRepoMakesTheRunPartial(t *testing.T) {
 	x := newIC(t, cfg{})
 	writeConfig(t, x.home, x.personal, x.work, cfg{repo: filepath.Join(x.root, "gone")})
