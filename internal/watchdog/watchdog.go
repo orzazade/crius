@@ -110,8 +110,12 @@ func grownSince(dirs []string, t time.Time) (bool, error) {
 	return false, nil
 }
 
+// repeatEvery is how often a heartbeat that stays stale is alerted again.
+const repeatEvery = 6 * time.Hour
+
 // Check posts an ALERT when the heartbeat is older than maxAge (counted from the later of the stamp and wake)
-// while transcripts grew after it. It returns an error when it cannot tell.
+// while transcripts grew after it, and again every repeatEvery while it stays stale. It returns an error when it cannot
+// tell.
 func Check(home string, now, wake time.Time, maxAge time.Duration) error {
 	bus := filepath.Join(home, "bus")
 	if fi, err := os.Stat(bus); err != nil || !fi.IsDir() {
@@ -153,8 +157,18 @@ func Check(home string, now, wake time.Time, maxAge time.Duration) error {
 	if err != nil || !grown {
 		return err
 	}
+	// One alert per stale stamp, repeated every repeatEvery while it stays stale: a 9-day streak of partial runs
+	// (10-30 to 11-08) alerted once and then never again. The mark's mtime is when it last went out.
+	again := ""
 	if b, err := os.ReadFile(seen); err == nil && strings.TrimSpace(string(b)) == key {
-		return nil
+		fi, err := os.Stat(seen)
+		if err != nil {
+			return err
+		}
+		if d := now.Sub(fi.ModTime()); d >= 0 && d < repeatEvery { // a mark in the future (the clock moved back) is due
+			return nil
+		}
+		again = fmt.Sprintf("; still, this alert repeats every %d h while it stays stale", int(repeatEvery.Hours()))
 	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
@@ -162,10 +176,13 @@ func Check(home string, now, wake time.Time, maxAge time.Duration) error {
 	if !stamp.IsZero() {
 		what = fmt.Sprintf("ingest heartbeat %d min old", int(now.Sub(stamp).Minutes()))
 	}
-	if err := Post(home, now, what+" while transcripts grow; see ~/.crius/logs/ingest.log"); err != nil {
+	if err := Post(home, now, what+" while transcripts grow; see ~/.crius/logs/ingest.log"+again); err != nil {
 		return err
 	}
-	return os.WriteFile(seen, []byte(key+"\n"), 0o600)
+	if err := os.WriteFile(seen, []byte(key+"\n"), 0o600); err != nil {
+		return err
+	}
+	return os.Chtimes(seen, now, now)
 }
 
 // Post appends one ALERT line from the watchdog to Crius's bus, redacted (an error can quote a config value).

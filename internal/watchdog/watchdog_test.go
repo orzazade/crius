@@ -222,3 +222,28 @@ func TestAnAlertAfterAPartialLineStartsOnItsOwnLine(t *testing.T) {
 		t.Fatalf("%q", b)
 	}
 }
+
+// Bus 11-08 02:44: every ingest run from 10-30 to 11-08 was partial, so the heartbeat stayed stale for 9 days, and the
+// watchdog alerted once on its stamp and never again. While it stays stale the alert repeats every 6 h, with its age.
+func TestAStaleStreakAlertsAgainEverySixHours(t *testing.T) {
+	w := newWC(t)
+	w.age(w.hb, 21*time.Minute)
+	w.age(w.tx, time.Minute)
+	if got := w.watch(w.now, time.Time{}); len(got) != 1 {
+		t.Fatal(got)
+	}
+	if got := w.watch(w.now.Add(6*time.Hour-time.Minute), time.Time{}); len(got) != 1 {
+		t.Fatalf("repeated before 6 h: %q", got)
+	}
+	got := w.watch(w.now.Add(6*time.Hour), time.Time{})
+	if len(got) != 2 || !strings.Contains(got[1], "ingest heartbeat 381 min old") || !strings.Contains(got[1], "repeats every 6 h") {
+		t.Fatalf("no repeat at 6 h: %q", got)
+	}
+	if got := w.watch(w.now.Add(9*time.Hour), time.Time{}); len(got) != 2 {
+		t.Fatalf("repeated again within 6 h of the last alert: %q", got)
+	}
+	// the clock moved back after the last alert: its mark lies in the future, and the alert is due, not held 6 h more
+	if got := w.watch(w.now.Add(5*time.Hour), time.Time{}); len(got) != 3 {
+		t.Fatalf("a mark in the future held the alert: %q", got)
+	}
+}
