@@ -3,9 +3,13 @@ package wakewatch
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/orzazade/crius/internal/testutil"
 )
 
 // Owner 11-08 ("make sure you have a watchdog for your own sessions, and they have for the rest"): on 11-07 from 20:00
@@ -19,6 +23,8 @@ type promptFake struct {
 	ops     []string         // "title: text" typed into another tab
 	live    map[string]error // surface -> why it has no live Claude
 	tabErr  error            // SendTab's error
+	failOn  string           // SendTab fails (not handed over) for a line holding this text
+	dead    map[string]bool  // tabs with no live Claude
 	handed  bool             // SendTab's error still hands the text over
 	at      time.Time
 	logLine func(string)
@@ -33,10 +39,18 @@ func (f *promptFake) run(t *testing.T, home string, min int) {
 		SendTab: func(title, text string) error {
 			f.say(title, text)
 			f.ops = append(f.ops, title+": "+text)
+			if f.failOn != "" && strings.Contains(text, f.failOn) {
+				return errors.New("cmux send: refused")
+			}
 			return f.tabErr
 		},
 		HandedOver: func(error) bool { return f.handed },
-		Live:       func(surface string) error { return f.live[surface] },
+		Live: func(surface string) error {
+			if f.dead[surface] {
+				return errors.New("runs \"-zsh\" in front, not Claude")
+			}
+			return f.live[surface]
+		},
 	}
 	if err := Prompts(d); err != nil {
 		t.Fatal(err)
@@ -82,7 +96,7 @@ func opsIdle() Screen {
 }
 
 func TestAPromptInCriussOwnTabWakesCriusAfter3Min(t *testing.T) {
-	home := setup(t, nil)
+	home := promptHome(t)
 	f := &promptFake{tabs: []Screen{
 		{Surface: "surface:1000070000", Title: "crius", Text: permission("crius", "git push", "")}, // only the owner answers Crius's own
 		opsIdle(),
@@ -112,7 +126,7 @@ func TestAPromptInCriussOwnTabWakesCriusAfter3Min(t *testing.T) {
 }
 
 func TestAnotherTabsPromptWakesOpsAt2MinThenCriusAt10(t *testing.T) {
-	home := setup(t, nil)
+	home := promptHome(t)
 	lead := Screen{Surface: "surface:1000070008", Title: "quotes", Text: permission("quotes · lead", "bash ~/.crius/state/quotes/build/bin/pr-build.sh 7856", "")}
 	f := &promptFake{tabs: []Screen{opsIdle(), lead}}
 	f.run(t, home, 0)
@@ -154,7 +168,7 @@ func TestAnotherTabsPromptWakesOpsAt2MinThenCriusAt10(t *testing.T) {
 }
 
 func TestOpsOnAPromptOfItsOwnSendsTheOthersToCriusAtOnce(t *testing.T) {
-	home := setup(t, nil)
+	home := promptHome(t)
 	f := &promptFake{tabs: []Screen{
 		{Surface: opsSurface, Title: "crius · ops", Text: permission("crius · ops", opsCmd, opsReason)},
 		{Surface: "surface:1000070008", Title: "quotes", Text: permission("quotes · lead", "bash pr-build.sh 7856", "")},
@@ -177,39 +191,56 @@ func TestOpsOnAPromptOfItsOwnSendsTheOthersToCriusAtOnce(t *testing.T) {
 }
 
 func TestOpsWithNoLiveClaudeWakesCriusAtOnce(t *testing.T) {
-	home := setup(t, nil)
+	home := promptHome(t)
 	f := &promptFake{tabs: []Screen{opsIdle()}, live: map[string]error{opsSurface: errors.New(`runs "-zsh" in front, not Claude`)}}
+	// seen dead on one run only: one failed read or cmux call is no restart (review of 42281dd, P3 6)
 	f.run(t, home, 0)
-	if len(f.crius) != 1 || !strings.Contains(f.crius[0], `crius:ops has no live Claude (runs "-zsh" in front, not Claude)`) {
-		t.Fatalf("want Crius woken at once, got %q", f.crius)
+	if len(f.crius) != 0 {
+		t.Fatalf("woke Crius on one look: %q", f.crius)
 	}
 	f.run(t, home, 1)
+	if len(f.crius) != 1 || !strings.Contains(f.crius[0], `crius:ops has no live Claude (runs "-zsh" in front, not Claude)`) {
+		t.Fatalf("want Crius woken on the second run, got %q", f.crius)
+	}
+	f.run(t, home, 2)
 	if len(f.crius) != 1 {
 		t.Fatalf("said again inside 30 min: %q", f.crius)
 	}
 	// a prompt elsewhere goes to Crius at once, not to the dead tab
 	f.tabs = append(f.tabs, Screen{Surface: "surface:1000070005", Title: "ado-91671", Text: permission("ado-91671 · lead", "az repos pr update --id 7596", "")})
-	f.run(t, home, 2)
-	f.run(t, home, 4)
+	f.run(t, home, 3)
+	f.run(t, home, 5)
 	if len(f.ops) != 0 || len(f.crius) != 2 || !strings.Contains(f.crius[1], "crius:ops cannot answer prompts now (it has no live Claude") ||
 		!strings.Contains(f.crius[1], "ado-91671 · lead (surface:1000070005, 2 min)") {
 		t.Fatalf("want the prompt sent to Crius, got %q %q", f.crius, f.ops)
 	}
-	f.run(t, home, 30)
+	f.run(t, home, 31)
 	if len(f.crius) != 3 {
 		t.Fatalf("not said again after 30 min: %q", f.crius)
 	}
+	// a read that fails once is not a dead ops
+	home = promptHome(t)
+	f = &promptFake{tabs: []Screen{{Surface: opsSurface, Title: "crius · ops", Err: "cmux read-screen: timeout"}}}
+	f.run(t, home, 0)
+	f.tabs = []Screen{opsIdle()}
+	f.run(t, home, 1)
+	f.tabs = []Screen{{Surface: opsSurface, Title: "crius · ops", Err: "cmux read-screen: timeout"}}
+	f.run(t, home, 2)
+	if len(f.crius) != 0 {
+		t.Fatalf("one failed read woke Crius: %q", f.crius)
+	}
 	// no ops tab at all
-	home = setup(t, nil)
+	home = promptHome(t)
 	f = &promptFake{tabs: []Screen{{Surface: buildSurface, Title: "crius · build", Text: idleTab("crius · build")}}}
 	f.run(t, home, 0)
+	f.run(t, home, 1)
 	if len(f.crius) != 1 || !strings.Contains(f.crius[0], "crius:ops has no live Claude (no tab is named crius · ops)") {
 		t.Fatalf("want Crius woken when no ops tab is open, got %q", f.crius)
 	}
 }
 
 func TestTypingIntoOpsFailsWakesCriusAtOnce(t *testing.T) {
-	home := setup(t, nil)
+	home := promptHome(t)
 	f := &promptFake{tabs: []Screen{opsIdle(), {Surface: "surface:1000070008", Title: "quotes", Text: permission("quotes · lead", "bash pr-build.sh 7856", "")}},
 		tabErr: errors.New("cmux send: refused")}
 	f.run(t, home, 0)
@@ -232,7 +263,7 @@ func TestTypingIntoOpsFailsWakesCriusAtOnce(t *testing.T) {
 // The replay of 11-07 20:00: crius:ops on its click-check.sh prompt, and 10 tabs on prompts (8 Quotes, the ado-91671 and
 // angular-91260 leads). Run with -v to see each wake line.
 func TestReplayOps1107OnAPromptAnd10TabsWaiting(t *testing.T) {
-	home := setup(t, nil)
+	home := promptHome(t)
 	tabs := []struct{ surface, name, cmd, reason string }{
 		{"surface:1000070008", "quotes · lead", "bash /private/tmp/claude-501/x/scratchpad/lead/merge.sh 7804", " Hook PreToolUse:Bash requires confirmation for this command:\n Posts text to Azure DevOps under the owner's name: needs the owner's click. (a script or program the command makes before it runs)\n"},
 		{"surface:1000070012", "quotes · orders-2", "bash ~/.crius/state/quotes/build/bin/pr-build.sh 7856", " Hook PreToolUse:Bash requires confirmation for this command:\n Posts text to Azure DevOps under the owner's name: needs the owner's click. (az pipelines build cancel; pr-build.sh line 28)\n"},
@@ -278,5 +309,145 @@ func TestReplayOps1107OnAPromptAnd10TabsWaiting(t *testing.T) {
 	}
 	if at[12] != at[3] {
 		t.Fatalf("woke again before 30 min: %q", f.crius[at[3]:])
+	}
+}
+
+// promptHome is a Crius home whose projects.toml names the projects Crius runs: their Azure DevOps asks are Crius's to
+// answer (CRIUS-CLICK), so crius:ops gets them.
+func promptHome(t *testing.T) string {
+	home := setup(t, nil)
+	testutil.Write(t, filepath.Join(home, "projects.toml"), "[projects.quotes]\n[projects.ado-91671]\n[projects.angular-91260]\n[projects.crius]\n")
+	return home
+}
+
+// Review of 42281dd, P2 1: an Azure DevOps ask in a session Crius does not run is the owner's alone (Clicks posts it as
+// OWNER-CLICK): crius:ops is not told to answer it.
+func TestAnOwnerOnlyPromptIsNotTypedIntoOps(t *testing.T) {
+	home := promptHome(t)
+	ask := " Hook PreToolUse:Bash requires confirmation for this command:\n Posts text to Azure DevOps under the owner's name: needs the owner's click. (az repos pr create --description)\n"
+	f := &promptFake{tabs: []Screen{opsIdle(),
+		{Surface: "surface:9", Title: "appx", Text: permission("appx · lead", "az repos pr create --title x", ask)},
+		{Surface: "surface:1000070010", Title: "quotes", Text: permission("quotes · page-list", "az repos pr create --title y", ask)}}}
+	f.run(t, home, 0)
+	f.run(t, home, 2)
+	f.run(t, home, 10)
+	if len(f.ops) != 1 || strings.Contains(f.ops[0], "appx") || !strings.Contains(f.ops[0], "quotes · page-list") {
+		t.Fatalf("want only the Crius-run tab's ask typed into ops, got %q", f.ops)
+	}
+	if len(f.crius) != 1 || strings.Contains(f.crius[0], "appx") {
+		t.Fatalf("the owner's ask reached Crius through the prompt watch: %q", f.crius)
+	}
+}
+
+// Review of 42281dd, P2 2: a dialog left on a tab whose Claude died is the last frame, not a prompt anyone can answer.
+func TestADialogOnATabWithNoLiveClaudeIsNoPrompt(t *testing.T) {
+	home := promptHome(t)
+	f := &promptFake{tabs: []Screen{opsIdle(),
+		{Surface: "surface:1000070008", Title: "quotes", Text: permission("quotes · lead", "bash pr-build.sh 7856", "")}},
+		dead: map[string]bool{"surface:1000070008": true}}
+	for _, min := range []int{0, 2, 10, 40} {
+		f.run(t, home, min)
+	}
+	if len(f.ops)+len(f.crius) != 0 {
+		t.Fatalf("a dead tab's dialog woke someone: %q %q", f.ops, f.crius)
+	}
+}
+
+// Review of 42281dd, P3 3: when one of several lines fails, only its prompts are typed again; the others went.
+func TestOnlyTheFailedOpsLineIsTypedAgain(t *testing.T) {
+	home := promptHome(t)
+	f := &promptFake{tabs: []Screen{opsIdle()}, failOn: "surface:1000070100"}
+	for i := 0; i < 14; i++ {
+		s := fmt.Sprintf("surface:10000701%02d", i)
+		f.tabs = append(f.tabs, Screen{Surface: s, Title: "quotes", Text: permission(fmt.Sprintf("quotes · page-%02d-with-a-long-name", i), "bash pr-build.sh "+s, "")})
+	}
+	f.run(t, home, 0)
+	f.run(t, home, 2)
+	if len(f.ops) < 2 {
+		t.Fatalf("want the prompts in two or more lines, got %q", f.ops)
+	}
+	first := len(f.ops)
+	f.run(t, home, 3)
+	again := f.ops[first:]
+	if len(again) != 1 || !strings.Contains(again[0], "surface:1000070100") || strings.Contains(again[0], "surface:1000070113") {
+		t.Fatalf("want only the failed line typed again, got %q", again)
+	}
+	all := strings.Join(f.crius, "\n")
+	if len(f.crius) == 0 || strings.Count(all, "typing into its tab failed") != len(f.crius) || !strings.Contains(all, "surface:1000070106") || strings.Contains(all, "surface:1000070113") {
+		t.Fatalf("want Crius told of the failed line's prompts only, got %q", f.crius)
+	}
+}
+
+// Review of 42281dd, P3 5: Crius heard of a prompt while ops was blocked; once ops is told, the 10-min wake still comes
+// at 10 min, not 30 min after the first.
+func TestTheTenMinuteWakeCountsFromWhenOpsWasTold(t *testing.T) {
+	home := promptHome(t)
+	f := &promptFake{tabs: []Screen{
+		{Surface: opsSurface, Title: "crius · ops", Text: permission("crius · ops", opsCmd, "")},
+		{Surface: "surface:1000070008", Title: "quotes", Text: permission("quotes · lead", "bash pr-build.sh 7856", "")}}}
+	f.run(t, home, 0)
+	f.run(t, home, 2) // ops blocked: Crius told
+	f.tabs[0] = opsIdle()
+	f.run(t, home, 4) // ops back: ops told
+	if len(f.ops) != 1 {
+		t.Fatalf("ops not told once it was back: %q", f.ops)
+	}
+	n := len(f.crius)
+	f.run(t, home, 10)
+	if len(f.crius) != n+1 || !strings.Contains(f.crius[n], "quotes · lead (surface:1000070008, 10 min; crius:ops told 22:04)") {
+		t.Fatalf("want the 10-min wake at 10 min, got %q", f.crius[n:])
+	}
+}
+
+// Review of 42281dd, P3 11: only crius:ops and crius:build are Crius's own tabs; another crius tab goes to ops.
+func TestAnotherCriusTabGoesToOps(t *testing.T) {
+	home := promptHome(t)
+	f := &promptFake{tabs: []Screen{opsIdle(), {Surface: "surface:1000070030", Title: "crius · research", Text: permission("crius · research", "ls", "")}}}
+	f.run(t, home, 0)
+	f.run(t, home, 2)
+	if len(f.ops) != 1 || !strings.Contains(f.ops[0], "crius · research") {
+		t.Fatalf("want ops told, got %q %q", f.ops, f.crius)
+	}
+}
+
+// Review of 42281dd, P3 4, 7 and 9: a wake held for Crius's tab is not also posted as an ALERT; crius:ops is found by its
+// title before a name another tab draws; a state that cannot be written stops the run before anything is typed.
+func TestHeldWakesTitleFirstAndStateFirst(t *testing.T) {
+	home := promptHome(t)
+	lead := Screen{Surface: "surface:1000070008", Title: "quotes", Text: permission("quotes · lead", "bash pr-build.sh 7856", "")}
+	decoy := Screen{Surface: "surface:1000070040", Title: "crius · notes", Text: permission("crius · ops", "cat x", "")}
+	f := &promptFake{tabs: []Screen{decoy, opsIdle(), lead}}
+	f.run(t, home, 0)
+	f.run(t, home, 2)
+	if len(f.ops) != 1 || !strings.HasPrefix(f.ops[0], "crius · ops: ") || !strings.Contains(f.ops[0], "quotes · lead") {
+		t.Fatalf("want the line typed into the tab titled crius · ops, got %q", f.ops)
+	}
+	held := 0
+	d := PromptDeps{Home: home, Now: t0.Add(10 * time.Minute), Screens: func() ([]Screen, error) { return f.tabs, nil },
+		SendCrius:  func(string) error { held++; return errors.New("held: stored") },
+		SendTab:    func(string, string) error { return nil },
+		HandedOver: func(error) bool { return true },
+		Live:       func(string) error { return nil }}
+	if err := Prompts(d); err != nil || held == 0 {
+		t.Fatal(err, held)
+	}
+	if bus := testutil.Read(t, filepath.Join(home, "bus", "crius.log")); strings.Contains(bus, "ALERT") {
+		t.Fatalf("a held wake was also posted:\n%s", bus)
+	}
+	// the state folder cannot be written: nothing is typed
+	home = promptHome(t)
+	f = &promptFake{tabs: []Screen{opsIdle(), lead}}
+	f.run(t, home, 0)
+	if err := os.Chmod(filepath.Join(home, "state"), 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(filepath.Join(home, "state"), 0o700) })
+	f.at = t0.Add(2 * time.Minute)
+	d = PromptDeps{Home: home, Now: f.at, Screens: func() ([]Screen, error) { return f.tabs, nil },
+		SendCrius: func(string) error { t.Error("typed into Crius's tab"); return nil },
+		SendTab:   func(string, string) error { t.Error("typed into ops"); return nil },
+		Live:      func(string) error { return nil }}
+	if err := Prompts(d); err == nil {
+		t.Fatal("a state that cannot be written gave no error")
 	}
 }

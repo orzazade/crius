@@ -1,6 +1,7 @@
 package wakewatch
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -51,14 +52,18 @@ type openPrompt struct {
 }
 
 type promptState struct {
-	Tabs    map[string]openPrompt
-	OpsDown time.Time // when Crius was last told crius:ops has no live Claude; zero while it has one
+	Tabs      map[string]openPrompt
+	DownSince time.Time // when crius:ops was first seen with no live Claude in this spell; zero while it has one
+	OpsDown   time.Time // when Crius was last told so
 }
 
 // Prompts runs the prompt watch once. A run that fails says so on the bus as an ALERT, once per error.
 func Prompts(d PromptDeps) error {
 	return alertOnce(d.Home, d.Now, "prompts.error", "prompt watch failed: ", prompts(d))
 }
+
+// queued is one prompt for crius:ops: its tab and how it is named in the line.
+type queued struct{ surface, text string }
 
 func prompts(d PromptDeps) error {
 	path := filepath.Join(d.Home, "state", "prompts.json")
@@ -77,12 +82,19 @@ func prompts(d PromptDeps) error {
 	if err != nil {
 		return err
 	}
-	// crius:ops: why it cannot answer prompts now, "" when it can
+	// projects.toml unread: no session is known to be Crius's, so every Azure DevOps ask is the owner's (Clicks says why)
+	crius, _ := criusRuns(d.Home)
+	// crius:ops's tab: by its title, else by the name it draws (review of 42281dd: a pasted border is no tab)
 	var ops *Screen
-	for i, s := range screens {
-		if BusName(tabName(s)) == OpsName || s.Title == opsTitle {
+	for i := range screens {
+		if screens[i].Title == opsTitle {
 			ops = &screens[i]
 			break
+		}
+	}
+	for i := range screens {
+		if ops == nil && BusName(tabName(screens[i])) == OpsName {
+			ops = &screens[i]
 		}
 	}
 	down := ""
@@ -96,10 +108,13 @@ func prompts(d PromptDeps) error {
 			down = err.Error()
 		}
 	}
-	var toCrius, toOps, late []string
-	var opsKeys []string
+	var toCrius, late, held []string
+	var toOps []queued
+	// a dead ops wakes Crius once it is seen so on two runs in a row: one failed read or cmux call is no restart (review)
 	if down == "" {
-		st.OpsDown = time.Time{}
+		st.DownSince, st.OpsDown = time.Time{}, time.Time{}
+	} else if st.DownSince.IsZero() {
+		st.DownSince = d.Now
 	} else if d.Now.Sub(st.OpsDown) >= clickRepeat {
 		toCrius = append(toCrius, fmt.Sprintf("%s has no live Claude (%s), so nobody answers the other tabs' prompts: start it again", OpsName, down))
 		st.OpsDown = d.Now
@@ -120,7 +135,9 @@ func prompts(d PromptDeps) error {
 		}
 		prompt, open := openDialog(s.Text)
 		who := BusName(tabName(s))
-		if !open || who == "crius:lead" {
+		// Crius's own tab and an Azure DevOps ask only the owner may answer (OWNER-CLICK) are the owner's; a dialog on a tab
+		// whose Claude has gone is its last frame, which nobody can answer (review of 42281dd)
+		if !open || who == "crius:lead" || ownerOnly(s, crius) || d.Live(s.Surface) != nil {
 			continue
 		}
 		p := st.Tabs[s.Surface]
@@ -130,25 +147,24 @@ func prompts(d PromptDeps) error {
 		age := d.Now.Sub(p.Since)
 		name := fmt.Sprintf("%s (%s, %d min", tabName(s), s.Surface, int(age.Minutes()))
 		switch {
-		case project(who) == "crius":
+		case who == OpsName || who == "crius:build":
 			if age >= ownAfter && d.Now.Sub(p.Crius) >= clickRepeat {
 				toCrius = append(toCrius, fmt.Sprintf("%s (%s) has had a permission prompt open for %d min, and only you answer its prompts: %s",
 					tabName(s), s.Surface, int(age.Minutes()), command(s.Text, prompt)))
 				p.Crius = d.Now
 			}
-		case age >= criusAfter && !p.Ops.IsZero() && d.Now.Sub(p.Crius) >= clickRepeat:
+		// told ops, and Crius has not heard of it since (a wake while ops was blocked came before)
+		case age >= criusAfter && !p.Ops.IsZero() && (p.Crius.Before(p.Ops) || d.Now.Sub(p.Crius) >= clickRepeat):
 			late = append(late, name+"; "+OpsName+" told "+p.Ops.Format("15:04")+")")
 			p.Crius = d.Now
-		case age >= opsAfter && p.Ops.IsZero():
-			if blocked != "" {
-				if d.Now.Sub(p.Crius) >= clickRepeat {
-					toOps = append(toOps, name+")")
-					p.Crius = d.Now
-				}
-				break
+		case age >= opsAfter && p.Ops.IsZero() && blocked != "":
+			if d.Now.Sub(p.Crius) >= clickRepeat {
+				held = append(held, name+")")
+				p.Crius = d.Now
 			}
-			opsKeys = append(opsKeys, s.Surface)
-			toOps = append(toOps, name+")")
+		case age >= opsAfter && p.Ops.IsZero():
+			toOps = append(toOps, queued{s.Surface, name + ")"})
+			p.Ops = d.Now // a line that fails takes it back below
 		}
 		next[s.Surface] = p
 	}
@@ -156,53 +172,66 @@ func prompts(d PromptDeps) error {
 	if len(late) > 0 {
 		toCrius = append(toCrius, pack("prompts still open 10+ min, and "+OpsName+" has not answered them: ", late)...)
 	}
-	if len(toOps) > 0 && blocked == "" {
-		var sendErr error
-		for _, line := range pack("prompts open 2+ min for you to answer: ", toOps) {
-			if err := d.SendTab(ops.Title, Prefix+Clean(line)); err != nil && sendErr == nil {
-				sendErr = err
-			}
-		}
-		if sendErr == nil || d.HandedOver != nil && d.HandedOver(sendErr) {
-			for _, k := range opsKeys {
-				p := st.Tabs[k]
-				p.Ops = d.Now
-				st.Tabs[k] = p
-			}
-		}
-		if sendErr != nil {
-			blocked = "typing into its tab failed: " + sendErr.Error()
-			fresh := toOps[:0]
-			for i, k := range opsKeys { // Crius hears of each prompt once per clickRepeat, however often ops fails
-				if p := st.Tabs[k]; d.Now.Sub(p.Crius) >= clickRepeat {
-					p.Crius = d.Now
-					st.Tabs[k] = p
-					fresh = append(fresh, toOps[i])
-				}
-			}
-			toOps = fresh
-		} else {
-			toOps = nil
-		}
+	if len(held) > 0 {
+		toCrius = append(toCrius, pack(OpsName+" cannot answer prompts now ("+blocked+"): ", held)...)
 	}
-	if len(toOps) > 0 {
-		toCrius = append(toCrius, pack(OpsName+" cannot answer prompts now ("+blocked+"): ", toOps)...)
-	}
-	// The state goes first: a wake that then fails is posted as an ALERT; a state that failed after the wakes would
-	// say them again every minute.
+	// The state goes first: a wake that then fails is posted as an ALERT, and a state that cannot be written stops the
+	// run before anything is typed, so nothing is typed again every minute.
 	if err := writeJSON(path, st); err != nil {
 		return err
 	}
+	if len(toOps) > 0 {
+		var failed []string
+		var why error
+		for _, l := range packQueued("prompts open 2+ min for you to answer: ", toOps) {
+			err := d.SendTab(ops.Title, Prefix+Clean(l.text))
+			if err == nil || d.HandedOver != nil && d.HandedOver(err) { // held: typed by a later run
+				continue
+			}
+			why = cmp.Or(why, err)
+			for _, q := range l.items { // not stored: tried again next run, and Crius hears of it once per clickRepeat
+				p := st.Tabs[q.surface]
+				p.Ops = time.Time{}
+				if d.Now.Sub(p.Crius) >= clickRepeat {
+					p.Crius = d.Now
+					failed = append(failed, q.text)
+				}
+				st.Tabs[q.surface] = p
+			}
+		}
+		if why != nil {
+			if err := writeJSON(path, st); err != nil {
+				return err
+			}
+		}
+		if len(failed) > 0 {
+			toCrius = append(toCrius, pack(OpsName+" cannot answer prompts now (typing into its tab failed: "+why.Error()+"): ", failed)...)
+		}
+	}
 	for _, line := range toCrius {
 		text := Clean(line)
-		if err := d.SendCrius(Prefix + text); err != nil {
-			// Crius's waiter wakes on an ALERT line: a wake that cannot be typed goes there
+		// Crius's waiter wakes on an ALERT line: a wake that cannot be typed, nor held to be typed later, goes there
+		if err := d.SendCrius(Prefix + text); err != nil && (d.HandedOver == nil || !d.HandedOver(err)) {
 			if perr := watchdog.Post(d.Home, d.Now, text); perr != nil {
 				return fmt.Errorf("%v; and the ALERT was not posted: %v", err, perr)
 			}
 		}
 	}
 	return nil
+}
+
+// ownerOnly says whether a tab's prompt is an Azure DevOps ask only the owner may answer: the ones Clicks posts as
+// OWNER-CLICK, not CRIUS-CLICK.
+func ownerOnly(s Screen, crius map[string]bool) bool {
+	_, _, ok := OwnerClick(s.Text)
+	return ok && !criusClick(s, crius)
+}
+
+// criusClick says whether a tab's Azure DevOps ask is Crius's to answer: the name its dialog's border draws (never the
+// tab title, review r2) is a project Crius runs, and not Crius's own tab, which its dialog blocks (review of 2ae5117).
+func criusClick(s Screen, crius map[string]bool) bool {
+	who := BusName(dialogBorder(s))
+	return who != "crius:lead" && crius[project(who)]
 }
 
 // command gives what a prompt asks to run: the dialog's text up to the hook's reason or the question, cut short, and the
@@ -225,20 +254,42 @@ func command(text, prompt string) string {
 
 // pack puts items after head, as few lines as fit MaxLine each.
 func pack(head string, items []string) []string {
-	var out []string
-	line := ""
-	for _, it := range items {
-		if line != "" && len([]rune(head+line+"; "+it)) > MaxLine {
-			out = append(out, head+line)
-			line = ""
-		}
-		if line != "" {
-			line += "; "
-		}
-		line += it
+	q := make([]queued, len(items))
+	for i, it := range items {
+		q[i].text = it
 	}
-	if line != "" {
-		out = append(out, head+line)
+	var out []string
+	for _, l := range packQueued(head, q) {
+		out = append(out, l.text)
+	}
+	return out
+}
+
+// packedLine is one line of packed prompts and the prompts in it.
+type packedLine struct {
+	text  string
+	items []queued
+}
+
+// packQueued is pack that keeps which prompts went into each line.
+func packQueued(head string, items []queued) []packedLine {
+	var out []packedLine
+	var cur packedLine
+	for _, it := range items {
+		if len(cur.items) > 0 && len([]rune(head+cur.text+"; "+it.text)) > MaxLine {
+			cur.text = head + cur.text
+			out = append(out, cur)
+			cur = packedLine{}
+		}
+		if len(cur.items) > 0 {
+			cur.text += "; "
+		}
+		cur.text += it.text
+		cur.items = append(cur.items, it)
+	}
+	if len(cur.items) > 0 {
+		cur.text = head + cur.text
+		out = append(out, cur)
 	}
 	return out
 }

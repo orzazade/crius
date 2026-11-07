@@ -200,7 +200,7 @@ func clicks(d ClickDeps, crius map[string]bool) error {
 			typ, whose := "OWNER-CLICK", "your"
 			// only the name the session draws itself: the tab title never gives CRIUS-CLICK (review r2); Crius's own tab is
 			// blocked by its dialog, so only the owner can answer it (review of 2ae5117)
-			if who := BusName(dialogBorder(s)); who != "crius:lead" && crius[strings.SplitN(who, ":", 2)[0]] {
+			if criusClick(s, crius) {
 				typ, whose = "CRIUS-CLICK", "Crius's"
 			}
 			text := fmt.Sprintf("%s (%s) waits on %s click since %s: %s", tabName(s), s.Surface, whose, f.Since.Format("15:04"), what)
