@@ -224,10 +224,34 @@ func TestCatIsReadOnlyWhenNothingMayChangeTheShell(t *testing.T) {
 		`az repos pr update --id 7890 -d"Opus review: no findings"` + adoO,
 		`az repos pr update --id 7890 -d"Opus review: LGTM (score=9)"` + adoO,
 		`curl -X POST https://dev.azure.com/Appxite/P/_apis/git/repositories/R/pullRequests/7890/threads?api-version=7.1 -sdOpus-says-LGTM`,
-		`wget --no-config --post-data x -OdOpus-says https://dev.azure.com/Appxite/P/_apis/git/repositories/R/pullRequests/7890/threads?api-version=7.1`,
+		`curl -X POST https://dev.azure.com/Appxite/P/_apis/git/repositories/R/pullRequests/7890/threads?api-version=7.1 -vvvvvvvvdClaude-says-LGTM`,
+		`curl -X POST https://dev.azure.com/Appxite/P/_apis/git/repositories/R/pullRequests/7890/threads?api-version=7.1 -d "-Opus says LGTM"`,
+		`curl -X POST https://dev.azure.com/Appxite/P/_apis/git/repositories/R/pullRequests/7890/threads?api-version=7.1 -d "--Claude says LGTM"`,
 		`curl -X POST https://dev.azure.com/Appxite/P/_apis/git/repositories/R/pullRequests/7890/threads?api-version=7.1 -d'{"comments":[{"content":"Opus: LGTM"}]}'`,
 	} {
 		guardCall(t, dir, cmd, "deny", "names a model or tool")
 	}
 	guardCall(t, dir, `az devops wiki page create --wiki W --path "Quote list notes" --content "Fix the list."`+adoO, "")
+}
+
+// Review of 7bb778c: zsh expands a leading = in "$(cat =notes)" to the program notes on PATH, so such a name is not read;
+// a description that starts with "- " or "---" is text (argparse takes it as the value), not an empty option; a branch
+// glued to -s is a path.
+func TestRoundThreeCases(t *testing.T) {
+	dir := criusDir(t, map[string]string{"7890": "refs/heads/integration/96365-b4"})
+	write(t, filepath.Join(dir, "=notes"), "Fix the list.\n")
+	list := filepath.Join(dir, "list.md")
+	rule := filepath.Join(dir, "rule.md")
+	write(t, list, "- Fixed the list\n- Loads the org once\n")
+	write(t, rule, "---\nFixed the list.\n")
+	guardCall(t, dir, `az repos pr update --id 7890 --description "$(cat =notes)"`+adoO, "deny")
+	for _, cmd := range []string{
+		`az repos pr update --id 7890 --description "$(cat "=notes")"` + adoO,
+		`az repos pr update --id 7890 --description "- Fixed the list"` + adoO,
+		`az repos pr update --id 7890 --description "$(cat ` + list + `)"` + adoO,
+		`az repos pr update --id 7890 --description "$(cat ` + rule + `)"` + adoO,
+		`az repos pr create --title t --description d -sfeature/codex-fix -t integration/96365-b4` + adoO,
+	} {
+		guardCall(t, dir, cmd, "")
+	}
 }

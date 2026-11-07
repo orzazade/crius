@@ -2382,7 +2382,8 @@ func parseAz(args []word) azOpts {
 	wants := false // the word before is an option name with no value attached
 	for ; i < len(args); i++ {
 		a := args[i]
-		if !strings.HasPrefix(a.text, "-") || len(a.text) < 2 || (!a.ok && !strings.Contains(a.text, "=") && len(a.text) > 2) {
+		if !strings.HasPrefix(a.text, "-") || len(a.text) < 2 || (!a.ok && !strings.Contains(a.text, "=") && len(a.text) > 2) ||
+			a.ok && textValue(a.text) {
 			// one word that starts with a literal such as commitId= is never an option, whatever it expands to
 			if !a.ok && (!oneWord(a.node) || !wants && !fixedStart(a.node)) {
 				o.unreadOpt = true
@@ -2448,6 +2449,16 @@ func parseAz(args []word) azOpts {
 // that name and an ambiguous one counts as every option it may be (review r2 P1-1, P1-2: the guard read the first
 // alias it was given, so --org A --organization B was read as A). set is false when none is on the command line; a
 // copy with no value gives a literal empty word.
+// textValue says whether a word that starts with a dash is a value for az's argparse, not an option: "- Fixed the list"
+// (a markdown list) or "---\n…" (review of 7bb778c P2: such descriptions were refused as empty). argparse takes a word
+// with whitespace as a value unless it begins like a short option (-dtext).
+func textValue(s string) bool {
+	if !strings.ContainsAny(s, " \t\r\n") {
+		return false
+	}
+	return strings.HasPrefix(s, "--") || strings.ContainsAny(s[1:2], " \t\r\n")
+}
+
 func (o azOpts) last(names ...string) (word, bool) {
 	v, set := word{ok: true}, false
 	for _, u := range o.seq {

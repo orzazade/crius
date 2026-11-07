@@ -79,13 +79,22 @@ func catWord(w *syntax.Word) (prefix, file string, ok bool) {
 		return "", "", false
 	}
 	f := literal(ce.Args[1])
-	// the shell globs, brace-expands and expands ~user in the name; the guard reads it as written, so such a name is not
-	// read (review of 07f23bd P1-3)
-	if !f.ok || f.text == "" || strings.HasPrefix(f.text, "-") || strings.ContainsAny(f.text, "*?[{") ||
-		strings.HasPrefix(f.text, "~") && !strings.HasPrefix(f.text, "~/") {
+	// the shell globs, brace-expands, expands ~user and (zsh) =cmd to a program's path in the name; the guard reads it as
+	// written, so such a name is not read (reviews of 07f23bd P1-3 and 7bb778c P1). Only a quoted or plain name passes.
+	if !f.ok || f.text == "" || strings.HasPrefix(f.text, "-") || !asWritten(ce.Args[1]) || strings.ContainsAny(f.text, "{") ||
+		strings.HasPrefix(f.text, "~") && !strings.HasPrefix(f.text, "~/") || strings.HasPrefix(f.text, "=") && isLitStart(ce.Args[1]) {
 		return "", "", false
 	}
 	return prefix, f.text, true
+}
+
+// isLitStart says whether a word starts with unquoted text (where zsh expands a leading = or ~).
+func isLitStart(w *syntax.Word) bool {
+	if len(w.Parts) == 0 {
+		return false
+	}
+	_, lit := w.Parts[0].(*syntax.Lit)
+	return lit
 }
 
 // resolve gives the post's words with each "$(cat FILE)" word read as FILE's text; why says why a file cannot be read.
@@ -215,14 +224,17 @@ func contentCheck(p postCall, in input) string {
 	for _, a := range p.args {
 		t, opt := a.text, prev
 		prev = ""
+		if strings.HasPrefix(t, "-") && strings.ContainsAny(t, " \t\r\n") {
+			read = append(read, t) // az's argparse takes "-Opus says" or "--Claude says" as a value (review of 7bb778c P2)
+		}
 		if strings.HasPrefix(t, "-") {
 			o, v, eq := strings.Cut(t, "=")
 			switch {
 			case !strings.HasPrefix(t, "--") && len(t) > 2:
 				// a value glued to a short option (-d"Opus: LGTM (score=9)", curl -d'{…}'), or behind joined flags
 				// (curl -sdOpus): each tail after the first letters may be the value (reviews of 1a2069f and 3a9092d)
-				for i := 3; i < len(t) && i <= 8; i++ {
-					read = append(read, t[i:])
+				for i := 3; i < len(t) && !notText(p.tool, t[:2], t, wiki); i++ {
+					read = append(read, t[i:]) // no cap (-vvvvvvvvdClaude); not for a path option (-sfeature/codex-fix)
 				}
 				t, opt = t[2:], t[:2]
 			case eq:
