@@ -45,6 +45,8 @@ var shippedCopies = map[string]string{
 	"merge.sh":          "testdata/team/merge.sh",
 	"merge-ok.sh":       "testdata/team/merge-ok.sh",
 	"review-gate.sh":    "testdata/team/review-gate.sh",
+	"click-check.sh":    "testdata/ops/click-check.sh",
+	"ops-pins.sh":       "testdata/ops/ops-pins.sh",
 }
 
 // testdata/pins.json, the pin file to install with this build, pins exactly the copies in testdata: a change to a copy

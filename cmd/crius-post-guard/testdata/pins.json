@@ -6,5 +6,7 @@
   "verdict-check.ts": ["1b2b46613f493590f1187a1ddb84a80cb704da473542c9bea761e472ffd565db"],
   "merge.sh": ["bc2b401ed0e2d13d22db82287f5248d0ff1da4bd55e8ab9676e57b8a1f8a9588"],
   "merge-ok.sh": ["8e92e3567a56c60c30ead6c3ba45b6f4e4f1f5981d253e5ec4e9e9f529f4a50f"],
-  "review-gate.sh": ["c667b4b9a9622beeb1e5e5b103d286d43f45c62971cbe7893c3f37282e17a5bd"]
+  "review-gate.sh": ["c667b4b9a9622beeb1e5e5b103d286d43f45c62971cbe7893c3f37282e17a5bd"],
+  "click-check.sh": ["3de89960eabff96cbe59903e34d58a3a378a17b0b201ed9053f04e64114e0f74"],
+  "ops-pins.sh": ["6014d80453f2bba49be2227c0d111030ed935ca6b1bc6d8f8ad8a751ae5dbc15"]
 }

@@ -113,6 +113,64 @@ func bunRunner(runner []word) string {
 	return ""
 }
 
+// aloneOwned gives why the script name at p could be changed by someone else ("" when it cannot): its folder is reached
+// through a symlink, or it or its folder is not this user's or is group- or world-writable.
+func aloneOwned(name, p string) string {
+	dir := filepath.Dir(p)
+	if real, err := filepath.EvalSymlinks(dir); err != nil || real != dir {
+		return name + " at " + p + ": its folder is reached through a symlink"
+	}
+	for _, f := range []string{p, dir} {
+		fi, err := os.Lstat(f)
+		if err != nil {
+			return name + ": " + err.Error()
+		}
+		st, ok := fi.Sys().(*syscall.Stat_t)
+		if !ok || int(st.Uid) != os.Getuid() || fi.Mode().Perm()&0o022 != 0 {
+			return name + ": " + f + " is not this user's alone (owner, or group- or world-writable)"
+		}
+	}
+	return ""
+}
+
+// opsScripts are the read-only checks Crius's ops tab runs before every click, by name, and the folder under
+// $CRIUS_HOME each lives in (owner order 11-08 item 4: on 11-07 from 20:00 crius:ops sat on its own prompt for
+// click-check.sh, which runs ops-pins.sh, and answered no other tab). On their pins they pass unread: the pin stands for
+// a reading of the whole file. Each one names the other ops scripts it runs, which pass only when pinned too.
+var opsScripts = map[string]struct {
+	dir  string
+	runs []string
+}{
+	"click-check.sh": {"state/crius/ops-bin", []string{"state/crius/ops-pins.sh"}},
+	"ops-pins.sh":    {"state/crius", nil},
+}
+
+// opsScript gives the files the ops script at p runs, itself first, and why it does not pass as a pinned ops check ("" when
+// it does): its folder, its owner and mode, and the pins of it and of every ops script it runs.
+func opsScript(p string) (files []string, why string) {
+	name := filepath.Base(p)
+	o, ok := opsScripts[name]
+	if !ok {
+		return nil, "not an ops script"
+	}
+	if want := filepath.Join(crHome(), o.dir); filepath.Dir(p) != want {
+		return nil, name + " at " + p + " is not in " + want
+	}
+	files = []string{p}
+	for _, r := range o.runs {
+		files = append(files, filepath.Join(crHome(), r))
+	}
+	for _, f := range files {
+		if why := aloneOwned(filepath.Base(f), f); why != "" {
+			return files, why
+		}
+		if why := pinned(f, filepath.Base(f)); why != "" {
+			return files, strings.TrimPrefix(why, reason+" ")
+		}
+	}
+	return files, strings.TrimPrefix(bashEnv(name), reason+" ")
+}
+
 // teamScript gives why the script at p, run with the words after, does not pass as a pinned team script ("" when it
 // does): its name, its folder (the Quotes build folder or a lead scratchpad's lead/, real folders), its owner and mode,
 // its hash, and for ado-suite.ts the report subcommand.
@@ -132,18 +190,8 @@ func teamScript(p string, after []word, runDir string) string {
 	if !inBuild && (err != nil || !leadScratchRe.MatchString(rel)) {
 		return name + " at " + p + " is outside the Quotes build folder and a lead scratchpad's lead/ folder"
 	}
-	if real, err := filepath.EvalSymlinks(dir); err != nil || real != dir {
-		return name + " at " + p + ": its folder is reached through a symlink"
-	}
-	for _, f := range []string{p, dir} {
-		fi, err := os.Lstat(f)
-		if err != nil {
-			return name + ": " + err.Error()
-		}
-		st, ok := fi.Sys().(*syscall.Stat_t)
-		if !ok || int(st.Uid) != os.Getuid() || fi.Mode().Perm()&0o022 != 0 {
-			return name + ": " + f + " is not this user's alone (owner, or group- or world-writable)"
-		}
+	if why := aloneOwned(name, p); why != "" {
+		return why
 	}
 	if why := pinned(p, name); why != "" {
 		return strings.TrimPrefix(why, reason+" ")

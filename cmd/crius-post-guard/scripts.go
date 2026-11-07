@@ -221,6 +221,21 @@ func scriptAt(name string, c ctx, kind runKind, plain, orNone bool, dir string) 
 	// item 5); the scripts and code a shell script runs are read as usual, or pass on their own pins (review r2 P1-6:
 	// merge.sh passed unread while it runs merge-ok.sh and review-gate.sh, which no pin covered)
 	pin := false
+	if _, ops := opsScripts[filepath.Base(name)]; ops && c.crius != nil && c.crius.lead && kind != byCode {
+		// an ops check passes unread on its pin when the command changes none of the files it runs (owner order 11-08)
+		files, why := opsScript(name)
+		for _, f := range files {
+			if why == "" && (!plain || c.changes(f, written) || c.madeBy(f) != "") {
+				why = "the command may change " + f + " before it runs"
+			}
+		}
+		if why == "" && len(heredocs) == 0 {
+			return ""
+		}
+		if why != "" {
+			c.crius.pinMiss = append(c.crius.pinMiss, why)
+		}
+	}
 	if c.crius != nil && c.crius.lead && plain && len(heredocs) == 0 && !c.changes(name, written) && c.madeBy(name) == "" {
 		why := teamScript(name, c.after, dir)
 		if why == "" && kind == byCode {
