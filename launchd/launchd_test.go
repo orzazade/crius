@@ -478,7 +478,7 @@ func TestInstallLoadsEveryTemplate(t *testing.T) {
 		t.Fatal(err)
 	}
 	files := map[string]string{"bin/crius-install-launchd": string(script), "bin/crius-digest-run": "", "bin/crius-weekly-run": "",
-		"bin/crius-wait": ""}
+		"bin/crius-wait": "", "bin/wait-sweep.sh": ""}
 	for _, job := range []string{"alpha", "beta"} {
 		files["launchd/space.scifilab.crius."+job+".plist.in"] = `<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict><key>Label</key><string>space.scifilab.crius.` + job + `</string></dict></plist>
@@ -523,5 +523,52 @@ func TestInstallLoadsEveryTemplate(t *testing.T) {
 	want := filepath.Join(agents, "space.scifilab.crius.alpha.plist") + "\n" + filepath.Join(agents, "space.scifilab.crius.beta.plist") + "\n"
 	if string(loads) != want {
 		t.Fatalf("loaded %q, want %q", loads, want)
+	}
+}
+
+// Docs audit 11-08 (efd3b9d): the wait-sweep job and its script lived only in ~/Library/LaunchAgents and ~/.claude/hooks.
+// The template runs the script the installer copies from bin/, every 2 minutes, and the script's own suite passes.
+func TestWaitSweepJobRunsTheTrackedScript(t *testing.T) {
+	in, err := os.ReadFile("space.scifilab.crius.wait-sweep.plist.in")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plist := filepath.Join(t.TempDir(), "wait-sweep.plist")
+	if err := os.WriteFile(plist, []byte(strings.ReplaceAll(string(in), "@HOME@", "/Users/x")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command("plutil", "-convert", "json", "-o", "-", plist).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var job struct {
+		Label             string
+		ProgramArguments  []string
+		StartInterval     int
+		StandardOutPath   string
+		StandardErrorPath string
+	}
+	if err := json.Unmarshal(out, &job); err != nil {
+		t.Fatal(err)
+	}
+	if job.Label != "space.scifilab.crius.wait-sweep" || job.StartInterval != 120 ||
+		!reflect.DeepEqual(job.ProgramArguments, []string{"/bin/bash", "/Users/x/.crius/bin/wait-sweep.sh"}) ||
+		job.StandardOutPath != "/Users/x/.crius/logs/wait-sweep.log" || job.StandardErrorPath != job.StandardOutPath {
+		t.Fatalf("%+v", job)
+	}
+	install, err := os.ReadFile("../bin/crius-install-launchd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(install), `install -m 755 "$repo/bin/wait-sweep.sh" "$bin/wait-sweep.sh"`) {
+		t.Fatal("crius-install-launchd does not install bin/wait-sweep.sh")
+	}
+	res, err := exec.Command("bash", "../bin/test/wait-sweep/test-wait-sweep.sh").CombinedOutput()
+	last := strings.TrimSpace(string(res))
+	if i := strings.LastIndex(last, "\n"); i >= 0 {
+		last = last[i+1:]
+	}
+	if err != nil || !strings.HasPrefix(last, "wait-sweep: ") || !strings.HasSuffix(last, " passed, 0 failed") {
+		t.Fatalf("wait-sweep suite: %v: %s", err, last)
 	}
 }

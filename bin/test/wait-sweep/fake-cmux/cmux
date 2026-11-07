@@ -1,0 +1,31 @@
+#!/bin/bash
+# Fake cmux for the wait-log / wait-sweep tests. Reads fixtures from $FAKE_CMUX_DIR:
+#   tree.txt              output of `tree --all` (with or without --id-format both)
+#   tree.fail / tree.hang make `tree` fail or hang; tree.slow makes the first `tree` hang, later ones answer
+#   surface_N.txt         screen of surface:N for `read-screen --surface surface:N`
+#   surface_N.fail        print this to stderr and exit 1
+#   surface_N.hang        sleep 10 (timeout test)
+#   surface_N.slow        the first read sleeps 10, later ones answer (a cmux busy for a moment)
+#   surface_N.crash       die from SIGSEGV with no output
+# Every read-screen call is recorded in $FAKE_CMUX_DIR/calls.log.
+d=${FAKE_CMUX_DIR:?FAKE_CMUX_DIR not set}
+args=" $* "
+case "$args" in
+  *" tree "*)
+    [ -f "$d/tree.hang" ] && sleep 10
+    [ -f "$d/tree.slow" ] && [ ! -f "$d/tree.slowed" ] && { : > "$d/tree.slowed"; sleep 10; }
+    [ -f "$d/tree.fail" ] && { cat "$d/tree.fail" >&2; exit 1; }
+    cat "$d/tree.txt"
+    ;;
+  *" read-screen "*)
+    ref=$(printf '%s\n' "$@" | awk 'p{print;exit} $0=="--surface"{p=1}')
+    echo "$ref" >> "$d/calls.log"
+    f="$d/${ref/:/_}"
+    [ -f "$f.hang" ] && sleep 10
+    [ -f "$f.slow" ] && [ ! -f "$f.slowed" ] && { : > "$f.slowed"; sleep 10; }
+    [ -f "$f.crash" ] && kill -SEGV $$
+    [ -f "$f.fail" ] && { cat "$f.fail" >&2; exit 1; }
+    cat "$f.txt"
+    ;;
+  *) echo "fake cmux: unsupported: $*" >&2; exit 2 ;;
+esac

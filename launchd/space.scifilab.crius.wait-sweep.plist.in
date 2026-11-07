@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The read-only cmux screen sweep (bin/wait-sweep.sh) every 2 minutes: logs prompts the Notification hook missed. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>space.scifilab.crius.wait-sweep</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>@HOME@/.crius/bin/wait-sweep.sh</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/Applications/cmux.app/Contents/Resources/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>StartInterval</key>
+  <integer>120</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>@HOME@/.crius/logs/wait-sweep.log</string>
+  <key>StandardErrorPath</key>
+  <string>@HOME@/.crius/logs/wait-sweep.log</string>
+</dict>
+</plist>
