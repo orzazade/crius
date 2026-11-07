@@ -18,7 +18,7 @@ func TestEachAskIsLoggedWithItsReasonAndText(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(home, "state"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	long := "az boards work-item update --id 1 --discussion hi\n" + strings.Repeat("x", 300)
+	long := "az boards work-item update --id 1 --discussion ''\n" + strings.Repeat("x", 300)
 	for _, in := range []string{
 		`{"tool_name":"Bash","cwd":"/tmp","tool_input":{"command":"ls -la"}}`,
 		`{"tool_name":"mcp__plugin_context-mode_context-mode__ctx_execute","cwd":"/tmp","tool_input":{"language":"shell","code":` + strconvQuote(long) + `}}`,
@@ -37,7 +37,7 @@ func TestEachAskIsLoggedWithItsReasonAndText(t *testing.T) {
 		t.Fatalf("%d lines, want 1 (the pass logs nothing): %q", len(lines), b)
 	}
 	l := lines[0]
-	for _, want := range []string{"__ctx_execute", "/tmp", "(az boards work-item update --discussion)", "az boards work-item update --id 1 --discussion hi⏎xxx"} {
+	for _, want := range []string{"__ctx_execute", "/tmp", "--discussion is empty", "az boards work-item update --id 1 --discussion ''⏎xxx"} {
 		if !strings.Contains(l, want) {
 			t.Errorf("log line lacks %q: %q", want, l)
 		}
@@ -64,12 +64,12 @@ func TestALogThatWouldBlockNeitherHangsNorLosesTheAsk(t *testing.T) {
 	var out bytes.Buffer
 	done := make(chan error, 1)
 	go func() {
-		done <- run(strings.NewReader(`{"tool_name":"Bash","cwd":"/tmp","tool_input":{"command":"az boards work-item update --id 1 --discussion hi"}}`), &out)
+		done <- run(strings.NewReader(`{"tool_name":"Bash","cwd":"/tmp","tool_input":{"command":"az boards work-item update --id 1 --discussion ''"}}`), &out)
 	}()
 	select {
 	case err := <-done:
-		if err != nil || !strings.Contains(out.String(), `"permissionDecision":"ask"`) {
-			t.Fatalf("err %v, out %q: want the ask", err, out.String())
+		if err != nil || !strings.Contains(out.String(), `"permissionDecision":"deny"`) {
+			t.Fatalf("err %v, out %q: want the deny", err, out.String())
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the hook hung on a FIFO log")

@@ -87,6 +87,9 @@ func pinned(p, name string) string {
 // teamScripts are the team scripts that pass on a pin match in a lead session (Crius 11-06 item 5); ado-suite.ts only
 // as `report <id>` (its one POST is in run), pass-post.sh only with verdict-check.ts beside it pinned too, merge.sh only
 // for a PR into integration/96365-bN (it completes into develop too, which keeps the click).
+// prTargetListRe is an integration/96365-bN branch: merge.sh completes into it on its pin.
+var prTargetListRe = regexp.MustCompile(`^(refs/heads/)?integration/96365-b[0-9]+$`)
+
 var teamScripts = map[string]bool{"merge.sh": true, "merge-ok.sh": true, "review-gate.sh": true, "pr-build.sh": true,
 	"pass-post.sh": true, "ado-suite.ts": true}
 

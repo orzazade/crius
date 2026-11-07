@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -54,12 +55,35 @@ func verdict(t *testing.T, qa, folder, body string) {
 	write(t, filepath.Join(qa, folder, "verdict.md"), body)
 }
 
-// passes says the exact rule lets cmd through on Bash with no ask.
+// passes says the hook lets cmd through on Bash.
 func passes(t *testing.T, cmd string) {
 	t.Helper()
-	if why := check(exactIn(cmd)); why != "" {
-		t.Errorf("want pass, asked: %s\n  %s", why, cmd)
+	if d, why := hookOn(t, exactIn(cmd)); d != "" {
+		t.Errorf("want pass, got %s: %s\n  %s", d, why, cmd)
 	}
+}
+
+// hookOn runs the hook on in and gives its decision ("" when it writes nothing) and reason.
+func hookOn(t *testing.T, in input) (string, string) {
+	t.Helper()
+	b, err := json.Marshal(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	if err := run(strings.NewReader(string(b)), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Len() == 0 {
+		return "", ""
+	}
+	var v struct {
+		HookSpecificOutput struct{ PermissionDecision, PermissionDecisionReason string }
+	}
+	if err := json.Unmarshal([]byte(out.String()), &v); err != nil {
+		t.Fatalf("%v: %s", err, out.String())
+	}
+	return v.HookSpecificOutput.PermissionDecision, v.HookSpecificOutput.PermissionDecisionReason
 }
 
 // asks says cmd still asks on Bash, with want in the reason when want is set.
@@ -141,7 +165,10 @@ func TestPRBuildOffShapeAsks(t *testing.T) {
 			t.Errorf("exact rule passed an off shape:\n  %s", cmd)
 		}
 		if strings.Contains(cmd, "/../") {
-			asks(t, cmd, "Not on the allow list")
+			// not the pinned place: read, and its az pipelines run --id "$1" is a word the guard cannot read
+			if d, why := hookOn(t, exactIn(cmd)); d != "deny" || !strings.Contains(why, "cannot read") {
+				t.Errorf("want deny, got %s %q\n  %s", d, why, cmd)
+			}
 		} else {
 			passes(t, cmd)
 		}
@@ -269,8 +296,9 @@ func TestQuotesExactShapesAreForBashOnly(t *testing.T) {
 	for _, cmd := range []string{voteCmd("7848"), "bash ~/.crius/state/quotes/build/bin/pr-build.sh 7848"} {
 		in := input{ToolName: "mcp__plugin_context-mode_context-mode__ctx_batch_execute", Cwd: "/"}
 		in.ToolInput.Commands = batchCommands{cmd}
-		if why := check(in); (why == "") == (cmd == voteCmd("7848")) {
-			t.Errorf("ctx_batch_execute: want the vote to ask and pr-build.sh to pass, got %q:\n  %s", why, cmd)
+		// owner 11-08: the vote's text passes the checks, so outside its exact shape it goes on too (no click to save)
+		if d, why := hookOn(t, in); d != "" {
+			t.Errorf("ctx_batch_execute: want pass, got %s %q:\n  %s", d, why, cmd)
 		}
 	}
 }

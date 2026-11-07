@@ -1,8 +1,10 @@
 // Command crius-post-guard is a Claude Code PreToolUse hook for Bash and context-mode's ctx_execute, ctx_execute_file and
-// ctx_batch_execute, in both personas and their subagents. It makes
-// every Azure DevOps write wait for the owner's click: it answers "ask", which Claude Code keeps even in bypass mode (a
-// headless probe on 10-30 refused the call). 10-30: a lead session posted a QA-notes comment and a reply to a colleague
-// on AB#94205 under the owner's name, because its brief said to; the owner had both deleted. No brief can grant this now.
+// ctx_batch_execute, in both personas and their subagents. It checks
+// every Azure DevOps write before it goes (owner 11-08, checkmode.go): a post whose text passes the checks goes on, one
+// that fails a check or that it cannot read is refused with the reason, and it never asks. 10-30: a lead session posted a
+// QA-notes comment and a reply to a colleague on AB#94205 under the owner's name, because its brief said to; the owner had
+// both deleted. Below, "asks" is the reading's word for a post or a step it cannot read: the hook records the posts and
+// checks them, and refuses the rest.
 //
 // It keys on the property (an az or REST write to Azure DevOps), not on one spelling. Owner 11-05, a post is:
 //   - az repos pr create or update (any option), and every other az repos pr command that is not a read (set-vote,
@@ -61,8 +63,7 @@
 // ctx tools: code of another language that runs the file it is handed by a spelling runnerRe lacks (require(path),
 // runpy) or runs a shell command that reads a script (execSync('bash post.sh')); the plugin's project folder is taken
 // to be the session's folder.
-// Output: nothing (the call goes on) or one JSON line with permissionDecision "ask"; in the Crius session "deny" in place
-// of every ask (criusmode.go).
+// Output: nothing (the call goes on) or one JSON line with permissionDecision "deny" and the reason (checkmode.go).
 package main
 
 import (
@@ -98,7 +99,7 @@ type input struct {
 	} `json:"tool_input"`
 }
 
-const reason = "Posts text to Azure DevOps under the owner's name: needs the owner's click. Show the owner the exact text first."
+const reason = "Posts text to Azure DevOps under the owner's name."
 
 func main() {
 	deadline = time.Now().Add(20 * time.Second)
@@ -109,25 +110,17 @@ func main() {
 	}
 }
 
-// run reads the hook input and writes an ask when the call needs the owner's click; it writes nothing otherwise.
+// run reads the hook input and writes a deny when a post fails a check (checkmode.go); it writes nothing otherwise.
 func run(r io.Reader, w io.Writer) error {
 	var in input
 	if err := json.NewDecoder(r).Decode(&in); err != nil {
-		why := "crius-post-guard could not read the hook input (" + err.Error() + "), so it cannot tell whether " +
-			"this posts text to Azure DevOps: needs the owner's click."
-		err := ask(w, why)
+		why := "crius-post-guard could not read the hook input (" + err.Error() + "), so it cannot check whether " +
+			"this posts text to Azure DevOps: refused."
+		err := deny(w, why)
 		logAsk(in, why)
 		return err
 	}
-	if criusSession(in.SessionID) {
-		return criusRun(in, w)
-	}
-	if why := check(in); why != "" {
-		err := ask(w, why)
-		logAsk(in, why)
-		return err
-	}
-	return nil
+	return checkRun(in, w)
 }
 
 // logAsk keeps each ask in $CRIUS_HOME/state/post-guard-asks.log (mode 600): the time, the tool, the folder, the reason
@@ -181,10 +174,8 @@ func logTo(in input, why, file string) {
 	}
 }
 
-func ask(w io.Writer, why string) error { return decide(w, "ask", why) }
-
-// decide writes one PreToolUse decision (ask, or deny in Crius mode) with its reason.
-func decide(w io.Writer, decision, why string) error {
+// deny writes the one PreToolUse decision the guard makes, a deny, with its reason (owner 11-08: it never asks).
+func deny(w io.Writer, why string) error {
 	var out struct {
 		HookSpecificOutput struct {
 			HookEventName            string `json:"hookEventName"`
@@ -193,7 +184,7 @@ func decide(w io.Writer, decision, why string) error {
 		} `json:"hookSpecificOutput"`
 	}
 	out.HookSpecificOutput.HookEventName = "PreToolUse"
-	out.HookSpecificOutput.PermissionDecision = decision
+	out.HookSpecificOutput.PermissionDecision = "deny"
 	out.HookSpecificOutput.PermissionDecisionReason = why
 	return json.NewEncoder(w).Encode(out)
 }
@@ -264,23 +255,16 @@ type runs struct {
 	cwd     string                // the folder this text starts in
 	moved   bool                  // it may change folder
 	movedAt uint                  // >0: from here on it may have changed folder (eval, source, $X)
+	pinned  bool                  // the text of a pinned team script: what it writes is vouched for by the pin
 }
 
-// check reads a Bash command, and the code context-mode's tools run (Crius 11-01 19:39: a lead ran an az write as
+// checkIn reads a Bash command, and the code context-mode's tools run (Crius 11-01 19:39: a lead ran an az write as
 // ctx_execute shell code): shell code and each ctx_batch_execute command get the Bash check (checkCode). The tool is known
 // by its name's ending, whatever the plugin's server is called. The plugin runs shell code in tool_input.cwd, else in its
 // project folder, and reads ctx_execute_file's path from the project folder (it takes no cwd there): the session's folder
-// stands for the project folder, and a relative cwd is taken from it.
-func check(in input) string {
-	why := checkIn(in, nil)
-	if why == "" {
-		return ""
-	}
-	return allowList(in, why)
-}
-
-// checkIn is check that, in Crius mode (col set), records the posts it finds in col instead of asking on them, and gives
-// an exact shape whose hook-time checks fail the usual reading.
+// stands for the project folder, and a relative cwd is taken from it. With col set (the hook), the posts it finds go to
+// col and the reading goes on; it gives why for what it cannot read. With col nil (the tests of the reading), it gives
+// why for the first post too. An exact shape passes; when its hook-time checks fail, the hook reads the call as any other.
 func checkIn(in input, col *criusLog) string {
 	t := in.ToolInput
 	dir := t.Cwd
@@ -289,13 +273,13 @@ func checkIn(in input, col *criusLog) string {
 	}
 	switch name := in.ToolName; {
 	case name == "Bash":
-		if ok, why := adoExact(t.Command, in.SessionID); ok && (col == nil || col.lead || why == "") {
+		if ok, why := adoExact(t.Command, in.SessionID); ok && (col == nil || why == "") {
 			return why
 		}
-		if ok, why := quotesExact(t.Command); ok && (col == nil || col.lead || why == "") {
+		if ok, why := quotesExact(t.Command); ok && (col == nil || why == "") {
 			return why
 		}
-		if ok, why := passPostExact(t.Command, in.SessionID); ok && (col == nil || col.lead || why == "") {
+		if ok, why := passPostExact(t.Command, in.SessionID); ok && (col == nil || why == "") {
 			return why
 		}
 		return checkBash(t.Command, ctx{cwd: in.Cwd, whole: t.Command, reads: new(int), read: new([]readText), crius: col})
@@ -450,6 +434,11 @@ var azTexts = map[textKey]bool{}
 
 // unsure asks when text the guard cannot read sits in a command that names az or Azure DevOps.
 func unsure(c ctx, what string) string {
+	if c.pinned {
+		// a pinned script's own text: the pin stands for a reading of the whole file, its dynamic steps included (owner
+		// 11-08: merge-ok.sh's bash -c "$1" was refused in every merge); the scripts it runs by file are read on their own
+		return ""
+	}
 	// review r4: az next to ), `, ] or " counts too ($(which az), ${commands[az]})
 	if namesAzOrADO(c.whole) {
 		return asked(what + " the guard cannot read")
@@ -1692,7 +1681,7 @@ func (c ctx) scan(f *syntax.File, src string) ctx {
 	c.movedAt = 0
 	moved, cds, loops := c.moved, 0, false
 	funcs := false
-	r := runs{file: f, src: src, scripts: map[*syntax.Word]bool{}, script: c.script}
+	r := runs{file: f, src: src, scripts: map[*syntax.Word]bool{}, script: c.script, pinned: c.pinned}
 	count := map[string]int{}
 	fors := map[string][]*syntax.ForClause{}
 	lits := map[string]string{} // a literal value each name is set to

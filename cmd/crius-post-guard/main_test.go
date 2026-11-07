@@ -334,9 +334,9 @@ func decision(t *testing.T, stdin string) (string, string) {
 	return got.HookSpecificOutput.PermissionDecision, got.HookSpecificOutput.PermissionDecisionReason
 }
 
-func TestTheHookPrintsAskForAWriteAndNothingForARead(t *testing.T) {
+func TestTheHookPrintsADenyForAWriteItCannotCheckAndNothingForARead(t *testing.T) {
 	stdin, _ := json.Marshal(map[string]any{"tool_name": "Bash", "cwd": t.TempDir(), "tool_input": map[string]string{"command": lead94205}})
-	if d, why := decision(t, string(stdin)); d != "ask" || !strings.HasPrefix(why, reason) {
+	if d, why := decision(t, string(stdin)); d != "deny" || !strings.HasPrefix(why, refused) {
 		t.Errorf("write: %q %q", d, why)
 	}
 	stdin, _ = json.Marshal(map[string]any{"tool_name": "Bash", "tool_input": map[string]string{"command": "az boards work-item show --id 94205"}})
@@ -345,9 +345,9 @@ func TestTheHookPrintsAskForAWriteAndNothingForARead(t *testing.T) {
 	}
 }
 
-// Unreadable input never lets a write through silently: the owner is asked.
-func TestUnreadableInputAsks(t *testing.T) {
-	if d, why := decision(t, `{"tool_name":"Bash","tool_input":`); d != "ask" || !strings.Contains(why, "could not read") {
+// Unreadable input never lets a write through silently: it is refused.
+func TestUnreadableInputIsRefused(t *testing.T) {
+	if d, why := decision(t, `{"tool_name":"Bash","tool_input":`); d != "deny" || !strings.Contains(why, "could not read") {
 		t.Errorf("%q %q", d, why)
 	}
 }
@@ -619,7 +619,7 @@ func TestAScriptNamedThroughAVariableSetInTheCommandIsRead(t *testing.T) {
 		s + `bash $S/argar.sh "a[\$(az boards work-item update --id 1)]"`,
 		s + `N='a[$(az boards work-item update --id 1)]'; bash $S/n1.sh 'az login'`,
 	} {
-		if why := check(bash(cmd, dir)); !strings.Contains(why, "owner's click") {
+		if why := check(bash(cmd, dir)); !strings.Contains(why, reason) {
 			t.Errorf("%q: %q", cmd, why)
 		}
 	}
@@ -665,8 +665,12 @@ func TestAScriptNamedThroughAVariableSetInTheCommandIsRead(t *testing.T) {
 		s + `printf x > ` + dir + `/LEAD/say.sh; bash $S/lead/say.sh INFO x 'az login'`,
 		s + `printf x > ~/.CRIUS/bin/bus-post; bash $S/lead/say.sh INFO x 'az login'`,
 	} {
-		if why := check(bash(cmd, dir)); !strings.Contains(why, "owner's click") {
+		if why := check(bash(cmd, dir)); !strings.Contains(why, reason) {
 			t.Errorf("%q: %q", cmd, why)
 		}
 	}
 }
+
+// check is the reading alone, as the tests of it use it: why the first post or the first thing the guard cannot read
+// would be refused, "" when the call has neither.
+func check(in input) string { return checkIn(in, nil) }

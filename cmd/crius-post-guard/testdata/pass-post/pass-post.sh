@@ -1,7 +1,7 @@
 #!/bin/bash
 # pass-post.sh [--check] <pr> <verdict.md> <msgfile> [src files...]: posts the DONE line only if every check passes.
 # --check (Crius 11-06 11:26): run every check, list ALL faults, post nothing. Read-only: run it first, fix everything it
-# lists, then run without --check. rc 0 = all pass (posted, or "check ok"); else the rc of the first fault (6..11).
+# lists, then run without --check. rc 0 = all pass (posted, or "check ok"); else the rc of the first fault (6..12).
 # SENDER=<qa role> and TO=<builder>,LEADER (env, both required): must be a qa-* name in board/members.tsv; no default (a default posted as the wrong tester).
 # and the line names "build <id> green" (B105). Does not post a FAIL/BUG line (post those by hand).
 B=$HOME/.crius/state/quotes/build
@@ -27,11 +27,19 @@ if /usr/bin/grep -q -E "build [0-9]+ green" "$M"; then
   if b=$(az pipelines runs show --org https://dev.azure.com/Appxite --project "AppXite Platform" --id "$bid" --query "[result, sourceBranch]" -o tsv | tr '\n' ' '); then
     [ "$b" = "succeeded refs/pull/$PR/merge " ] || fault 9 "build $bid is '$b', not a green refs/pull/$PR/merge build"
   else fault 9 "cannot read build $bid"; fi
+  # rc 12 (lead 11-06 15:10: 7856, 7804, 7840 got PASS on a build whose bN base had moved in the PR's folders, so merge.sh
+  # refused them): run the lead's merge-ok file rules (scan mode, no trial) on the build; a refusal there refuses the PASS.
+  tb=$(az repos pr show --org https://dev.azure.com/Appxite --id "$PR" --query targetRefName -o tsv) || tb=""
+  if [[ $tb == refs/heads/integration/* ]]; then
+    mok=$(MOK_SCAN=1 TB="${tb#refs/heads/}" bash $HOME/.crius/state/quotes/build/bin/lead/merge-ok.sh "$PR" "$bid" 2>&1); mrc=$?
+    [ $mrc -eq 0 ] || fault 12 "merge-ok rc $mrc on build $bid: $(echo "$mok" | tail -1 | cut -c1-200); the builder rebuilds (merge the target, push, pr-build.sh)"
+  elif [ -z "$tb" ]; then fault 12 "cannot read target of PR $PR"; fi
 else fault 7 "message has no 'build <id> green' (B105)"; fi
 # rc 11 (lead 11-05 21:40: 7798 and earlier 7789 got PASS with no review record, so merge.sh refused them): a
 # notes/*-evidence/*/deep-review.md must hold "Reviewed: <base>..<PR head>" (same rule as the lead's review-gate.sh).
 if [ ${#head} -eq 40 ]; then
-  find "$B/notes" -path '*-evidence/*' -name deep-review.md -exec /usr/bin/grep -h -o -E '^Reviewed: [0-9a-f]{7,40}\.\.[0-9a-f]{8,40}' {} + | sed 's/.*\.\.//' | while read -r s; do [[ $head == "$s"* ]] && echo hit; done | /usr/bin/grep -q hit || fault 11 "no deep-review.md has 'Reviewed: <base>..${head:0:8}' for PR $PR; the builder's codex review writes it"
+  # lead 11-06 16:0x (RULES §0): a review of an sha the head reaches over clean target merges covers the head.
+  bash "$B/qa/tools/review-check.sh" "$PR" > /dev/null || fault 11 "no deep-review.md has 'Reviewed: <base>..${head:0:8}' (or an sha it reaches over clean target merges) for PR $PR; the builder's codex review writes it"
 fi
 if [ ${#faults[@]} -gt 0 ]; then
   echo "REFUSED: ${#faults[@]} fault(s)${CHECK:+ (check only, nothing posted)}:"; printf '  - %s\n' "${faults[@]}"; exit $rc

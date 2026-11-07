@@ -29,10 +29,28 @@ while read -r opr osrc ohead; do
 done <<< "$others"
 [ -z "$carried" ] || { echo "LOUD review-gate: PR $pr carries the head of open PR(s)$carried that is not in develop; merge those first"; exit 9; }
 notes=${REVIEW_NOTES:-~/.crius/state/quotes/build/notes}
+# RULES §0 (owner 11-06 15:27, Crius 15:26): a clean merge of the target into the PR changes none of the PR's own code, so
+# it needs no new review and no new QA PASS. chain = the head, then each first parent reached back over a merge commit
+# whose second parent is already in the target and whose tree is exactly git's own merge (no conflict, no hand edit).
+# A review record or a QA PASS naming any sha in the chain counts; a PASS on an older sha needs MERGE_BUILD (merge.sh's
+# build) to be a green refs/pull/<pr>/merge build of the current head (B105 still holds at the head).
+tb=$(az repos pr show --org https://dev.azure.com/Appxite --id "$pr" --query targetRefName -o tsv) || { echo "LOUD review-gate: cannot read target of PR $pr"; exit 2; }
+tb=${tb#refs/heads/}
+git -C $G -c http.extraHeader="Authorization: Bearer $tok" fetch -q origin "$tb" || { echo "LOUD review-gate: fetch $tb failed"; exit 2; }
+chain=$head; c=$head
+for _ in 1 2 3 4 5 6; do
+  read -r _ p1 p2 extra <<< "$(git -C $G rev-list --parents -n1 "$c")"
+  [ -n "$p2" ] && [ -z "$extra" ] || break
+  git -C $G merge-base --is-ancestor "$p2" "origin/$tb" || break
+  t=$(git -C $G merge-tree --write-tree "$p1" "$p2" 2>/dev/null) || break
+  [ "${t%%$'\n'*}" = "$(git -C $G rev-parse "$c^{tree}")" ] || break
+  c=$p1; chain="$chain $c"
+done
+inchain() { local s; for s in $chain; do [ ${#1} -ge 8 ] && [ "${s#"$1"}" != "$s" ] && return 0; done; return 1; }
 found=""
 while IFS= read -r f; do
   while IFS= read -r end; do
-    [ ${#end} -ge 8 ] && [ "${head#"$end"}" != "$head" ] && found="$f"
+    inchain "$end" && found="$f"
   done < <(/usr/bin/grep -o -E '^Reviewed: [0-9a-f]{7,40}\.\.[0-9a-f]{8,40}' "$f" | sed 's/.*\.\.//')
 done < <(find "$notes" -path '*-evidence/*' -name deep-review.md)
 if [ -n "$found" ]; then
@@ -63,18 +81,27 @@ if [ -n "$found" ]; then
   esac
   # B105 (11-04, 7711 Mac PASS, Linux build red): the QA PASS line names a green PR build at the same head.
   log=${BUILD_LOG:-~/.crius/state/quotes/build/BUILD-LOG.md}
-  qa=$(/usr/bin/grep -a -E "^[0-9T:-]+ DONE qa-[a-z0-9-]+ .*PR $pr\b.*${head:0:8}" "$log" | /usr/bin/grep -a -E "\bPASS\b" | /usr/bin/grep -a -v -E "\b(NOT|no) PASS\b" | tail -1)  # PASS before or after the sha (7732 23:54)
-  [ -n "$qa" ] || { echo "LOUD review-gate: no qa DONE ... PASS line names PR $pr at ${head:0:8}"; exit 6; }
+  qa=""; qs=""
+  for s in $chain; do
+    qa=$(/usr/bin/grep -a -E "^[0-9T:-]+ DONE qa-[a-z0-9-]+ .*PR $pr\b.*${s:0:8}" "$log" | /usr/bin/grep -a -E "\bPASS\b" | /usr/bin/grep -a -v -E "\b(NOT|no) PASS\b" | tail -1)  # PASS before or after the sha (7732 23:54)
+    [ -n "$qa" ] && { qs=$s; break; }
+  done
+  [ -n "$qa" ] || { echo "LOUD review-gate: no qa DONE ... PASS line names PR $pr at ${head:0:8}$( [ "$chain" = "$head" ] || echo " or at an sha it reaches over clean $tb merges")"; exit 6; }
   # Lead ORDER 11-05 19:4x (two hand PASS lines named branch builds): from 19:45 a PASS counts only when pass-post.sh wrote it.
   [[ "${qa:0:16}" < "2026-11-05T19:45" ]] || [[ $qa == *"[pass-post]"* ]] || { echo "LOUD review-gate: the PASS for PR $pr was not posted by qa/tools/pass-post.sh (no [pass-post] mark)"; exit 6; }
-  bid=$(echo "$qa" | /usr/bin/grep -o -i -E "build ([0-9.]+ \()?[0-9]+\)? green" | /usr/bin/grep -o -E "[0-9]+\)? green" | /usr/bin/grep -o -E "^[0-9]+")
-  [ -n "$bid" ] || { echo "LOUD review-gate: the QA PASS for PR $pr names no 'build <id> green' (B105)"; exit 6; }
+  if [ "$qs" = "$head" ]; then
+    bid=$(echo "$qa" | /usr/bin/grep -o -i -E "build ([0-9.]+ \()?[0-9]+\)? green" | /usr/bin/grep -o -E "[0-9]+\)? green" | /usr/bin/grep -o -E "^[0-9]+")
+    [ -n "$bid" ] || { echo "LOUD review-gate: the QA PASS for PR $pr names no 'build <id> green' (B105)"; exit 6; }
+  else
+    bid=${MERGE_BUILD:-}
+    [[ $bid =~ ^[0-9]+$ ]] || { echo "LOUD review-gate: the QA PASS names ${qs:0:8}, carried over clean $tb merges to ${head:0:8}; pass MERGE_BUILD=<green merge build of the head>"; exit 6; }
+  fi
   b=$(az pipelines runs show --org https://dev.azure.com/Appxite --project "AppXite Platform" --id "$bid" --query "[result, sourceBranch, sourceVersion]" -o tsv | tr "\n" " ") || { echo "LOUD review-gate: cannot read build $bid"; exit 2; }
   set -- $b
   # A PR build runs refs/pull/<n>/merge; that merge commit's second parent is the PR head it built.
   p2=$(az devops invoke --org https://dev.azure.com/Appxite --area git --resource commits --route-parameters project="AppXite Platform" repositoryId=d88331ee-60dc-4f15-b236-b1790c6fdeaa commitId="$3" --api-version 7.1 --query "parents[1]" -o tsv) || { echo "LOUD review-gate: cannot read merge commit of build $bid"; exit 2; }
   [ "$1" = succeeded ] && [ "$2" = "refs/pull/$pr/merge" ] && [ "$p2" = "$head" ] || { echo "LOUD review-gate: build $bid is .$1. on .$2. of head .${p2:0:8}., not a green build of PR $pr at ${head:0:8} (B105)"; exit 6; }
-  echo "review-gate OK: PR $pr head ${head:0:8} reviewed in $found; QA PASS with green build $bid"; exit 0
+  echo "review-gate OK: PR $pr head ${head:0:8} reviewed in $found; QA PASS$( [ "$qs" = "$head" ] || echo " at ${qs:0:8}, carried over clean $tb merge(s)") with green build $bid"; exit 0
 fi
 echo "LOUD review-gate: no deep-review.md has 'Reviewed: <base>..${head:0:8}' for PR $pr"
 exit 3

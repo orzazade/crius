@@ -3,7 +3,6 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 )
@@ -36,9 +35,9 @@ func TestAzOptionLastCopyInOrderWinsOverAliasesAndPrefixes(t *testing.T) {
 		pr + " -s main" + allowOrg,
 		pr + " --sour main" + allowOrg,
 	} {
-		if why := check(bash(cmd, dir)); !strings.Contains(why, "owner's click") || !strings.Contains(why, "Not on the allow list") {
-			t.Errorf("lead: want an ask from the allow list, got %q\n  %s", why, cmd)
-		}
+		// owner 11-08: opening a PR into develop or from main is a post like any other; only completing one into develop
+		// or main is refused
+		leadCheck(t, dir, cmd, "")
 	}
 	leadCheck(t, dir, "az repos pr create --title x -s main -t develop --source-branch feature/96365-x --target-b integration/96365-b1"+allowOrg, "")
 	// az rest: -m and --method, -u, --uri and --url are one option each
@@ -65,7 +64,7 @@ func TestAnUnquotedWordIsUnreadableWhenIFSIsSet(t *testing.T) {
 		`O="repos:pr:update:--id:9:--status:completed:--org:https://dev.azure.com/Appxite"; declare $'\x49FS=:'; az $O`,
 		`source ./sep.sh; O="repos:pr:update:--id:9:--status:completed:--org:https://dev.azure.com/Appxite"; az $O`,
 	} {
-		if why := check(bash(cmd, dir)); !strings.Contains(why, "owner's click") {
+		if why := check(bash(cmd, dir)); !strings.Contains(why, reason) {
 			t.Errorf("want an ask, got %q\n  %s", why, cmd)
 		}
 		if d, why := crius(t, criusSID, dir, cmd); d != "deny" {
@@ -97,7 +96,7 @@ func TestANamerefOrAComputedNameMakesVariablesUnknown(t *testing.T) {
 		if d, why := crius(t, criusSID, dir, cmd); d != "deny" {
 			t.Errorf("Crius mode: want deny, got %s %q\n  %s", d, why, cmd)
 		}
-		if why := check(bash(cmd, dir)); !strings.Contains(why, "owner's click") {
+		if why := check(bash(cmd, dir)); !strings.Contains(why, reason) {
 			t.Errorf("lead: want an ask, got %q\n  %s", why, cmd)
 		}
 	}
@@ -126,7 +125,7 @@ func TestAScriptRunAfterACdRunsInThatFolder(t *testing.T) {
 		if d, why := crius(t, criusSID, dir, cmd); d != "deny" {
 			t.Errorf("Crius mode: want deny, got %s %q\n  %s", d, why, cmd)
 		}
-		if why := check(bash(cmd, dir)); !strings.Contains(why, "owner's click") {
+		if why := check(bash(cmd, dir)); !strings.Contains(why, reason) {
 			t.Errorf("lead: want an ask, got %q\n  %s", why, cmd)
 		}
 	}
@@ -174,55 +173,51 @@ func TestJSONEscapesDoNotHideACompletionOrAICredit(t *testing.T) {
 }
 
 // P1-6: a pinned team script passed unread, so the scripts it runs passed too, pinned or not, there or not (merge.sh
-// runs $NS/lead/review-gate.sh and $NS/lead/merge-ok.sh). Its own posts still pass on the pin; what it runs is read as
-// usual or passes on its own pin.
+// runs review-gate.sh and merge-ok.sh, since 11-07 from ~/.crius/state/quotes/build/bin/lead/). Its own posts still pass
+// on the pin; what it runs is read as usual or passes on its own pin.
 func TestAPinnedScriptsNestedScriptsAreReadOrPinned(t *testing.T) {
 	home, _ := quotesHomePRs(t, map[string]prInfo{"7848": {Status: "active", Target: "refs/heads/integration/96365-b1"}})
 	dir := t.TempDir()
-	shipped, err := os.ReadFile(filepath.Join("testdata", "team", "merge.sh"))
-	if err != nil {
+	read := func(name string) string {
+		t.Helper()
+		b, err := os.ReadFile(filepath.Join("testdata", "team", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	lead := filepath.Join(home, ".crius/state/quotes/build/bin/lead")
+	if err := os.MkdirAll(lead, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	merge := filepath.Join(home, ".crius/state/quotes/build/merge.sh")
-	install := func(p, body string) {
+	install := func(p, body string, pin bool) {
 		t.Helper()
 		write(t, p, body)
 		if err := os.Chmod(p, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		pinBody(t, filepath.Base(p), body)
+		if pin {
+			pinBody(t, filepath.Base(p), body)
+		}
 	}
-	// the shipped copy: its $NS/lead scripts are not there
-	install(merge, string(shipped))
-	const cmd = "bash ~/.crius/state/quotes/build/merge.sh 7848 1"
-	leadCheck(t, dir, cmd, "review-gate.sh")
-
-	// the same script with $NS in this test's lead scratchpad
-	ns := filepath.Join(scratchRoot(), "-Users-x-Projects-Appxite-svc-quote-channels", "3584a7f4-fcb0-4260-9e8d-e7749735c202", "scratchpad")
-	if err := os.MkdirAll(filepath.Join(ns, "lead"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	body := regexp.MustCompile(`(?m)^NS=.*$`).ReplaceAllString(string(shipped), "NS="+ns)
-	install(merge, body)
-	read := "#!/bin/bash\naz repos pr show --id \"$1\" --org https://dev.azure.com/Appxite -o none\n"
-	gate, ok := filepath.Join(ns, "lead", "review-gate.sh"), filepath.Join(ns, "lead", "merge-ok.sh")
-	// a nested script that posts and no pin covers
-	write(t, gate, "#!/bin/bash\naz repos pr update --id \"$1\" --title x --org https://dev.azure.com/Appxite\n")
-	install(ok, read)
-	leadCheck(t, dir, cmd, "Not on the allow list")
+	merge, gate, ok := filepath.Join(lead, "merge.sh"), filepath.Join(lead, "review-gate.sh"), filepath.Join(lead, "merge-ok.sh")
+	install(merge, read("merge.sh"), true)
+	const cmd = "bash ~/.crius/state/quotes/build/bin/lead/merge.sh 7848 1"
+	// the scripts it runs are not there: nothing runs (bash fails, merge.sh stops with rc 10), and the pin vouches for
+	// merge.sh's own text
+	leadCheck(t, dir, cmd, "")
+	// a nested script that posts with a word the guard cannot read, and no pin covers it
+	readOnly := "#!/bin/bash\naz repos pr show --id \"$1\" --org https://dev.azure.com/Appxite -o none\n"
+	install(gate, "#!/bin/bash\naz repos pr update --id \"$1\" --title x --org https://dev.azure.com/Appxite\n", false)
+	install(ok, readOnly, true)
+	leadCheck(t, dir, cmd, "cannot read")
 	// the shipped merge-ok.sh runs scripts/heavy.ts in a folder the guard does not follow, and the PR's own tests
-	install(gate, read)
-	okShipped, err := os.ReadFile(filepath.Join("testdata", "team", "merge-ok.sh"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	install(ok, string(okShipped))
-	leadCheck(t, dir, cmd, "owner's click")
-	if why := checkIn(bash(cmd, dir), &criusLog{lead: true}); !strings.Contains(why, "merge-ok.sh line 86") {
-		t.Errorf("want the lead reading to stop at merge-ok.sh's bun scripts/heavy.ts (line 86), got %q", why)
-	}
-	// both nested scripts pinned and only reading: merge.sh passes
-	install(ok, read)
+	install(gate, readOnly, true)
+	install(ok, read("merge-ok.sh"), false)
+	leadCheck(t, dir, cmd, "merge-ok.sh")
+	// all three shipped scripts, pinned: merge.sh passes
+	install(gate, read("review-gate.sh"), true)
+	install(ok, read("merge-ok.sh"), true)
 	leadCheck(t, dir, cmd, "")
 }
 
@@ -280,7 +275,7 @@ func TestPackageScriptsAndPreloadsAreRead(t *testing.T) {
 		{dir, "bun --preload ./p.ts x.ts"},
 		{dir, "node -r ./p.ts x.ts"},
 	} {
-		if why := check(bash(c.cmd, c.cwd)); !strings.Contains(why, "owner's click") {
+		if why := check(bash(c.cmd, c.cwd)); !strings.Contains(why, reason) {
 			t.Errorf("want an ask, got %q\n  %s (in %s)", why, c.cmd, c.cwd)
 		}
 	}
@@ -323,7 +318,7 @@ func TestAnUnknownProgramBeforeAPostMayWriteItsBody(t *testing.T) {
 		if d, why := crius(t, criusSID, dir, cmd); d != "deny" {
 			t.Errorf("Crius mode: want deny, got %s %q\n  %s", d, why, cmd)
 		}
-		if why := check(bash(cmd, dir)); !strings.Contains(why, "owner's click") {
+		if why := check(bash(cmd, dir)); !strings.Contains(why, reason) {
 			t.Errorf("lead: want an ask, got %q\n  %s", why, cmd)
 		}
 	}

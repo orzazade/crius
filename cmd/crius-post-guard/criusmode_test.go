@@ -89,43 +89,17 @@ func criusDir(t *testing.T, targets map[string]string) string {
 
 // Crius mode is the session whose id Crius writes to $CRIUS_HOME/state/crius/session-id (review of 2a882aa, P2-7: a
 // folder name is not a session); its subagents share the id. No file, another id or none means the lead rules.
-func TestCriusModeIsTheCriusSession(t *testing.T) {
+func TestEverySessionIsCheckedTheSameWay(t *testing.T) {
+	// owner 11-08: the Crius session and every other one get the same checks; nothing asks
 	const unreadable = "$AZ repos pr create --title t" + adoO
 	dir := criusDir(t, nil)
-	for _, c := range []struct {
-		sid, transcript, want string
-	}{
-		{criusSID, criusTranscript, "deny"},
-		{criusSID, criusSubagent, "deny"},
-		{criusSID, leadTranscript, "deny"},
-		{leadSID, criusTranscript, "ask"},
-		{"", criusTranscript, "ask"},
-		{criusSID[:8], criusTranscript, "ask"},
+	for _, c := range []struct{ sid, transcript string }{
+		{criusSID, criusTranscript}, {criusSID, criusSubagent}, {leadSID, leadTranscript}, {leadSID, criusTranscript},
+		{"", criusTranscript}, {criusSID[:8], criusTranscript},
 	} {
-		if d, why := hook(t, c.sid, c.transcript, dir, unreadable); d != c.want {
-			t.Errorf("session %q, transcript %s: want %s, got %s %q", c.sid, c.transcript, c.want, d, why)
+		if d, why := hook(t, c.sid, c.transcript, dir, unreadable); d != "deny" {
+			t.Errorf("session %q, transcript %s: want deny, got %s %q", c.sid, c.transcript, d, why)
 		}
-	}
-	home := os.Getenv("CRIUS_HOME")
-	idFile := filepath.Join(home, "state", "crius", "session-id")
-	for name, body := range map[string]string{"another id": leadSID + "\n", "empty": "", "two lines": criusSID + "\n" + leadSID + "\n"} {
-		write(t, idFile, body)
-		if d, why := hook(t, criusSID, criusTranscript, dir, unreadable); d != "ask" {
-			t.Errorf("session-id file %s: want ask, got %s %q", name, d, why)
-		}
-	}
-	write(t, idFile, criusSID+"\n")
-	if err := os.Chmod(idFile, 0o666); err != nil {
-		t.Fatal(err)
-	}
-	if d, why := hook(t, criusSID, criusTranscript, dir, unreadable); d != "ask" {
-		t.Errorf("a world-writable session-id file: want ask, got %s %q", d, why)
-	}
-	if err := os.Remove(idFile); err != nil {
-		t.Fatal(err)
-	}
-	if d, why := hook(t, criusSID, criusTranscript, dir, unreadable); d != "ask" {
-		t.Errorf("no session-id file: want ask, got %s %q", d, why)
 	}
 }
 
@@ -146,9 +120,9 @@ func TestCriusModeAllowsAReadablePostAndALeadStillAsks(t *testing.T) {
 		if d, why := crius(t, criusSID, dir, cmd); d != "" {
 			t.Errorf("Crius mode: want allow, got %s %q\n  %s", d, why, cmd)
 		}
-		// a lead passes the PR create from feature/96365-* into bN on the allow list (item 3); the rest keep the click
-		if d, _ := crius(t, leadSID, dir, cmd); (d == "ask") == strings.HasPrefix(cmd, "az repos pr create") {
-			t.Errorf("lead session: got %q\n  %s", d, cmd)
+		// owner 11-08: a lead session gets the same checks
+		if d, why := crius(t, leadSID, dir, cmd); d != "" {
+			t.Errorf("lead session: want allow, got %s %q\n  %s", d, why, cmd)
 		}
 	}
 }
@@ -184,7 +158,7 @@ func TestCriusModeDeniesEachHardCheck(t *testing.T) {
 		if d != "deny" || !strings.Contains(why, want) {
 			t.Errorf("want deny naming %q, got %s %q\n  %s", want, d, why, cmd)
 		}
-		if strings.Contains(why, "write it so the guard can read it") != strings.Contains(want, "cannot read") {
+		if strings.Contains(why, rewrite) != strings.Contains(want, "cannot read") {
 			t.Errorf("rewrite hint only on what the guard cannot read: %q", why)
 		}
 	}
@@ -218,11 +192,11 @@ func TestCriusModeDeniesWhatTheGuardCannotRead(t *testing.T) {
 		"echo '{}' | az devops invoke --in-file - --http-method POST --area git --resource pullRequestThreads" + adoO: "stdin",
 	} {
 		d, why := crius(t, criusSID, dir, cmd)
-		if d != "deny" || !strings.Contains(why, want) || !strings.Contains(why, "write it so the guard can read it") {
+		if d != "deny" || !strings.Contains(why, want) || !strings.Contains(why, rewrite) {
 			t.Errorf("want deny naming %q with the rewrite hint, got %s %q\n  %s", want, d, why, cmd)
 		}
-		if d, _ := crius(t, leadSID, dir, cmd); d != "ask" {
-			t.Errorf("lead session: want ask, got %q\n  %s", d, cmd)
+		if d, _ := crius(t, leadSID, dir, cmd); d != "deny" {
+			t.Errorf("lead session: want deny, got %q\n  %s", d, cmd)
 		}
 	}
 }

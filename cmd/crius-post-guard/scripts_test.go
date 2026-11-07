@@ -233,7 +233,7 @@ func TestTextWritesHiddenInScriptsVariablesLoopsAndFunctionsAsk(t *testing.T) {
 		`O="--org https://dev.azure.com/Appxite"; az repos pr update --id 7 $O --status completed`,
 		`az repos pr update --id "$ID" --status completed --org https://dev.azure.com/Appxite`,
 	} {
-		if why := check(bash(cmd, dir)); !strings.Contains(why, "owner's click") {
+		if why := check(bash(cmd, dir)); !strings.Contains(why, reason) {
 			t.Errorf("%q: %q", cmd, why)
 		}
 	}
@@ -298,7 +298,7 @@ func TestScriptPassFailsClosed(t *testing.T) {
 		"P2 a function named exit":                                        `az account show -o none; exit() { :; }; cd ` + dir + `/d3/x || exit; bash ../b/s.sh`,
 		"P2 trap text":                                                    s + `bash $S/t.sh`,
 	} {
-		if why := check(bash(cmd, dir)); !strings.Contains(why, "owner's click") {
+		if why := check(bash(cmd, dir)); !strings.Contains(why, reason) {
 			t.Errorf("%s: %q passed", name, cmd)
 		}
 	}
@@ -334,7 +334,7 @@ func TestScriptPassNeedsAShownRead(t *testing.T) {
 		"P2 a word that may split into --out-file":        s + `bash $S/spl.sh`,
 		"P3 a read command by a path of its own":          `az account show -o none; ` + dir + `/cat x ${S%.x}; bash ` + dir + `/s.sh`,
 	} {
-		if why := check(bash(cmd, dir)); !strings.Contains(why, "owner's click") {
+		if why := check(bash(cmd, dir)); !strings.Contains(why, reason) {
 			t.Errorf("%s: %q passed", name, cmd)
 		}
 	}
@@ -355,7 +355,7 @@ func TestAHeredocAfterALeadingCdWritesTheCdFolder(t *testing.T) {
 		"code that posts":           "cd " + dir + " && cat > edit6.ts <<'EOF'\nBun.spawnSync(['az', 'repos', 'pr', 'create', '--title', 't']);\nEOF\nbun edit6.ts",
 		"a write outside the chain": "cd " + dir + " && true\necho \"Bun.spawnSync(['az', 'repos', 'pr', 'create'])\" > edit7.ts\nbun edit7.ts",
 	} {
-		if why := check(bash(cmd, start)); !strings.Contains(why, "owner's click") {
+		if why := check(bash(cmd, start)); !strings.Contains(why, reason) {
 			t.Errorf("%s: want ask, got %q\n  %s", name, why, cmd)
 		}
 	}

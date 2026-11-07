@@ -10,6 +10,11 @@ pins=(
   "$B/qa/tools/pass-post.sh 78e4266433e9a6c7"
   "$B/qa/tools/review-check.sh 0d876bd2c06456bb"
   "$B/bin/lead/carry-chain.sh 264ab6328559848a"
+  "$B/bin/pr-text-check.sh af97ffb72f996e08"
+  "$B/bin/lead/merge.sh c4fffdbfe468b14c"
+  "$B/bin/lead/merge-ok.sh bff227d8b7b4a5eb"
+  "$B/bin/lead/postmerge-scan.sh 067a2374b8349eba"
+  "$B/notes/platform-db-bin/need-qa.sh 164ac9cf67172e87"
 )
 rc=0
 for p in "${pins[@]}"; do

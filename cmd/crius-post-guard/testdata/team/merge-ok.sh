@@ -6,6 +6,11 @@
 # rc 0 = OK (or the build already sits on current develop), rc 4 = rebuild needed (reason printed), rc 2 = lookup error.
 # After each merge, watch develop's own build; a red develop stops merges until fixed.
 G=~/Projects/Appxite/svc_quote/wt/platform; O=https://dev.azure.com/Appxite
+# Crius DECISION 11-06 16:02: merge trials go to the front of the heavy queue. heavy.ts has no priority, so a trial step runs
+# at once (niced) while the 15-min load is under 28, and through the heavy queue when it is not.
+hv() { local l15; l15=$(sysctl -n vm.loadavg | awk '{print (int($3) > int($4) ? int($3) : int($4))}')
+  if [ "$l15" -lt 28 ]; then echo "MOK direct: 15-min load $l15 < 28 (Crius 16:02, merge trials first)"; nice -n 5 bash -c "$1"
+  else (cd ~/Projects/Appxite/svc_quote/channels/poc/ui-app && HEAVY_WAIT_S=3600 bun scripts/heavy.ts run -- bash -c "$1"); fi; }
 pr="$1"; bid="$2"
 [ -n "$pr" ] && [ -n "$bid" ] || { echo "usage: merge-ok.sh <pr> <build>"; exit 2; }
 # TB (env): the target branch, develop or integration/96365-bN (Crius 11-06 05:55, batch gate); merge.sh passes it.
@@ -54,25 +59,91 @@ if [ "$pm" = web ] && echo "$ps" | /usr/bin/grep -q -x web; then
 fi
 # (3f) Crius 11-06 12:52: when the openapi file is the only shared file that moved since the build and the PR does not edit
 # it, the trial merge decides: dotnet build, OpenApiDriftTests, web tsc -b and the web contract tests, all rc 0 (each rc in
-# the mok log). Any other shared file that moved still refuses below.
+# the mok log). Any other shared file that moved still refuses below. Only when the web rules (3b/3d) above would refuse:
+# a web PR keeps the cheap contract-test path (7827 13:1x waited for the heavy slot it did not need).
 oapi=""
-if [ "$s2" = contracts/quotes.openapi.yaml ] && ! echo "$mine" | /usr/bin/grep -q -x contracts/quotes.openapi.yaml; then
-  oapi=yes
-elif [ -n "$s2" ]; then
+# (3g) lead 11-06 16:0x (RULES §0; 7807, 7825, 7858, 7826 looped on rebuilds: each rebuild takes ~25 min and the next merge
+# moves bN again): where a file rule below would refuse only because both sides moved, a full trial on the merged tree
+# decides at merge time instead (bN cannot move meanwhile: the lead merges one PR at a time). It still refuses: package or
+# lockfile changes on either side (the trial cannot install them), Migrations on both sides (two new migrations need a
+# rebuilt snapshot), and any text conflict (above). full = "<reason>"; the trial runs dotnet build, all .NET test projects,
+# and web tsc -b + full vitest.
+full=""
+pkall=$(printf '%s\n%s\n' "$s1" "$s2" | /usr/bin/grep -E '(^|/)(package\.json|package-lock\.json|bun\.lockb?|yarn\.lock|pnpm-lock\.yaml)$')
+twomig=""; echo "$s1" | /usr/bin/grep -q -E '(^|/)Migrations/' && echo "$s2" | /usr/bin/grep -q -E '(^|/)Migrations/' && twomig=yes
+canfull() { [ -z "$pkall" ] && [ -z "$twomig" ]; }
+if [ -n "$s2" ]; then
   s2web=$(echo "$s2" | /usr/bin/grep -v -E '(/Migrations/|(^|/)Migrations/|\.props$|\.targets$|\.sln$|(^|/)global\.json$)')
-  [ "$pm" = web ] && { [ -n "$train" ] || ! echo "$ps" | /usr/bin/grep -q -x web; } && { [ -z "$s2web" ] || [ "$s2web" = contracts/quotes.openapi.yaml ]; } || { echo "LOUD merge-ok: develop since the build touched shared file(s): $(echo $s2)"; exit 4; }
-  [ -n "$s2web" ] && contract=yes
+  if [ "$pm" = web ] && { [ -n "$train" ] || ! echo "$ps" | /usr/bin/grep -q -x web; } && { [ -z "$s2web" ] || [ "$s2web" = contracts/quotes.openapi.yaml ]; }; then
+    [ -n "$s2web" ] && contract=yes
+  elif [ "$s2" = contracts/quotes.openapi.yaml ] && ! echo "$mine" | /usr/bin/grep -q -x contracts/quotes.openapi.yaml; then
+    oapi=yes
+  elif canfull; then
+    full="develop since the build touched shared file(s): $(echo $s2)"
+  else
+    echo "LOUD merge-ok: develop since the build touched shared file(s): $(echo $s2)$( [ -n "$pkall" ] && echo "; package files: $(echo $pkall)")$( [ -n "$twomig" ] && echo '; Migrations on both sides')"; exit 4
+  fi
 fi
 # (3a) Crius 11-05 20:26: web drift tests read the openapi file. When it is the PR's only shared file and develop since the
 # build changed only web/, the web *-contract tests on the trial merge decide (green = no rebuild); any other shared file refuses.
 # (3c) Crius 11-05 20:54 (takes in 3a): a PR with no web/ file, develop since the build changed only web/ and no shared
 # file (s2 above): its own shared files cannot interact, so they pass; the openapi file still goes to the contract tests.
-if [ -n "$s1" ]; then
-  [ "$ps" = web ] && ! echo "$pm" | /usr/bin/grep -q -x web || { echo "LOUD merge-ok: PR touches shared file(s): $(echo $s1)"; exit 4; }
+# (3c+) Crius 11-06 14:00 (7826: Migrations + openapi + one web test; b1 since changed one other web test): a PR with its
+# own shared files and web files passes when every change since the build is under web/ and no web file changed on both
+# sides; the trial on the merged tree then runs tsc -b and the full vitest (train). Not run or any fail = rc 4.
+if [ -n "$s1" ] && [ "$ps" = web ] && echo "$pm" | /usr/bin/grep -q -x web; then
+  cw=$(comm -12 <(echo "$mine" | /usr/bin/grep '^web/' | sort) <(echo "$since" | /usr/bin/grep '^web/' | sort))
+  [ -z "$cw" ] || { echo "LOUD merge-ok: develop since the build changed web file(s) this PR also changes: $(echo $cw)"; exit 4; }
+  # the trial links an existing node_modules, so a PR package or lockfile change would not be installed: refuse
+  pk=$(echo "$s1" | /usr/bin/grep -E '(^|/)(package\.json|package-lock\.json|bun\.lockb?|yarn\.lock|pnpm-lock\.yaml)$')
+  [ -z "$pk" ] || { echo "LOUD merge-ok: PR changes package file(s) the trial cannot install: $(echo $pk)"; exit 4; }
+  train=yes; contract=yes
+elif [ -n "$s1" ]; then
+  if [ "$ps" = web ] && ! echo "$pm" | /usr/bin/grep -q -x web; then :
+  elif canfull; then full="${full:+$full; }PR touches shared file(s): $(echo $s1)"
+  else echo "LOUD merge-ok: PR touches shared file(s): $(echo $s1)$( [ -n "$pkall" ] && echo "; package files: $(echo $pkall)")$( [ -n "$twomig" ] && echo '; Migrations on both sides')"; exit 4; fi
   echo "$s1" | /usr/bin/grep -q -x contracts/quotes.openapi.yaml && contract=yes
 fi
 both=$(comm -12 <(echo "$pm") <(echo "$ps"))
-[ -z "$both" ] || { [ -n "$train" ] && [ "$both" = web ]; } || { echo "LOUD merge-ok: develop since the build changed folder(s) this PR also changes: $(echo $both)"; exit 4; }
+if [ -n "$both" ] && ! { [ -n "$train" ] && [ "$both" = web ]; }; then
+  canfull || { echo "LOUD merge-ok: develop since the build changed folder(s) this PR also changes: $(echo $both)"; exit 4; }
+  full="${full:+$full; }develop since the build changed folder(s) this PR also changes: $(echo $both)"
+fi
+# MOK_SCAN=1 (postmerge-scan.sh, Crius 11-06 13:28): stop before any trial; rc 0 here means "no rebuild by the file rules,
+# a trial still runs at merge time".
+if [ -n "${MOK_SCAN:-}" ]; then echo "merge-ok scan: PR $pr passes the file rules on $TB ${dev:0:8}$( [ -n "$full" ] && echo "; full trial at merge time ($full)" || { [ -n "$oapi$contract" ] && echo '; trial at merge time'; })"; exit 0; fi
+if [ -n "$full" ]; then
+  D=/private/tmp/claude-501/-Users-orkhanrzazade-Projects-Appxite-svc-quote-channels/3584a7f4-fcb0-4260-9e8d-e7749735c202/scratchpad/mok-trial
+  L=$D.log; H=~/Projects/Appxite/svc_quote/channels/poc/ui-app
+  [ ! -e "$D" ] || { echo "LOUD merge-ok: $D exists (another trial running, or left over): remove it by hand"; exit 2; }
+  c=$(git -C $G commit-tree "$(echo "$mt" | head -1)" -p "$dev" -p "$head" -m "merge-ok trial $pr") || { echo "LOUD merge-ok: cannot make the trial merge commit"; exit 2; }
+  nm=$(ls -d ~/Projects/Appxite/svc_quote/wt/*/web/node_modules 2>/dev/null | head -1)
+  [ -n "$nm" ] || { echo "LOUD merge-ok: no web/node_modules in any svc_quote worktree to run the web checks with"; exit 2; }
+  git -C $G worktree add -q --detach "$D" "$c" || { echo "LOUD merge-ok: cannot add trial worktree"; exit 2; }
+  ln -s "$nm" "$D/web/node_modules"
+  : > "$L"; fail=""
+  hv "cd $D && dotnet build svc_quote.slnx -m:2 -p:NuGetAudit=false" >> "$L" 2>&1; r=$?
+  echo "MOK rc dotnet-build $r" >> "$L"; [ $r -eq 0 ] || fail="$fail dotnet-build:$r"
+  for t in tests/Quote.Core.Tests tests/Quote.Worker.Tests tests/Quote.Api.Tests; do
+    [ -z "$fail" ] || break
+    : > "$L.t"
+    hv "cd $D && dotnet test $t --no-build -- NUnit.NumberOfTestWorkers=2" > "$L.t" 2>&1; r=$?
+    cat "$L.t" >> "$L"; echo "MOK rc $t $r" >> "$L"
+    /usr/bin/grep -a -q -E '^(Passed|Failed)!.*Total: *[1-9]' "$L.t" || r=${r/#0/9}   # no test count = did not run
+    [ $r -eq 0 ] || fail="$fail $t:$r"
+  done
+  rm -f "$L.t"
+  if [ -z "$fail" ]; then
+    (cd "$D/web" && ./node_modules/.bin/tsc -b && ./node_modules/.bin/vitest run) >> "$L" 2>&1; r=$?
+    echo "MOK rc web $r" >> "$L"
+    files=$(/usr/bin/grep -a -E 'Test Files +[0-9]+ passed' "$L" | tail -1)
+    { [ $r -eq 0 ] && [ -n "$files" ] && ! /usr/bin/grep -a -q -E 'Test Files .*failed' "$L"; } || fail="$fail web:$r"
+  fi
+  rm "$D/web/node_modules"; git -C $G worktree remove --force "$D"
+  [ -z "$fail" ] || { echo "LOUD merge-ok: full trial (3g) on the trial merge failed:$fail ($L); reason for the trial: $full"; exit 4; }
+  echo "merge-ok: PR $pr build $bid on ${base:0:8}; $TB ${dev:0:8}: $full; full trial (3g) green on the merged tree: dotnet build, Core/Worker/Api tests, web tsc -b + vitest ($files)"
+  exit 0
+fi
 if [ -n "$oapi" ]; then
   D=/private/tmp/claude-501/-Users-orkhanrzazade-Projects-Appxite-svc-quote-channels/3584a7f4-fcb0-4260-9e8d-e7749735c202/scratchpad/mok-trial
   L=$D.log; H=~/Projects/Appxite/svc_quote/channels/poc/ui-app
@@ -83,9 +154,9 @@ if [ -n "$oapi" ]; then
   git -C $G worktree add -q --detach "$D" "$c" || { echo "LOUD merge-ok: cannot add trial worktree"; exit 2; }
   ln -s "$nm" "$D/web/node_modules"
   : > "$L"
-  (cd $H && HEAVY_WAIT_S=3600 bun scripts/heavy.ts run -- bash -c "cd $D && dotnet build svc_quote.slnx") >> "$L" 2>&1; r1=$?
+  hv "cd $D && dotnet build svc_quote.slnx -m:2 -p:NuGetAudit=false" >> "$L" 2>&1; r1=$?
   echo "MOK rc dotnet-build $r1" >> "$L"
-  r2=9; [ $r1 -eq 0 ] && { (cd $H && HEAVY_WAIT_S=3600 bun scripts/heavy.ts run -- bash -c "cd $D && dotnet test tests/Quote.Api.Tests --no-build --filter FullyQualifiedName~OpenApiDriftTests") >> "$L" 2>&1; r2=$?; }
+  r2=9; [ $r1 -eq 0 ] && { hv "cd $D && dotnet test tests/Quote.Api.Tests --no-build --filter FullyQualifiedName~OpenApiDriftTests" >> "$L" 2>&1; r2=$?; }
   echo "MOK rc openapi-drift $r2" >> "$L"
   (cd "$D/web" && ./node_modules/.bin/tsc -b) >> "$L" 2>&1; r3=$?
   echo "MOK rc web-tsc $r3" >> "$L"

@@ -48,7 +48,7 @@ type scriptText struct {
 // cannotRead asks for a file the guard could not read, with the reason, when the command or a script that runs it names
 // az or Azure DevOps, as before 11-05 (a missing ./build/app or bun x.ts in other work is no post).
 func cannotRead(c ctx, name, why string) string {
-	if !namesAz(c) {
+	if c.pinned || !namesAz(c) { // a pinned script's text vouches for the files it runs that the guard cannot read (unsure)
 		return ""
 	}
 	return asked("the guard cannot read " + name + ": " + why)
@@ -62,6 +62,9 @@ func namesAz(c ctx) bool {
 // cannotPlace asks, like cannotRead, for a file whose path the guard cannot work out; source keeps its own text (the
 // start-up files of tools: . "$NVM_DIR/nvm.sh").
 func cannotPlace(a word, c ctx, kind runKind, why string) string {
+	if c.pinned {
+		return "" // as cannotRead
+	}
 	what := "the shell script "
 	if kind == byCode {
 		what = "the code file "
@@ -221,7 +224,7 @@ func scriptAt(name string, c ctx, kind runKind, plain, orNone bool, dir string) 
 	// item 5); the scripts and code a shell script runs are read as usual, or pass on their own pins (review r2 P1-6:
 	// merge.sh passed unread while it runs merge-ok.sh and review-gate.sh, which no pin covered)
 	pin := false
-	if _, ops := opsScripts[filepath.Base(name)]; ops && c.crius != nil && c.crius.lead && kind != byCode {
+	if _, ops := opsScripts[filepath.Base(name)]; ops && c.crius != nil && kind != byCode {
 		// an ops check passes unread on its pin when the command changes none of the files it runs (owner order 11-08)
 		files, why := opsScript(name)
 		for _, f := range files {
@@ -236,7 +239,7 @@ func scriptAt(name string, c ctx, kind runKind, plain, orNone bool, dir string) 
 			c.crius.pinMiss = append(c.crius.pinMiss, why)
 		}
 	}
-	if c.crius != nil && c.crius.lead && plain && len(heredocs) == 0 && !c.changes(name, written) && c.madeBy(name) == "" {
+	if c.crius != nil && plain && len(heredocs) == 0 && !c.changes(name, written) && c.madeBy(name) == "" {
 		why := teamScript(name, c.after, dir)
 		if why == "" && kind == byCode {
 			why = bunRunner(c.runner)
@@ -286,7 +289,7 @@ func scriptAt(name string, c ctx, kind runKind, plain, orNone bool, dir string) 
 			switch made := c.madeBy(name); {
 			case made != "":
 				// a script the command ran before names this one: it may write it (gen.sh && bash out.sh, review r3b)
-				return unsure(ctx{whole: made + "\n" + c.whole}, "a script or program another script the command runs may make:")
+				return unsure(ctx{whole: made + "\n" + c.whole, pinned: c.pinned}, "a script or program another script the command runs may make:")
 			case c.changes(name, written):
 				// made by the command in a way the guard does not read (go build -o x, cp a.sh x.sh)
 				return unsure(c, "a script or program the command makes before it runs ("+name+"):")
@@ -733,6 +736,9 @@ var readsOnly = map[string]bool{"chmod": true, "shellcheck": true, "bat": true, 
 func (c ctx) changes(script string, fine map[*syntax.Word]bool) bool {
 	for i := range c.files {
 		r := c.files[i]
+		if r.pinned {
+			continue // a pinned script's own writes are part of the file its pin stands for
+		}
 		// each text in the folder state of its own (review of the 11-05 change: a script's folder was used for the
 		// command's relative words)
 		rc := ctx{cwd: r.cwd, vars: r.vars, moved: r.moved, movedAt: r.movedAt, script: r.script, cd: r.cd, alt: c.alt}

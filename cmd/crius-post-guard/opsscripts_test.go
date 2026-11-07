@@ -36,25 +36,26 @@ func TestOpsCheckScriptsRunWithNoPromptOnTheirPins(t *testing.T) {
 	_, _, _ = opsHome(t)
 	dir := t.TempDir()
 	// the 11-07 20:00 command, and the other shapes ops runs them in
-	leadCheck(t, dir, "~/.crius/state/crius/ops-bin/click-check.sh workspace:1000070003 surface:1000070012", "")
-	leadCheck(t, dir, "bash ~/.crius/state/crius/ops-bin/click-check.sh workspace:1000070003 surface:1000070012", "")
-	leadCheck(t, dir, "~/.crius/state/crius/ops-pins.sh; echo rc=$?", "")
+	guardCall(t, dir, "~/.crius/state/crius/ops-bin/click-check.sh workspace:1000070003 surface:1000070012", "")
+	guardCall(t, dir, "bash ~/.crius/state/crius/ops-bin/click-check.sh workspace:1000070003 surface:1000070012", "")
+	guardCall(t, dir, "~/.crius/state/crius/ops-pins.sh; echo rc=$?", "")
 }
 
-func TestOpsCheckScriptsAskWhenChangedOrElsewhere(t *testing.T) {
+func TestOpsCheckScriptsAreReadWhenChangedOrElsewhere(t *testing.T) {
 	_, click, pins := opsHome(t)
 	dir := t.TempDir()
 	cmd := "~/.crius/state/crius/ops-bin/click-check.sh workspace:1000070003 surface:1000070012"
-	// ops-pins.sh changed after its pin, with an az write: the click-check run asks
+	// ops-pins.sh changed after its pin: click-check.sh runs it as a script it may change first, so it is refused, and
+	// the reason says the pin no longer matches
 	b, _ := os.ReadFile(pins)
 	write(t, pins, string(b)+"az repos pr update --id 1 --description x --org https://dev.azure.com/Appxite\n")
-	leadCheck(t, dir, cmd, "ops-pins.sh")
+	guardCall(t, dir, cmd, "deny", "ops-pins.sh", "does not match the SHA-256")
 	write(t, pins, string(b))
 	// group-writable: anyone in the group could change it
 	if err := os.Chmod(click, 0o775); err != nil {
 		t.Fatal(err)
 	}
-	leadCheck(t, dir, cmd, "click-check.sh")
+	guardCall(t, dir, cmd, "deny", "click-check.sh")
 	if err := os.Chmod(click, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +63,7 @@ func TestOpsCheckScriptsAskWhenChangedOrElsewhere(t *testing.T) {
 	other := filepath.Join(dir, "click-check.sh")
 	cb, _ := os.ReadFile(click)
 	write(t, other, string(cb))
-	leadCheck(t, dir, "bash "+other+" workspace:1 surface:2", "click-check.sh")
+	guardCall(t, dir, "bash "+other+" workspace:1 surface:2", "deny", "click-check.sh")
 	// a command that writes the script before it runs it
-	leadCheck(t, dir, "echo 'az repos pr update --id 1 --description x' > ~/.crius/state/crius/ops-pins.sh; "+cmd, "ops-pins.sh")
+	guardCall(t, dir, "echo 'az repos pr update --id 1 --description x' > ~/.crius/state/crius/ops-pins.sh; "+cmd, "deny", "ops-pins.sh")
 }

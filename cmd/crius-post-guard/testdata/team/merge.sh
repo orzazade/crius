@@ -28,11 +28,11 @@ if [ "${SYNC_OK:-}" = "$pr" ]; then
   git -C $G merge-base --is-ancestor "$head" origin/develop || no 10 "SYNC_OK: head ${head:0:8} is not on origin/develop, so this is not a sync PR"
   echo "review-gate skipped: SYNC_OK=$pr, head ${head:0:8} is on origin/develop"
 else
-  o=$(bash $NS/lead/review-gate.sh "$pr" 2>&1); g=$?
+  o=$(MERGE_BUILD="$bid" bash $HOME/.crius/state/quotes/build/bin/lead/review-gate.sh "$pr" 2>&1); g=$?
   echo "$o"; [ $g -eq 0 ] || no 10 "review-gate rc $g"
 fi
 
-o=$(bash $NS/lead/merge-ok.sh "$pr" "$bid" 2>&1); m=$?
+o=$(bash $HOME/.crius/state/quotes/build/bin/lead/merge-ok.sh "$pr" "$bid" 2>&1); m=$?
 echo "$o"; [ $m -eq 0 ] || no 11 "merge-ok rc $m"
 
 b=$(az pipelines runs show --org $O --project "$P" --id "$bid" --query "[result, sourceBranch]" -o tsv | tr '\n' ' ') || no 2 "cannot read build $bid"
@@ -58,7 +58,7 @@ h2=$(az repos pr show --org $O --id "$pr" --query lastMergeSourceCommit.commitId
 # rc 20 (lead 11-05 22:03, second slip: 7798 merged during 7772's rebuild, 7799 during 7785's): refuse while another PR
 # that requeue-all.sh queued (lead/inflight.txt) still has its Build policy running and shares a project folder with this
 # PR, because this merge would make that rebuild stale. ORDER_OK=<that pr> overrides for one named PR.
-inf=$NS/lead/inflight.txt
+inf=$HOME/.crius/state/quotes/build/bin/lead/inflight.txt
 proj() { awk -F/ '{ if ($1=="src"||$1=="tests") print $1"/"$2; else if ($1=="web") print "web"; else print $1 }' | sort -u; }
 tok=$(az account get-access-token --resource 499b84ac-1321-427f-aa17-267ca6975798 --query accessToken -o tsv) || no 2 "no ADO token"
 git -C $G -c http.extraHeader="Authorization: Bearer $tok" fetch -q origin "$TB" || no 2 "fetch $TB failed"
@@ -89,7 +89,7 @@ fi
 az repos pr update --org $O --id "$pr" --status completed --squash false --delete-source-branch true -o none || no 18 "az repos pr update failed"
 for i in $(seq 30); do
   s=$(az repos pr show --org $O --id "$pr" --query "[status, lastMergeCommit.commitId]" -o tsv | tr '\n' ' ')
-  case "$s" in completed\ *) [ -f "$inf" ] && { /usr/bin/grep -v -x "$pr" "$inf" > "$inf.new"; mv "$inf.new" "$inf"; }; echo "merge.sh: PR $pr completed, merge commit ${s#completed }"; exit 0;; esac
+  case "$s" in completed\ *) [ -f "$inf" ] && { /usr/bin/grep -v -x "$pr" "$inf" > "$inf.new"; mv "$inf.new" "$inf"; }; echo "merge.sh: PR $pr completed, merge commit ${s#completed }"; [ "${TB:-develop}" = develop ] || bash $HOME/.crius/state/quotes/build/bin/lead/postmerge-scan.sh "$TB"; exit 0;; esac
   sleep 10
 done
 no 18 "PR still '$s' after 5 min"

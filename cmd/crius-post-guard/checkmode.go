@@ -16,42 +16,29 @@ import (
 	"mvdan.cc/sh/v3/syntax"
 )
 
-// Crius mode (Crius 11-06, owner: the Crius session kept asking him for clicks, so he could not leave it alone). In the
-// Crius session and its subagents, known by the hook input's session_id being the one Crius writes to
-// $CRIUS_HOME/state/crius/session-id (review of 2a882aa, P2-7: a project folder is not a session), the guard never
-// answers "ask":
+// Check mode (owner 11-08: "why we have such guards at all, it is too much"; before that, Crius mode for the Crius
+// session only, Crius 11-06). In every session the guard checks the posts it finds and never answers "ask":
 //   - every post the reading finds is recorded instead of returned, so the reading goes on through the whole command and
-//     every script it reads; when all of them pass the hard checks the call goes on (the guard writes nothing, so the
-//     owner's own permission rules still apply);
+//     every script it reads; when all of them pass the checks the call goes on (the guard writes nothing, so the
+//     owner's own permission rules still apply). A read (show, list, runs list, pr list) is no post and is not checked;
+//   - a word that is "$(cat FILE)" in double quotes is read as FILE's text (resolve), as the shell gives it to az;
 //   - a hard check that fails denies with its reason: text with AI credit (aiCreditRe: the real forms, not a bare
 //     "generated"), an az repos pr update --status completed into develop or main (the target is read with one GET in
 //     the command's own org, which must be Appxite's), a completion through REST (by name or as the number 3), any
 //     --auto-complete or a prefix of it, a production URL or resource (prodRe, prodHostRe);
-//   - anything the guard cannot read denies with the reason and "write it so the guard can read it": the agent rewrites
-//     the call and nobody waits. That covers a post with a word that is not a literal (its text could be anything), and
-//     every source of text the post's own parser finds (bodySources) that the guard did not read: a file that cannot be
-//     read, stdin, a curl or wget config file, a file the command writes before it in a way the guard does not read, a
-//     relative file after a folder change (a cd, find -execdir, and find -exec and xargs, which fill in words).
-// The exact shapes (adoexact.go, quotesexact.go, passpost.go) still pass on their own; when their hook-time checks fail,
-// the call gets the reading like any other. Allows go to post-guard-allows.log, not the ask log.
-// Known gaps: hook input the guard cannot parse names no session, so it still asks; a git push to develop or main
-// passes here as everywhere (not a post to this guard); text an az call reads from somewhere other than its words and
-// the files they name (a config default) is not seen; a file a script the command runs writes under a name the script
-// computes is not seen; any session of this user can write the session-id file.
-
-// criusSession says whether sid is the Crius session: the one line of $CRIUS_HOME/state/crius/session-id, a plain file
-// of this user's that no one else may write.
-func criusSession(sid string) bool {
-	if sid == "" {
-		return false
-	}
-	b, why := ownFile(filepath.Join(crHome(), "state", "crius", "session-id"))
-	if why != "" {
-		return false
-	}
-	id, rest, _ := strings.Cut(string(b), "\n")
-	return strings.TrimSpace(rest) == "" && strings.TrimSpace(id) == sid
-}
+//   - a content check that fails denies with its reason (contentCheck, content.go): a model or tool name in the text
+//     people read, an empty text or an empty file, a PR description over 4000 characters, a team's work item rule;
+//   - anything the guard cannot read denies with the reason and how to write the text so it can (rewrite): the agent
+//     rewrites the call and nobody waits. That covers a post with a word that is not a literal (its text could be
+//     anything), and every source of text the post's own parser finds (bodySources) that the guard did not read: a file
+//     that cannot be read, stdin, a curl or wget config file, a file the command writes before it in a way the guard does
+//     not read, a relative file after a folder change (a cd, find -execdir, and find -exec and xargs, which fill in words).
+// The exact shapes (adoexact.go, quotesexact.go, passpost.go) pass on their own, and so do pinned team scripts' own posts
+// (pins.go); when their hook-time checks fail, the call gets the reading like any other. Allows go to
+// post-guard-allows.log, refusals to post-guard-asks.log (its name from when the guard asked).
+// Known gaps: a git push to develop or main passes here as everywhere (not a post to this guard); text an az call reads
+// from somewhere other than its words and the files they name (a config default) is not seen; a file a script the
+// command runs writes under a name the script computes is not seen.
 
 // crHome is $CRIUS_HOME, else ~/.crius.
 func crHome() string {
@@ -97,15 +84,14 @@ type postCall struct {
 	why   string
 }
 
-// criusLog collects the posts of one hook call in Crius mode.
+// criusLog collects the posts of one hook call.
 type criusLog struct {
 	posts   []postCall
-	lead    bool     // the lead allow list's reading: pinned team scripts' own posts pass (allowlist.go)
 	pinMiss []string // why team scripts the command runs did not pass on their pin
 }
 
-// post records a post the reading found and gives "" in Crius mode, so the reading goes on; elsewhere it gives why.
-// stdin: the call reads a pipe, a file or a heredoc on its standard input.
+// post records a post the reading found and gives "" when there is a log (the hook), so the reading goes on; with none
+// (the tests of the reading) it gives why. stdin: the call reads a pipe, a file or a heredoc on its standard input.
 func (c ctx) post(tool string, args []word, stdin bool, why string) string {
 	if c.crius == nil || why == "" || unsureWhy(why) {
 		return why
@@ -147,26 +133,40 @@ var (
 	protectedRe    = regexp.MustCompile(`^refs/heads/(develop|main|master)$`)
 )
 
-const rewrite = "; write it so the guard can read it (literal words; post text in a file passed with @file or --in-file)"
+// rewrite is how to write post text the guard can read (owner 11-08).
+const rewrite = `; write the text to a file and pass --description "$(cat file)" (or @file, --in-file file); literal words otherwise`
 
-// criusRun is run for a Crius-mode call: nothing when it may go on, else a deny with the reason.
-func criusRun(in input, w io.Writer) error {
+// refused starts every reason the guard gives.
+const refused = "crius-post-guard refused, not asked: "
+
+// checkRun is run for every call: nothing when it may go on, else a deny with the reason.
+func checkRun(in input, w io.Writer) error {
 	col := &criusLog{}
 	if why := checkIn(in, col); why != "" {
-		// posts are recorded, so what is left is what the guard cannot read (a command, a script, code of another language)
-		why = "Crius mode: refused, not asked: " + strings.TrimPrefix(why, reason+" ") + rewrite
+		// posts are recorded, so what is left is what the guard cannot read (a command, a script, code of another
+		// language), or an exact shape's own check
+		if len(col.pinMiss) > 0 {
+			why += " (not a pinned team script: " + col.pinMiss[0] + ")"
+		}
+		why = refused + strings.TrimPrefix(why, reason+" ") + rewrite
 		logAsk(in, why)
-		return decide(w, "deny", why)
+		return deny(w, why)
 	}
 	for _, p := range col.posts {
-		if why := hardCheck(p); why != "" {
-			why = "Crius mode: refused, not asked: " + why
+		why := ""
+		if p.args, why = p.resolve(); why == "" {
+			if why = hardCheck(p); why == "" {
+				why = contentCheck(p, in)
+			}
+		}
+		if why != "" {
+			why = refused + why
 			logAsk(in, why)
-			return decide(w, "deny", why)
+			return deny(w, why)
 		}
 	}
 	if len(col.posts) > 0 {
-		logTo(in, "Crius mode: allowed "+strings.TrimPrefix(col.posts[0].why, reason+" "), "post-guard-allows.log")
+		logTo(in, "allowed "+strings.TrimPrefix(col.posts[0].why, reason+" "), "post-guard-allows.log")
 	}
 	return nil
 }

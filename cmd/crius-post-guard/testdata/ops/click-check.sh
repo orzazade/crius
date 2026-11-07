@@ -7,7 +7,7 @@ ORG=https://dev.azure.com/Appxite; PROJ="AppXite Platform"; B1=integration/96365
 BL=$HOME/.crius/state/quotes/build/BUILD-LOG.md; REPO=$HOME/Projects/Appxite/svc_quote/svc_quote
 main() {
 echo "PINS: $(~/.crius/state/crius/ops-pins.sh 2>&1 | cut -c1-110 | tr '\n' ' ')"
-scr=$(cmux read-screen --workspace "$ws" --surface "$sf" --scrollback < /dev/null 2>&1 | tail -80)
+scr=$(cmux read-screen --workspace "$ws" --surface "$sf" --scrollback < /dev/null 2>&1 | tail -250)
 printf '%s' "$scr" | tail -12 | /usr/bin/grep -aq 'Do you want to proceed\|❯ 1\. Yes' || echo "SCREEN: no prompt open now"
 echo "GUARD: $(printf '%s' "$scr" | /usr/bin/grep -a -A3 'Hook PreToolUse' | tail -4 | tr -s ' \n│' ' ' | cut -c1-300)"
 title=$(cmux tree --all < /dev/null 2>&1 | /usr/bin/grep -a "$sf " | /usr/bin/grep -ao '"[^"]*"' | head -1 | tr -d '"')
@@ -17,7 +17,9 @@ sid=$(/usr/bin/grep -a "$key " ~/.crius/bus/waits.log | /usr/bin/grep -ao 'sid=[
 cmd=$(printf '%s\n' "$scr" | awk '/^ *(Bash command|Tool use)/{b=1;n=0;c="";next} b&&/Hook PreToolUse/{b=0;o=c} /╌/{next} b&&n++>0{sub(/^ *│ ?/,"");sub(/ +$/,"");c=c (c==""?"":" ") $0} END{print o}')
 f=$(ls -t ~/.claude*/projects/*/"${sid:-none}"*.jsonl 2>/dev/null | head -1)
 cwd=$([ -n "$f" ] && tail -c 200000 "$f" | /usr/bin/grep -ao '"cwd":"[^"]*"' | tail -1 | cut -d'"' -f4)
-echo "TAB: $title sid=${sid:-?} cwd=${cwd:-?}"; [ -n "$cmd" ] || { echo "NO COMMAND BOX on screen: read the screen"; return; }
+# A box taller than the screen loses its header: fall back to the last tool_use in the transcript (it is written there).
+[ -n "$cmd" ] || [ -z "$f" ] || { cmd=$(tail -c 400000 "$f" | /usr/bin/grep -a '"tool_use"' | tail -1 | jq -r '[.message.content[]|select(.type=="tool_use")|.input.command // (.input|tostring)]|join("\n")'); echo "CMD FROM TRANSCRIPT (box cut off): check its guard reason matches"; }
+echo "TAB: $title sid=${sid:-?} cwd=${cwd:-?}"; [ -n "$cmd" ] || { echo "NO COMMAND BOX on screen and no transcript: read the screen"; return; }
 out="$SP/cmd-${sf#surface:}.txt"; printf '%s\n' "$cmd" > "$out"; n=$(printf '%s\n' "$cmd" | fold -w 230 | wc -l | tr -d ' ')
 echo "--- CMD ($n lines; whole in $out)"; printf '%s\n' "$cmd" | fold -w 230 | head -18
 [ "$n" -gt 18 ] && echo "--- CMD CUT at 18 of $n lines: read the file before approving"
