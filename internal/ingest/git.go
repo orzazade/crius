@@ -22,9 +22,28 @@ func gitRun(repo string, args ...string) (string, error) {
 	cmd := exec.Command("git", append([]string{"-C", repo, "-c", "log.showSignature=false"}, args...)...)
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("git %s: %v: %s", args[0], err, head(strings.TrimSpace(errb.String()), 200))
+		g := &gitError{msg: fmt.Sprintf("git %s: %v: %s", args[0], err, head(strings.TrimSpace(errb.String()), 200)), code: -1, quiet: errb.Len() == 0}
+		if ee, ok := err.(*exec.ExitError); ok {
+			g.code = ee.ExitCode()
+		}
+		return "", g
 	}
 	return out.String(), nil
+}
+
+type gitError struct {
+	msg   string
+	code  int
+	quiet bool // nothing on stderr
+}
+
+func (e *gitError) Error() string { return e.msg }
+
+// quietNo is git's plain "no" to a -q question (no such ref, HEAD is not a symbolic ref): exit 1 and nothing on stderr.
+// A broken ref or an unreadable repo says something, so it is never taken for a "no" (review P2).
+func quietNo(err error) bool {
+	var g *gitError
+	return errors.As(err, &g) && g.code == 1 && g.quiet
 }
 
 var errDiverged = errors.New("branches diverged")
@@ -60,15 +79,26 @@ func defaultBranch(repo string) (name, sha string, err error) {
 		return n, local, fmt.Errorf("%w: %s and origin/%s have diverged (or the fetch is shallow); read %s only", errDiverged,
 			n, n, n)
 	}
-	// a repo with no remote at all (svc_marketplace works on wip/baseline) has no origin default: its line is the branch
-	// it has checked out (docs audit 11-08: every run since 10-30 ended partial on it)
+	// a repo with no remote at all (a local service repo on a wip branch) has no origin default: its line is the branch
+	// it has checked out (docs audit 11-08: every run since 10-30 ended partial on it). With none to read, the warning
+	// names why (review P3-3).
 	if out, err := gitRun(repo, "remote"); err == nil && strings.TrimSpace(out) == "" {
-		if b, err := gitRun(repo, "symbolic-ref", "--short", "-q", "HEAD"); err == nil && strings.TrimSpace(b) != "" {
-			n := strings.TrimSpace(b)
-			if sha, err := gitRun(repo, "rev-parse", "--verify", "-q", "refs/heads/"+n); err == nil {
-				return n, strings.TrimSpace(sha), nil
-			}
+		b, err := gitRun(repo, "symbolic-ref", "--short", "-q", "HEAD")
+		n := strings.TrimSpace(b)
+		switch {
+		case quietNo(err):
+			return "", "", fmt.Errorf("no remote and HEAD is detached (a rebase or bisect in progress?): nothing read until a branch is checked out")
+		case err != nil:
+			return "", "", fmt.Errorf("no remote and cannot read HEAD: %v", err)
 		}
+		sha, err := gitRun(repo, "rev-parse", "--verify", "-q", "refs/heads/"+n)
+		switch {
+		case quietNo(err):
+			return "", "", fmt.Errorf("no remote and branch %s has no commit yet", n)
+		case err != nil:
+			return "", "", fmt.Errorf("no remote and cannot read branch %s: %v", n, err)
+		}
+		return n, strings.TrimSpace(sha), nil
 	}
 	return "", "", fmt.Errorf("no default branch (origin HEAD, main, master)")
 }

@@ -71,7 +71,7 @@ func TestACommitLandingDuringTheRunIsNotSkipped(t *testing.T) {
 	eq(t, x.one("select count(*) from git_commit"), "2")
 }
 
-// Docs audit 11-08: svc_marketplace is a local repo with no remote and no main or master (it works on wip/baseline), so
+// Docs audit 11-08: a local service repo with no remote and no main or master (it works on wip/baseline), so
 // every run since 10-30 warned "no default branch" and ended partial (exit 3, no heartbeat). A repo with no remote at all
 // reads the branch it has checked out; one with a remote still needs origin's default, main or master.
 func TestARepoWithNoRemoteReadsItsCheckedOutBranch(t *testing.T) {
@@ -87,6 +87,29 @@ func TestARepoWithNoRemoteReadsItsCheckedOutBranch(t *testing.T) {
 	testutil.Git(t, repo, "remote", "add", "origin", filepath.Join(x.root, "nowhere"))
 	if st := x.run(); st.Status != "partial" || !strings.Contains(strings.Join(st.Warnings, "\n"), "no default branch") {
 		t.Fatalf("with a remote: %+v", st)
+	}
+}
+
+// A no-remote repo in a rebase or bisect (detached HEAD), or on a branch with no commit yet, stays partial, but the
+// warning names that cause, not "no default branch" (review P3-3).
+func TestANoRemoteRepoSaysWhyItHasNoBranch(t *testing.T) {
+	x, repo := gitCase(t)
+	testutil.Git(t, repo, "checkout", "-q", "-b", "wip/baseline")
+	testutil.Write(t, filepath.Join(repo, "a.txt"), "1\n")
+	testutil.CommitAll(t, repo)
+	testutil.Git(t, repo, "checkout", "-q", "--detach")
+	if st := x.run(); st.Status != "partial" || !strings.Contains(strings.Join(st.Warnings, "\n"), "no remote and HEAD is detached") {
+		t.Fatalf("detached: %+v", st)
+	}
+	testutil.Git(t, repo, "checkout", "-q", "--orphan", "fresh")
+	if st := x.run(); st.Status != "partial" || !strings.Contains(strings.Join(st.Warnings, "\n"), "no remote and branch fresh has no commit yet") {
+		t.Fatalf("unborn: %+v", st)
+	}
+	// a broken branch ref is git saying something is wrong, not a detached HEAD or an empty branch: its error is kept
+	testutil.Write(t, filepath.Join(repo, ".git", "refs", "heads", "fresh"), "garbage\n")
+	if w := strings.Join(x.run().Warnings, "\n"); !strings.Contains(w, "no remote and cannot read HEAD: git symbolic-ref") ||
+		strings.Contains(w, "detached") || strings.Contains(w, "no commit yet") {
+		t.Fatalf("broken ref: %s", w)
 	}
 }
 
