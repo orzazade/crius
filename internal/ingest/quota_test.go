@@ -722,15 +722,14 @@ func TestQuotaEnterprisePersonaIsNotStale(t *testing.T) {
 }
 
 // Review of 47842ed (codex P1): a heartbeat repeats a session's last values, so it measures nothing new. A 95%
-// measured 2 h ago with heartbeats since is a stale measurement (unknown), not a fresh one (room). A Max sample
-// without a 5h window does not say 5h is 0%.
+// measured 2 h ago with heartbeats since is a stale measurement (unknown), not a fresh one (room). (Its "no 5h" case
+// went 11-08: with no 5h window reported the 7d share decides; TestRoom covers it.)
 func TestQuotaRoomCountsMeasurementsNotHeartbeats(t *testing.T) {
 	for _, c := range []struct {
 		name, limits string
 		since        time.Duration
 	}{
 		{"heartbeats", `"five_hour":{"used_percentage":40,"resets_at":%d},"seven_day":{"used_percentage":95,"resets_at":%d}`, 2 * time.Hour},
-		{"no 5h", `"seven_day":{"used_percentage":40,"resets_at":%[2]d}`, 10 * time.Minute},
 	} {
 		x := quotaCase(t)
 		if err := os.MkdirAll(filepath.Join(x.home, "spool"), 0o700); err != nil {
