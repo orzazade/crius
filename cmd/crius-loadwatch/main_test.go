@@ -214,8 +214,8 @@ func TestAQuietMachineGetsAThirdSlot(t *testing.T) {
 	}
 }
 
-// The 5-min load over 28 while 3 or 4 slots are set: 1 at once as before, and the extra slots are turned off for good
-// (the most it sets is 2), with the numbers posted to crius:lead (DECISION 11-08: drop back to 2 and post the numbers).
+// The 5-min load over 28 while 3 or 4 slots are set: 1 at once as before, and the extra slots are turned off (the most
+// it sets is 2), with the numbers posted to crius:lead (DECISION 11-08: drop back to 2 and post the numbers).
 func TestOverloadWithThreeSlotsTurnsTheThirdOff(t *testing.T) {
 	r := newRig(t, "3")
 	r.minutes(1, 28.4, 17)
@@ -224,7 +224,7 @@ func TestOverloadWithThreeSlotsTurnsTheThirdOff(t *testing.T) {
 		!strings.Contains(b[1], " INFO crius:loadwatch -> crius:lead — extra heavy slots off: load5 28.40 over 28 with 3 slots (load15 17.00, memory free 80%)") {
 		t.Fatalf("slots %s bus %q", r.slots(t), b)
 	}
-	if r.minutes(30, 10, 10); r.slots(t) != "2" || len(r.bus(t)) != 3 {
+	if r.minutes(20, 10, 10); r.slots(t) != "2" || len(r.bus(t)) != 3 {
 		t.Fatalf("after the trip the most is 2: slots %s bus %q", r.slots(t), r.bus(t))
 	}
 	r.minutes(1, 29, 10) // over 28 again with 2 slots: no second trip line
@@ -350,5 +350,112 @@ func TestOverloadWithFourSlotsTurnsTheExtrasOff(t *testing.T) {
 	}
 	if r.minutes(10, 5, 5); r.slots(t) != "2" {
 		t.Fatalf("after the trip the most is 2: slots %s", r.slots(t))
+	}
+}
+
+// The extras come back once the 15-min load has been under 18 for 30 minutes after the trip, with one INFO to
+// crius:lead; then the normal up-steps apply. A minute at 18 or more starts the 30 minutes again (crius:lead DECISION
+// 11-08: the 04:56 overload was npm ci and Spotlight, not the heavy jobs, so "off for good" was too strict).
+func TestTheExtrasComeBackAfterThirtyQuietMinutes(t *testing.T) {
+	r := newRig(t, "3")
+	r.minutes(1, 29, 17)  // 03:00 trip: 3 -> 1
+	r.minutes(10, 20, 17) // 03:01-03:10 quiet: 1 -> 2 at 03:01
+	r.minutes(1, 20, 18)  // 03:11 not under 18: the clock starts again
+	r.minutes(30, 20, 17) // 03:12-03:41: the clock starts at 03:12, 29 min by 03:41
+	if b := r.bus(t); r.slots(t) != "2" || len(b) != 3 {
+		t.Fatalf("29 quiet minutes: slots %s bus %q", r.slots(t), b)
+	}
+	r.minutes(1, 20, 17) // 03:42: 30 minutes since 03:12
+	b := r.bus(t)
+	if r.slots(t) != "3" || len(b) != 5 ||
+		!strings.Contains(b[3], " INFO crius:loadwatch -> crius:lead — extra heavy slots allowed again: load15 under 18 for 30 min (load5 20.00, load15 17.00, memory free 80%)") ||
+		!strings.Contains(b[4], "heavy slots 2 -> 3") {
+		t.Fatalf("slots %s bus %q", r.slots(t), b)
+	}
+	// and they can trip again
+	r.minutes(1, 29, 17)
+	if b := r.bus(t); r.slots(t) != "1" || !strings.Contains(b[len(b)-1], "extra heavy slots off") {
+		t.Fatalf("second trip: slots %s bus %q", r.slots(t), b)
+	}
+}
+
+// The trip line says how the extras come back.
+func TestTheTripLineSaysWhenTheExtrasReturn(t *testing.T) {
+	r := newRig(t, "4")
+	r.minutes(1, 30, 11)
+	if b := r.bus(t); len(b) != 2 || !strings.HasSuffix(b[1], "the most is 2 until load15 has been under 18 for 30 min") {
+		t.Fatalf("bus %q", b)
+	}
+}
+
+// A gap in the readings (Mac asleep, missed or failed runs) or a clock set back restarts the quiet clock: the extras
+// come back only after 30 minutes of readings with no gap over 3 minutes (review P2, P3).
+func TestAGapRestartsTheQuietClock(t *testing.T) {
+	for _, jump := range []time.Duration{40 * time.Minute, -2 * time.Hour} {
+		r := newRig(t, "3")
+		r.minutes(1, 29, 17)
+		r.minutes(5, 20, 17)
+		r.now = r.now.Add(jump)
+		if r.minutes(30, 20, 17); r.slots(t) != "2" {
+			t.Fatalf("jump %v: back within 30 min of the gap: slots %s", jump, r.slots(t))
+		}
+		if r.minutes(1, 20, 17); r.slots(t) != "3" {
+			t.Fatalf("jump %v: not back 30 min after the gap: slots %s", jump, r.slots(t))
+		}
+	}
+}
+
+// A state file it cannot parse, or a quiet clock it cannot read, keeps the extras off, still lets the load rules act (over
+// 28 drops to 1), is loud, and is rewritten so the next run starts a fresh quiet clock (review P2).
+func TestABrokenStateKeepsTheExtrasOff(t *testing.T) {
+	for _, bad := range []string{"{garbage", `{"noExtra":true,"quietSince":"x","quietLast":"x"}`} {
+		r := newRig(t, "2")
+		if err := os.WriteFile(r.d.state, []byte(bad), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if rc := r.minutes(1, 10, 10); rc != 2 || r.slots(t) != "2" || len(r.bus(t)) != 1 || !strings.Contains(r.bus(t)[0], " ALERT ") {
+			t.Fatalf("%s: quiet: rc %d slots %s bus %q", bad, rc, r.slots(t), r.bus(t))
+		}
+		if rc := r.minutes(1, 29, 10); rc != 0 || r.slots(t) != "1" {
+			t.Fatalf("%s: over 28: rc %d slots %s", bad, rc, r.slots(t))
+		}
+		r.minutes(28, 20, 10) // the clock started at the first run (03:00): 29 min by 03:29
+		if r.slots(t) != "2" {
+			t.Fatalf("%s: back before 30 quiet minutes: slots %s", bad, r.slots(t))
+		}
+		if r.minutes(1, 10, 10); r.slots(t) != "4" {
+			t.Fatalf("%s: not back after 30 quiet minutes: slots %s", bad, r.slots(t))
+		}
+	}
+}
+
+// A state file that exists but cannot be read is not overwritten into a forgotten trip, and the load rules still act
+// (review r2 P2-1).
+func TestAnUnreadableStateKeepsTheTrip(t *testing.T) {
+	r := newRig(t, "2")
+	if err := os.WriteFile(r.d.state, []byte(`{"noExtra":true}`), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	if rc := r.minutes(1, 29, 10); rc != 2 || r.slots(t) != "1" {
+		t.Fatalf("over 28: rc %d slots %s out %s", rc, r.slots(t), r.out.String())
+	}
+	if r.minutes(1, 10, 10); r.slots(t) != "2" {
+		t.Fatalf("the trip was forgotten: slots %s", r.slots(t))
+	}
+}
+
+// A broken state on a run whose slot write also fails is still said: no failure drops another (review r2 P2-2).
+func TestABrokenStateIsSaidWhenTheSlotWriteFails(t *testing.T) {
+	r := newRig(t, "2")
+	if err := os.WriteFile(r.d.state, []byte("{garbage"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Dir(r.slotPath)
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(dir, 0o700)
+	if rc := r.minutes(1, 29, 10); rc != 2 || len(r.bus(t)) != 1 || !strings.Contains(r.bus(t)[0], "extra slots kept off") {
+		t.Fatalf("rc %d bus %q", rc, r.bus(t))
 	}
 }

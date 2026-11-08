@@ -10,8 +10,9 @@
 // Those are the up-steps. The extra slots come down only past a dead band: 4 to 3 at a 15-min load of 16, 3 to 2 at 22
 // (4 goes straight to 2 at 22), or at once to 2 when memory is under 40% free.
 //
-// The 5-min load over 28 while 3 or 4 slots are set turns the extra slots off for good (the most it sets is then 2) and
-// posts the numbers to crius:lead; deleting "noExtra" from the state file turns them back on.
+// The 5-min load over 28 while 3 or 4 slots are set turns the extra slots off (the most it sets is then 2) and posts the
+// numbers to crius:lead. They come back, with one more line to crius:lead, once the 15-min load has been under 18 for 30
+// minutes after that; a minute at 18 or more starts the 30 minutes again (crius:lead DECISION 11-08).
 //
 // It writes the slots file (~/AppxiteRig/heavy/slots) only on a change, and then posts one INFO line on the Crius bus.
 // A file that holds another whole number was set by hand: it is left alone and said in the log; an empty or broken
@@ -47,11 +48,20 @@ const (
 	minFree   = 40 // percent
 )
 
-// state is what one run leaves the next: whether a failure was already posted, and whether the extra slots are off.
+// state is what one run leaves the next: whether a failure was already posted, whether the extra slots are off, and
+// since when the 15-min load has been under 18 while they are.
 type state struct {
-	Failed  bool `json:"failed,omitempty"`
-	NoExtra bool `json:"noExtra,omitempty"`
+	Failed     bool   `json:"failed,omitempty"`
+	NoExtra    bool   `json:"noExtra,omitempty"`
+	QuietSince string `json:"quietSince,omitempty"` // RFC3339
+	QuietLast  string `json:"quietLast,omitempty"`  // the last quiet reading, RFC3339
 }
+
+// backAfter is how long the 15-min load must stay under quiet before tripped extra slots come back.
+const backAfter = 30 * time.Minute
+
+// maxGap is the longest time between two quiet readings that keeps the quiet clock running (the job runs every minute).
+const maxGap = 3 * time.Minute
 
 type deps struct {
 	home, slots, state string
@@ -137,35 +147,58 @@ func want(l5, l15 float64, free int, cur string, noExtra bool) string {
 func run(d deps) int {
 	now := d.now()
 	var st state
-	if b, err := os.ReadFile(d.state); err == nil {
-		if err := json.Unmarshal(b, &st); err != nil {
-			return failed(d, &st, now, fmt.Errorf("state %s: %w", d.state, err))
-		}
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		return failed(d, &st, now, err)
+	var late error // failures that must not stop the load rules: the run applies them, then ends loud
+	// every failure carries the ones before it, so none is dropped (review r2 P2-2)
+	fail := func(err error) int { return failed(d, &st, now, errors.Join(late, err)) }
+	b, err := os.ReadFile(d.state)
+	if err == nil {
+		err = json.Unmarshal(b, &st)
+	} else if errors.Is(err, fs.ErrNotExist) {
+		err = nil
+	}
+	if err != nil {
+		// a state it cannot read or parse may have held a trip: keep the extras off and start a fresh quiet clock
+		// (review P2, r2 P2-1)
+		st = state{NoExtra: true, Failed: st.Failed}
+		late = fmt.Errorf("state %s: %w; extra slots kept off", d.state, err)
 	}
 	l5, l15, err := d.load()
 	if err != nil {
-		return failed(d, &st, now, err)
+		return fail(err)
 	}
 	// memory it cannot read only rules out the extra slots: the load rules still hold, and the run ends loud (review P2)
 	free, memErr := d.mem()
 	mem := fmt.Sprintf("%d%%", free)
 	if memErr != nil {
 		free, mem = -1, "unknown"
+		late = errors.Join(late, memErr)
 	}
-	b, err := os.ReadFile(d.slots)
+	b, err = os.ReadFile(d.slots)
 	if err != nil {
-		return failed(d, &st, now, err)
+		return fail(err)
 	}
 	cur := strings.TrimSpace(string(b))
 	loads := fmt.Sprintf("load5 %.2f, load15 %.2f, memory free %s", l5, l15, mem)
 	if n, err := strconv.Atoi(cur); err != nil || n < 0 { // empty or broken: failing to look, never a hand value (review P3-1)
-		return failed(d, &st, now, fmt.Errorf("slots file %s holds %q, not a slot count", d.slots, cur))
+		return fail(fmt.Errorf("slots file %s holds %q, not a slot count", d.slots, cur))
 	}
 	if cur != "1" && cur != "2" && cur != "3" && cur != "4" {
 		fmt.Fprintf(d.out, "%s slots file %s holds %q, not 1 to 4: left alone (%s)\n", now.Format(time.RFC3339), d.slots, cur, loads)
+		if late != nil {
+			return fail(nil)
+		}
 		return save(d, &st, now)
+	}
+	if st.NoExtra {
+		back, err := quietLongEnough(&st, l15, now)
+		late = errors.Join(late, err)
+		if back {
+			line := fmt.Sprintf("extra heavy slots allowed again: load15 under %g for %d min (%s)", quiet, int(backAfter.Minutes()), loads)
+			fmt.Fprintf(d.out, "%s %s\n", now.Format(time.RFC3339), line)
+			if err := watchdog.PostOn(d.home, "crius", "INFO", "crius:loadwatch", "crius:lead", now, line); err != nil {
+				return fail(fmt.Errorf("extra slots back, but the bus line failed: %w", err))
+			}
+		}
 	}
 	// the trip is kept before anything can fail: failed() saves the state too (review P1, P3)
 	trip := (cur == "3" || cur == "4") && l5 > limit && !st.NoExtra
@@ -175,26 +208,59 @@ func run(d deps) int {
 	}
 	if w != cur {
 		if err := writeAtomic(d.slots, w+"\n"); err != nil {
-			return failed(d, &st, now, err)
+			return fail(err)
 		}
 		line := fmt.Sprintf("heavy slots %s -> %s (%s)", cur, w, loads)
 		fmt.Fprintf(d.out, "%s %s\n", now.Format(time.RFC3339), line)
 		if err := watchdog.PostOn(d.home, "crius", "INFO", "crius:loadwatch", "all", now, line); err != nil {
-			return failed(d, &st, now, fmt.Errorf("slots set, but the bus line failed: %w", err))
+			return fail(fmt.Errorf("slots set, but the bus line failed: %w", err))
 		}
 	}
 	if trip {
-		line := fmt.Sprintf("extra heavy slots off: load5 %.2f over %g with %s slots (load15 %.2f, memory free %s); the most is 2 now. Delete noExtra in %s to retry",
-			l5, limit, cur, l15, mem, d.state)
+		line := fmt.Sprintf("extra heavy slots off: load5 %.2f over %g with %s slots (load15 %.2f, memory free %s); the most is 2 until load15 has been under %g for %d min",
+			l5, limit, cur, l15, mem, quiet, int(backAfter.Minutes()))
 		fmt.Fprintf(d.out, "%s %s\n", now.Format(time.RFC3339), line)
 		if err := watchdog.PostOn(d.home, "crius", "INFO", "crius:loadwatch", "crius:lead", now, line); err != nil {
-			return failed(d, &st, now, fmt.Errorf("extra slots off, but the bus line failed: %w", err))
+			return fail(fmt.Errorf("extra slots off, but the bus line failed: %w", err))
 		}
 	}
-	if memErr != nil {
-		return failed(d, &st, now, memErr)
+	if late != nil {
+		return fail(nil)
 	}
 	return save(d, &st, now)
+}
+
+// quietLongEnough keeps the quiet clock of tripped extra slots: a 15-min load at quiet or more stops it, the first
+// minute under starts it, and once it has run backAfter the extras are back on (true). A gap of more than maxGap since
+// the last quiet reading (Mac asleep, missed or failed runs), a clock set back, or a stamp it cannot parse (said in the
+// error) starts it again (review P2, P3).
+func quietLongEnough(st *state, l15 float64, now time.Time) (bool, error) {
+	if l15 >= quiet {
+		st.QuietSince, st.QuietLast = "", ""
+		return false, nil
+	}
+	var err error
+	restart := st.QuietSince == ""
+	if !restart {
+		since, e1 := time.Parse(time.RFC3339, st.QuietSince)
+		last, e2 := time.Parse(time.RFC3339, st.QuietLast)
+		gap := now.Sub(last)
+		switch {
+		case e1 != nil || e2 != nil:
+			err = fmt.Errorf("state quiet clock (%q, %q) cannot be read: %w; started again", st.QuietSince, st.QuietLast, errors.Join(e1, e2))
+			restart = true
+		case gap < 0 || gap > maxGap:
+			restart = true
+		case now.Sub(since) >= backAfter:
+			st.NoExtra, st.QuietSince, st.QuietLast = false, "", ""
+			return true, nil
+		}
+	}
+	if restart {
+		st.QuietSince = now.Format(time.RFC3339)
+	}
+	st.QuietLast = now.Format(time.RFC3339)
+	return false, err
 }
 
 // save writes the state and clears a posted failure.
