@@ -390,7 +390,6 @@ func resources() (float64, float64, error) {
 	return float64(fs.Bavail) * float64(fs.Bsize) / (1 << 30), swap, nil
 }
 
-// loadAvg reads the 1-minute load from sysctl vm.loadavg ("{ 6.02 5.81 5.40 }").
 // bootTime is when the machine last booted (sysctl kern.boottime).
 func bootTime() (time.Time, error) {
 	tv, err := unix.SysctlTimeval("kern.boottime")
@@ -403,6 +402,7 @@ func bootTime() (time.Time, error) {
 	return time.Unix(tv.Sec, int64(tv.Usec)*1000), nil
 }
 
+// loadAvg reads the 1-minute load from sysctl vm.loadavg ("{ 6.02 5.81 5.40 }").
 func loadAvg() (float64, error) {
 	out, err := exec.Command("/usr/sbin/sysctl", "-n", "vm.loadavg").CombinedOutput()
 	if err != nil {

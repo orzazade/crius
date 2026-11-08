@@ -18,8 +18,9 @@ import (
 // folder in projects.toml (rig = "<folder of the services' <name>.pid files>"): after a boot (the boot time newer than
 // the last look), or whenever the team has a live session. A service is down when its pid file names no running
 // process, or was written before the boot, as a reboot reuses pids (crius:lead DECISION 11-08: the Mac rebooted 11-07
-// 19:45 and the 17 rig services stayed down 11 hours until a probe hit them). The same set is said once; a new boot or
-// another set says it again, and a rig with none down clears it. What it cannot look at is said to Crius.
+// 19:45 and the 17 rig services stayed down 11 hours until a probe hit them). A running team hears a set once: fewer of
+// the same services down (being started) stays quiet, a new one down or a new boot says it again, and a team that is
+// not running forgets it, so its next session hears it. What it cannot look at is said to Crius.
 func rigDown(d Deps, st *state, ss []Session, sesErr error, watch projects, park parked) [][2]string {
 	var c struct {
 		Projects map[string]struct{ Rig string }
@@ -29,43 +30,53 @@ func rigDown(d Deps, st *state, ss []Session, sesErr error, watch projects, park
 	} else if err != nil {
 		return [][2]string{{"rig-failed", "the rig check could not read projects.toml: " + err.Error()}}
 	}
+	var rigs []string
+	for p, v := range c.Projects {
+		if v.Rig != "" && watch.has(p) && !park.has(p, p) {
+			rigs = append(rigs, p)
+		}
+	}
+	if len(rigs) == 0 {
+		return nil
+	}
+	slices.Sort(rigs)
 	var failed []string
 	boot, bootErr := d.Boot()
 	if bootErr != nil {
 		failed = append(failed, "boot time: "+bootErr.Error())
 	}
-	booted := bootErr == nil && boot.After(st.RigBoot)
+	// kern.boottime moves by the size of a clock step (a time sync, a wake): only a minute or more is a boot
+	booted := bootErr == nil && boot.Sub(st.RigBoot) > time.Minute
 	running := map[string]bool{}
 	for _, s := range ss {
-		running[strings.TrimSpace(project(s.Name))] = true
+		running[project(BusName(s.Name))] = true // "quotes · frontend" is quotes:frontend
 	}
 	var procs []Proc
 	var leads map[string]bool
 	var leadErr error
-	looked := false
-	for _, p := range slices.Sorted(func(yield func(string) bool) {
-		for k := range c.Projects {
-			if !yield(k) {
-				return
+	looked, postFailed := false, false
+	for _, p := range rigs {
+		if sesErr == nil && !running[p] {
+			delete(st.Rig, p) // heard by no session: the team's next one hears it
+			if !booted {
+				continue
 			}
-		}
-	}) {
-		dir := c.Projects[p].Rig
-		if dir == "" || !watch.has(p) || park.has(p, p) || !booted && (sesErr != nil || !running[p]) {
+		} else if sesErr != nil && !booted {
 			continue
 		}
 		if !looked {
 			looked = true
 			var err error
 			if procs, err = d.Procs(); err != nil {
-				return append([][2]string{{"rig-failed", "the rig check failed to list processes: " + err.Error()}}, said(failed)...)
+				return said(append(failed, "process list: "+err.Error()))
 			}
 		}
+		dir := c.Projects[p].Rig
 		if strings.HasPrefix(dir, "~/") {
 			h, _ := os.UserHomeDir()
 			dir = filepath.Join(h, dir[2:])
 		}
-		down, err := deadServices(dir, procs, boot)
+		down, err := deadServices(dir, procs, boot, d.Now)
 		if err != nil {
 			failed = append(failed, err.Error())
 			continue
@@ -74,8 +85,10 @@ func rigDown(d Deps, st *state, ss []Session, sesErr error, watch projects, park
 			delete(st.Rig, p)
 			continue
 		}
-		set := strings.Join(down, ", ")
-		if st.Rig[p] == set && !booted {
+		if !booted && subset(down, st.Rig[p]) {
+			if sesErr == nil {
+				st.Rig[p] = strings.Join(down, ", ")
+			}
 			continue
 		}
 		if leads == nil && leadErr == nil {
@@ -89,19 +102,60 @@ func rigDown(d Deps, st *state, ss []Session, sesErr error, watch projects, park
 		if booted {
 			why = "since the boot at " + boot.Local().Format("01-02 15:04")
 		}
-		// the names last: the bus cuts a line at 300 runes, and the count and folder say what a cut list leaves out
-		text := fmt.Sprintf("rig services down %s, %d of the pid files in %s; start them before the team's next probe or test: %s",
-			why, len(down), c.Projects[p].Rig, set)
-		if err := postLine(d, "ALERT", p, to, text); err != nil {
+		// the names last and fitted to the bus's 300-rune cut, the count and folder first: a long list loses only names
+		head := fmt.Sprintf("rig services down %s, %d of the pid files in %s; start them before the team's next probe or test: ",
+			why, len(down), c.Projects[p].Rig)
+		if err := postLine(d, "ALERT", p, to, head+fit(down, 300-len([]rune(head)))); err != nil {
 			failed = append(failed, err.Error())
+			postFailed = true
 			continue
 		}
-		st.Rig[p] = set
+		if sesErr == nil && running[p] {
+			st.Rig[p] = strings.Join(down, ", ")
+		}
 	}
-	if bootErr == nil {
+	if bootErr == nil && !postFailed { // a boot alert that could not be posted is tried again on the next run
 		st.RigBoot = boot
 	}
 	return said(failed)
+}
+
+// subset says whether every name in down is in the set said before (", " joined).
+func subset(down []string, said string) bool {
+	if said == "" {
+		return false
+	}
+	before := strings.Split(said, ", ")
+	for _, n := range down {
+		if !slices.Contains(before, n) {
+			return false
+		}
+	}
+	return true
+}
+
+// fit joins names with ", " in at most room runes, ending in "+N more" when they do not all fit.
+func fit(names []string, room int) string {
+	all := strings.Join(names, ", ")
+	if len([]rune(all)) <= room {
+		return all
+	}
+	out := ""
+	for i, n := range names {
+		next := n
+		if out != "" {
+			next = out + ", " + n
+		}
+		more := fmt.Sprintf(" +%d more", len(names)-i-1)
+		if i == len(names)-1 {
+			more = ""
+		}
+		if len([]rune(next+more)) > room {
+			return out + fmt.Sprintf(" +%d more", len(names)-i)
+		}
+		out = next
+	}
+	return out
 }
 
 func said(failed []string) [][2]string {
@@ -111,38 +165,43 @@ func said(failed []string) [][2]string {
 	return [][2]string{{"rig-failed", "the rig check failed to look: " + strings.Join(failed, "; ")}}
 }
 
-// deadServices names, sorted, each <name>.pid in dir whose pid runs no process, or whose file is older than the boot.
-func deadServices(dir string, procs []Proc, boot time.Time) ([]string, error) {
-	files, err := filepath.Glob(filepath.Join(dir, "*.pid"))
+// deadServices names, sorted, each <name>.pid in dir whose pid runs no process, or whose file is older than the boot. A
+// file written in the last 10 s that holds no pid is being written (echo $! > x.pid empties it first): it waits a run.
+func deadServices(dir string, procs []Proc, boot, now time.Time) ([]string, error) {
+	entries, err := os.ReadDir(dir) // unlike a glob, a folder it cannot list is an error
 	if err != nil {
-		return nil, err
-	}
-	if len(files) == 0 {
-		if _, err := os.Stat(dir); err != nil {
-			return nil, fmt.Errorf("rig folder: %w", err)
-		}
+		return nil, fmt.Errorf("rig folder: %w", err)
 	}
 	alive := map[int]bool{}
 	for _, p := range procs {
 		alive[p.PID] = true
 	}
 	var down []string
-	for _, f := range files {
-		name := strings.TrimSuffix(filepath.Base(f), ".pid")
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".pid") {
+			continue
+		}
+		f := filepath.Join(dir, e.Name())
 		b, err := os.ReadFile(f)
 		if errors.Is(err, fs.ErrNotExist) {
-			continue // removed since the glob: stopped on purpose
+			continue // removed since the listing: stopped on purpose
 		}
 		if err != nil {
 			return nil, err
 		}
 		fi, err := os.Stat(f)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}
 		pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+		if err != nil && now.Sub(fi.ModTime()) < 10*time.Second {
+			continue
+		}
 		if err != nil || pid <= 0 || !alive[pid] || !boot.IsZero() && fi.ModTime().Before(boot) {
-			down = append(down, name)
+			down = append(down, strings.TrimSuffix(e.Name(), ".pid"))
 		}
 	}
 	slices.Sort(down)
