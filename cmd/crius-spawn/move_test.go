@@ -193,18 +193,22 @@ func TestAMoveRetriesTheResumeAndFilesTheNewFolderFirst(t *testing.T) {
 // cannot see it, and the move pressed Enter on Claude's "Exit and stop tasks" dialog whatever it listed. It is accepted
 // only when it lists the session's bus waiters alone; else the dialog is left with Escape and nothing moves.
 func TestAMoveStopsOnlyItsBusWaiterAtExit(t *testing.T) {
+	// the live layout (11-08, quotes qa-frontend)
 	dialog := func(tasks ...string) string {
-		return "╭────╮\n│ Background work is running\n│ The following will stop when you exit:\n│  " + strings.Join(tasks, "\n│  ") +
-			"\n│\n│ ❯ 1. Exit and stop tasks\n│   2. Stay\n╰────╯\n"
+		return "✻ Cooked for 19s · done 6:28 AM\n▔▔▔▔▔▔▔▔\n   Background work is running\n   The following will stop when you exit:\n\n   " +
+			strings.Join(tasks, "\n   ") + "\n\n   ❯ 1. Exit and stop tasks\n     2. Move to background and exit\n     3. Stay\n\n   " +
+			"Enter to confirm · Esc to cancel\n"
 	}
+	waiter := "shell · B=~/.crius/state/quotes/build; cd $B && ~/.claude…"
 	for _, c := range []struct {
 		name   string
 		screen string
 		moved  bool
 	}{
-		{"its waiter", dialog("Wait for the next bus line"), true},
-		{"a subagent too", dialog("Wait for the next bus line", "Deep review of the branch (agent)"), false},
-		{"more than it lists", dialog("Wait for the next bus line", "+ 2 more items"), false},
+		{"its waiter", dialog(waiter), true},
+		{"a subagent too", dialog(waiter, "agent · Deep review of the branch"), false},
+		{"a subagent, not its waiter", dialog("agent · Deep review of the branch"), false},
+		{"more than it lists", dialog(waiter, "+ 2 more items"), false},
 	} {
 		x := newMoveRig(t)
 		x.children = []proc{{pid: 70, ppid: os.Getpid(), command: "/bin/zsh -c eval '~/.claude/skills/cmux-team/bin/team-wait.sh --mode worker'"}}
@@ -234,6 +238,51 @@ func TestAMoveStopsOnlyItsBusWaiterAtExit(t *testing.T) {
 		}
 		if !c.moved && (err == nil || !strings.Contains(err.Error(), "besides its 1 bus waiter") || len(x.resumed) != 0 || !strings.HasSuffix(last, " escape")) {
 			t.Errorf("%s: %v, resumed %q, last key %q", c.name, err, x.resumed, last)
+		}
+	}
+}
+
+// Review r2 P2-1, P2-2: the dialog was matched by its words anywhere on the screen (a conversation that quotes them), and
+// was answered again on every read, so an exit already accepted could get an Escape and a false "nothing moved".
+func TestAMoveAnswersOnlyAnOpenDialogAndOnlyOnce(t *testing.T) {
+	quoted := "⏺ The move presses Enter on \"Exit and stop tasks\" when the following will stop when you exit: only its waiter\n\n❯ \n"
+	for _, c := range []struct {
+		name    string
+		screens []string
+	}{
+		{"quoted in the conversation", []string{quoted, quoted}},
+		{"read again after Enter", []string{
+			"   The following will stop when you exit:\n\n   shell · team-wait\n\n   ❯ 1. Exit and stop tasks\n     3. Stay\n\n   Enter to confirm · Esc to cancel\n",
+			"   The following will stop when you exit:\n\n   shell · team-wait\n   stopping…\n\n   ❯ 1. Exit and stop tasks\n     3. Stay\n\n   Enter to confirm · Esc to cancel\n"}},
+	} {
+		x := newMoveRig(t)
+		x.children = []proc{{pid: 70, ppid: os.Getpid(), command: "/bin/zsh -c eval '~/.claude/skills/cmux-team/bin/team-wait.sh --mode worker'"}}
+		x.exits = false
+		reads, passes := 0, 0
+		x.m.state = func(string) (string, error) {
+			if strings.Contains(strings.Join(x.typed, "\n"), "/exit") {
+				if passes++; passes == 4 { // Claude ends on the fourth pass after /exit
+					if err := os.Remove(filepath.Join(x.m1, "sessions", "1.json")); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			return sessionstate.Idle, nil
+		}
+		x.m.cmux = func(args ...string) (string, error) {
+			x.typed = append(x.typed, strings.Join(args, " "))
+			if args[0] == "read-screen" {
+				reads++
+				return c.screens[min(reads, len(c.screens))-1], nil
+			}
+			return "", nil
+		}
+		x.m.tries = 5
+		if _, err := x.m.move("team", "dev"); err != nil || len(x.resumed) != 1 {
+			t.Errorf("%s: %v, resumed %q", c.name, err, x.resumed)
+		}
+		if n := strings.Count(strings.Join(x.typed, "\n"), "escape"); n != 0 {
+			t.Errorf("%s: %d escapes typed: %q", c.name, n, x.typed)
 		}
 	}
 }

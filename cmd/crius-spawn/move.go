@@ -115,7 +115,7 @@ func (m mover) move(project, role string) (string, error) {
 		if p, _, err := sessionstate.Process(r.Config, r.SessionID); err == nil && p != 0 {
 			where = r.Config
 		}
-		return "", fmt.Errorf("%s %s: session %s resumed in %s %s, but it runs in %s, not %s", project, role, r.SessionID, ws, surface, where, dir)
+		return "", fmt.Errorf("%s %s: session %s resumed in %s %s, but it runs in %s, not %s; it is filed on %s: stop its Claude, then crius-spawn -resume %s %s", project, role, r.SessionID, ws, surface, where, dir, dir, project, role)
 	}
 	if err := m.file(project, role, r.SessionID, dir, dir); err != nil {
 		return "", fmt.Errorf("%s %s: session %s runs in %s, but %w", project, role, r.SessionID, dir, err)
@@ -186,31 +186,39 @@ func (m mover) idle(r sessionstate.State, pid int) (int, error) {
 	return 0, fmt.Errorf("%d background jobs run (%s)", len(jobs), strings.Join(jobs, "; "))
 }
 
-// stopList gives the tasks Claude's exit dialog says will stop ("Background work is running / The following will stop
-// when you exit:", then one line per task, then "Exit and stop tasks"); ok is false when the screen shows no such
-// dialog or a line that counts more tasks than it lists.
-func stopList(screen string) (tasks []string, ok bool) {
-	head := strings.Index(screen, "will stop when you exit:")
+// dialogFooter ends Claude's exit dialog: only a screen whose last line is this shows the dialog open now, not a
+// conversation that quotes its words (review r2 P2-1).
+const dialogFooter = "Enter to confirm · Esc to cancel"
+
+// stopList gives the tasks Claude's exit dialog, open at the bottom of the screen, says will stop: "Background work is
+// running / The following will stop when you exit:", one "shell · <command>" line per task, the options, then
+// dialogFooter. open is false when no dialog ends the screen; ok is false for a line it cannot count as one task.
+func stopList(screen string) (tasks []string, open, ok bool) {
+	lines := strings.Split(strings.TrimRight(screen, " \t\n"), "\n")
+	if !strings.Contains(lines[len(lines)-1], dialogFooter) {
+		return nil, false, false
+	}
+	head := strings.LastIndex(screen, "will stop when you exit:")
 	if head < 0 {
-		return nil, false
+		return nil, true, false
 	}
 	rest := screen[head+len("will stop when you exit:"):]
 	tail := strings.Index(rest, "Exit and stop tasks")
 	if tail < 0 {
-		return nil, false
+		return nil, true, false
 	}
 	tail = strings.LastIndex(rest[:tail], "\n") + 1 // the option's own line, its number included
 	for _, l := range strings.Split(rest[:tail], "\n") {
-		l = strings.Trim(l, " \t│╭╮╰╯─❯>")
+		l = strings.Trim(l, " \t│╭╮╰╯─▔❯>")
 		if l == "" {
 			continue
 		}
-		if strings.Contains(l, " more") || strings.Contains(l, " item") {
-			return nil, false
+		if !strings.HasPrefix(l, "shell · ") { // a subagent, a workflow, a "+N more" line, or a wrapped command
+			return nil, true, false
 		}
 		tasks = append(tasks, l)
 	}
-	return tasks, true
+	return tasks, true, true
 }
 
 // exit types /exit into the session's own tab and waits for its Claude to stop. Claude's "Exit and stop tasks" dialog is
@@ -229,6 +237,7 @@ func (m mover) exit(r sessionstate.State, waiters int) error {
 		return fmt.Errorf("cmux send-key: %v: %s", err, out)
 	}
 	turn := time.Now().Add(turnCap)
+	accepted := false
 	for i := 0; i < m.tries; {
 		pid, _, err := sessionstate.Process(r.Config, r.SessionID)
 		if err != nil {
@@ -245,18 +254,24 @@ func (m mover) exit(r sessionstate.State, waiters int) error {
 			continue
 		}
 		i++
-		if screen, err := m.cmux(append(append([]string{"read-screen"}, tab...), "--lines", "40")...); err == nil && strings.Contains(screen, "Exit and stop tasks") {
-			key := "enter"
-			tasks, ok := stopList(screen)
-			if !ok || len(tasks) != waiters {
-				key = "escape"
-			}
-			// cmux refuses a key while a dialog is open unless forced (live 11-08, quotes qa-frontend).
-			if out, err := m.cmux(append(append([]string{"send-key", "--force"}, tab...), key)...); err != nil {
-				return fmt.Errorf("cmux send-key: %v: %s", err, out)
-			}
-			if key == "escape" {
-				return fmt.Errorf("its exit would stop background work besides its %d bus waiter(s) (%q): left running, nothing moved, try when it ends", waiters, tasks)
+		if accepted { // once Enter went to the dialog, no other key: Claude is stopping its tasks (review r2 P2-2)
+			time.Sleep(m.wait)
+			continue
+		}
+		if screen, err := m.cmux(append(append([]string{"read-screen"}, tab...), "--lines", "40")...); err == nil {
+			if tasks, open, ok := stopList(screen); open {
+				key := "enter"
+				if !ok || len(tasks) != waiters {
+					key = "escape"
+				}
+				// cmux refuses a key while a dialog is open unless forced (live 11-08, quotes qa-frontend).
+				if out, err := m.cmux(append(append([]string{"send-key", "--force"}, tab...), key)...); err != nil {
+					return fmt.Errorf("cmux send-key: %v: %s", err, out)
+				}
+				if key == "escape" {
+					return fmt.Errorf("its exit would stop background work besides its %d bus waiter(s) (%q): left running, nothing moved, try when it ends", waiters, tasks)
+				}
+				accepted = true
 			}
 		}
 		time.Sleep(m.wait)
