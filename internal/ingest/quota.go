@@ -116,10 +116,10 @@ func (r *runner) newAlert(tx *sql.Tx, key string, holds bool) (bool, error) {
 func (r *runner) recordRule(tx *sql.Tx, ok map[string]bool) error {
 	type last struct {
 		ok    bool
-		since string
+		since time.Time
 	}
 	before := map[string]last{}
-	rows, err := tx.Query("select project, ok, since from enterprise_rule order by since")
+	rows, err := tx.Query("select project, ok, since from enterprise_rule")
 	if err != nil {
 		return err
 	}
@@ -130,7 +130,14 @@ func (r *runner) recordRule(tx *sql.Tx, ok map[string]bool) error {
 			rows.Close()
 			return err
 		}
-		before[p] = last{v, since}
+		t, err := time.Parse(time.RFC3339, since)
+		if err != nil {
+			rows.Close()
+			return fmt.Errorf("enterprise_rule %s since %q: %w", p, since, err)
+		}
+		if b, ok := before[p]; !ok || t.After(b.since) { // the newest by time, whatever the text's form
+			before[p] = last{v, t}
+		}
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
@@ -152,17 +159,21 @@ func (r *runner) recordRule(tx *sql.Tx, ok map[string]bool) error {
 	}
 	for _, p := range slices.Sorted(maps.Keys(projects)) {
 		b, seen := before[p]
-		since := time.Unix(0, 0).UTC().Format(time.RFC3339)
+		since := time.Unix(0, 0).UTC()
 		if seen {
 			if b.ok == ok[p] {
 				continue
 			}
-			since = edit.Format(time.RFC3339)
-			if since <= b.since {
-				since = now.Format(time.RFC3339)
+			// after the last row, so it is the newest: the edit, else now, else a second past the last (a clock behind it)
+			since = edit.Truncate(time.Second)
+			if !since.After(b.since) {
+				since = now.Truncate(time.Second)
+			}
+			if !since.After(b.since) {
+				since = b.since.Add(time.Second)
 			}
 		}
-		if _, err := tx.Exec("insert into enterprise_rule (project, ok, since) values (?, ?, ?)", p, ok[p], since); err != nil {
+		if _, err := tx.Exec("insert into enterprise_rule (project, ok, since) values (?, ?, ?)", p, ok[p], since.Format(time.RFC3339)); err != nil {
 			return err
 		}
 	}

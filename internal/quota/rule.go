@@ -1,6 +1,9 @@
 package quota
 
-import "time"
+import (
+	"sort"
+	"time"
+)
 
 // ruleChange is one row of enterprise_rule: from since, the project may (ok) or may not run on the enterprise account.
 type ruleChange struct {
@@ -17,7 +20,7 @@ type rules struct {
 
 func loadRules(db Querier, now map[string]bool) (rules, error) {
 	r := rules{now: now, history: map[string][]ruleChange{}}
-	rows, err := db.Query("select project, ok, since from enterprise_rule order by project, since")
+	rows, err := db.Query("select project, ok, since from enterprise_rule")
 	if err != nil {
 		return r, err
 	}
@@ -33,6 +36,9 @@ func loadRules(db Querier, now map[string]bool) (rules, error) {
 			return r, err
 		}
 		r.history[p] = append(r.history[p], ruleChange{t, ok})
+	}
+	for _, h := range r.history { // by time, whatever the text's form
+		sort.Slice(h, func(i, j int) bool { return h[i].since.Before(h[j].since) })
 	}
 	return r, rows.Err()
 }

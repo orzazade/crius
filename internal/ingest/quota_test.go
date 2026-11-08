@@ -1747,3 +1747,46 @@ func TestQuotaEnterpriseRuleIsJudgedAsItStoodWhenTheSessionRan(t *testing.T) {
 		t.Fatalf("the week's violations %+v", sp.Violations)
 	}
 }
+
+// Review of 9c5bd4a P2: a session that left a project (another tag) before the project's enterprise rule was turned
+// off broke no rule for it, though the session ran on enterprise past the edit for its new project.
+func TestQuotaASessionThatLeftTheProjectBeforeTheEditIsNotS1ForIt(t *testing.T) {
+	x := quotaCase(t)
+	other := strings.ReplaceAll(strings.Replace(axiProject, "[projects.axi]", "[projects.bx]", 1), "/work/axi", "/work/bx")
+	sid := "aaaaaaaa-2222-3333-4444-555555555555"
+	tx := filepath.Join(x.work, "-p", sid+".jsonl")
+	testutil.Write(t, tx, lines(
+		prompt("p1-"+sid, iso(qNow.Add(-6*time.Hour-time.Minute)), "[crius account=enterprise project=axi role=lead]\n", "", "/work/axi"),
+		assistant(A{Req: sid + "-ra", TS: iso(qNow.Add(-6 * time.Hour)), In: 1000, Out: 1000}),
+		prompt("p2-"+sid, iso(qNow.Add(-5*time.Hour-time.Minute)), "[crius account=enterprise project=bx role=lead]\n", "", "/work/axi"),
+		assistant(A{Req: sid + "-rb", TS: iso(qNow.Add(-5 * time.Hour)), In: 1000, Out: 1000}),
+		assistant(A{Req: sid + "-rc", TS: iso(qNow.Add(-time.Hour)), In: 1000, Out: 1000})))
+	x.spool(quota.Line{TS: iso(qNow.Add(-6*time.Hour - 30*time.Second)), Kind: "session", Session: sid, Persona: "work"})
+	writeConfig(t, x.home, x.personal, x.work, cfg{extra: axiProject + other})
+	clock = func() time.Time { return qNow.Add(-3 * time.Hour) }
+	x.run()
+	edit := qNow.Add(-2 * time.Hour)
+	writeConfig(t, x.home, x.personal, x.work, cfg{extra: strings.Replace(axiProject, `["max", "enterprise"]`, `["max"]`, 1) + other})
+	if err := os.Chtimes(filepath.Join(x.home, "projects.toml"), edit, edit); err != nil {
+		t.Fatal(err)
+	}
+	clock = func() time.Time { return qNow }
+	x.run()
+	if got := grepAlerts(x.alerts(), "S1 personal work"); len(got) != 0 {
+		t.Fatalf("axi's stretch ended 5 h ago, before the edit: %q", got)
+	}
+}
+
+// Review of 9c5bd4a P3-2: with the clock behind the last rule row, a change goes in after it, once, and no run fails.
+func TestQuotaARuleChangeWithTheClockBehindGoesInOnce(t *testing.T) {
+	x := quotaCase(t)
+	x.run()
+	ahead := iso(qNow.Add(time.Hour))
+	x.q("insert into enterprise_rule (project, ok, since) values ('axi', 0, ?)", ahead) // the clock was ahead then
+	x.run()
+	x.run()
+	got := x.q("select ok, since from enterprise_rule where project = 'axi' order by since")
+	if len(got) != 3 || got[2][0] != "1" || got[2][1] != iso(qNow.Add(time.Hour+time.Second)) {
+		t.Fatalf("rule rows %q", got)
+	}
+}

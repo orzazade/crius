@@ -190,24 +190,48 @@ func (s *sess) guard(id string, ok rules) []Violation {
 	if n := len(s.obs); n > 0 && s.obs[n-1].ts.After(end) {
 		end = s.obs[n-1].ts
 	}
-	upTo := func(t time.Time) time.Time {
-		if t.IsZero() || !end.IsZero() && t.After(end) {
-			return end
-		}
-		return t
+	if n := len(s.orgs); n > 0 && s.orgs[n-1].ts.After(end) {
+		end = s.orgs[n-1].ts
 	}
+	// check judges project over [from, to]: to is cut at the session's end, and a session with no known end is judged
+	// at from alone, so a stretch is never judged by a rule set after the session's last sign of life (review of 9c5bd4a)
 	check := func(project, via string, from, to time.Time) {
+		if to.IsZero() || !end.IsZero() && to.After(end) {
+			to = end
+		}
+		if to.IsZero() || to.Before(from) {
+			to = from
+		}
 		v := Violation{Session: id, Project: project, Kind: "s1", Source: via}
 		switch {
 		case project == "":
 			v.Kind = "unmapped"
-		case ok.okDuring(project, from, upTo(to)):
+		case ok.okDuring(project, from, to):
 			return
 		}
 		if k := v.Kind + project + via; !seen[k] {
 			seen[k] = true
 			vs = append(vs, v)
 		}
+	}
+	// until gives where the project of the session at from stops: its tag's end or the next tag's start, before to.
+	until := func(from, to time.Time) time.Time {
+		if a := s.assignment(from); a != nil && !a.to.IsZero() && (to.IsZero() || a.to.Before(to)) {
+			to = a.to
+		}
+		for _, a := range s.asg {
+			if a.from.After(from) && (to.IsZero() || a.from.Before(to)) {
+				return a.from
+			}
+		}
+		return to
+	}
+	// tagTo is the end of tag a within a stretch ending at to.
+	tagTo := func(a asg, to time.Time) time.Time {
+		if !a.to.IsZero() && (to.IsZero() || a.to.Before(to)) {
+			return a.to
+		}
+		return to
 	}
 	// A tag is compared with the statusline at each line and at each tag's start.
 	var when []time.Time
@@ -242,10 +266,10 @@ func (s *sess) guard(id string, ok rules) []Violation {
 				break
 			}
 		}
-		check(s.project(from), "statusline", from, to)
+		check(s.project(from), "statusline", from, until(from, to))
 		for _, a := range s.asg {
 			if a.from.After(from) && (to.IsZero() || a.from.Before(to)) {
-				check(a.project, "statusline", a.from, to)
+				check(a.project, "statusline", a.from, tagTo(a, to))
 			}
 		}
 	}
@@ -264,10 +288,10 @@ func (s *sess) guard(id string, ok rules) []Violation {
 				break
 			}
 		}
-		check(s.project(from), "organization", from, to)
+		check(s.project(from), "organization", from, until(from, to))
 		for _, a := range s.asg {
 			if a.from.After(from) && (to.IsZero() || a.from.Before(to)) {
-				check(a.project, "organization", a.from, to)
+				check(a.project, "organization", a.from, tagTo(a, to))
 			}
 		}
 	}
