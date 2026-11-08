@@ -54,6 +54,11 @@ func deadWakes(f *fake) []string {
 }
 
 func leadLines(t *testing.T, home string) []string {
+	return leadLinesOf(t, home, " ALERT crius:wakewatch -> ")
+}
+
+// leadLinesOf gives the lines of quotes' bus log that hold the given text.
+func leadLinesOf(t *testing.T, home, has string) []string {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join(home, "bus", "quotes.log"))
 	if err != nil {
@@ -61,7 +66,7 @@ func leadLines(t *testing.T, home string) []string {
 	}
 	var out []string
 	for _, l := range strings.Split(string(b), "\n") {
-		if strings.Contains(l, " ALERT crius:wakewatch -> ") {
+		if strings.Contains(l, has) {
 			out = append(out, l)
 		}
 	}

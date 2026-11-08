@@ -106,6 +106,16 @@ type Deps struct {
 	// Typed says whether a tab's input box (surface:N) holds typed text, not grey placeholder text: cmux send refuses such a
 	// tab, so a lead's message to it is lost (Crius 11-02 02:19).
 	Typed func(surface string) (bool, error)
+	// Procs lists every process: its pid, its parent's and its command line (rearm).
+	Procs func() ([]Proc, error)
+	// SendTab types text into the tab of that title (a role's tab, not Crius's).
+	SendTab func(title, text string) error
+}
+
+// Proc is one process as ps lists it.
+type Proc struct {
+	PID, PPID int
+	Command   string
 }
 
 // Workspace is one cmux workspace: Named is false while it shows a default title, and Color is "" when none is set.
@@ -115,9 +125,10 @@ type Workspace struct {
 	Color      string
 }
 
-// Session is a live Claude Code session: its name ("quotes: lead") and id.
+// Session is a live Claude Code session: its name ("quotes: lead"), id and the pid of its Claude.
 type Session struct {
 	Name, ID string
+	PID      int
 }
 
 type seenScreen struct {
@@ -140,6 +151,7 @@ type state struct {
 	BusSizes    map[string]int64     // project -> its bus log's size when the waiter check last looked: a gap seen now began after it
 	Roles       map[string]roleSeen  // <project>.<role> -> when its session was last seen live (deadRoles)
 	RolesAt     time.Time            // when deadRoles last looked at every role: a role started after it may have died unseen
+	Waits       map[string]roleWait  // <project>.<role> -> its session's team-wait waiter (rearm)
 }
 
 // waitGap is when a bus log was first seen with no waiter, and whether that gap was said to Crius. From is the log's size
@@ -185,6 +197,9 @@ func Run(d Deps) error {
 	if st.Roles == nil {
 		st.Roles = map[string]roleSeen{}
 	}
+	if st.Waits == nil {
+		st.Waits = map[string]roleWait{}
+	}
 	for k, at := range st.Typed {
 		// a dead role's line stays raised as long as the role is dead, so its key goes only when the alert does (review P2-1)
 		if d.Now.Sub(at) > window+resend && !strings.HasPrefix(k, "dead:") {
@@ -205,8 +220,9 @@ func Run(d Deps) error {
 	alerts = append(alerts, ha...)
 	alerts = append(alerts, wrongFolder(d, hv)...)
 	alerts = append(alerts, deadRoles(d, &st, ss, sesErr, watch, park)...)
-	screens, err := d.Screens()
-	if err != nil {
+	screens, scrErr := d.Screens()
+	alerts = append(alerts, rearm(d, &st, ss, sesErr, screens, scrErr, watch, park)...)
+	if err := scrErr; err != nil {
 		alerts = append(alerts, [2]string{screensFailed, "the tab check failed to look: " + err.Error()})
 		hv.blind = true
 	} else {

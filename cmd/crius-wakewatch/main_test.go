@@ -777,3 +777,16 @@ func TestWaiterLogsOfAWatchDirWaiterAreEveryLogThere(t *testing.T) {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 }
+
+// ps lines read into processes; a line that does not read, or an empty list, is an error (never "no waiter").
+func TestParseProcs(t *testing.T) {
+	ps, err := parseProcs("  500     1 claude --resume\n16713 16710 /bin/bash /x/team-wait.sh --role qa-backend-2\n")
+	if err != nil || len(ps) != 2 || ps[1].PID != 16713 || ps[1].PPID != 16710 || ps[1].Command != "/bin/bash /x/team-wait.sh --role qa-backend-2" {
+		t.Fatalf("%+v %v", ps, err)
+	}
+	for _, bad := range []string{"", "x 1 cmd\n", "12\n"} {
+		if _, err := parseProcs(bad); err == nil {
+			t.Errorf("%q: no error", bad)
+		}
+	}
+}

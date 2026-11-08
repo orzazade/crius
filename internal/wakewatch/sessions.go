@@ -46,7 +46,7 @@ func LiveSessions(home string) ([]Session, error) {
 			continue
 		}
 		seen[s.PID] = true
-		out = append(out, Session{Name: s.Name, ID: s.SessionID})
+		out = append(out, Session{Name: s.Name, ID: s.SessionID, PID: s.PID})
 	}
 	return out, nil
 }

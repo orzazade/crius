@@ -95,7 +95,8 @@ func main() {
 			return wakewatch.LiveSessions(home)
 		}, States: func() ([]sessionstate.State, error) {
 			return sessionstate.List(filepath.Join(store.Home(), "sessions"))
-		}, Restore: restore, Waiters: waiters, Typed: outbox.Typed})
+		}, Restore: restore, Waiters: waiters, Typed: outbox.Typed, Procs: procs,
+		SendTab: func(title, text string) error { return outbox.Send(store.Home(), title, text) }})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, time.Now().Format(time.RFC3339), "crius-wakewatch:", err)
 		os.Exit(1)
@@ -183,6 +184,40 @@ func restoreFolders(b []byte) ([]string, error) {
 		if c != nil && c.Kind == "claude" {
 			out = append(out, c.Environment["CLAUDE_CONFIG_DIR"])
 		}
+	}
+	return out, nil
+}
+
+// procs lists every process with its parent and command line.
+func procs() ([]wakewatch.Proc, error) {
+	out, err := exec.Command("ps", "-axww", "-o", "pid=,ppid=,command=").Output()
+	if err != nil {
+		return nil, fmt.Errorf("ps -axww -o pid=,ppid=,command=: %v", err)
+	}
+	return parseProcs(string(out))
+}
+
+// parseProcs reads ps lines of "pid ppid command"; a line that does not read is an error, never a missing process.
+func parseProcs(ps string) ([]wakewatch.Proc, error) {
+	var out []wakewatch.Proc
+	for _, line := range strings.Split(ps, "\n") {
+		f := strings.Fields(line)
+		if len(f) == 0 {
+			continue
+		}
+		pid, err1 := strconv.Atoi(f[0])
+		var ppid int
+		var err2 error = errors.New("no ppid")
+		if len(f) > 1 {
+			ppid, err2 = strconv.Atoi(f[1])
+		}
+		if err := errors.Join(err1, err2); err != nil {
+			return nil, fmt.Errorf("ps line %q: %v", line, err)
+		}
+		out = append(out, wakewatch.Proc{PID: pid, PPID: ppid, Command: strings.Join(f[2:], " ")})
+	}
+	if len(out) == 0 {
+		return nil, errors.New("ps listed no process")
 	}
 	return out, nil
 }

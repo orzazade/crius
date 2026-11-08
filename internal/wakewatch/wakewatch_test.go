@@ -45,6 +45,10 @@ type fake struct {
 	deep     map[string]string // surface -> the tab read deep; none: its screen
 	typed    map[string]bool   // surface -> its input box holds typed text
 	typedErr error
+	procs    []Proc
+	procErr  error
+	tabs     [][2]string // title, text typed into a tab other than Crius's
+	tabErr   error
 }
 
 func (f *fake) deps(home string, now time.Time) Deps {
@@ -72,6 +76,14 @@ func (f *fake) deps(home string, now time.Time) Deps {
 				return all, f.waitErr
 			}
 			return f.waiters, f.waitErr
+		},
+		Procs: func() ([]Proc, error) { return f.procs, f.procErr },
+		SendTab: func(title, text string) error {
+			if f.tabErr != nil {
+				return f.tabErr
+			}
+			f.tabs = append(f.tabs, [2]string{title, text})
+			return nil
 		},
 		Load:  func() (float64, error) { return f.load, f.loadErr },
 		Typed: func(surface string) (bool, error) { return f.typed[surface], f.typedErr },
