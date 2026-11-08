@@ -790,3 +790,11 @@ func TestParseProcs(t *testing.T) {
 		}
 	}
 }
+
+// The rig check's boot time is this machine's: in the past, and less than a year back.
+func TestBootTimeIsThisMachines(t *testing.T) {
+	b, err := bootTime()
+	if err != nil || !b.Before(time.Now()) || b.Before(time.Now().AddDate(-1, 0, 0)) {
+		t.Fatalf("boot %v, %v", b, err)
+	}
+}

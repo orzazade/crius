@@ -21,6 +21,8 @@ var t0 = time.Date(2026, 10, 21, 22, 0, 0, 0, time.Local)
 func stamp(t time.Time) string { return t.Format("2006-01-02T15:04") }
 
 type fake struct {
+	boot     time.Time // the machine's boot time (rigDown)
+	bootErr  error
 	sent     []string
 	sendErr  error
 	tried    []string // every text given to Send, sent or not
@@ -78,6 +80,7 @@ func (f *fake) deps(home string, now time.Time) Deps {
 			return f.waiters, f.waitErr
 		},
 		Procs: func() ([]Proc, error) { return f.procs, f.procErr },
+		Boot:  func() (time.Time, error) { return f.boot, f.bootErr },
 		SendTab: func(title, text string) error {
 			if f.tabErr != nil {
 				return f.tabErr

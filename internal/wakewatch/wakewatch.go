@@ -111,6 +111,8 @@ type Deps struct {
 	Procs func() ([]Proc, error)
 	// SendTab types text into the tab of that title (a role's tab, not Crius's).
 	SendTab func(title, text string) error
+	// Boot is when the machine last booted (kern.boottime; rigDown).
+	Boot func() (time.Time, error)
 }
 
 // Proc is one process as ps lists it.
@@ -153,6 +155,8 @@ type state struct {
 	Roles       map[string]roleSeen  // <project>.<role> -> when its session was last seen live (deadRoles)
 	RolesAt     time.Time            // when deadRoles last looked at every role: a role started after it may have died unseen
 	Waits       map[string]roleWait  // <project>.<role> -> its session's team-wait waiter (rearm)
+	Rig         map[string]string    // project -> the down rig services last said to its leads (rigDown)
+	RigBoot     time.Time            // the boot time rigDown last read: a newer one is a boot since
 }
 
 // waitGap is when a bus log was first seen with no waiter, and whether that gap was said to Crius. From is the log's size
@@ -201,6 +205,9 @@ func Run(d Deps) error {
 	if st.Waits == nil {
 		st.Waits = map[string]roleWait{}
 	}
+	if st.Rig == nil {
+		st.Rig = map[string]string{}
+	}
 	for k, at := range st.Typed {
 		// a dead role's line stays raised as long as the role is dead, so its key goes only when the alert does (review P2-1)
 		if d.Now.Sub(at) > window+resend && !strings.HasPrefix(k, "dead:") {
@@ -223,6 +230,7 @@ func Run(d Deps) error {
 	alerts = append(alerts, deadRoles(d, &st, ss, sesErr, watch, park)...)
 	screens, scrErr := d.Screens()
 	alerts = append(alerts, rearm(d, &st, ss, sesErr, screens, scrErr, watch, park)...)
+	alerts = append(alerts, rigDown(d, &st, ss, sesErr, watch, park)...)
 	if err := scrErr; err != nil {
 		alerts = append(alerts, [2]string{screensFailed, "the tab check failed to look: " + err.Error()})
 		hv.blind = true

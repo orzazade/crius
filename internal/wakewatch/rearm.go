@@ -151,12 +151,17 @@ func rearm(d Deps, st *state, ss []Session, sesErr error, screens []Screen, scrE
 
 // postInfo posts an INFO from wakewatch to the leads on the project's bus log; with no bus log, to Crius on crius.log.
 func postInfo(d Deps, project string, to []string, text string) error {
+	return postLine(d, "INFO", project, to, text)
+}
+
+// postLine posts a line of that type from wakewatch to the leads on the project's bus log; with no bus log, to Crius.
+func postLine(d Deps, typ, project string, to []string, text string) error {
 	if _, err := os.Stat(filepath.Join(d.Home, "bus", project+".log")); errors.Is(err, fs.ErrNotExist) {
-		return watchdog.PostOn(d.Home, "crius", "INFO", "crius:wakewatch", "crius:lead", d.Now, text)
+		return watchdog.PostOn(d.Home, "crius", typ, "crius:wakewatch", "crius:lead", d.Now, text)
 	} else if err != nil {
 		return err
 	}
-	return watchdog.PostOn(d.Home, project, "INFO", "crius:wakewatch", strings.Join(to, ", "), d.Now, text)
+	return watchdog.PostOn(d.Home, project, typ, "crius:wakewatch", strings.Join(to, ", "), d.Now, text)
 }
 
 // waitersBySession gives, for each session, the command of a team-wait.sh process running under its Claude (pid). Only a

@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"golang.org/x/sys/unix"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,7 +29,6 @@ import (
 	"github.com/orzazade/crius/internal/store"
 	"github.com/orzazade/crius/internal/wakewatch"
 	"github.com/orzazade/crius/internal/watchdog"
-	"golang.org/x/sys/unix"
 )
 
 var swapRe = regexp.MustCompile(`used = ([\d.]+)([MG])`)
@@ -96,7 +96,7 @@ func main() {
 		}, States: func() ([]sessionstate.State, error) {
 			return sessionstate.List(filepath.Join(store.Home(), "sessions"))
 		}, Restore: restore, Waiters: waiters, Typed: outbox.Typed, Procs: procs,
-		SendTab: func(title, text string) error { return outbox.Send(store.Home(), title, text) }})
+		SendTab: func(title, text string) error { return outbox.Send(store.Home(), title, text) }, Boot: bootTime})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, time.Now().Format(time.RFC3339), "crius-wakewatch:", err)
 		os.Exit(1)
@@ -391,6 +391,18 @@ func resources() (float64, float64, error) {
 }
 
 // loadAvg reads the 1-minute load from sysctl vm.loadavg ("{ 6.02 5.81 5.40 }").
+// bootTime is when the machine last booted (sysctl kern.boottime).
+func bootTime() (time.Time, error) {
+	tv, err := unix.SysctlTimeval("kern.boottime")
+	if err != nil {
+		return time.Time{}, fmt.Errorf("sysctl kern.boottime: %w", err)
+	}
+	if tv.Sec <= 0 {
+		return time.Time{}, fmt.Errorf("sysctl kern.boottime: %d", tv.Sec)
+	}
+	return time.Unix(tv.Sec, int64(tv.Usec)*1000), nil
+}
+
 func loadAvg() (float64, error) {
 	out, err := exec.Command("/usr/sbin/sysctl", "-n", "vm.loadavg").CombinedOutput()
 	if err != nil {
