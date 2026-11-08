@@ -33,26 +33,41 @@ main = origin/main = this RESUME commit (P6b). Local main ref is behind: it is c
   after the work statusline, red first. Status: done (main c133717, 27c2a73; scorecard def v2).
 - Standing (memory): personal repo, push to main after review; effort medium/high only; no AI attribution.
 
-## GOAL (2026-10-30 18:10)
-
-Goal: build the Crius record (design §9 steps 1-9) so Crius answers the owner's questions from its own store, and its watchers decide from session state (OpenRig parts)
-- [x] 1 store layout, leak test, decisions, items, bus grammar · 060610f
-- [x] 2 crius-ingest v1, backup, watchdog · ccf32e8
-- [x] 3 quota sampling + quota --room · e4f35b8, aa38638, f57ddd8
-- [x] 4 find/show/health/--deep, redaction, recall eval 31/34 · b3a87cb, bus 2026-10-17T02:27
-- [x] 4b fail-closed key=value + gitleaks rules · 86a776a
-- [x] 5 digest + Crius daily start (09:00/18:00 goal report) · 23052fe .. 50e2384
-- [x] 3b Enterprise fallback: included usage + spend limit (owner 10-19 14:44, Crius NEED 15:06) · 72e9793, 97dc0d1
-- [ ] 6 record accept + scorecard (P1-P6, P3c, P3b done; P7 open)
-- [ ] 9 Falcon source
-- [x] O1 OpenRig lessons doc (docs/notes/OPENRIG-LESSONS.md) · 23165f5, VERIFIED bus 14:47
-- [x] O2 crius-hook writes a state file per session · 6268b49, VERIFIED bus 15:32, live (owner OK) 15:33
-- [x] O3 wakewatch and promptwatch read session state first, screen as fallback · f095f7c, VERIFIED bus 16:03, installed observe-only until ~/.crius/wakewatch-mode says decide
-- [x] O4 messages stored (~/.crius/outbox), held while the box has typed text, retried until delivered (crius-say; wakewatch alerts) · 86f33e3 + a2f74f8 (test token fix), VERIFIED bus 17:23 (in the O5 line: items 1-5 all verified)
-- [x] O5 crius-spawn -resume <project> <role> by session id (role file ~/.crius/roles/<project>.<role>.json, kept by crius-hook) · f12739b, VERIFIED bus 17:23, installed; role file written live; -resume and /clear not yet tried on a live tab
-Done: 86% (12 of 14 required rows: 1-5, 4b, 3b, 6, 9, O1-O5, equal weight; 7 and 8 only if needed)
-Next: owner queue brief (~/.crius/state/crius/STATUS-owner-queue-1030.md, A-I done, J screen asks in review); then step 6 P7 and step 9 Falcon source
-Needs owner: nothing (the no-ai-attribution hook installed on owner OK q12; turning wakewatch from observe to decide is a step Crius brings later)
+## GOAL (2026-11-08 19:10)
+Goal: Crius's tools keep every team moving with no owner wait and on Max subscriptions only (orders from crius:lead 11-07/11-08)
+- [x] 2 crius-rec digest time limit · 03de07c, VERIFIED 11-06 15:14
+- [x] F crius-loadwatch sets heavy slots by load · 876308d, VERIFIED 11-08 03:29
+- [x] H ingest: no-remote repo with a detached HEAD or broken ref says so · a705153, VERIFIED 04:16 at aa78d1c (names it)
+- [x] I loadwatch third slot · aa78d1c, VERIFIED 04:16
+- [x] L loadwatch: tripped extras come back after 30 min calm · 7648044, VERIFIED 05:26
+- [x] M wakewatch re-arms a role whose bus waiter died · 5d8f0ee, VERIFIED 05:41
+- [x] O a Max-to-Max move is never "wrong account" · 90ead3e, VERIFIED 06:24
+- [x] N crius-spawn -move resumes the same session on another Max account · b726806, VERIFIED 06:41
+- [x] P quota stale rule (request >45 min after the newest sample) · 20603f7, VERIFIED 06:41 at b726806
+- [x] Q hung heavy-slot check · 1782fc7, VERIFIED 06:41 at b726806
+- [x] R enterprise guard judges a session by the rule of its time · c567dfa, VERIFIED 07:29
+- [x] S wakewatch rig-down alert · c567dfa, VERIFIED 07:29
+- [x] U a WAIT line silences its role's idle flag · c567dfa, VERIFIED 07:29
+- [x] V crius-hook keeps parallel events (queued files) · a81c1f5, VERIFIED 07:53
+- [x] W no false S1 for Max lines without rate limits · beacf0e, VERIFIED 11:00 at e23b71e
+- [x] X -move after a 429: a turn ends only on its turn_duration line · e23b71e, VERIFIED 11:00
+- [x] T all 6 quotes tabs off max1 · e23b71e, VERIFIED 11:00 (pids 25343, 27945 on max3)
+- [x] Y wakewatch S1 on paid usage (owner's hardest rule) · 118841b, VERIFIED 11:07
+- [x] AA context-mode hook never asks; deny kept (~/.claude/hooks/context-mode-security.mjs) · 1b674d1, VERIFIED 14:46
+- [x] AB team-wait finds an idle tab by session id, not title · 3fda072, VERIFIED 19:04
+- [~] Z quotes tabs max2 -> max3 until max3 leads · DONE 18:59: 7 of 13 moved, max3 13 tabs vs max2 10; 6 hold bg jobs at every try
+- [~] 0 Crius wakes only on an allow-list of bus lines · 04b9c15, DONE 11-08 01:35
+- [~] A docs-audit gaps 1-5 · 9221529, DONE 02:44
+- [~] B dead-role check + crius-spawn -close · 1b51813, DONE 02:56
+- [~] C -resume types the "background jobs died" prompt · b71937b, DONE 02:56; live check at the next real -resume
+- [~] D ci-proof <pr> · 58e151e, 27eb62d, DONE 03:40
+- [~] E team-wait --mode lead reads the project bus · DONE 03:4x (no git)
+- [~] G watchdog repeats a stale-heartbeat alert every 6 h · 5aa6fb7, DONE 03:3x
+- [~] J loadwatch fourth slot · 0b5ffb3, DONE 04:51
+- [~] K loadwatch dead band · 7e2dd43, DONE 04:55
+Done: 67% (20 of 30 milestones verified, equal weight; rows 1 and 3 void since the owner removed the guards 11-08)
+Next: nothing queued; idle until an order. Open rows wait on VERIFIED. Detail and known gaps: ~/.crius/state/crius/STATUS-build.md. 10-30 goal (record accept P7, Falcon source) parked with no order; its block is in git history
+Needs owner: nothing
 
 ## NOW
 
