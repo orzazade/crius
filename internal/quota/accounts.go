@@ -181,23 +181,6 @@ func (as *Accounts) SameSeat(a, b string) bool {
 		samePath(filepath.Join(a, "projects")) == samePath(filepath.Join(b, "projects"))
 }
 
-// LineAccount is the account ("max" or "enterprise") a statusline line was measured on: the plan of the row listing its
-// config folder, else of the row signed into its login, else its rate limits (Max sends them, enterprise does not).
-// The folder decides first because a Max line can come without rate limits (crius:lead 11-08: at max2's weekly reset
-// each max2 session wrote one, and five sessions on ~/.claude-max2 were posted as S1 on the enterprise account).
-func (as *Accounts) LineAccount(dir, login string, rl bool) string {
-	if a := as.Dir(dir); dir != "" && a != nil {
-		return a.Plan
-	}
-	if a := as.Of(login); a != nil {
-		return a.Plan
-	}
-	if rl {
-		return "max"
-	}
-	return "enterprise"
-}
-
 // Dir is the row listing the config folder dir, nil when none does (or when as is nil).
 func (as *Accounts) Dir(dir string) *Acct {
 	if as == nil {

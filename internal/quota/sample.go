@@ -284,3 +284,34 @@ func display(l Line) string {
 	// Sample refuses rate_limits without the seven-day share and reset, so both are here.
 	return out + fmt.Sprintf("7d %.0f%% (resets %s)", *l.SevenPct, time.Unix(*l.SevenReset, 0).Local().Format("Mon 15:04"))
 }
+
+// LineAccount is the account ("max" or "enterprise") a statusline line was measured on. Rate limits come only from a
+// Max account. A line without them is Max when its login (of its config folder, at the time) was measured with rate
+// limits on another line, as maxLogins (MaxLogins) holds: a Max line can come without them (crius:lead 11-08: at max2's
+// weekly reset each max2 session wrote one, and five sessions on ~/.claude-max2 were posted as S1 on the enterprise
+// account). Neither the folder's name nor its accounts.toml row decides: an enterprise sign-in in a Max folder would
+// read as Max (review of 3c476e6 P2-1).
+func LineAccount(login string, rl bool, maxLogins map[string]bool) string {
+	if rl || login != "" && maxLogins[login] {
+		return "max"
+	}
+	return "enterprise"
+}
+
+// MaxLogins gives the logins measured with rate limits: every quota row is a line that had them.
+func MaxLogins(db Querier) (map[string]bool, error) {
+	rows, err := db.Query("select distinct login from quota where login is not null and login != ''")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var l string
+		if err := rows.Scan(&l); err != nil {
+			return nil, err
+		}
+		out[l] = true
+	}
+	return out, rows.Err()
+}

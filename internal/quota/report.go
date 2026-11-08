@@ -76,7 +76,7 @@ type Projects struct {
 
 type obs struct {
 	ts    time.Time
-	max   bool   // measured on a Max account (Accounts.LineAccount): its folder's row, else its login's, else its rate limits
+	max   bool   // measured on a Max account (LineAccount): its rate limits, or a login measured with them
 	login string // "" on a line from before the field or from a folder with no login
 }
 
@@ -315,6 +315,10 @@ func (s *sess) guard(id string, ok rules) []Violation {
 // both accounts.
 func sessions(db Querier, p Projects) (out map[string]*sess, lastLine map[string]time.Time, both []string, err error) {
 	out, lastLine = map[string]*sess{}, map[string]time.Time{}
+	maxLogins, err := MaxLogins(db)
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	get := func(id string) *sess {
 		if out[id] == nil {
 			out[id] = &sess{}
@@ -343,10 +347,10 @@ func sessions(db Querier, p Projects) (out map[string]*sess, lastLine map[string
 			s.persona, s.cwdProject = persona, p.ForCwd(cwd, recorded)
 			return nil
 		}},
-		{"select session, coalesce(persona, ''), ts, rl, coalesce(login, ''), coalesce(config_dir, '') from account_seen order by ts", func(r *sql.Rows) error {
-			var id, persona, ts, login, dir string
+		{"select session, coalesce(persona, ''), ts, rl, coalesce(login, '') from account_seen order by ts", func(r *sql.Rows) error {
+			var id, persona, ts, login string
 			var rl bool
-			if err := r.Scan(&id, &persona, &ts, &rl, &login, &dir); err != nil {
+			if err := r.Scan(&id, &persona, &ts, &rl, &login); err != nil {
 				return err
 			}
 			t, err := parseTS(ts)
@@ -360,7 +364,7 @@ func sessions(db Querier, p Projects) (out map[string]*sess, lastLine map[string
 			if t.After(lastLine[persona]) {
 				lastLine[persona] = t
 			}
-			s.obs = append(s.obs, obs{t, p.Accounts.LineAccount(dir, login, rl) == "max", login})
+			s.obs = append(s.obs, obs{t, LineAccount(login, rl, maxLogins) == "max", login})
 			return nil
 		}},
 		{"select session, min(coalesce(ts_first, ts_last)), max(coalesce(ts_last, ts_first)) from request" +
