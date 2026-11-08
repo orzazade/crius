@@ -186,40 +186,6 @@ func TestResumeKeepsTheSessionsMaxAccount(t *testing.T) {
 	}
 }
 
-// Owner 10-23: -move relaunches the role from the session crius-hook keeps as its current one: in its folder, off the
-// Max account it ran on. A session still running is refused (two Claudes on one worktree), and so is a role with none.
-func TestAMoveReadsTheRolesSessionAndItsAccount(t *testing.T) {
-	home, d := t.TempDir(), t.TempDir()
-	m1 := filepath.Join(d, ".claude-work-max")
-	testutil.Write(t, filepath.Join(m1, ".claude.json"), `{"oauthAccount":{"accountUuid":"acct-1"}}`)
-	testutil.Write(t, filepath.Join(home, "accounts.toml"), "[[account]]\nname = \"max1\"\nplan = \"max\"\ndirs = [\""+m1+"\"]\n")
-	s := sessionstate.State{SessionID: "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b", Cwd: "/Users/o/Projects/quotes/.worktrees/lead", Project: "quotes", Role: "lead", Config: m1}
-	if err := sessionstate.WriteRole(filepath.Join(home, "roles"), s, true); err != nil {
-		t.Fatal(err)
-	}
-	if m, err := moved(home, "quotes", "lead"); err != nil || m == nil || *m != (launch.Moved{Cwd: s.Cwd, From: "max1"}) {
-		t.Errorf("%+v %v", m, err)
-	}
-	// Review 10-23: a folder no row lists, signed in to max1's login, is on max1 too, so a move to max1 is refused.
-	m2 := filepath.Join(d, ".claude-other")
-	testutil.Write(t, filepath.Join(m2, ".claude.json"), `{"oauthAccount":{"accountUuid":"acct-1"}}`)
-	s2 := sessionstate.State{SessionID: "7a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d", Cwd: "/Users/o/Projects/quotes/.worktrees/dev", Project: "quotes", Role: "dev", Config: m2}
-	if err := sessionstate.WriteRole(filepath.Join(home, "roles"), s2, true); err != nil {
-		t.Fatal(err)
-	}
-	if m, err := moved(home, "quotes", "dev"); err != nil || m == nil || m.From != "max1" {
-		t.Errorf("unlisted folder on max1's login: %+v %v", m, err)
-	}
-	if _, err := moved(home, "quotes", "rig"); err == nil || !strings.Contains(err.Error(), "no session to move for quotes rig") {
-		t.Errorf("no role: %v", err)
-	}
-	status := fmt.Sprintf(`{"pid":%d,"sessionId":%q,"name":"quotes · lead","procStart":%q}`, os.Getpid(), s.SessionID, testutil.ProcStart(t, os.Getpid()))
-	testutil.Write(t, filepath.Join(m1, "sessions", "1.json"), status)
-	if _, err := moved(home, "quotes", "lead"); err == nil || !strings.Contains(err.Error(), fmt.Sprintf("still runs in process %d", os.Getpid())) {
-		t.Errorf("running: %v", err)
-	}
-}
-
 // 10-28: crius-spawn -resume falcon lead found no ~/.crius/roles/falcon.lead.json: the lead was started by hand without
 // the name "falcon · lead", so crius never filed a role for it. The error says how crius files a role and offers the
 // newest stopped sessions filed under no role in the project's launch folder, each with the line that resumes it by
@@ -278,7 +244,7 @@ func TestAResumeWithNoRoleFileSaysHow(t *testing.T) {
 		t.Errorf("cmux called: %q", got)
 	}
 	// -move gets the same help; with no stopped session to offer, or no launch folder, it says so.
-	if _, err := moved(home, "falcon", "lead"); err == nil || !strings.Contains(err.Error(), "then -move works") {
+	if _, err := (mover{home: home}).move("falcon", "lead"); err == nil || !strings.Contains(err.Error(), "then -move works") {
 		t.Errorf("move: %v", err)
 	}
 	if err := resume(home, "harbor", "lead", d); err == nil || !strings.HasSuffix(err.Error(), "crius saw no stopped session in "+har+" filed under no role") {

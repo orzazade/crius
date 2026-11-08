@@ -1,7 +1,7 @@
 // Command crius-spawn opens a team session and starts it:
 //
 //	crius-spawn [-account max|<name>] [-parent <leader session id>] [-item <project>#<n>] <project> <role> <first prompt…>
-//	crius-spawn -move [-account max|<name>] [-parent <leader session id>] [-item <project>#<n>] <project> <role> <first prompt…>
+//	crius-spawn -move [-account max|<name>] <project> <role>
 //	crius-spawn -resume <project> <role>
 //
 // The tab lands in the project's workspace (made, named and coloured when missing), is named "<project> · <role>",
@@ -16,9 +16,11 @@
 // start for the role, kept in $CRIUS_HOME/roles/<project>.<role>.json. A session that ran in a Max row's
 // folder of accounts.toml comes back in that folder, on that account.
 //
-// With -move it moves a role off an account at its limit: once the role's Claude has stopped, a fresh session with the
-// first prompt given (the role's brief) starts in the current session's folder, so on its worktree and branch, on
-// another Max account (the one whose week resets soonest under 95%, or the row -account names), and the old tab is closed.
+// With -move it moves a role off an account at its limit as the same session (owner 10-30): at a turn boundary, with no
+// background job but its bus waiter running (crius:lead 11-08), it types /exit into the role's tab and resumes the
+// session there on the Max account whose week resets soonest under 95% (or the row -account names), then prints the new
+// Claude's pid and config folder. A session busy or running a job is left alone, and a resume that lands in another
+// folder fails.
 package main
 
 import (
@@ -47,10 +49,10 @@ func main() {
 	item := flag.String("item", "", "the work item, <project>#<n>, for the provenance tag")
 	again := flag.Bool("resume", false, "bring the role's current session back: <project> <role>, nothing else")
 	closed := flag.Bool("close", false, "mark the role's current session closed on purpose: <project> <role>, nothing else; wakewatch's dead-role check skips it until another session of the role starts or -resume brings it back")
-	move := flag.Bool("move", false, "start the role afresh in its current session's folder on another Max account (-account, default the one whose week resets soonest under 95%); its Claude must have stopped")
+	move := flag.Bool("move", false, "resume the role's current session on another Max account (-account, default the one whose week resets soonest under 95%): <project> <role>; only at a turn boundary with no background job but its bus waiter")
 	flag.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: crius-spawn [-account max|<name>] [-parent id] [-item project#n] <project> <role> <first prompt…>")
-		fmt.Fprintln(os.Stderr, "       crius-spawn -move [-account max|<name>] [-parent id] [-item project#n] <project> <role> <first prompt…>")
+		fmt.Fprintln(os.Stderr, "       crius-spawn -move [-account max|<name>] <project> <role>")
 		fmt.Fprintln(os.Stderr, "       crius-spawn -resume <project> <role>")
 		fmt.Fprintln(os.Stderr, "       crius-spawn -close <project> <role>")
 		flag.PrintDefaults()
@@ -84,6 +86,28 @@ func main() {
 		}
 		return
 	}
+	if *move {
+		if flag.NArg() != 2 || *again || *parent != "" || *item != "" {
+			flag.Usage()
+			os.Exit(2)
+		}
+		m := mover{home: store.Home(), want: *account, tries: 60, wait: time.Second, procs: psProcs, cmux: runCmux,
+			pick: d.Pick,
+			state: func(id string) (string, error) {
+				s, err := sessionstate.Read(filepath.Join(store.Home(), "sessions"), id)
+				return s.State, err
+			},
+			resume: func(project, role, id, cwd, acct, dir string) (string, string, error) {
+				return launch.Resume(project, role, id, cwd, acct, dir, d)
+			}}
+		out, err := m.move(flag.Arg(0), flag.Arg(1))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "crius-spawn:", err)
+			os.Exit(1)
+		}
+		fmt.Println(out)
+		return
+	}
 	if *again {
 		if flag.NArg() != 2 || *account != "" || *move || *parent != "" || *item != "" {
 			flag.Usage()
@@ -101,14 +125,6 @@ func main() {
 	}
 	s := launch.Spawn{Project: flag.Arg(0), Role: flag.Arg(1), Account: *account, Parent: *parent, Item: *item,
 		Prompt: strings.Join(flag.Args()[2:], " ")}
-	if *move {
-		m, err := moved(store.Home(), s.Project, s.Role)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "crius-spawn:", err)
-			os.Exit(1)
-		}
-		s.Move = m
-	}
 	ws, surface, tag, err := launch.Run(s, d)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "crius-spawn:", err)
@@ -150,32 +166,6 @@ func closeRole(home, project, role string) error {
 	}
 	fmt.Printf("OK %s %s closed: session %s\n", project, role, s.SessionID)
 	return nil
-}
-
-// moved is the role's current session as a move needs it: its folder and the account it ran on, the row that lists its
-// config folder, else the row of the login that folder is signed into ("" when neither).
-func moved(home, project, role string) (*launch.Moved, error) {
-	s, err := stopped(home, project, role, "move")
-	if err != nil {
-		return nil, err
-	}
-	as, err := quota.LoadAccounts(home)
-	if err != nil {
-		return nil, err
-	}
-	a := as.Dir(s.Config)
-	if a == nil {
-		login, err := quota.LoginOf(s.Config)
-		if err != nil {
-			return nil, fmt.Errorf("%s %s: which account its session ran on: %w", project, role, err)
-		}
-		a = as.Of(login)
-	}
-	m := &launch.Moved{Cwd: s.Cwd}
-	if a != nil {
-		m.From = a.Name
-	}
-	return m, nil
 }
 
 // stopped is the session crius-hook keeps as the role's current one, refused while its Claude still runs. A role with
