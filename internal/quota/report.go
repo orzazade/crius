@@ -76,7 +76,7 @@ type Projects struct {
 
 type obs struct {
 	ts    time.Time
-	rl    bool
+	max   bool   // measured on a Max account (Accounts.LineAccount): its folder's row, else its login's, else its rate limits
 	login string // "" on a line from before the field or from a folder with no login
 }
 
@@ -142,7 +142,7 @@ func (s *sess) org(t time.Time) *orgLine {
 // else the launch tag active then, else unknown.
 func (s *sess) account(t time.Time) string {
 	if o := s.line(t); o != nil {
-		if o.rl {
+		if o.max {
 			return "max"
 		}
 		return "enterprise"
@@ -260,7 +260,7 @@ func (s *sess) guard(id string, ok rules) []Violation {
 		}
 	}
 	for i, o := range s.obs {
-		if o.rl {
+		if o.max {
 			continue
 		}
 		from, to := o.ts.Add(-Grace), time.Time{}
@@ -268,7 +268,7 @@ func (s *sess) guard(id string, ok rules) []Violation {
 			from = s.first // requests before the first line take its account
 		}
 		for _, x := range s.obs[i+1:] {
-			if x.rl {
+			if x.max {
 				to = x.ts.Add(-Grace)
 				break
 			}
@@ -343,10 +343,10 @@ func sessions(db Querier, p Projects) (out map[string]*sess, lastLine map[string
 			s.persona, s.cwdProject = persona, p.ForCwd(cwd, recorded)
 			return nil
 		}},
-		{"select session, coalesce(persona, ''), ts, rl, coalesce(login, '') from account_seen order by ts", func(r *sql.Rows) error {
-			var id, persona, ts, login string
+		{"select session, coalesce(persona, ''), ts, rl, coalesce(login, ''), coalesce(config_dir, '') from account_seen order by ts", func(r *sql.Rows) error {
+			var id, persona, ts, login, dir string
 			var rl bool
-			if err := r.Scan(&id, &persona, &ts, &rl, &login); err != nil {
+			if err := r.Scan(&id, &persona, &ts, &rl, &login, &dir); err != nil {
 				return err
 			}
 			t, err := parseTS(ts)
@@ -360,7 +360,7 @@ func sessions(db Querier, p Projects) (out map[string]*sess, lastLine map[string
 			if t.After(lastLine[persona]) {
 				lastLine[persona] = t
 			}
-			s.obs = append(s.obs, obs{t, rl, login})
+			s.obs = append(s.obs, obs{t, p.Accounts.LineAccount(dir, login, rl) == "max", login})
 			return nil
 		}},
 		{"select session, min(coalesce(ts_first, ts_last)), max(coalesce(ts_last, ts_first)) from request" +
@@ -437,7 +437,7 @@ func sessions(db Querier, p Projects) (out map[string]*sess, lastLine map[string
 				if measured[l.org] == nil {
 					measured[l.org] = map[bool]bool{}
 				}
-				measured[l.org][o.rl] = true
+				measured[l.org][o.max] = true
 			}
 		}
 	}

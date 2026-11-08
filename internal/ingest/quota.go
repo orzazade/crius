@@ -32,7 +32,9 @@ func (r *runner) ingestQuota() {
 		}
 	}
 	// Every session's account, also of sessions seen by the statusline before their transcript was read.
-	if err := r.inTx(measuredAccount); err != nil {
+	if as, err := quota.LoadAccounts(r.home); err != nil {
+		r.warn(true, "session accounts: %v", err)
+	} else if err := r.inTx(measuredAccount(as)); err != nil {
 		r.warn(true, "session accounts: %v", err)
 	}
 	if err := r.inTx(r.quotaChecks); err != nil {

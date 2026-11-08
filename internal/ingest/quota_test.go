@@ -1812,3 +1812,39 @@ func TestQuotaAnIdleTabsHeartbeatAfterTheEditIsNotS1(t *testing.T) {
 		t.Fatalf("no request after the edit: %q", got)
 	}
 }
+
+// crius:lead 11-08 09:01: at max2's weekly reset (05:00Z) each max2 session wrote one statusline line without rate
+// limits; read as enterprise, the 09:00 ingest posted five false S1s and "account mismatch: tag max, statusline
+// enterprise" for sessions whose config folder was ~/.claude-max2. A line's account is its config folder's row in
+// accounts.toml; its rate limits decide only for a folder no row lists (the control: that one is still S1).
+func TestQuotaAMaxFolderLineWithoutRateLimitsIsMax(t *testing.T) {
+	x := quotaCase(t)
+	seats := testutil.MaxSeats(t, t.TempDir(), x.home)
+	onMax := "23d7a2d7-2222-3333-4444-555555555555"
+	unlisted := "e0dea215-2222-3333-4444-555555555555"
+	x.session("work", onMax, "/work/demo", "[crius account=max project=demo role=lead]", qNow.Add(-50*time.Minute), qNow.Add(-20*time.Minute))
+	x.session("work", unlisted, "/work/demo", "", qNow.Add(-50*time.Minute), qNow.Add(-20*time.Minute))
+	at := func(sid, dir string, ago time.Duration, rl bool) quota.Line {
+		l := sampleAt(sid, qNow.Add(-ago), 20, qNow.Add(4*24*time.Hour))
+		l.Persona, l.Dir, l.RL = "work", dir, rl
+		if !rl {
+			l.FivePct, l.FiveReset, l.SevenPct, l.SevenReset = nil, nil, nil, nil
+		}
+		return l
+	}
+	x.spool(at(onMax, seats.WorkA, 55*time.Minute, true), at(onMax, seats.WorkA, 40*time.Minute, false),
+		at(onMax, seats.WorkA, 10*time.Minute, false),
+		at(unlisted, "/elsewhere/.claude-work", 40*time.Minute, false))
+	x.run()
+	all := strings.Join(x.alerts(), "\n")
+	if strings.Contains(all, "23d7a2d7") {
+		t.Errorf("a Max folder's line read as enterprise: %q", all)
+	}
+	if !strings.Contains(all, "S1 personal work on the enterprise account: session e0dea215, project demo (account from statusline)") {
+		t.Errorf("control: a line from a folder no row lists, without rate limits, is enterprise: %q", all)
+	}
+	var acct string
+	if err := sqlOne(x, "select account from session where id = ?", onMax, &acct); err != nil || acct != "max" {
+		t.Errorf("session account %q %v", acct, err)
+	}
+}

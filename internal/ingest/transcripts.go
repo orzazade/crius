@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/orzazade/crius/internal/quota"
 	"github.com/orzazade/crius/internal/store"
 )
 
@@ -681,14 +682,39 @@ func (r *runner) rollUp(tx *sql.Tx, sid string) error {
 	return err
 }
 
-// measuredAccount sets each session's account from the newest statusline line seen for it, when there is one: rate
-// limits mean Max, a response without them enterprise. What the statusline saw wins over a tag (the tag's account
-// stays on the assignment, where the guard compares the two). It runs after rollUp, which resets the account.
-func measuredAccount(tx *sql.Tx) error {
-	_, err := tx.Exec("update session set account=(select case rl when 1 then 'max' else 'enterprise' end from" +
-		" account_seen where session=session.id order by ts desc, rowid desc limit 1) where exists (select 1 from" +
-		" account_seen where session=session.id)")
-	return err
+// measuredAccount sets each session's account from the newest statusline line seen for it, when there is one, as
+// quota.Accounts.LineAccount reads it: its config folder's row, else its login's, else its rate limits. What the
+// statusline saw wins over a tag (the tag's account stays on the assignment, where the guard compares the two). It
+// runs after rollUp, which resets the account.
+func measuredAccount(as *quota.Accounts) func(tx *sql.Tx) error {
+	return func(tx *sql.Tx) error {
+		rows, err := tx.Query("select s.id, a.rl, coalesce(a.login, ''), coalesce(a.config_dir, '') from session s" +
+			" join account_seen a on a.rowid = (select rowid from account_seen where session = s.id order by ts desc," +
+			" rowid desc limit 1)")
+		if err != nil {
+			return err
+		}
+		set := map[string]string{}
+		for rows.Next() {
+			var id, login, dir string
+			var rl bool
+			if err := rows.Scan(&id, &rl, &login, &dir); err != nil {
+				rows.Close()
+				return err
+			}
+			set[id] = as.LineAccount(dir, login, rl)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		for id, a := range set {
+			if _, err := tx.Exec("update session set account = ? where id = ?", a, id); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 }
 
 func head(s string, n int) string {
