@@ -136,3 +136,100 @@ func TestAMoveThatLandsElsewhereFails(t *testing.T) {
 		t.Errorf("did not exit: %v, resumed %q", err, x.resumed)
 	}
 }
+
+// Review of fe19215 P2-2: a bus line can start a turn between the idle check and Enter; /exit then waits behind the turn.
+// The move waits for it, where it used to give up after its reads and leave the queued /exit to end the session later.
+func TestAMoveWaitsForATurnThatStartedAfterExit(t *testing.T) {
+	x := newMoveRig(t)
+	x.exits = false
+	reads := 0
+	x.m.state = func(id string) (string, error) {
+		if !strings.Contains(strings.Join(x.typed, "\n"), "/exit") {
+			return sessionstate.Idle, nil
+		}
+		reads++
+		if reads == 6 { // the turn ends and the queued /exit runs
+			if err := os.Remove(filepath.Join(x.m1, "sessions", "1.json")); err != nil {
+				t.Fatal(err)
+			}
+			return sessionstate.Idle, nil
+		}
+		return sessionstate.Running, nil
+	}
+	if _, err := x.m.move("team", "dev"); err != nil || len(x.resumed) != 1 {
+		t.Fatalf("turn after /exit: %v, resumed %q", err, x.resumed)
+	}
+}
+
+// Review of fe19215 P2-4: the old Claude can still be in front of its tab after its sessions file is gone; Resume then
+// refuses "not a shell". The move tries again, and a resume that fails names the folder the session is now filed on.
+func TestAMoveRetriesTheResumeAndFilesTheNewFolderFirst(t *testing.T) {
+	x := newMoveRig(t)
+	resume := x.m.resume
+	x.m.resume = func(project, role, id, cwd, acct, dir string) (string, string, error) {
+		if r, err := sessionstate.ReadRole(filepath.Join(x.home, "roles"), "team", "dev"); err != nil || r.FiledConfig() != x.m2 {
+			t.Errorf("at the resume the role is filed on %q (%v), want %q", r.FiledConfig(), err, x.m2)
+		}
+		if len(x.resumed) == 0 {
+			x.resumed = append(x.resumed, "refused")
+			return "", "", fmt.Errorf("team · dev (WS-1 SF-1) runs claude in front, not a shell: left alone")
+		}
+		return resume(project, role, id, cwd, acct, dir)
+	}
+	if out, err := x.m.move("team", "dev"); err != nil || len(x.resumed) != 2 || !strings.Contains(out, "max1 -> max2") {
+		t.Fatalf("claude still in front once: %v %q, resumed %q", err, out, x.resumed)
+	}
+	x = newMoveRig(t)
+	x.m.resume = func(project, role, id, cwd, acct, dir string) (string, string, error) {
+		return "", "", fmt.Errorf("two tabs are titled team · dev")
+	}
+	_, err := x.m.move("team", "dev")
+	if err == nil || !strings.Contains(err.Error(), "filed on "+x.m2+", but did not resume") || !strings.Contains(err.Error(), "crius-spawn -resume team dev") {
+		t.Errorf("resume failed: %v", err)
+	}
+}
+
+// Review of fe19215 P2-3: a background subagent or workflow runs inside Claude with no shell child, so the idle check
+// cannot see it, and the move pressed Enter on Claude's "Exit and stop tasks" dialog whatever it listed. It is accepted
+// only when it lists the session's bus waiters alone; else the dialog is left with Escape and nothing moves.
+func TestAMoveStopsOnlyItsBusWaiterAtExit(t *testing.T) {
+	dialog := func(tasks ...string) string {
+		return "╭────╮\n│ Background work is running\n│ The following will stop when you exit:\n│  " + strings.Join(tasks, "\n│  ") +
+			"\n│\n│ ❯ 1. Exit and stop tasks\n│   2. Stay\n╰────╯\n"
+	}
+	for _, c := range []struct {
+		name   string
+		screen string
+		moved  bool
+	}{
+		{"its waiter", dialog("Wait for the next bus line"), true},
+		{"a subagent too", dialog("Wait for the next bus line", "Deep review of the branch (agent)"), false},
+		{"more than it lists", dialog("Wait for the next bus line", "+ 2 more items"), false},
+	} {
+		x := newMoveRig(t)
+		x.children = []proc{{pid: 70, ppid: os.Getpid(), command: "/bin/zsh -c eval '~/.claude/skills/cmux-team/bin/team-wait.sh --mode worker'"}}
+		x.exits = false
+		shown := false
+		x.m.cmux = func(args ...string) (string, error) {
+			x.typed = append(x.typed, strings.Join(args, " "))
+			switch {
+			case args[0] == "read-screen" && strings.Contains(strings.Join(x.typed, "\n"), "/exit"):
+				shown = true
+				return c.screen, nil
+			case args[0] == "send-key" && shown && args[len(args)-1] == "enter":
+				if err := os.Remove(filepath.Join(x.m1, "sessions", "1.json")); err != nil && !os.IsNotExist(err) {
+					t.Fatal(err)
+				}
+			}
+			return "", nil
+		}
+		_, err := x.m.move("team", "dev")
+		last := x.typed[len(x.typed)-1]
+		if c.moved && (err != nil || len(x.resumed) != 1 || !strings.HasSuffix(last, " enter")) {
+			t.Errorf("%s: %v, resumed %q, last key %q", c.name, err, x.resumed, last)
+		}
+		if !c.moved && (err == nil || !strings.Contains(err.Error(), "besides its 1 bus waiter") || len(x.resumed) != 0 || !strings.HasSuffix(last, " escape")) {
+			t.Errorf("%s: %v, resumed %q, last key %q", c.name, err, x.resumed, last)
+		}
+	}
+}

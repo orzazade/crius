@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -1031,105 +1030,6 @@ func TestResumeStartsInTheSessionsAccountFolder(t *testing.T) {
 		if _, _, err := Resume("quotes", "lead", resumeID, "/Users/o/Projects/quotes", c[0], c[1], f.deps()); err == nil || len(f.calls) != 0 {
 			t.Errorf("%q: err %v, calls %q: want refused before cmux", c, err, f.calls)
 		}
-	}
-}
-
-// Owner 10-23: a role on an account at its limit moves to one with room: a fresh session with the brief it is given, in
-// the old session's folder (its worktree and branch), on the picked account. Its old tab, a shell once its Claude has
-// stopped, is closed so the role has one tab.
-func TestAMoveStartsTheRoleInItsFolderOnAnotherAccountAndClosesTheOldTab(t *testing.T) {
-	to := func(string, string) (string, string, error) { return "max2", "/Users/o/.claude-max2", nil }
-	f := &fake{trees: []string{treeWith("quotes · lead · max1")}, picked: to}
-	s := Spawn{Project: "quotes", Role: "lead", Prompt: "Read your brief.", Move: &Moved{Cwd: "/Users/o/Projects/quotes/.worktrees/lead", From: "max1"}}
-	if _, _, tag, err := Run(s, f.deps()); err != nil || tag != "[crius account=max project=quotes role=lead]" {
-		t.Fatalf("%q %v", tag, err)
-	}
-	closed, opened := slices.Index(f.calls, "close-surface --workspace workspace:2 --surface surface:22"), -1
-	for i, c := range f.calls {
-		if strings.HasPrefix(c, "new-surface ") {
-			opened = i
-			if !strings.Contains(c, "--working-directory /Users/o/Projects/quotes/.worktrees/lead ") ||
-				!strings.Contains(c, "--primary '/Users/o/.claude-max2' ") || !strings.HasSuffix(c, "-n 'quotes · lead'"+exitLine) {
-				t.Errorf("new-surface %q", c)
-			}
-		}
-	}
-	if closed < 0 || opened < 0 || closed < opened {
-		t.Errorf("calls %q: want the new tab opened, then the old one closed", f.calls)
-	}
-	// With no old tab open, the move just opens the new one.
-	f = &fake{trees: []string{tree}, picked: to}
-	if _, _, _, err := Run(s, f.deps()); err != nil || len(f.called("close-surface")) != 0 || len(f.called("new-surface")) != 1 {
-		t.Errorf("%v, calls %q", err, f.calls)
-	}
-	// Refused before any tab is touched: no account to move to, the same account, a folder unfit for a shell line, and
-	// an old tab with anything but a shell in front.
-	for _, c := range []struct {
-		f    *fake
-		s    Spawn
-		want string
-	}{
-		{&fake{trees: []string{tree}, picked: func(string, string) (string, string, error) { return "", "", nil }}, s, "no signed-in folder"},
-		{&fake{trees: []string{tree}, picked: func(string, string) (string, string, error) { return "max1", "/Users/o/.claude-work-max", nil }}, s, "on max1 already"},
-		{&fake{trees: []string{tree}, picked: to}, Spawn{Project: "quotes", Role: "lead", Prompt: "go", Move: &Moved{Cwd: "rel/dir", From: "max1"}}, "bad folder"},
-		// a move goes to another Max account only; the enterprise account is never launched (owner 11-07)
-		{&fake{trees: []string{tree}, picked: to}, Spawn{Project: "quotes", Role: "lead", Prompt: "go", Account: "enterprise", Move: s.Move}, "never launched"},
-		{&fake{trees: []string{treeWith("quotes · lead · max1")}, picked: to, front: "claude"}, s, "left alone"},
-	} {
-		_, _, _, err := Run(c.s, c.f.deps())
-		if err == nil || !strings.Contains(err.Error(), c.want) || len(c.f.called("close-surface")) != 0 || len(c.f.called("new-")) != 0 {
-			t.Errorf("%q: err %v, calls %q", c.want, err, c.f.calls)
-		}
-	}
-}
-
-// Review 10-23 (-move): the old tab was closed before the new one opened, so a failure after (a new tab cmux refused, a
-// session that never came up) left the role with no tab; and no lock held the role, so a resume or a second move at the
-// same time could each open a Claude on one worktree. The role's lock, the one Resume takes, is held from the look at
-// its tabs until the new box is up, and the old tab closes only then.
-func TestAMoveHoldsTheRolesLockAndClosesTheOldTabLast(t *testing.T) {
-	to := func(string, string) (string, string, error) { return "max2", "/Users/o/.claude-max2", nil }
-	s := Spawn{Project: "quotes", Role: "lead", Prompt: "Read your brief.", Move: &Moved{Cwd: "/Users/o/Projects/quotes/.worktrees/lead", From: "max1"}}
-	f := &fake{trees: []string{treeWith("quotes · lead · max1")}, picked: to}
-	d := f.deps()
-	d.Lock = filepath.Join(t.TempDir(), "launch.lock")
-	cmux, held := d.Cmux, false
-	d.Cmux = func(args ...string) (string, error) {
-		if args[0] == "tree" {
-			lf, err := os.OpenFile(d.Lock+".quotes.lead", os.O_CREATE|os.O_RDWR, 0o600)
-			if err != nil {
-				t.Fatal(err)
-			}
-			held = syscall.Flock(int(lf.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) != nil
-			lf.Close()
-		}
-		return cmux(args...)
-	}
-	if _, _, _, err := Run(s, d); err != nil || !held {
-		t.Errorf("err %v, role lock held while looking at its tabs: %v", err, held)
-	}
-	// A session that never comes up leaves the old tab open.
-	f = &fake{trees: []string{treeWith("quotes · lead · max1")}, picked: to, noWork: true}
-	if _, _, _, err := Run(s, f.deps()); err == nil || len(f.called("close-surface")) != 0 {
-		t.Errorf("err %v, calls %q: want an error and the old tab left open", err, f.calls)
-	}
-	// A move from a project that starts on enterprise goes to the Max account with the most room.
-	f = &fake{trees: []string{tree}, picked: to, account: "enterprise"}
-	if _, _, tag, err := Run(s, f.deps()); err != nil || !strings.HasPrefix(tag, "[crius account=max ") {
-		t.Errorf("enterprise project: %q %v", tag, err)
-	}
-	// Review 10-23: a Claude started in the old tab while the new one came up keeps its tab.
-	f = &fake{trees: []string{treeWith("quotes · lead · max1")}, picked: to}
-	d = f.deps()
-	front, looks := d.Front, 0
-	d.Front = func(tty string) (string, error) {
-		if looks++; looks > 1 {
-			return "claude", nil
-		}
-		return front(tty)
-	}
-	if _, _, _, err := Run(s, d); err == nil || !strings.Contains(err.Error(), "runs claude in front") || len(f.called("close-surface")) != 0 {
-		t.Errorf("err %v, calls %q: want the old tab left open, its Claude named", err, f.calls)
 	}
 }
 

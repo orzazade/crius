@@ -54,7 +54,8 @@ Rules: [docs/RULES.md](docs/RULES.md) (definition of done, bugs, goals and repor
 - AXI v1 is being retired: a new v1-only security finding is one line in the next report, not an S1.
   Re-raise if it also hits v2 or the retirement date slips (owner, 2026-10-17).
 - Moving a session to another account resumes the same session (same id, full context) at a turn boundary; never
-  park and restart fresh (owner, 2026-10-30). Until `crius-spawn -move` does this: ~/.crius/state/crius/move-to-max2.sh.
+  park and restart fresh (owner, 2026-10-30). Use `crius-spawn -move <project> <role>`; it refuses while a turn or a
+  background job runs, so retry it at the next turn boundary.
 - `cmux send` targets a session only with `--workspace workspace:N --surface surface:NNN`. A bare positional
   number is treated as text and goes to your own surface.
 - Disk alert, high swap or "clean up the Mac": load the `disk-cleanup` skill and follow it (owner, 2026-11-04).

@@ -390,7 +390,7 @@ func (r *runner) pauseAccounts(tx *sql.Tx, rep *quota.Report, as *quota.Accounts
 // limitChecks tells Crius when a Max account its sessions run on reaches quota.Limit of its week (owner 10-28 23:5x):
 // one NEED per account and window, and one more when a later run finds a session on it not named before; each names
 // the sessions open on it (as tabsByLogin counts them) and the account each project moves to by the rule (quota.Pick).
-// Crius parks each with a RESUME note and moves it; nothing is stopped here. An account at the limit with no session
+// Crius moves each, the same session, with crius-spawn -move at its next turn boundary; nothing is stopped here. An account at the limit with no session
 // open on it is no news. A login no row lists is checked too: its sessions spend a Max week all the same.
 func (r *runner) limitChecks(tx *sql.Tx, rep *quota.Report, as *quota.Accounts) error {
 	open, err := sessionsByLogin(tx, rep.Now)
@@ -450,7 +450,7 @@ func (r *runner) limitChecks(tx *sql.Tx, rep *quota.Report, as *quota.Accounts) 
 		}
 		if err := r.queueLine(tx, key+":need:"+strings.Join(news, ","), "NEED", "crius", "crius:lead", fmt.Sprintf(
 			"quota: account %s at %g%% of its 7d (%s, resets %s) reached the %d%% limit; on it: %s. Next by the rule: "+
-				"%s. Park each with a RESUME note and move it (crius-spawn -move)", a.Name, a.SevenPct, at,
+				"%s. Move each, the same session, at its turn boundary: crius-spawn -move <project> <role>", a.Name, a.SevenPct, at,
 			a.Reset.Local().Format("Mon 15:04"), quota.Limit, strings.Join(names, ", "), strings.Join(moves, ", "))); err != nil {
 			return err
 		}
