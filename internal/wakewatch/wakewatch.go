@@ -682,8 +682,6 @@ func waiting(st *state, d Deps, watch projects, park parked, screens []Screen, h
 				live[s.Surface] = true
 				out = append(out, [2]string{"screen-failed:" + s.Surface, fmt.Sprintf("tab %q (%s): idle check could not read its bus: %v", s.Title, s.Surface, err)})
 				continue
-			} else if w.silent {
-				continue // its WAIT runs: the idle spell counts from its end
 			}
 		}
 		live[s.Surface] = true
@@ -693,7 +691,7 @@ func waiting(st *state, d Deps, watch projects, park parked, screens []Screen, h
 		if isLead(name) && !dialogRe.MatchString(s.Text) && view != "busy" && !quiet {
 			sa.note(d, name, s.Surface+":"+h, body, seen.Since)
 		}
-		if seen.Since.Equal(d.Now) {
+		if seen.Since.Equal(d.Now) || w.silent { // a WAIT that runs still lets a lead's ask reach the owner queue (above)
 			continue
 		}
 		if ask {

@@ -49,6 +49,18 @@ func TestAWaitLineSilencesTheIdleFlagUntilItsTime(t *testing.T) {
 	if len(got) == 0 || got[0] < at.Add(2*time.Hour+idleAfter).Format("15:04") {
 		t.Fatalf("the line that ends the wait starts a fresh idle spell: %q", got)
 	}
+	acked := bus + stamp(at.Add(7*time.Minute)) + " ACK crius:lead -> harness2:lead — noted\n"
+	if got := idleRuns(t, acked, at, time.Date(2026, 11, 8, 8, 50, 0, 0, time.Local)); len(got) != 0 {
+		t.Fatalf("an ACK ends a timed wait: %q", got)
+	}
+	toAll := event + stamp(at.Add(2*time.Hour)) + " ORDER crius:lead -> harness2:all — items 4-6\n"
+	if got := idleRuns(t, toAll, at, at.Add(4*time.Hour)); len(got) == 0 {
+		t.Fatalf("a line to the whole project ends an event wait: %q", got)
+	}
+	far := stamp(at) + " WAIT harness2:lead -> crius — waiting for CI until 12-31 09:00\n"
+	if got := idleRuns(t, far, at, at.Add(26*time.Hour)); len(got) != 1 || !strings.Contains(got[0], "its WAIT until Mon 11-09 05:38 has passed") {
+		t.Fatalf("a wait is capped at 24 h: %q", got)
+	}
 	got = idleRuns(t, event, at, at.Add(14*time.Hour))
 	if len(got) != 1 || !strings.Contains(got[0], "its WAIT for an event has lasted 12 h") {
 		t.Fatalf("an event wait ends after 12 h, flagged once: %q", got)
@@ -64,7 +76,13 @@ func TestAWaitNamesItsTimeInTheFormsLeadsWrite(t *testing.T) {
 		{"waiting for the week reset (Sun 09:00)", time.Date(2026, 11, 8, 9, 0, 0, 0, time.Local)},
 		{"recheck after 15:15Z", time.Date(2026, 11, 8, 15, 15, 0, 0, time.UTC)},
 		{"until 11-09 09:30, then round 2", time.Date(2026, 11, 9, 9, 30, 0, 0, time.Local)},
-		{"next check at 04:00", time.Date(2026, 11, 9, 4, 0, 0, 0, time.Local)}, // passed today: tomorrow's
+		{"next check at 04:00", time.Time{}}, // passed: a time is never moved to the next day
+		{"IDLE at 05:30 was wrong; waiting for the week reset (Sun 09:00)", time.Date(2026, 11, 8, 9, 0, 0, 0, time.Local)},
+		{"rate limited since 05:10; reset at 9:30am", time.Date(2026, 11, 8, 9, 30, 0, 0, time.Local)},
+		{"took 1:05 to run; waiting for QA", time.Time{}},
+		{"Monitor 07:00 run, then QA", time.Date(2026, 11, 8, 7, 0, 0, 0, time.Local)},
+		{"baseline 2025-12-01 10:00; waiting for CI", time.Time{}},
+		{"back at 3:15 pm", time.Date(2026, 11, 8, 15, 15, 0, 0, time.Local)},
 		{"until Monday 08:00", time.Date(2026, 11, 9, 8, 0, 0, 0, time.Local)},
 		{"waiting for QA to judge item 3; bun test 135/0", time.Time{}},
 	} {

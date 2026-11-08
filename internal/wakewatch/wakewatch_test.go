@@ -2476,6 +2476,9 @@ func TestALeadThatAsksOnItsScreenBecomesAQueueRow(t *testing.T) {
 		return "⏺ Compacted while idle, before the prompt cache expired\n" + string(asked[box:])
 	}
 	dialog := func(time.Time) string { return string(asked) + "\n ❯ 1. Yes\n   2. No\n" }
+	waitAsk := func(time.Time) string { // the ask, its turn ended on ⏳
+		return strings.Replace(string(asked), `"go, A1 and A2 as proposed" is enough.`, `"go, A1 and A2 as proposed" is enough. ⏳`, 1)
+	}
 	for _, c := range []struct {
 		name  string
 		bus   string
@@ -2498,6 +2501,9 @@ func TestALeadThatAsksOnItsScreenBecomesAQueueRow(t *testing.T) {
 		{"the head scrolled off", "", "marketplace · lead", []func(time.Time) string{headless, headless, headless, headless}, ownerqueue.Open},
 		{"the head scrolled off above a Worked-for line", "", "marketplace · lead", []func(time.Time) string{worked, worked, worked, worked}, ownerqueue.Open},
 		{"a dialog", "", "marketplace · lead", []func(time.Time) string{dialog, dialog, dialog, dialog}, ""},
+		// review of 8295577 P2-3: a lead whose WAIT runs (for the owner, often) still has its ask read
+		{"its WAIT runs", stamp(t0) + " WAIT marketplace:lead -> crius:lead — waiting for the owner on A1 and A2\n",
+			"marketplace · lead", []func(time.Time) string{waitAsk, waitAsk, waitAsk, waitAsk}, ownerqueue.Open},
 	} {
 		home := setup(t, map[string]string{"marketplace.log": busFrom("marketplace:lead", t0.Add(-time.Hour)) + c.bus})
 		status := filepath.Join(home, "marketplace-STATUS.md")
