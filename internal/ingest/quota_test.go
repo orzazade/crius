@@ -1790,3 +1790,25 @@ func TestQuotaARuleChangeWithTheClockBehindGoesInOnce(t *testing.T) {
 		t.Fatalf("rule rows %q", got)
 	}
 }
+
+// Review r2 of 8b1e3ae P2: a tab left open makes no request after the edit, but its statusline still writes heartbeat
+// lines; those bill nothing, so they break no rule.
+func TestQuotaAnIdleTabsHeartbeatAfterTheEditIsNotS1(t *testing.T) {
+	x := quotaCase(t)
+	sid := "abababab-2222-3333-4444-555555555555"
+	x.session("work", sid, "/work/axi", "[crius account=enterprise project=axi role=lead]", qNow.Add(-6*time.Hour), qNow.Add(-5*time.Hour))
+	x.spool(quota.Line{TS: iso(qNow.Add(-6*time.Hour - 30*time.Second)), Kind: "session", Session: sid, Persona: "work"})
+	clock = func() time.Time { return qNow.Add(-3 * time.Hour) }
+	x.run()
+	edit := qNow.Add(-2 * time.Hour)
+	writeConfig(t, x.home, x.personal, x.work, cfg{extra: strings.Replace(axiProject, `["max", "enterprise"]`, `["max"]`, 1)})
+	if err := os.Chtimes(filepath.Join(x.home, "projects.toml"), edit, edit); err != nil {
+		t.Fatal(err)
+	}
+	x.spool(quota.Line{TS: iso(qNow.Add(-time.Hour)), Kind: "heartbeat", Session: sid, Persona: "work"})
+	clock = func() time.Time { return qNow }
+	x.run()
+	if got := grepAlerts(x.alerts(), "S1 personal work"); len(got) != 0 {
+		t.Fatalf("no request after the edit: %q", got)
+	}
+}

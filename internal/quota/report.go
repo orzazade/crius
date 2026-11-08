@@ -186,16 +186,23 @@ func (s *sess) login(t time.Time) string {
 func (s *sess) guard(id string, ok rules) []Violation {
 	var vs []Violation
 	seen := map[string]bool{}
-	end := s.last // a stretch still open runs to the session's last request or line, judged by the rules of that time
-	if n := len(s.obs); n > 0 && s.obs[n-1].ts.After(end) {
-		end = s.obs[n-1].ts
-	}
-	if n := len(s.orgs); n > 0 && s.orgs[n-1].ts.After(end) {
-		end = s.orgs[n-1].ts
+	// A stretch still open runs to the session's last request, judged by the rules of that time: only a request bills,
+	// and an idle tab's statusline writes heartbeat lines (review r2 of 8b1e3ae P2). With no request, its last line.
+	end := s.last
+	if end.IsZero() {
+		if n := len(s.obs); n > 0 {
+			end = s.obs[n-1].ts
+		}
+		if n := len(s.orgs); n > 0 && s.orgs[n-1].ts.After(end) {
+			end = s.orgs[n-1].ts
+		}
 	}
 	// check judges project over [from, to]: to is cut at the session's end, and a session with no known end is judged
 	// at from alone, so a stretch is never judged by a rule set after the session's last sign of life (review of 9c5bd4a)
 	check := func(project, via string, from, to time.Time) {
+		if !end.IsZero() && from.After(end) {
+			return // a stretch after the last request (heartbeat lines) bills nothing
+		}
 		if to.IsZero() || !end.IsZero() && to.After(end) {
 			to = end
 		}
