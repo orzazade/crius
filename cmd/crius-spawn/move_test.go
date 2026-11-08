@@ -286,3 +286,26 @@ func TestAMoveAnswersOnlyAnOpenDialogAndOnlyOnce(t *testing.T) {
 		}
 	}
 }
+
+// Review r3 P1: the waiters were counted before /exit. A turn that a bus line started in between can end the waiter and
+// start a build; the dialog lists it cut short like a waiter, one line for one waiter, and Enter killed the build.
+// The shell children are counted again when the dialog is open.
+func TestAMoveCountsTheJobsAgainAtTheDialog(t *testing.T) {
+	x := newMoveRig(t)
+	x.children = []proc{{pid: 70, ppid: os.Getpid(), command: "/bin/zsh -c eval '~/.claude/skills/cmux-team/bin/team-wait.sh --mode worker'"}}
+	x.exits = false
+	x.m.cmux = func(args ...string) (string, error) {
+		x.typed = append(x.typed, strings.Join(args, " "))
+		if args[0] == "read-screen" {
+			// the waiter ended and a build runs in its place
+			x.children = []proc{{pid: 72, ppid: os.Getpid(), command: "/bin/zsh -c eval 'B=~/.crius/state/quotes/build; cd $B && npm run build'"}}
+			return "   The following will stop when you exit:\n\n   shell · B=~/.crius/state/quotes/build; cd $B && npm…\n\n" +
+				"   ❯ 1. Exit and stop tasks\n     3. Stay\n\n   Enter to confirm · Esc to cancel\n", nil
+		}
+		return "", nil
+	}
+	_, err := x.m.move("team", "dev")
+	if last := x.typed[len(x.typed)-1]; err == nil || !strings.HasSuffix(last, " escape") || len(x.resumed) != 0 {
+		t.Fatalf("a build in the waiter's place: %v, last key %q, resumed %q", err, last, x.resumed)
+	}
+}

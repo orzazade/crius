@@ -84,7 +84,7 @@ func (m mover) move(project, role string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("%s %s: %w: nothing moved, try at its next turn boundary", project, role, err)
 		}
-		if err := m.exit(r, waiters); err != nil {
+		if err := m.exit(r, pid, waiters); err != nil {
 			return "", fmt.Errorf("%s %s: %w", project, role, err)
 		}
 	}
@@ -156,12 +156,25 @@ func (m mover) idle(r sessionstate.State, pid int) (int, error) {
 	if st != sessionstate.Idle {
 		return 0, fmt.Errorf("a turn is running (state %q)", st)
 	}
+	waiters, jobs, err := m.kids(pid)
+	if err != nil {
+		return 0, err
+	}
+	switch len(jobs) {
+	case 0:
+		return waiters, nil
+	case 1:
+		return 0, fmt.Errorf("1 background job runs (%s)", jobs[0])
+	}
+	return 0, fmt.Errorf("%d background jobs run (%s)", len(jobs), strings.Join(jobs, "; "))
+}
+
+// kids counts the bus waiters (team-wait.sh) among the shell children of a Claude (pid) and names its other shell jobs.
+func (m mover) kids(pid int) (waiters int, jobs []string, err error) {
 	ps, err := m.procs()
 	if err != nil {
-		return 0, fmt.Errorf("cannot list its background jobs: %w", err)
+		return 0, nil, fmt.Errorf("cannot list its background jobs: %w", err)
 	}
-	var jobs []string
-	waiters := 0
 	for _, p := range ps {
 		w := strings.Fields(p.command)
 		if p.ppid != pid || len(w) < 2 || !shells[filepath.Base(w[0])] || w[1] != "-c" {
@@ -177,13 +190,7 @@ func (m mover) idle(r sessionstate.State, pid int) (int, error) {
 		}
 		jobs = append(jobs, fmt.Sprintf("%d %.60s", p.pid, cmd))
 	}
-	switch len(jobs) {
-	case 0:
-		return waiters, nil
-	case 1:
-		return 0, fmt.Errorf("1 background job runs (%s)", jobs[0])
-	}
-	return 0, fmt.Errorf("%d background jobs run (%s)", len(jobs), strings.Join(jobs, "; "))
+	return waiters, jobs, nil
 }
 
 // dialogFooter ends Claude's exit dialog: only a screen whose last line is this shows the dialog open now, not a
@@ -203,7 +210,7 @@ func stopList(screen string) (tasks []string, open, ok bool) {
 		return nil, true, false
 	}
 	rest := screen[head+len("will stop when you exit:"):]
-	tail := strings.Index(rest, "Exit and stop tasks")
+	tail := strings.LastIndex(rest, "Exit and stop tasks") // the option, not a task line that quotes it
 	if tail < 0 {
 		return nil, true, false
 	}
@@ -225,7 +232,7 @@ func stopList(screen string) (tasks []string, open, ok bool) {
 // accepted only when it lists as many tasks as the session has bus waiters, which the resume prompt restarts; a
 // background subagent or workflow runs inside Claude with no shell, so idle cannot see it, but the dialog lists it
 // (review of fe19215 P2-3). Then the dialog is left with Escape (no turn runs) and nothing moves.
-func (m mover) exit(r sessionstate.State, waiters int) error {
+func (m mover) exit(r sessionstate.State, pid, waiters int) error {
 	if r.Workspace == "" || r.Surface == "" {
 		return fmt.Errorf("session %s has no tab on file to type /exit into", r.SessionID)
 	}
@@ -260,8 +267,11 @@ func (m mover) exit(r sessionstate.State, waiters int) error {
 		}
 		if screen, err := m.cmux(append(append([]string{"read-screen"}, tab...), "--lines", "40")...); err == nil {
 			if tasks, open, ok := stopList(screen); open {
+				// counted again now: a turn that started after the idle check may have ended its waiter and started a
+				// build, which the dialog lists cut short like a waiter (review r3 P1)
+				now, jobs, err := m.kids(pid)
 				key := "enter"
-				if !ok || len(tasks) != waiters {
+				if !ok || err != nil || len(jobs) != 0 || now != waiters || len(tasks) != now {
 					key = "escape"
 				}
 				// cmux refuses a key while a dialog is open unless forced (live 11-08, quotes qa-frontend).
