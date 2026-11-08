@@ -21,36 +21,38 @@ var t0 = time.Date(2026, 10, 21, 22, 0, 0, 0, time.Local)
 func stamp(t time.Time) string { return t.Format("2006-01-02T15:04") }
 
 type fake struct {
-	boot     time.Time // the machine's boot time (rigDown)
-	bootErr  error
-	sent     []string
-	sendErr  error
-	tried    []string // every text given to Send, sent or not
-	screens  []Screen
-	scrErr   error
-	freeGB   float64 // free disk; 0 means a healthy 100
-	swapGB   float64
-	resErr   error
-	load     float64
-	loadErr  error
-	tools    map[string]error
-	ses      []Session
-	sesErr   error
-	wss      []Workspace
-	wsErr    error
-	states   []sessionstate.State // crius-hook's session files
-	stErr    error
-	restore  map[string][]string // surface -> the config folder of each Claude record cmux keeps for it
-	rsErr    error
-	waiters  []string // the bus logs a live waiter covers; nil: every bus log in home
-	waitErr  error
-	deep     map[string]string // surface -> the tab read deep; none: its screen
-	typed    map[string]bool   // surface -> its input box holds typed text
-	typedErr error
-	procs    []Proc
-	procErr  error
-	tabs     [][2]string // title, text typed into a tab other than Crius's
-	tabErr   error
+	boot      time.Time // the machine's boot time (rigDown)
+	bootErr   error
+	sent      []string
+	sendErr   error
+	tried     []string // every text given to Send, sent or not
+	screens   []Screen
+	scrErr    error
+	freeGB    float64 // free disk; 0 means a healthy 100
+	swapGB    float64
+	resErr    error
+	load      float64
+	loadErr   error
+	tools     map[string]error
+	ses       []Session
+	sesErr    error
+	wss       []Workspace
+	wsErr     error
+	states    []sessionstate.State // crius-hook's session files
+	stErr     error
+	restore   map[string][]string // surface -> the config folder of each Claude record cmux keeps for it
+	rsErr     error
+	waiters   []string // the bus logs a live waiter covers; nil: every bus log in home
+	waitErr   error
+	deep      map[string]string // surface -> the tab read deep; none: its screen
+	typed     map[string]bool   // surface -> its input box holds typed text
+	typedErr  error
+	procs     []Proc
+	procErr   error
+	claudes   []Claude // running claude processes (paid)
+	claudeErr error
+	tabs      [][2]string // title, text typed into a tab other than Crius's
+	tabErr    error
 }
 
 func (f *fake) deps(home string, now time.Time) Deps {
@@ -79,8 +81,9 @@ func (f *fake) deps(home string, now time.Time) Deps {
 			}
 			return f.waiters, f.waitErr
 		},
-		Procs: func() ([]Proc, error) { return f.procs, f.procErr },
-		Boot:  func() (time.Time, error) { return f.boot, f.bootErr },
+		Procs:   func() ([]Proc, error) { return f.procs, f.procErr },
+		Claudes: func() ([]Claude, error) { return f.claudes, f.claudeErr },
+		Boot:    func() (time.Time, error) { return f.boot, f.bootErr },
 		SendTab: func(title, text string) error {
 			if f.tabErr != nil {
 				return f.tabErr

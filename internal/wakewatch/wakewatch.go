@@ -113,6 +113,8 @@ type Deps struct {
 	SendTab func(title, text string) error
 	// Boot is when the machine last booted (kern.boottime; rigDown).
 	Boot func() (time.Time, error)
+	// Claudes lists every running claude process with the environment it was started with (paid).
+	Claudes func() ([]Claude, error)
 }
 
 // Proc is one process as ps lists it.
@@ -227,6 +229,7 @@ func Run(d Deps) error {
 	}
 	alerts = append(alerts, m...)
 	ss, sesErr := d.Sessions()
+	alerts = append(alerts, paid(d, ss)...)
 	hv, ha := readHooks(d, st.Views, ss, sesErr)
 	alerts = append(alerts, ha...)
 	alerts = append(alerts, wrongFolder(d, hv)...)
