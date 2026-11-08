@@ -11,7 +11,8 @@ import (
 // 100%; an older one only while both shares are under 90%, since they may have grown since. 7d at 100% is full at
 // any age (it cannot drop within a week); a 5h window that has reset counts 0 (Build sets FivePct so). The age is
 // that of the older of the two shares' own measurements (SevenAt, FiveAt), never a heartbeat's or another line's
-// (reviews of 47842ed and 27cdaa1).
+// (reviews of 47842ed and 27cdaa1). With no 5h window reported this epoch the 7d share decides alone (live 11-08: the
+// statusline has sent none since 10-31, so "unknown" put every Appxite launch on aitch's fallback account).
 func Room(r *Report) (verdict, reason string) {
 	switch {
 	case !r.Ended.IsZero():
@@ -19,7 +20,11 @@ func Room(r *Report) (verdict, reason string) {
 	case r.Reset.IsZero():
 		return "unknown", "no quota sample yet"
 	}
-	nums := fmt.Sprintf("7d %.0f%%, 5h %.0f%%, reset %s", math.Floor(r.SevenPct), math.Floor(r.FivePct), day(r.Reset))
+	five := fmt.Sprintf("5h %.0f%%", math.Floor(r.FivePct))
+	if !r.FiveKnown {
+		five = "5h none reported"
+	}
+	nums := fmt.Sprintf("7d %.0f%%, %s, reset %s", math.Floor(r.SevenPct), five, day(r.Reset))
 	age := r.Now.Sub(r.MeasuredAt())
 	if !r.SevenAt.IsZero() {
 		nums += ", sample " + ago(age) + " old"
@@ -31,8 +36,6 @@ func Room(r *Report) (verdict, reason string) {
 		return "unknown", nums + " (top share not measured)"
 	case r.SevenAt.After(r.Now) || !r.FiveReset.IsZero() && r.FiveAt.After(r.Now): // each, not only the older one
 		return "unknown", nums + " (sample ahead of the clock)"
-	case !r.FiveKnown:
-		return "unknown", nums + " (no 5h window sampled)"
 	case age <= Gap:
 		return "room", nums
 	case r.SevenPct < 90 && r.FivePct < 90:

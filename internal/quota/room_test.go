@@ -35,6 +35,13 @@ func TestRoom(t *testing.T) {
 		{"5h ahead behind a 7d", Report{FiveKnown: true, SevenAt: now.Add(-5 * time.Minute), FiveAt: now.Add(time.Hour), SevenPct: 50, FivePct: 20, Reset: reset, FiveReset: five}, "unknown", "ahead"},
 		{"sample ahead of the clock", Report{FiveKnown: true, SevenAt: now.Add(2 * time.Hour), FiveAt: now.Add(2 * time.Hour), SevenPct: 40, FivePct: 10, Reset: reset, FiveReset: five}, "unknown", "ahead"},
 		{"week ended", Report{FiveKnown: true, SevenAt: now.Add(-20 * time.Hour), FiveAt: now.Add(-20 * time.Hour), Ended: now.Add(-time.Hour)}, "unknown", "week ended"},
+		// Live 11-08: the statusline has sent no 5h window since 10-31 (max2) and 11-05 (max3), on every responded line,
+		// so every account read unknown and aitch put every Appxite launch on its fallback, max1, until max1 hit 95%.
+		// With no 5h window reported the 7d share decides, by the same age rules.
+		{"no 5h window reported, fresh", Report{SevenAt: now.Add(-8 * time.Minute), SevenPct: 85, Reset: reset}, "room", "7d 85%, 5h none reported"},
+		{"no 5h window reported, stale under 90", Report{SevenAt: now.Add(-3 * time.Hour), SevenPct: 60, Reset: reset}, "room", "(under 90%)"},
+		{"no 5h window reported, stale 95", Report{SevenAt: now.Add(-50 * time.Minute), SevenPct: 95, Reset: reset}, "unknown", "90% or more"},
+		{"no 5h window reported, 7d full", Report{SevenAt: now.Add(-time.Minute), SevenPct: 100, Reset: reset}, "full", "7d 100%"},
 	} {
 		c.r.Now = now
 		v, reason := Room(&c.r)
