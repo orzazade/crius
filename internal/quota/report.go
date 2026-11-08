@@ -11,8 +11,8 @@ import (
 	"github.com/orzazade/crius/internal/store"
 )
 
-// Gap: a sample this far from a request (both sides) leaves the request unmeasured, and open sessions with no sample
-// this recent make the quota stale (design §5, M2).
+// Gap: a sample this far from a request (both sides) leaves the request unmeasured, and a request this long after the
+// newest sample makes the quota stale (design §5, M2; live 11-07 20:27: an idle session with no sample is not stale).
 const Gap = 45 * time.Minute
 
 const week = 7 * 24 * time.Hour
@@ -33,7 +33,7 @@ type Report struct {
 	Now     time.Time
 	Status  string   // complete or partial (design §4)
 	Reasons []string // why partial: no sample, stale personas, epoch ended, unknown account, unpriced
-	Stale   []string // personas with open sessions and no statusline line within Gap, with their last line
+	Stale   []string // personas or logins whose newest request came over Gap after their newest statusline line, with that line
 	// StaleProjects: the projects whose open sessions run on the login a Stale entry names; none for a persona entry,
 	// which covers every project of the persona. A project's guard is blind only for its own accounts (Crius 10-29).
 	StaleProjects map[string][]string
@@ -1125,6 +1125,6 @@ func (v Violation) text(n int) string {
 
 // StaleText is the alert for one stale entry of Report.Stale (design §5).
 func StaleText(entry string) string {
-	return "quota/max STALE: sessions are open but the statusline sampler wrote nothing within 45 min (" +
+	return "quota/max STALE: requests ran over 45 min after the statusline sampler's last line (" +
 		clip(entry, 80) + "); is crius-statusline in that persona's statusLine and working?"
 }
