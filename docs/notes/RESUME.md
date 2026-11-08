@@ -58,7 +58,7 @@ Goal: Crius's tools keep every team moving with no owner wait and on Max subscri
 - [~] G watchdog repeats a stale-heartbeat alert every 6 h · 5aa6fb7, DONE 03:3x
 - [~] J loadwatch fourth slot · 0b5ffb3, DONE 04:51
 - [~] K loadwatch dead band · 7e2dd43, DONE 04:55
-Done: 57% (13 verified, 23 milestones, equal weight; rows checked by one VERIFIED line are one milestone; rows 1 and 3 void since the owner removed the guards 11-08)
+Done: 57% (13 verified, 23 milestones, equal weight; items checked by one VERIFIED line are one milestone; items 1 and 3 void since the owner removed the guards 11-08)
 Next: nothing queued; idle until an order. Open rows wait on VERIFIED. Detail and known gaps: ~/.crius/state/crius/STATUS-build.md. 10-30 goal (record accept P7, Falcon source) parked with no order; its block is in git history
 Needs owner: nothing
 
