@@ -53,6 +53,13 @@ func TestAWaitLineSilencesTheIdleFlagUntilItsTime(t *testing.T) {
 	if got := idleRuns(t, acked, at, time.Date(2026, 11, 8, 8, 50, 0, 0, time.Local)); len(got) != 0 {
 		t.Fatalf("an ACK ends a timed wait: %q", got)
 	}
+	if got := idleRuns(t, event+stamp(at.Add(7*time.Minute))+" ACK crius:lead -> harness2:lead — noted\n", at, at.Add(150*time.Minute)); len(got) != 0 {
+		t.Fatalf("an ACK ends an event wait: %q", got)
+	}
+	ordered := bus + stamp(at.Add(7*time.Minute)) + " DECISION crius:lead -> harness2:lead — don't wait, do Y now\n"
+	if got := idleRuns(t, ordered, at, time.Date(2026, 11, 8, 8, 50, 0, 0, time.Local)); len(got) == 0 {
+		t.Fatalf("an order does not end a timed wait: %q", got)
+	}
 	toAll := event + stamp(at.Add(2*time.Hour)) + " ORDER crius:lead -> harness2:all — items 4-6\n"
 	if got := idleRuns(t, toAll, at, at.Add(4*time.Hour)); len(got) == 0 {
 		t.Fatalf("a line to the whole project ends an event wait: %q", got)
@@ -83,11 +90,21 @@ func TestAWaitNamesItsTimeInTheFormsLeadsWrite(t *testing.T) {
 		{"Monitor 07:00 run, then QA", time.Date(2026, 11, 8, 7, 0, 0, 0, time.Local)},
 		{"baseline 2025-12-01 10:00; waiting for CI", time.Time{}},
 		{"back at 3:15 pm", time.Date(2026, 11, 8, 15, 15, 0, 0, time.Local)},
+		{"until 2026-11-09 09:00", time.Date(2026, 11, 9, 9, 0, 0, 0, time.Local)},
+		{"until Tues 09:00", time.Date(2026, 11, 10, 9, 0, 0, 0, time.Local)},
+		{"until Thurs 09:00", time.Date(2026, 11, 12, 9, 0, 0, 0, time.Local)},
 		{"until Monday 08:00", time.Date(2026, 11, 9, 8, 0, 0, 0, time.Local)},
 		{"waiting for QA to judge item 3; bun test 135/0", time.Time{}},
 	} {
 		if got := waitUntil(c.text, at); !got.Equal(c.want) {
 			t.Errorf("%q: %v, want %v", c.text, got, c.want)
 		}
+	}
+	night := time.Date(2026, 11, 8, 22, 0, 0, 0, time.Local) // review r2 P2-A: a time after midnight
+	if got, want := waitUntil("quota resets 09:00", night), time.Date(2026, 11, 9, 9, 0, 0, 0, time.Local); !got.Equal(want) {
+		t.Errorf("at 22:00: %v, want %v", got, want)
+	}
+	if got := waitUntil("IDLE at 21:50 was wrong", night); !got.IsZero() {
+		t.Errorf("a time quoted from the past: %v", got)
 	}
 }

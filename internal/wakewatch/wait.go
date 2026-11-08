@@ -26,8 +26,8 @@ type waitState struct {
 // waitOnBus reads who's bus (crius:lead DECISION 11-08 06:40: harness2:lead posted 'WAIT … waiting for the week reset
 // (Sun 09:00)' at 05:38 and drew IDLE at 06:38). A WAIT line from who that names a time ("Sun 09:00", "11-09 09:00",
 // "09:00", "15:15Z": the first one still ahead of the line, at most 24 h on) silences its idle flag until then; one
-// naming no time waits for an event, until a line to who (or <project>:all) from another role, at most 12 h. A newer
-// line from who ends any wait. A wait that ran out with no such line is flagged once.
+// naming no time waits for an event, at most 12 h. A newer line from who ends any wait, and so does one that gives it
+// work (to who or <project>:all, not an ACK, VERIFIED, PASS or LANDED). A wait that ran out is flagged once.
 func waitOnBus(home, who string, now time.Time) (waitState, error) {
 	lines, _, err := busLines(home, who)
 	if err != nil {
@@ -50,10 +50,10 @@ func waitOnBus(home, who string, now time.Time) (waitState, error) {
 			at, until, w = t, waitUntil(m[5], t), waitState{}
 		case from == who:
 			at, w = time.Time{}, waitState{}
-		case !at.IsZero() && until.IsZero() && slices.ContainsFunc(recipients(m[4]), func(r string) bool {
+		case !at.IsZero() && !answersDone[m[2]] && slices.ContainsFunc(recipients(m[4]), func(r string) bool {
 			return busName(project, r) == who || strings.EqualFold(r, project+":all")
 		}):
-			at, w = time.Time{}, waitState{from: t} // the event came: a fresh idle spell from here (an ACK does not end a timed wait)
+			at, w = time.Time{}, waitState{from: t} // a line that gives work ends any wait: a fresh idle spell from here (an ACK gives none)
 		}
 	}
 	if at.IsZero() {
@@ -75,7 +75,7 @@ func waitOnBus(home, who string, now time.Time) (waitState, error) {
 	return waitState{from: until, once: true, note: "; its WAIT until " + until.Format("Mon 01-02 15:04") + " has passed (said once)"}, nil
 }
 
-var waitTimeRe = regexp.MustCompile(`(?i)\b(?:(mon|tue|wed|thu|fri|sat|sun)(?:[a-z]*day)?\.?\s+)?(?:(\d{1,2})-(\d{1,2})\s+)?([01]?\d|2[0-3]):([0-5]\d)\s*(z|utc|am|pm)?\b`)
+var waitTimeRe = regexp.MustCompile(`(?i)\b(?:(mon|tue|wed|thu|fri|sat|sun)(?:s|sday|nesday|day|s|rs|rsday|urday|ursday)?\.?\s+)?(?:(\d{1,2})-(\d{1,2})\s+)?([01]?\d|2[0-3]):([0-5]\d)\s*(z|utc|am|pm)?\b`)
 
 var weekdays = map[string]time.Weekday{"sun": time.Sunday, "mon": time.Monday, "tue": time.Tuesday, "wed": time.Wednesday,
 	"thu": time.Thursday, "fri": time.Friday, "sat": time.Saturday}
@@ -85,7 +85,7 @@ var weekdays = map[string]time.Weekday{"sun": time.Sunday, "mon": time.Monday, "
 // 8295577 P1-1). A weekday names its next date, today included; a date after a year ("2025-12-01") is not read.
 func waitUntil(text string, at time.Time) time.Time {
 	for _, ix := range waitTimeRe.FindAllStringSubmatchIndex(text, -1) {
-		if ix[0] > 0 && strings.ContainsAny(text[ix[0]-1:ix[0]], "0123456789-") {
+		if ix[0] > 0 && strings.ContainsAny(text[ix[0]-1:ix[0]], "0123456789") {
 			continue
 		}
 		m := make([]string, len(ix)/2)
@@ -116,13 +116,24 @@ func waitUntil(text string, at time.Time) time.Time {
 			if mo < 1 || mo > 12 || d < 1 || d > 31 {
 				continue
 			}
-			t = time.Date(base.Year(), time.Month(mo), d, h, mi, 0, 0, loc)
-			if t.Before(base.AddDate(0, -6, 0)) { // "01-02" written in December is next year's
+			y := base.Year()
+			if ix[0] >= 5 && text[ix[0]-1] == '-' { // "2026-11-09 09:00": the year it names
+				if v, err := strconv.Atoi(text[ix[0]-5 : ix[0]-1]); err == nil {
+					y = v
+				}
+			}
+			t = time.Date(y, time.Month(mo), d, h, mi, 0, 0, loc)
+			if y == base.Year() && t.Before(base.AddDate(0, -6, 0)) { // "01-02" written in December is next year's
 				t = t.AddDate(1, 0, 0)
 			}
 		default:
 			t = time.Date(base.Year(), base.Month(), base.Day(), h, mi, 0, 0, loc)
 			for i := 0; i < 7 && m[1] != "" && t.Weekday() != weekdays[strings.ToLower(m[1])]; i++ {
+				t = t.AddDate(0, 0, 1)
+			}
+			// a bare time already past is tomorrow's only when that is within 12 h ("09:00" posted at 22:00); a time
+			// quoted from the past ("IDLE at 06:38", posted 06:40) lands almost a day on and stays skipped
+			if m[1] == "" && !t.After(base) && t.AddDate(0, 0, 1).Sub(base) <= 12*time.Hour {
 				t = t.AddDate(0, 0, 1)
 			}
 		}
