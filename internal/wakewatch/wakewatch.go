@@ -156,7 +156,7 @@ type state struct {
 	RolesAt     time.Time            // when deadRoles last looked at every role: a role started after it may have died unseen
 	Waits       map[string]roleWait  // <project>.<role> -> its session's team-wait waiter (rearm)
 	Rig         map[string]string    // project -> the down rig services last said to its leads (rigDown)
-	RigBoot     time.Time            // the boot time rigDown last read: a newer one is a boot since
+	RigBoot     map[string]time.Time // project -> the boot rigDown last looked at for it: a newer one is a boot since
 }
 
 // waitGap is when a bus log was first seen with no waiter, and whether that gap was said to Crius. From is the log's size
@@ -204,6 +204,9 @@ func Run(d Deps) error {
 	}
 	if st.Waits == nil {
 		st.Waits = map[string]roleWait{}
+	}
+	if st.RigBoot == nil {
+		st.RigBoot = map[string]time.Time{}
 	}
 	if st.Rig == nil {
 		st.Rig = map[string]string{}

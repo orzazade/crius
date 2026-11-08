@@ -45,8 +45,6 @@ func rigDown(d Deps, st *state, ss []Session, sesErr error, watch projects, park
 	if bootErr != nil {
 		failed = append(failed, "boot time: "+bootErr.Error())
 	}
-	// kern.boottime moves by the size of a clock step (a time sync, a wake): only a minute or more is a boot
-	booted := bootErr == nil && boot.Sub(st.RigBoot) > time.Minute
 	running := map[string]bool{}
 	for _, s := range ss {
 		running[project(BusName(s.Name))] = true // "quotes · frontend" is quotes:frontend
@@ -54,9 +52,13 @@ func rigDown(d Deps, st *state, ss []Session, sesErr error, watch projects, park
 	var procs []Proc
 	var leads map[string]bool
 	var leadErr error
-	looked, postFailed := false, false
+	looked := false
 	for _, p := range rigs {
-		if sesErr == nil && !running[p] {
+		// Each project keeps the boot it was told about, so one that could not be told is told on the next run and no
+		// other is told twice (review r2 of 4ebed9c P2). kern.boottime moves by the size of a clock step (a time sync, a
+		// wake): only a minute or more is a boot.
+		booted := bootErr == nil && boot.Sub(st.RigBoot[p]) > time.Minute
+		if sesErr == nil && !running[strings.ToLower(p)] {
 			delete(st.Rig, p) // heard by no session: the team's next one hears it
 			if !booted {
 				continue
@@ -83,6 +85,9 @@ func rigDown(d Deps, st *state, ss []Session, sesErr error, watch projects, park
 		}
 		if len(down) == 0 {
 			delete(st.Rig, p)
+			if bootErr == nil {
+				st.RigBoot[p] = boot
+			}
 			continue
 		}
 		if !booted && subset(down, st.Rig[p]) {
@@ -106,16 +111,15 @@ func rigDown(d Deps, st *state, ss []Session, sesErr error, watch projects, park
 		head := fmt.Sprintf("rig services down %s, %d of the pid files in %s; start them before the team's next probe or test: ",
 			why, len(down), c.Projects[p].Rig)
 		if err := postLine(d, "ALERT", p, to, head+fit(down, 300-len([]rune(head)))); err != nil {
-			failed = append(failed, err.Error())
-			postFailed = true
+			failed = append(failed, err.Error()) // its boot stays unsaid: tried again on the next run
 			continue
 		}
-		if sesErr == nil && running[p] {
+		if sesErr == nil && running[strings.ToLower(p)] {
 			st.Rig[p] = strings.Join(down, ", ")
 		}
-	}
-	if bootErr == nil && !postFailed { // a boot alert that could not be posted is tried again on the next run
-		st.RigBoot = boot
+		if bootErr == nil {
+			st.RigBoot[p] = boot
+		}
 	}
 	return said(failed)
 }

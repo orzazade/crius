@@ -185,3 +185,42 @@ func TestNoRigNoBootRead(t *testing.T) {
 		t.Fatalf("sent %q", f.sent)
 	}
 }
+
+// Review r2 of 4ebed9c P2: a boot alert that one team's bus refuses is tried again for that team only; the team that
+// heard it is not told again each run.
+func TestABootAlertOneBusRefusesIsRetriedForThatTeamOnly(t *testing.T) {
+	home := setup(t, map[string]string{"team.log": "", "other.log": ""})
+	rig := filepath.Join(home, "rig-run")
+	testutil.Write(t, filepath.Join(home, "projects.toml"), "[projects.team]\nleads = { lead = \"/nowhere/STATUS.md\" }\nrig = \""+rig+"\"\n"+
+		"[projects.other]\nleads = { lead = \"/nowhere/OTHER.md\" }\nrig = \""+rig+"\"\n")
+	boot := time.Date(2026, 11, 7, 19, 45, 50, 0, time.Local)
+	pidFile(t, rig, "api", 501, boot.Add(-time.Hour))
+	other := filepath.Join(home, "bus", "other.log")
+	if err := os.Chmod(other, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	f := &fake{boot: boot}
+	now := boot.Add(time.Minute)
+	for i := 0; i < 3; i++ {
+		if err := Run(f.deps(home, now)); err != nil {
+			t.Fatal(err)
+		}
+		now = now.Add(5 * time.Minute)
+	}
+	if got := rigLines(t, home); len(got) != 1 {
+		t.Fatalf("the team that heard the boot is told again: %q", got)
+	}
+	if err := os.Chmod(other, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Run(f.deps(home, now)); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "rig services down since the boot at 11-07 19:45") {
+		t.Fatalf("the refused boot alert is not tried again: %q", b)
+	}
+}
