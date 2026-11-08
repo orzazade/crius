@@ -61,7 +61,7 @@ func TestRigServicesDownAfterTheBootAreSaidToTheTeam(t *testing.T) {
 	}
 	run()
 	got := rigLines(t, home)
-	if len(got) != 1 || !strings.Contains(got[0], "rig services down since the boot at 11-07 19:45: api, jobs (2 of the pid files in "+rig+")") {
+	if len(got) != 1 || !strings.Contains(got[0], "rig services down since the boot at 11-07 19:45, 2 of the pid files in "+rig+"; start them before the team's next probe or test: api, jobs") {
 		t.Fatalf("after the boot: %q", got)
 	}
 	run()
@@ -78,7 +78,7 @@ func TestRigServicesDownAfterTheBootAreSaidToTheTeam(t *testing.T) {
 	}
 	f.procs = f.procs[:3]
 	run()
-	if got := rigLines(t, home); len(got) != 2 || !strings.Contains(got[1], "rig services down while the team runs: jobs (1 of") {
+	if got := rigLines(t, home); len(got) != 2 || !strings.Contains(got[1], "rig services down while the team runs, 1 of the pid files in "+rig+"; start them before the team's next probe or test: jobs") {
 		t.Fatalf("jobs down while the team runs: %q", got)
 	}
 	// with no team session, nothing is said until the next boot

@@ -89,8 +89,9 @@ func rigDown(d Deps, st *state, ss []Session, sesErr error, watch projects, park
 		if booted {
 			why = "since the boot at " + boot.Local().Format("01-02 15:04")
 		}
-		text := fmt.Sprintf("rig services down %s: %s (%d of the pid files in %s). Start them before the team's next probe or test",
-			why, set, len(down), c.Projects[p].Rig)
+		// the names last: the bus cuts a line at 300 runes, and the count and folder say what a cut list leaves out
+		text := fmt.Sprintf("rig services down %s, %d of the pid files in %s; start them before the team's next probe or test: %s",
+			why, len(down), c.Projects[p].Rig, set)
 		if err := postLine(d, "ALERT", p, to, text); err != nil {
 			failed = append(failed, err.Error())
 			continue
