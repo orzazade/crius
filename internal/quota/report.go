@@ -681,7 +681,7 @@ func Build(db Querier, p Projects, now time.Time) (*Report, error) {
 		switch last := lastLine[persona]; {
 		case last.IsZero():
 			rep.Stale = append(rep.Stale, persona+": no statusline line yet")
-		case now.Sub(last) > Gap:
+		case t.Sub(last) > Gap: // a request went unmeasured for longer than Gap; idle after a late one is not (live 11-07 20:27)
 			rep.Stale = append(rep.Stale, persona+": last statusline line "+when(last))
 		}
 	}
@@ -722,7 +722,7 @@ func Build(db Querier, p Projects, now time.Time) (*Report, error) {
 					}
 				}
 			}
-			if now.Sub(last) <= Gap {
+			if newestMax[l].Sub(last) <= Gap { // no request of the login went unmeasured for longer than Gap
 				continue
 			}
 			at := "none"

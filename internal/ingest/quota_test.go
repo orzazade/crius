@@ -200,17 +200,17 @@ func TestQuotaTwoHourGapIsUncoveredNotZero(t *testing.T) {
 	}
 }
 
-// Open sessions with no sample in the last 45 minutes: the quota is stale, and the ingest alerts once.
+// Open sessions whose requests came more than 45 minutes after the newest sample (or with none): the quota is stale, and the ingest alerts once.
 func TestQuotaOpenSessionsWithNoRecentSampleAreStale(t *testing.T) {
 	x := quotaCase(t)
 	x.session("personal", x.sid, "/work/demo", "", qNow.Add(-10*time.Minute))
 	x.run() // no spool at all: the sampler is not installed or broken
-	x.spool(sampleAt(x.sid, qNow.Add(-50*time.Minute), 20, qNow.Add(4*24*time.Hour)))
+	x.spool(sampleAt(x.sid, qNow.Add(-60*time.Minute), 20, qNow.Add(4*24*time.Hour)))
 	x.run()
 	x.run()
 	stale := grepAlerts(x.alerts(), "quota/max STALE")
 	if len(stale) != 2 || !strings.Contains(stale[0], "personal: no statusline line yet") {
-		t.Fatalf("want one stale alert per gap (none, then the 50-min-old sample), got %q", x.alerts())
+		t.Fatalf("want one stale alert per gap (none, then a sample 50 min before the last request), got %q", x.alerts())
 	}
 	if rep := x.report(); rep.Status != "partial" || len(rep.Stale) == 0 {
 		t.Fatalf("status %s stale %v, want partial and stale", rep.Status, rep.Stale)
@@ -1084,7 +1084,7 @@ func TestQuotaGuardThatCannotSeeTheShareWakesCrius(t *testing.T) {
 	t.Cleanup(func() { clock = time.Now })
 	x := newIC(t, cfg{extra: axiProject + guardedProject})
 	x.session("personal", x.sid, "/work/demo", "", qNow.Add(-10*time.Minute))
-	x.spool(sampleAt(x.sid, qNow.Add(-50*time.Minute), 20, qNow.Add(4*24*time.Hour)))
+	x.spool(sampleAt(x.sid, qNow.Add(-60*time.Minute), 20, qNow.Add(4*24*time.Hour)))
 	x.run()
 	x.run()
 	need := grepAlerts(x.alerts(), " NEED crius:ingest -> crius:lead — ")
@@ -1094,7 +1094,7 @@ func TestQuotaGuardThatCannotSeeTheShareWakesCrius(t *testing.T) {
 	// Without pause_at the stale sample stays an ALERT only (TestQuotaOpenSessionsWithNoRecentSampleAreStale).
 	y := quotaCase(t)
 	y.session("personal", y.sid, "/work/demo", "", qNow.Add(-10*time.Minute))
-	y.spool(sampleAt(y.sid, qNow.Add(-50*time.Minute), 20, qNow.Add(4*24*time.Hour)))
+	y.spool(sampleAt(y.sid, qNow.Add(-60*time.Minute), 20, qNow.Add(4*24*time.Hour)))
 	y.run()
 	if n := grepAlerts(y.alerts(), " NEED "); len(n) != 0 {
 		t.Fatalf("no guarded project, no NEED: %q", n)
@@ -1537,6 +1537,32 @@ func TestQuotaAnAccountWithNoRequestSinceItsResetIsNotStale(t *testing.T) {
 	x.run()
 	if rep := x.report(); len(rep.Stale) != 1 || !strings.Contains(rep.Stale[0], "max1") {
 		t.Fatalf("max1 worked after its reset with no sample: want one stale entry naming max1, got %q", rep.Stale)
+	}
+}
+
+// Live 11-07 20:27: two sessions on max1 sent their last requests 8 min after max1's last sample and then went idle;
+// 42 min after those requests the sample was 50 min old, and the report called max1 stale and the quotes guard blind.
+// No request went unmeasured for longer than Gap: not stale. Requests that keep coming Gap past the sample are.
+func TestQuotaAnIdleSessionAfterItsLastSampleIsNotStale(t *testing.T) {
+	x := quotaCase(t)
+	d1 := filepath.Join(x.home, "cfg1")
+	l1 := x.signIn(d1, "u-1")
+	testutil.Write(t, filepath.Join(x.home, "accounts.toml"), "[[account]]\nname = \"max1\"\nplan = \"max\"\ndirs = [\""+d1+"\"]\n")
+	r := qNow.Add(2 * 24 * time.Hour)
+	s1 := "aaaaaaaa-0000-0000-0000-000000000001"
+	line := sampleAt(s1, qNow.Add(-50*time.Minute), 83, r)
+	line.Login, line.Dir, line.Persona = l1, d1, "work"
+	x.session("work", s1, "/work/quotes", "", qNow.Add(-50*time.Minute), qNow.Add(-45*time.Minute), qNow.Add(-42*time.Minute))
+	x.spool(line)
+	x.run()
+	if rep := x.report(); len(rep.Stale) != 0 {
+		t.Fatalf("max1's last request came 8 min after its last sample: want no stale entry, got %q", rep.Stale)
+	}
+	// The session works on with no new line: its requests 48 min past the sample went unmeasured (the persona check names it).
+	x.session("work", s1, "/work/quotes", "", qNow.Add(-50*time.Minute), qNow.Add(-45*time.Minute), qNow.Add(-42*time.Minute), qNow.Add(-2*time.Minute))
+	x.run()
+	if rep := x.report(); len(rep.Stale) != 1 {
+		t.Fatalf("requests 48 min past max1's last sample: want one stale entry, got %q", rep.Stale)
 	}
 }
 
