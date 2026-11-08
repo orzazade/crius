@@ -63,6 +63,7 @@ func loadConfig(home string) (*config, error) {
 			ArtifactDirs []string `toml:"artifact_dirs"`
 			Leads        map[string]string
 			PauseAt      *int   `toml:"pause_at"`
+			Rig          string // the folder of the pid files of the rig services the team uses; read by wakewatch (rigDown)
 			Clicks       string // read by nothing since owner 11-04 (every listed project's clicks go to Crius); kept so the live file loads
 		}
 	}

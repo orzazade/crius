@@ -292,3 +292,13 @@ func TestALookWhoseTransactionRolledBackIsStillRecorded(t *testing.T) {
 		t.Errorf("session filed %v, want quotes", got)
 	}
 }
+
+// crius:lead DECISION 11-08: rig = "<folder of pid files>" names the rig a team uses; wakewatch reads it (rigDown), and
+// the ingest loads it, where it refused the file as an unknown key (live 11-08 06:43: crius-hook logged it).
+func TestRigLoads(t *testing.T) {
+	home := t.TempDir()
+	testutil.Write(t, filepath.Join(home, "projects.toml"), "[projects.quotes]\nrig = \"~/rig/run\"\nleads = { lead = \"/w/q.md\" }\n")
+	if _, err := Leads(home); err != nil {
+		t.Fatal(err)
+	}
+}
