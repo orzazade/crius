@@ -86,6 +86,11 @@ func TestAMoveResumesTheSameSessionOnThePickedAccount(t *testing.T) {
 	if !strings.Contains(strings.Join(x.typed, "\n"), "send --workspace WS-1 --surface SF-1 -- /exit") {
 		t.Errorf("typed %q: want /exit into its own tab", x.typed)
 	}
+	// crius:lead 11-08: a moved tab still filed on its old folder was flagged "wrong account" and -resume would bring
+	// it back there: the move files the new folder.
+	if r, err := sessionstate.ReadRole(filepath.Join(x.home, "roles"), "team", "dev"); err != nil || r.Config != x.m2 || r.FiledConfig() != x.m2 {
+		t.Errorf("role file after the move: config %q filed %q (%v), want both %q", r.Config, r.FiledConfig(), err, x.m2)
+	}
 	for _, w := range []string{"session " + x.id, fmt.Sprintf("pid %d", os.Getpid()), "CLAUDE_CONFIG_DIR " + x.m2, "max1 -> max2"} {
 		if !strings.Contains(out, w) {
 			t.Errorf("out %q lacks %q", out, w)

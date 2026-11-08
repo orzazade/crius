@@ -99,6 +99,20 @@ func (m mover) move(project, role string) (string, error) {
 		}
 		return "", fmt.Errorf("%s %s: session %s resumed in %s %s, but it runs in %s, not %s", project, role, r.SessionID, ws, surface, where, dir)
 	}
+	// File the new folder, so a later -resume and wakewatch's folder checks keep the session where it was moved
+	// (crius:lead 11-08: quotes frontend, moved to max2, still filed on .claude-work-max, was flagged on another
+	// account). The resumed Claude's hook may have written the role since, so read it again first.
+	cur, err := sessionstate.ReadRole(filepath.Join(m.home, "roles"), project, role)
+	if err != nil {
+		return "", fmt.Errorf("%s %s: session %s runs in %s, but its role file could not be read to file it there: %w", project, role, r.SessionID, dir, err)
+	}
+	if cur.SessionID != r.SessionID {
+		return "", fmt.Errorf("%s %s: session %s runs in %s, but the role now names session %s: not filed", project, role, r.SessionID, dir, cur.SessionID)
+	}
+	cur.Config, cur.Filed = dir, dir
+	if err := sessionstate.WriteRole(filepath.Join(m.home, "roles"), cur, true); err != nil {
+		return "", fmt.Errorf("%s %s: session %s runs in %s, but filing it there failed: %w", project, role, r.SessionID, dir, err)
+	}
 	return fmt.Sprintf("OK %s %s session %s moved %s -> %s: pid %d CLAUDE_CONFIG_DIR %s (%s %s)", project, role, r.SessionID, from, acct, now, dir, ws, surface), nil
 }
 
