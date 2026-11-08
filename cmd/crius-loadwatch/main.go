@@ -55,6 +55,8 @@ type state struct {
 	NoExtra    bool   `json:"noExtra,omitempty"`
 	QuietSince string `json:"quietSince,omitempty"` // RFC3339
 	QuietLast  string `json:"quietLast,omitempty"`  // the last quiet reading, RFC3339
+	// Holders: each slot holder's job as last seen, by slot file and token (hung.go)
+	Holders map[string]holderSeen `json:"holders,omitempty"`
 }
 
 // backAfter is how long the 15-min load must stay under quiet before tripped extra slots come back.
@@ -68,13 +70,17 @@ type deps struct {
 	now                func() time.Time
 	load               func() (load5, load15 float64, err error)
 	mem                func() (freePct int, err error)
+	ps                 func() ([]proc, error)             // every process (hung.go)
+	outputs            func(pids []int) ([]string, error) // the regular files those processes have as stdout or stderr
+	lead               func(cwd string) (project string, leads []string, err error)
 	out                io.Writer
 }
 
 func main() {
 	home := store.Home()
 	os.Exit(run(deps{home: home, slots: filepath.Join(os.Getenv("HOME"), "AppxiteRig", "heavy", "slots"),
-		state: filepath.Join(home, "state", "loadwatch.json"), now: time.Now, load: sysLoad, mem: memFree, out: os.Stdout}))
+		state: filepath.Join(home, "state", "loadwatch.json"), now: time.Now, load: sysLoad, mem: memFree,
+		ps: sysPS, outputs: sysOutputs, lead: leadOf(home), out: os.Stdout}))
 }
 
 // sysLoad reads the 5- and 15-min load averages ("{ 12.62 12.36 16.85 }").
@@ -184,6 +190,7 @@ func run(d deps) int {
 	}
 	if cur != "1" && cur != "2" && cur != "3" && cur != "4" {
 		fmt.Fprintf(d.out, "%s slots file %s holds %q, not 1 to 4: left alone (%s)\n", now.Format(time.RFC3339), d.slots, cur, loads)
+		late = errors.Join(late, hung(d, &st, now))
 		if late != nil {
 			return fail(nil)
 		}
@@ -224,6 +231,7 @@ func run(d deps) int {
 			return fail(fmt.Errorf("extra slots off, but the bus line failed: %w", err))
 		}
 	}
+	late = errors.Join(late, hung(d, &st, now))
 	if late != nil {
 		return fail(nil)
 	}

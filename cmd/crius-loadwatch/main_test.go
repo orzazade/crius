@@ -21,6 +21,13 @@ type rig struct {
 	memErr   error
 	busPath  string
 	slotPath string
+	// the hung-holder check's world (hung_test.go)
+	procs    []proc
+	psErr    error
+	outFiles []string
+	outErr   error
+	project  string
+	leadErr  error
 }
 
 func newRig(t *testing.T, slots string) *rig {
@@ -39,7 +46,15 @@ func newRig(t *testing.T, slots string) *rig {
 	}
 	r.d = deps{home: filepath.Join(dir, "home"), slots: r.slotPath, state: filepath.Join(dir, "home", "state", "loadwatch.json"),
 		now: func() time.Time { return r.now }, load: func() (float64, float64, error) { return r.l5, r.l15, r.loadErr },
-		mem: func() (int, error) { return r.free, r.memErr }, out: &r.out}
+		mem: func() (int, error) { return r.free, r.memErr }, out: &r.out,
+		ps:      func() ([]proc, error) { return r.procs, r.psErr },
+		outputs: func([]int) ([]string, error) { return r.outFiles, r.outErr },
+		lead: func(string) (string, []string, error) {
+			if r.project == "" {
+				return "", nil, r.leadErr
+			}
+			return r.project, []string{r.project + ":lead"}, r.leadErr
+		}}
 	if err := os.MkdirAll(filepath.Dir(r.d.state), 0o700); err != nil {
 		t.Fatal(err)
 	}
