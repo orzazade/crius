@@ -93,6 +93,8 @@ func TestAWaitNamesItsTimeInTheFormsLeadsWrite(t *testing.T) {
 		{"until 2026-11-09 09:00", time.Date(2026, 11, 9, 9, 0, 0, 0, time.Local)},
 		{"until Tues 09:00", time.Date(2026, 11, 10, 9, 0, 0, 0, time.Local)},
 		{"until Thurs 09:00", time.Date(2026, 11, 12, 9, 0, 0, 0, time.Local)},
+		{"waiting Thur 09:00", time.Date(2026, 11, 12, 9, 0, 0, 0, time.Local)},
+		{"since 2026-03-01 10:00 the job ran; waiting for the owner", time.Time{}}, // its own year: past, not next year's
 		{"until Monday 08:00", time.Date(2026, 11, 9, 8, 0, 0, 0, time.Local)},
 		{"waiting for QA to judge item 3; bun test 135/0", time.Time{}},
 	} {

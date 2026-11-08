@@ -75,14 +75,15 @@ func waitOnBus(home, who string, now time.Time) (waitState, error) {
 	return waitState{from: until, once: true, note: "; its WAIT until " + until.Format("Mon 01-02 15:04") + " has passed (said once)"}, nil
 }
 
-var waitTimeRe = regexp.MustCompile(`(?i)\b(?:(mon|tue|wed|thu|fri|sat|sun)(?:s|sday|nesday|day|s|rs|rsday|urday|ursday)?\.?\s+)?(?:(\d{1,2})-(\d{1,2})\s+)?([01]?\d|2[0-3]):([0-5]\d)\s*(z|utc|am|pm)?\b`)
+var waitTimeRe = regexp.MustCompile(`(?i)\b(?:(mon|tue|wed|thu|fri|sat|sun)(?:s|sday|nesday|day|r|rs|rsday|urday)?\.?\s+)?(?:(\d{1,2})-(\d{1,2})\s+)?([01]?\d|2[0-3]):([0-5]\d)\s*(z|utc|am|pm)?\b`)
 
 var weekdays = map[string]time.Weekday{"sun": time.Sunday, "mon": time.Monday, "tue": time.Tuesday, "wed": time.Wednesday,
 	"thu": time.Thursday, "fri": time.Friday, "sat": time.Saturday}
 
 // waitUntil gives the first time named in text that is still ahead of the line's own time at, or zero when it names
-// none. A time is never moved on to the next day: "IDLE at 06:38 was wrong" quotes a time that has passed (review of
-// 8295577 P1-1). A weekday names its next date, today included; a date after a year ("2025-12-01") is not read.
+// none. A bare time already past is tomorrow's only when that is within 12 h, so "IDLE at 06:38 was wrong" quotes a
+// time that has passed (review of 8295577 P1-1). A weekday names its next date, today included; a date may carry its
+// year ("2026-11-09 09:00").
 func waitUntil(text string, at time.Time) time.Time {
 	for _, ix := range waitTimeRe.FindAllStringSubmatchIndex(text, -1) {
 		if ix[0] > 0 && strings.ContainsAny(text[ix[0]-1:ix[0]], "0123456789") {
@@ -116,14 +117,14 @@ func waitUntil(text string, at time.Time) time.Time {
 			if mo < 1 || mo > 12 || d < 1 || d > 31 {
 				continue
 			}
-			y := base.Year()
+			y, named := base.Year(), false
 			if ix[0] >= 5 && text[ix[0]-1] == '-' { // "2026-11-09 09:00": the year it names
 				if v, err := strconv.Atoi(text[ix[0]-5 : ix[0]-1]); err == nil {
-					y = v
+					y, named = v, true
 				}
 			}
 			t = time.Date(y, time.Month(mo), d, h, mi, 0, 0, loc)
-			if y == base.Year() && t.Before(base.AddDate(0, -6, 0)) { // "01-02" written in December is next year's
+			if !named && t.Before(base.AddDate(0, -6, 0)) { // "01-02" written in December is next year's
 				t = t.AddDate(1, 0, 0)
 			}
 		default:
