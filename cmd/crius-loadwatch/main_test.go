@@ -196,8 +196,8 @@ func TestAQuietMachineGetsAThirdSlot(t *testing.T) {
 	if r.slots(t) != "3" || len(b) != 1 || !strings.HasSuffix(b[0], "heavy slots 2 -> 3 (load5 17.00, load15 17.90, memory free 40%)") {
 		t.Fatalf("slots %s bus %q", r.slots(t), b)
 	}
-	// load15 back over 18 (or memory under 40%): 2, not 1
-	r.minutes(1, 20, 19)
+	// load15 at 22 (or memory under 40%): 2, not 1
+	r.minutes(1, 20, 22)
 	if b := r.bus(t); r.slots(t) != "2" || len(b) != 2 || !strings.Contains(b[1], "heavy slots 3 -> 2") {
 		t.Fatalf("slots %s bus %q", r.slots(t), b)
 	}
@@ -300,8 +300,43 @@ func TestAVeryQuietMachineGetsAFourthSlot(t *testing.T) {
 	if b := r.bus(t); r.slots(t) != "4" || !strings.HasSuffix(b[len(b)-1], "heavy slots 2 -> 4 (load5 7.80, load15 11.90, memory free 40%)") {
 		t.Fatalf("slots %s bus %q", r.slots(t), b)
 	}
-	if r.minutes(1, 14, 13); r.slots(t) != "3" {
-		t.Fatalf("load15 13: slots %s", r.slots(t))
+	// down from 4 only at load15 16, from 3 only at 22 (dead band, crius:lead DECISION 11-08)
+	for _, c := range []struct {
+		l15  float64
+		want string
+	}{{13, "4"}, {15.9, "4"}, {16, "3"}, {17.9, "3"}, {21.9, "3"}, {22, "2"}, {17.9, "3"}} {
+		if r.minutes(1, 14, c.l15); r.slots(t) != c.want {
+			t.Fatalf("load15 %.1f: slots %s, want %s", c.l15, r.slots(t), c.want)
+		}
+	}
+}
+
+// The flap of 11-08 04:41-04:51 (2 -> 3 -> 2 -> 3 in 10 min at load15 ~18) is one step up with the dead band.
+func TestTheFlapOf0441IsOneStep(t *testing.T) {
+	r := newRig(t, "2")
+	r.free = 78
+	for _, l := range [][2]float64{{14.12, 17.50}, {22.66, 18.55}, {21.0, 18.3}, {19.77, 17.96}} {
+		r.minutes(1, l[0], l[1])
+	}
+	if b := r.bus(t); r.slots(t) != "3" || len(b) != 1 || !strings.Contains(b[0], "heavy slots 2 -> 3 (load5 14.12, load15 17.50") {
+		t.Fatalf("slots %s bus %q", r.slots(t), b)
+	}
+}
+
+// 4 slots with load15 at 22 or more goes straight to 2; memory under 40% takes 4 to 2 as well.
+func TestAStepDownFromFourGoesToTheRightLevel(t *testing.T) {
+	r := newRig(t, "4")
+	if r.minutes(1, 20, 23); r.slots(t) != "2" {
+		t.Fatalf("load15 23: slots %s", r.slots(t))
+	}
+	r = newRig(t, "4")
+	r.free = 39
+	if r.minutes(1, 10, 10); r.slots(t) != "2" {
+		t.Fatalf("39%% free: slots %s", r.slots(t))
+	}
+	// 2 to 1 is the over-28 rule only: a high 15-min load with the 5-min load at 28 keeps 2
+	if r.minutes(3, 28, 35); r.slots(t) != "2" {
+		t.Fatalf("load5 28, load15 35: slots %s", r.slots(t))
 	}
 }
 

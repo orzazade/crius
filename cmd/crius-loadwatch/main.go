@@ -7,6 +7,9 @@
 //   - else the 15-min load is under 28: 2 slots;
 //   - else the count stays (easing on the 5-min load flipped 4 times on 11-05).
 //
+// Those are the up-steps. The extra slots come down only past a dead band: 4 to 3 at a 15-min load of 16, 3 to 2 at 22
+// (4 goes straight to 2 at 22), or at once to 2 when memory is under 40% free.
+//
 // The 5-min load over 28 while 3 or 4 slots are set turns the extra slots off for good (the most it sets is then 2) and
 // posts the numbers to crius:lead; deleting "noExtra" from the state file turns them back on.
 //
@@ -35,10 +38,13 @@ import (
 )
 
 const (
-	limit   = 28.0
-	quiet   = 18.0 // the 15-min load under this, with memory free at least minFree, allows a third slot
-	idle    = 12.0 // and under this, a fourth
-	minFree = 40   // percent
+	limit = 28.0
+	quiet = 18.0 // the 15-min load under this, with memory free at least minFree, allows a third slot
+	idle  = 12.0 // and under this, a fourth
+	// the dead band: the extra slots come down only at these 15-min loads (crius:lead DECISION 11-08)
+	downFour  = 16.0
+	downThree = 22.0
+	minFree   = 40 // percent
 )
 
 // state is what one run leaves the next: whether a failure was already posted, and whether the extra slots are off.
@@ -98,20 +104,34 @@ func memFree() (int, error) {
 	return 0, fmt.Errorf("memory_pressure: no %q line", key)
 }
 
-// want gives the slot count the load asks for, cur when it asks for no change.
+// want gives the slot count the load asks for (cur is "1" to "4"). Up-steps go straight to the level; the extra slots
+// come down only past a dead band: 4 to 3 at load15 16, 3 to 2 at 22 (the up-steps alone flipped 2 -> 3 -> 2 -> 3 in
+// 10 min at load15 ~18 on 11-08). 2 to 1 is the over-28 rule only.
 func want(l5, l15 float64, free int, cur string, noExtra bool) string {
-	extra := free >= minFree && !noExtra
-	switch {
-	case l5 > limit:
+	if l5 > limit {
 		return "1"
-	case l15 < idle && extra:
-		return "4"
-	case l15 < quiet && extra:
-		return "3"
-	case l15 < limit:
-		return "2"
 	}
-	return cur
+	extra := free >= minFree && !noExtra
+	up := 0
+	switch {
+	case l15 < idle && extra:
+		up = 4
+	case l15 < quiet && extra:
+		up = 3
+	case l15 < limit:
+		up = 2
+	}
+	n, _ := strconv.Atoi(cur)
+	if up > n {
+		return strconv.Itoa(up)
+	}
+	if n == 4 && (!extra || l15 >= downFour) {
+		n = 3
+	}
+	if n == 3 && (!extra || l15 >= downThree) {
+		n = 2
+	}
+	return strconv.Itoa(n)
 }
 
 func run(d deps) int {
