@@ -142,10 +142,12 @@ func TestARigAlertReachesTheTeamThatStartsAfterTheBoot(t *testing.T) {
 	if n := len([]rune(text)); n > 300 || !strings.Contains(text, ": service-number-10") || !regexp.MustCompile(` \+\d+ more$`).MatchString(text) {
 		t.Fatalf("17 names in %d runes: %q", n, text)
 	}
-	f.boot = boot.Add(3 * time.Microsecond) // a clock step moves kern.boottime a little
-	run()
+	for i := 1; i <= 4; i++ { // clock steps move kern.boottime a little, 40 s each: never a boot, however many
+		f.boot = boot.Add(time.Duration(i) * 40 * time.Second)
+		run()
+	}
 	if got := rigLines(t, home); len(got) != 1 {
-		t.Fatalf("a clock step read as a boot: %q", got)
+		t.Fatalf("clock steps read as a boot: %q", got)
 	}
 	f.ses = []Session{{Name: "team · lead", ID: "s1"}}
 	run() // the lead resumes hours later: it hears the same set

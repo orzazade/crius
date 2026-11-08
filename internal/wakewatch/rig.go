@@ -58,6 +58,9 @@ func rigDown(d Deps, st *state, ss []Session, sesErr error, watch projects, park
 		// other is told twice (review r2 of 4ebed9c P2). kern.boottime moves by the size of a clock step (a time sync, a
 		// wake): only a minute or more is a boot.
 		booted := bootErr == nil && boot.Sub(st.RigBoot[p]) > time.Minute
+		if bootErr == nil && !booted {
+			st.RigBoot[p] = boot // a clock step is taken in at once, so steps never add up to a minute (review r3 P2)
+		}
 		if sesErr == nil && !running[strings.ToLower(p)] {
 			delete(st.Rig, p) // heard by no session: the team's next one hears it
 			if !booted {
