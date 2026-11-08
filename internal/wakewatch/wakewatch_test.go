@@ -2025,6 +2025,57 @@ func TestATabThatWouldRestoreOnAnotherFolderIsCaught(t *testing.T) {
 	}
 }
 
+// crius:lead 11-07 19:58: seven roles moved, same session, from max3 to max2 woke Crius as on another account. A live
+// session or a restore record in a folder of another Max row of the role's persona is its own seat; one in another
+// persona's Max folder or an enterprise folder still wakes Crius, and an unread accounts.toml is said.
+func TestAMoveBetweenMaxAccountsIsNotAWrongFolder(t *testing.T) {
+	home := setup(t, nil)
+	s := testutil.MaxSeats(t, t.TempDir(), home)
+	role := hookState("s1", sessionstate.Idle, "team", "r1")
+	role.Config, role.Filed, role.Workspace = s.WorkA, s.WorkB, "W1"
+	if err := sessionstate.WriteRole(filepath.Join(home, "roles"), role, true); err != nil {
+		t.Fatal(err)
+	}
+	at := t0
+	run := func(runs string, restore []string) []string {
+		running := hookState("s1", sessionstate.Idle, "team", "r1")
+		running.Config = runs
+		f := &fake{ses: []Session{{Name: "team: r1", ID: "s1"}}, states: []sessionstate.State{running},
+			restore: map[string][]string{sfID: restore}}
+		at = at.Add(time.Hour)
+		if err := Run(f.deps(home, at)); err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, m := range f.sent {
+			if strings.Contains(m, "team · r1") || strings.Contains(m, "accounts.toml") {
+				out = append(out, m)
+			}
+		}
+		return out
+	}
+	if sent := run(s.WorkA, []string{s.WorkA}); len(sent) != 0 {
+		t.Fatalf("filed on max3, runs and restores on max2 (one persona): sent %q, want nothing", sent)
+	}
+	for _, c := range []struct {
+		runs    string
+		restore []string
+		want    string
+	}{
+		{s.Personal, []string{s.WorkB}, "runs in " + s.Personal},
+		{s.WorkB, []string{s.Ent}, "bring it back in " + s.Ent},
+	} {
+		sent := run(c.runs, c.restore)
+		if len(sent) != 1 || !strings.Contains(sent[0], c.want) || !strings.Contains(sent[0], s.WorkB) {
+			t.Fatalf("runs in %s, restores in %q: sent %q, want one wake with %q", c.runs, c.restore, sent, c.want)
+		}
+	}
+	testutil.Write(t, filepath.Join(home, "accounts.toml"), "[[account]\n")
+	if sent := run(s.WorkA, []string{s.WorkB}); len(sent) != 2 || !strings.Contains(strings.Join(sent, "|"), "could not read accounts.toml") {
+		t.Fatalf("accounts.toml unread: sent %q, want the wake (the folders read as two accounts) and the unread file", sent)
+	}
+}
+
 // Crius 22:43: a record with no folder restores in ~/.claude, so a role filed there is in its own folder (timelock-diary
 // lead 11-01 22:37, a false alert).
 func TestARecordWithNoFolderIsRightForARoleFiledInTheDefaultFolder(t *testing.T) {

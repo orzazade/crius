@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/orzazade/crius/internal/ingest"
+	"github.com/orzazade/crius/internal/quota"
 	"github.com/orzazade/crius/internal/sessionstate"
 	"github.com/orzazade/crius/internal/store"
 )
@@ -113,6 +114,16 @@ func record(in sessionstate.Input) error {
 		sameTab := s.Surface != "" && cur.Surface == s.Surface && !(in.Event == "SessionStart" && s.Detail == "startup")
 		if err == nil && (cur.SessionID == s.SessionID || sameTab) {
 			s.Filed = cur.FiledConfig()
+			// A move to another Max account of the same persona is filed (crius:lead 11-07 19:58), so -resume
+			// resumes it where it now runs.
+			if s.Filed != s.Config {
+				as, err := quota.LoadAccounts(home)
+				if err != nil {
+					fail(fmt.Errorf("role %s.%s keeps its filed folder %s, as accounts.toml does not read: %w", s.Project, s.Role, s.Filed, err))
+				} else if as.SameSeat(s.Filed, s.Config) {
+					s.Filed = s.Config
+				}
+			}
 		}
 	}
 	return sessionstate.WriteRole(roles, s, replace)

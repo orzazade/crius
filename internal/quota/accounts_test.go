@@ -5,7 +5,44 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/orzazade/crius/internal/testutil"
 )
+
+// crius:lead 11-07 19:58: a move from one Max account to another is never a wrong account. Two folders are one seat when
+// they are one folder, or folders of Max rows filing into one transcript folder (one persona); a personal-persona
+// folder, an enterprise row or a folder on no row is another.
+func TestTwoMaxFoldersOfOnePersonaAreOneSeat(t *testing.T) {
+	root, home := t.TempDir(), t.TempDir()
+	s := testutil.MaxSeats(t, root, home)
+	as, err := LoadAccounts(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "link-a")
+	if err := os.Symlink(s.WorkA, link); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		a, b string
+		want bool
+	}{
+		{s.WorkA, s.WorkB, true},
+		{s.WorkB, s.WorkA, true},
+		{s.WorkA, link + "/", true},
+		{s.WorkA, s.Personal, false},
+		{s.WorkA, s.Ent, false},
+		{s.WorkA, filepath.Join(root, "elsewhere"), false},
+		{filepath.Join(root, "x"), filepath.Join(root, "x"), true},
+	} {
+		if got := as.SameSeat(c.a, c.b); got != c.want {
+			t.Errorf("SameSeat(%s, %s) = %v, want %v", c.a, c.b, got, c.want)
+		}
+	}
+	if (*Accounts)(nil).SameSeat(s.WorkA, s.WorkB) {
+		t.Error("no accounts file read: two folders are one seat")
+	}
+}
 
 func signIn(t *testing.T, dir, uuid string) {
 	t.Helper()

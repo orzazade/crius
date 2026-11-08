@@ -382,6 +382,47 @@ func TestARestoreInAnotherFolderKeepsTheRolesFolder(t *testing.T) {
 	}
 }
 
+// crius:lead 11-07 19:58: seven roles moved, same session, from one Max account to another (max3 to max2) kept max3 as
+// their filed folder, so wakewatch called the move a wrong account and -resume would take them back. A resume in a
+// folder of another Max row of the same persona files that folder; one in another persona's or an enterprise folder
+// keeps the role's.
+func TestAResumeOnAnotherMaxAccountFilesItsFolder(t *testing.T) {
+	h := t.TempDir()
+	crius := filepath.Join(h, ".crius")
+	testutil.Write(t, filepath.Join(crius, "projects.toml"), "[projects.team]\ncwd = [\"/w/team\"]\n")
+	s := testutil.MaxSeats(t, h, crius)
+	roles := filepath.Join(crius, "roles")
+	in := func(cfg, source string) {
+		testutil.Write(t, filepath.Join(cfg, "sessions", fmt.Sprintf("%d.json", os.Getpid())),
+			fmt.Sprintf(`{"pid":%d,"sessionId":"s-1","cwd":"/w/team","name":"team · r1","procStart":%q}`, os.Getpid(), testutil.ProcStart(t, os.Getpid())))
+		env := []string{"HOME=" + h, "CRIUS_HOME=" + crius, "CLAUDE_CONFIG_DIR=" + cfg, "CMUX_WORKSPACE_ID=ws-9", "CMUX_SURFACE_ID=sf-3"}
+		run(t, env, `{"session_id":"s-1","hook_event_name":"SessionStart","source":"`+source+`","cwd":"/w/team"}`)
+	}
+	in(s.WorkB, "startup")
+	for _, c := range []struct{ cfg, filed string }{
+		{s.WorkA, s.WorkA},    // max3 -> max2, one persona: the move is filed
+		{s.Personal, s.WorkA}, // another persona's Max folder (a restore with no CLAUDE_CONFIG_DIR): kept
+		{s.Ent, s.WorkA},      // the enterprise row: kept
+		{s.WorkB, s.WorkB},    // back on max3
+	} {
+		in(c.cfg, "resume")
+		r, err := sessionstate.ReadRole(roles, "team", "r1")
+		if err != nil || r.SessionID != "s-1" || r.Config != c.cfg || r.FiledConfig() != c.filed {
+			t.Fatalf("resumed in %s: role file %+v, %v; want filed in %s", c.cfg, r, err, c.filed)
+		}
+	}
+	// accounts.toml unreadable: the role keeps its folder, and the log says why.
+	testutil.Write(t, filepath.Join(crius, "accounts.toml"), "[[account]\n")
+	in(s.WorkA, "resume")
+	if r, err := sessionstate.ReadRole(roles, "team", "r1"); err != nil || r.FiledConfig() != s.WorkB {
+		t.Fatalf("accounts.toml unread: role file %+v, %v; want filed in %s", r, err, s.WorkB)
+	}
+	if log := testutil.Read(t, filepath.Join(crius, "logs", "crius-hook.log")); !strings.Contains(log, "accounts.toml") ||
+		!strings.Contains(log, "keeps its filed folder") {
+		t.Fatalf("log %q, want the unread accounts.toml and the kept folder", log)
+	}
+}
+
 // Review of item 8: after /clear the new id's first event may come before its start; in the role's own tab it keeps the
 // role's folder. A /clear in another tab of the same role files its own.
 func TestAClearInTheRolesTabKeepsItsFolder(t *testing.T) {

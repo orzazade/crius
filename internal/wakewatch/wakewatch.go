@@ -34,6 +34,7 @@ import (
 	"github.com/BurntSushi/toml"
 	"github.com/orzazade/crius/internal/goal"
 	"github.com/orzazade/crius/internal/ownerqueue"
+	"github.com/orzazade/crius/internal/quota"
 	"github.com/orzazade/crius/internal/redact"
 	"github.com/orzazade/crius/internal/sessionstate"
 	"github.com/orzazade/crius/internal/watchdog"
@@ -1392,10 +1393,25 @@ func readHooks(d Deps, prev map[string][2]string, ss []Session, sesErr error) (*
 // 10-29 00:28, cmux restored sessions with no CLAUDE_CONFIG_DIR). crius-spawn -resume brings it back in the filed
 // folder. Typed once, like a bus line: a resume that aitch's route sends elsewhere again must not wake Crius for ever.
 // The same goes before a restart for the folder its cmux tab would restore it in, or none, where Claude begins on
-// ~/.claude (crius:lead 10-29 05:56: alert only, cmux's records are its own).
+// ~/.claude (crius:lead 10-29 05:56: alert only, cmux's records are its own). A folder of another Max account of the
+// same persona is the role's own seat (quota.SameSeat; crius:lead 11-07 19:58); with accounts.toml unread, it is not,
+// and that is said.
 func wrongFolder(d Deps, h *hooks) [][2]string {
 	var out [][2]string
 	var unread error
+	var as *quota.Accounts
+	var asErr error
+	read := false
+	same := func(a, b string) bool {
+		if samePath(a) == samePath(b) {
+			return true
+		}
+		if !read {
+			as, asErr = quota.LoadAccounts(d.Home)
+			read = true
+		}
+		return asErr == nil && as.SameSeat(a, b)
+	}
 	for _, id := range slices.Sorted(maps.Keys(h.session)) {
 		s := h.session[id]
 		if s.Project == "" || s.Role == "" || s.Config == "" {
@@ -1408,7 +1424,7 @@ func wrongFolder(d Deps, h *hooks) [][2]string {
 		if err != nil || r.SessionID != id || r.FiledConfig() == "" {
 			continue
 		}
-		if samePath(r.FiledConfig()) != samePath(s.Config) {
+		if !same(r.FiledConfig(), s.Config) {
 			out = append(out, [2]string{"folder:" + id + ":" + s.Config, fmt.Sprintf(
 				"%s · %s (session %s) runs in %s, but its role started in %s: another account or persona. Stop its Claude, then crius-spawn -resume %s %s",
 				s.Project, s.Role, id, s.Config, r.FiledConfig(), s.Project, s.Role)})
@@ -1430,7 +1446,7 @@ func wrongFolder(d Deps, h *hooks) [][2]string {
 			if c == "" {
 				c = def
 			}
-			return c == "" || samePath(c) != samePath(r.FiledConfig())
+			return c == "" || !same(c, r.FiledConfig())
 		})
 		if i < 0 {
 			continue
@@ -1446,6 +1462,9 @@ func wrongFolder(d Deps, h *hooks) [][2]string {
 	}
 	if unread != nil {
 		out = append(out, [2]string{"restore-unread", "the restore check could not read a cmux tab's restore record: " + unread.Error()})
+	}
+	if asErr != nil {
+		out = append(out, [2]string{"accounts-unread", "the folder check could not read accounts.toml, so a move between Max accounts reads as another account: " + asErr.Error()})
 	}
 	return out
 }

@@ -99,3 +99,31 @@ func ProcStart(t *testing.T, pid int) string {
 	}
 	return strings.TrimSpace(string(out))
 }
+
+// Seats are config folders under root, as accounts.toml in crius (a Crius home) lists them: WorkA (row max2) and WorkB
+// (row max3) are two Max accounts of one persona, their projects/ links to one work transcript folder; Personal (row
+// max1) is a Max account of another persona with its own projects/; Ent (an enterprise row) links to the work folder.
+type Seats struct{ WorkA, WorkB, Personal, Ent string }
+
+func MaxSeats(t *testing.T, root, crius string) Seats {
+	t.Helper()
+	s := Seats{filepath.Join(root, ".claude-a"), filepath.Join(root, ".claude-b"), filepath.Join(root, ".claude-p"),
+		filepath.Join(root, ".claude-e")}
+	work := filepath.Join(root, ".work", "projects")
+	for _, d := range []string{work, filepath.Join(s.Personal, "projects"), s.WorkA, s.WorkB, s.Ent} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, d := range []string{s.WorkA, s.WorkB, s.Ent} {
+		if err := os.Symlink(work, filepath.Join(d, "projects")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	row := func(name, plan, dir string) string {
+		return "[[account]]\nname = \"" + name + "\"\nplan = \"" + plan + "\"\ndirs = [\"" + dir + "\"]\n"
+	}
+	Write(t, filepath.Join(crius, "accounts.toml"), row("max1", "max", s.Personal)+row("max2", "max", s.WorkA)+
+		row("max3", "max", s.WorkB)+row("ent", "enterprise", s.Ent))
+	return s
+}

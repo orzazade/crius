@@ -169,6 +169,18 @@ func (as *Accounts) Name(login string) string {
 	return "login " + login
 }
 
+// SameSeat says config folders a and b give a session one account kind and persona: they are one folder, or both are
+// folders of Max rows whose projects/ is one transcript folder (crius:lead 11-07 19:58: a move from one Max account to
+// another is never a wrong account). A folder of another persona, of an enterprise row or of no row is another seat.
+func (as *Accounts) SameSeat(a, b string) bool {
+	if samePath(a) == samePath(b) {
+		return true
+	}
+	ra, rb := as.Dir(a), as.Dir(b)
+	return ra != nil && rb != nil && ra.Plan == "max" && rb.Plan == "max" &&
+		samePath(filepath.Join(a, "projects")) == samePath(filepath.Join(b, "projects"))
+}
+
 // Dir is the row listing the config folder dir, nil when none does (or when as is nil).
 func (as *Accounts) Dir(dir string) *Acct {
 	if as == nil {
