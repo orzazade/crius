@@ -33,25 +33,18 @@ main = origin/main = this RESUME commit (P6b). Local main ref is behind: it is c
   after the work statusline, red first. Status: done (main c133717, 27c2a73; scorecard def v2).
 - Standing (memory): personal repo, push to main after review; effort medium/high only; no AI attribution.
 
-## GOAL (2026-11-08 19:10)
+## GOAL (2026-11-08 19:20)
 Goal: Crius's tools keep every team moving with no owner wait and on Max subscriptions only (orders from crius:lead 11-07/11-08)
 - [x] 2 crius-rec digest time limit · 03de07c, VERIFIED 11-06 15:14
 - [x] F crius-loadwatch sets heavy slots by load · 876308d, VERIFIED 11-08 03:29
-- [x] H ingest: no-remote repo with a detached HEAD or broken ref says so · a705153, VERIFIED 04:16 at aa78d1c (names it)
-- [x] I loadwatch third slot · aa78d1c, VERIFIED 04:16
+- [x] H+I ingest says a no-remote repo has a detached HEAD or broken ref; loadwatch third slot · aa78d1c, a705153, VERIFIED 04:16
 - [x] L loadwatch: tripped extras come back after 30 min calm · 7648044, VERIFIED 05:26
 - [x] M wakewatch re-arms a role whose bus waiter died · 5d8f0ee, VERIFIED 05:41
 - [x] O a Max-to-Max move is never "wrong account" · 90ead3e, VERIFIED 06:24
-- [x] N crius-spawn -move resumes the same session on another Max account · b726806, VERIFIED 06:41
-- [x] P quota stale rule (request >45 min after the newest sample) · 20603f7, VERIFIED 06:41 at b726806
-- [x] Q hung heavy-slot check · 1782fc7, VERIFIED 06:41 at b726806
-- [x] R enterprise guard judges a session by the rule of its time · c567dfa, VERIFIED 07:29
-- [x] S wakewatch rig-down alert · c567dfa, VERIFIED 07:29
-- [x] U a WAIT line silences its role's idle flag · c567dfa, VERIFIED 07:29
+- [x] N+P+Q crius-spawn -move to another Max account; quota stale rule; hung heavy-slot check · b726806, 20603f7, 1782fc7, VERIFIED 06:41
+- [x] R+S+U enterprise guard by the rule of its time; wakewatch rig-down alert; a WAIT line silences its idle flag · c567dfa, VERIFIED 07:29
 - [x] V crius-hook keeps parallel events (queued files) · a81c1f5, VERIFIED 07:53
-- [x] W no false S1 for Max lines without rate limits · beacf0e, VERIFIED 11:00 at e23b71e
-- [x] X -move after a 429: a turn ends only on its turn_duration line · e23b71e, VERIFIED 11:00
-- [x] T all 6 quotes tabs off max1 · e23b71e, VERIFIED 11:00 (pids 25343, 27945 on max3)
+- [x] W+X+T no false S1 for Max lines without rate limits; -move after a 429 ends a turn only on its turn_duration line; all 6 quotes tabs off max1 · e23b71e, beacf0e, VERIFIED 11:00
 - [x] Y wakewatch S1 on paid usage (owner's hardest rule) · 118841b, VERIFIED 11:07
 - [x] AA context-mode hook never asks; deny kept (~/.claude/hooks/context-mode-security.mjs) · 1b674d1, VERIFIED 14:46
 - [x] AB team-wait finds an idle tab by session id, not title · 3fda072, VERIFIED 19:04
@@ -65,7 +58,7 @@ Goal: Crius's tools keep every team moving with no owner wait and on Max subscri
 - [~] G watchdog repeats a stale-heartbeat alert every 6 h · 5aa6fb7, DONE 03:3x
 - [~] J loadwatch fourth slot · 0b5ffb3, DONE 04:51
 - [~] K loadwatch dead band · 7e2dd43, DONE 04:55
-Done: 67% (20 of 30 milestones verified, equal weight; rows 1 and 3 void since the owner removed the guards 11-08)
+Done: 57% (13 verified, 23 milestones, equal weight; rows checked by one VERIFIED line are one milestone; rows 1 and 3 void since the owner removed the guards 11-08)
 Next: nothing queued; idle until an order. Open rows wait on VERIFIED. Detail and known gaps: ~/.crius/state/crius/STATUS-build.md. 10-30 goal (record accept P7, Falcon source) parked with no order; its block is in git history
 Needs owner: nothing
 
