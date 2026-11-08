@@ -225,6 +225,10 @@ func TestAMoveStopsOnlyItsBusWaiterAtExit(t *testing.T) {
 		}
 		_, err := x.m.move("team", "dev")
 		last := x.typed[len(x.typed)-1]
+		// live 11-08 (quotes qa-frontend): cmux refuses a key while a dialog is open unless forced
+		if !strings.HasPrefix(last, "send-key --force ") {
+			t.Errorf("%s: dialog answered with %q, want send-key --force", c.name, last)
+		}
 		if c.moved && (err != nil || len(x.resumed) != 1 || !strings.HasSuffix(last, " enter")) {
 			t.Errorf("%s: %v, resumed %q, last key %q", c.name, err, x.resumed, last)
 		}

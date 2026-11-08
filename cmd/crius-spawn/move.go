@@ -251,7 +251,8 @@ func (m mover) exit(r sessionstate.State, waiters int) error {
 			if !ok || len(tasks) != waiters {
 				key = "escape"
 			}
-			if out, err := m.cmux(append(append([]string{"send-key"}, tab...), key)...); err != nil {
+			// cmux refuses a key while a dialog is open unless forced (live 11-08, quotes qa-frontend).
+			if out, err := m.cmux(append(append([]string{"send-key", "--force"}, tab...), key)...); err != nil {
 				return fmt.Errorf("cmux send-key: %v: %s", err, out)
 			}
 			if key == "escape" {
