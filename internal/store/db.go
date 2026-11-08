@@ -99,6 +99,9 @@ create table if not exists alert (key text primary key, ts text not null, text t
 -- session keeps its main repo's project after the worktree is removed. One row per session, never changed, so a path
 -- made again as a plain folder or another repo's worktree moves no session filed before.
 create table if not exists session_worktree (session text primary key, path text not null, main text not null);
+-- Whether a project may run on the enterprise account, from when (the projects.toml edit that set it): ingest adds a
+-- row when the rule changes, the first one from the epoch, so the quota guard judges each session by the rule of its time.
+create table if not exists enterprise_rule (project text not null, ok integer not null, since text not null, primary key (project, since));
 `
 
 // Open opens (or creates, mode 600) the record store and applies the schema.

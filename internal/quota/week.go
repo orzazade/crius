@@ -26,6 +26,10 @@ func Spent(db Querier, p Projects, from, to time.Time, lo, hi int64) (*Spend, er
 	if err != nil {
 		return nil, err
 	}
+	ok, err := loadRules(db, p.EnterpriseOK)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := db.Query("select ts from quota where account = 'max' and seven_day_pct is not null"+
 		" and epoch between ? and ? order by ts", lo, hi)
 	if err != nil {
@@ -64,12 +68,13 @@ func Spent(db Querier, p Projects, from, to time.Time, lo, hi int64) (*Spend, er
 	shares, ent := map[string]float64{}, map[string]float64{}
 	seen := map[string]bool{}
 	// guard's checks and keys, so the counts match the quota report's
+	var t time.Time // the request being counted: each one is judged by the rule of its time
 	check := func(sid, project, via string) {
 		v := Violation{Session: sid, Project: project, Kind: "s1", Source: via}
 		switch {
 		case project == "":
 			v.Kind = "unmapped"
-		case p.EnterpriseOK[project]:
+		case ok.okDuring(project, t, t):
 			return
 		}
 		if k := sid + " " + v.Kind + project + via; !seen[k] {
@@ -84,7 +89,8 @@ func Spent(db Querier, p Projects, from, to time.Time, lo, hi int64) (*Spend, er
 			rows.Close()
 			return nil, err
 		}
-		t, err := parseTS(ts)
+		var err error
+		t, err = parseTS(ts)
 		if err != nil {
 			rows.Close()
 			return nil, err

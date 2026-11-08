@@ -1697,3 +1697,53 @@ func TestQuotaGuardIsBlindForAStaleAccountOfAnUnknownProject(t *testing.T) {
 		t.Fatalf("want the stale entry to name max1, got %q", rep.Stale)
 	}
 }
+
+// crius:lead 11-07 19:57 and DECISION 11-08 (1): a project's enterprise rule is judged as it stood when the session ran.
+// Turning enterprise off for a project (accounts = ["max"]) raised 707 S1 alerts at once for sessions that ran while
+// it was still allowed; only the sessions that ran on enterprise after the edit broke the rule.
+func TestQuotaEnterpriseRuleIsJudgedAsItStoodWhenTheSessionRan(t *testing.T) {
+	x := quotaCase(t)
+	tag := "[crius account=enterprise project=axi role=lead]"
+	before, after, across := "77777777-2222-3333-4444-555555555555", "88888888-2222-3333-4444-555555555555", "99999999-2222-3333-4444-555555555555"
+	x.session("work", before, "/work/axi", tag, qNow.Add(-6*time.Hour), qNow.Add(-5*time.Hour))
+	x.session("work", across, "/work/axi", tag, qNow.Add(-4*time.Hour))
+	clock = func() time.Time { return qNow.Add(-3 * time.Hour) }
+	x.run() // axi may use enterprise: nothing to say
+	if got := grepAlerts(x.alerts(), "S1 personal work"); len(got) != 0 {
+		t.Fatalf("axi was allowed: %q", got)
+	}
+	edit := qNow.Add(-2 * time.Hour)
+	writeConfig(t, x.home, x.personal, x.work, cfg{extra: strings.Replace(axiProject, `["max", "enterprise"]`, `["max"]`, 1)})
+	if err := os.Chtimes(filepath.Join(x.home, "projects.toml"), edit, edit); err != nil {
+		t.Fatal(err)
+	}
+	x.session("work", after, "/work/axi", tag, qNow.Add(-90*time.Minute))
+	x.session("work", across, "/work/axi", tag, qNow.Add(-4*time.Hour), qNow.Add(-time.Hour)) // ran on past the edit
+	clock = func() time.Time { return qNow }
+	x.run()
+	s1 := grepAlerts(x.alerts(), "S1 personal work")
+	if j := strings.Join(s1, "\n"); len(s1) != 2 || !strings.Contains(j, "session 88888888, project axi") ||
+		!strings.Contains(j, "session 99999999, project axi") {
+		t.Fatalf("want an S1 for each session that ran on enterprise after the edit: %q", s1)
+	}
+	if got := x.q("select project, ok, since from enterprise_rule where project = 'axi' order by since"); len(got) != 2 ||
+		got[0][1] != "1" || got[1][1] != "0" || got[1][2] != iso(edit) {
+		t.Fatalf("rule history %q", got)
+	}
+	db, err := sql.Open("sqlite", filepath.Join(x.home, "state", "record.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	p, err := QuotaProjects(x.home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sp, err := quota.Spent(db, p, qNow.Add(-7*time.Hour), qNow, 0, 1<<40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sp.Violations) != 2 || sp.Violations[0].Session != after || sp.Violations[1].Session != across {
+		t.Fatalf("the week's violations %+v", sp.Violations)
+	}
+}

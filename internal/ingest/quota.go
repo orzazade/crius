@@ -110,6 +110,65 @@ func (r *runner) newAlert(tx *sql.Tx, key string, holds bool) (bool, error) {
 	return n == 0, err
 }
 
+// recordRule adds a row to enterprise_rule for each project whose enterprise rule differs from its last row: from the
+// epoch for a project it has none for, else from the projects.toml edit that changed it (its mtime; the run's time when
+// that is not after the last row or is ahead of the clock). A project gone from projects.toml may no longer use it.
+func (r *runner) recordRule(tx *sql.Tx, ok map[string]bool) error {
+	type last struct {
+		ok    bool
+		since string
+	}
+	before := map[string]last{}
+	rows, err := tx.Query("select project, ok, since from enterprise_rule order by since")
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var p, since string
+		var v bool
+		if err := rows.Scan(&p, &v, &since); err != nil {
+			rows.Close()
+			return err
+		}
+		before[p] = last{v, since}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	now := clock().UTC()
+	edit := now
+	if fi, err := os.Stat(filepath.Join(r.home, "projects.toml")); err != nil {
+		return err
+	} else if m := fi.ModTime().UTC(); m.Before(now) {
+		edit = m
+	}
+	projects := map[string]bool{}
+	for _, c := range r.cfg.projects {
+		projects[c.slug] = true
+	}
+	for p := range before {
+		projects[p] = true
+	}
+	for _, p := range slices.Sorted(maps.Keys(projects)) {
+		b, seen := before[p]
+		since := time.Unix(0, 0).UTC().Format(time.RFC3339)
+		if seen {
+			if b.ok == ok[p] {
+				continue
+			}
+			since = edit.Format(time.RFC3339)
+			if since <= b.since {
+				since = now.Format(time.RFC3339)
+			}
+		}
+		if _, err := tx.Exec("insert into enterprise_rule (project, ok, since) values (?, ?, ?)", p, ok[p], since); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (r *runner) quotaChecks(tx *sql.Tx) error {
 	p, err := r.cfg.quotaProjects(r.home)
 	if err != nil {
@@ -117,6 +176,9 @@ func (r *runner) quotaChecks(tx *sql.Tx) error {
 		r.warn(true, "quota checks: %v", err)
 		return r.queueLine(tx, "quota:off:"+clock().UTC().Format("2006-01-02"), "NEED", "crius", "crius:lead",
 			fmt.Sprintf("quota guard is off, no pause or quota alert runs: %v", err))
+	}
+	if err := r.recordRule(tx, p.EnterpriseOK); err != nil {
+		return err
 	}
 	rep, err := quota.Build(tx, p, clock())
 	if err != nil {

@@ -183,15 +183,25 @@ func (s *sess) login(t time.Time) string {
 // until the next Max line, by an enterprise organization when no statusline line exists, or by an enterprise launch
 // tag) is checked against each project active in it, and a tag
 // that a statusline line contradicts is a mismatch.
-func (s *sess) guard(id string, ok map[string]bool) []Violation {
+func (s *sess) guard(id string, ok rules) []Violation {
 	var vs []Violation
 	seen := map[string]bool{}
-	check := func(project, via string) {
+	end := s.last // a stretch still open runs to the session's last request or line, judged by the rules of that time
+	if n := len(s.obs); n > 0 && s.obs[n-1].ts.After(end) {
+		end = s.obs[n-1].ts
+	}
+	upTo := func(t time.Time) time.Time {
+		if t.IsZero() || !end.IsZero() && t.After(end) {
+			return end
+		}
+		return t
+	}
+	check := func(project, via string, from, to time.Time) {
 		v := Violation{Session: id, Project: project, Kind: "s1", Source: via}
 		switch {
 		case project == "":
 			v.Kind = "unmapped"
-		case ok[project]:
+		case ok.okDuring(project, from, upTo(to)):
 			return
 		}
 		if k := v.Kind + project + via; !seen[k] {
@@ -232,10 +242,10 @@ func (s *sess) guard(id string, ok map[string]bool) []Violation {
 				break
 			}
 		}
-		check(s.project(from), "statusline")
+		check(s.project(from), "statusline", from, to)
 		for _, a := range s.asg {
 			if a.from.After(from) && (to.IsZero() || a.from.Before(to)) {
-				check(a.project, "statusline")
+				check(a.project, "statusline", a.from, to)
 			}
 		}
 	}
@@ -254,16 +264,16 @@ func (s *sess) guard(id string, ok map[string]bool) []Violation {
 				break
 			}
 		}
-		check(s.project(from), "organization")
+		check(s.project(from), "organization", from, to)
 		for _, a := range s.asg {
 			if a.from.After(from) && (to.IsZero() || a.from.Before(to)) {
-				check(a.project, "organization")
+				check(a.project, "organization", a.from, to)
 			}
 		}
 	}
 	for _, a := range s.asg {
 		if a.account == "enterprise" {
-			check(a.project, "tag")
+			check(a.project, "tag", a.from, a.to)
 		}
 	}
 	return vs
@@ -503,6 +513,10 @@ func Build(db Querier, p Projects, now time.Time) (*Report, error) {
 	if err != nil {
 		return nil, err
 	}
+	ok, err := loadRules(db, p.EnterpriseOK)
+	if err != nil {
+		return nil, err
+	}
 	ids := make([]string, 0, len(ss))
 	for id := range ss {
 		ids = append(ids, id)
@@ -513,7 +527,7 @@ func Build(db Querier, p Projects, now time.Time) (*Report, error) {
 		if n := len(ss[id].obs); n > 0 && ss[id].obs[n-1].ts.After(last) {
 			last = ss[id].obs[n-1].ts
 		}
-		for _, v := range ss[id].guard(id, p.EnterpriseOK) {
+		for _, v := range ss[id].guard(id, ok) {
 			if !last.IsZero() && now.Sub(last) > Gap {
 				v.Ended = last
 			}
