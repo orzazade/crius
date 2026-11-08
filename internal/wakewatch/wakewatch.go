@@ -282,7 +282,7 @@ func Run(d Deps) error {
 		if err != nil {
 			sendErr = err
 		}
-		if (strings.HasPrefix(a[0], "bus:") || strings.HasPrefix(a[0], "folder:") || strings.HasPrefix(a[0], "restore:") || strings.HasPrefix(a[0], "handed:") || strings.HasPrefix(a[0], "dead:")) && (err == nil || d.HandedOver != nil && d.HandedOver(err)) {
+		if (strings.HasPrefix(a[0], "bus:") || strings.HasPrefix(a[0], "folder:") || strings.HasPrefix(a[0], "restore:") || strings.HasPrefix(a[0], "handed:") || strings.HasPrefix(a[0], "dead:") || strings.HasPrefix(a[0], "waited:")) && (err == nil || d.HandedOver != nil && d.HandedOver(err)) {
 			st.Typed[a[0]] = d.Now
 		}
 		// Crius's waiter wakes on a bus line: a wake that cannot be typed goes there, so none is lost (S2, 10-22).
@@ -655,6 +655,7 @@ func waiting(st *state, d Deps, watch projects, park parked, screens []Screen, h
 		var who string
 		var clear bool
 		var lastLine, unparked time.Time
+		var w waitState
 		if !ask {
 			if who, _ = session(s.Text, s.Title); who == "" {
 				continue
@@ -676,6 +677,13 @@ func waiting(st *state, d Deps, watch projects, park parked, screens []Screen, h
 				continue
 			} else if p {
 				continue // its idle spell starts afresh once a newer line unparks it
+			}
+			if w, err = waitOnBus(d.Home, who, d.Now); err != nil {
+				live[s.Surface] = true
+				out = append(out, [2]string{"screen-failed:" + s.Surface, fmt.Sprintf("tab %q (%s): idle check could not read its bus: %v", s.Title, s.Surface, err)})
+				continue
+			} else if w.silent {
+				continue // its WAIT runs: the idle spell counts from its end
 			}
 		}
 		live[s.Surface] = true
@@ -701,6 +709,9 @@ func waiting(st *state, d Deps, watch projects, park parked, screens []Screen, h
 		}
 		if unparked.After(from) {
 			from = unparked
+		}
+		if w.from.After(from) {
+			from = w.from
 		}
 		after, running := idleAfter, "nothing running"
 		if long {
@@ -740,6 +751,10 @@ func waiting(st *state, d Deps, watch projects, park parked, screens []Screen, h
 			}
 			if back { // said once (Typed; again after window+resend if it stays so): the wait is its lead's to end
 				out = append(out, [2]string{handedKey(s.Surface, boxKey), text + "; its newest line is a DONE and nothing gave it work since: give it the next item or park it (said once; again in 12 h if it stays so)" + box})
+				continue
+			}
+			if w.once { // a WAIT that ran out is said once (Typed), not every 20 min
+				out = append(out, [2]string{"waited:" + s.Surface + ":" + h, text + w.note + box})
 				continue
 			}
 			out = append(out, [2]string{idleKey(s.Surface, h), text + box})
