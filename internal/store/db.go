@@ -79,7 +79,7 @@ create table if not exists quota (
   five_hour_pct real, five_reset integer, seven_day_pct real, sample_kind text not null);
 create index if not exists quota_ts on quota (ts);
 -- Every statusline line per session: rl=1 when rate_limits were present, 0 when a response came without them. A line is
--- Max when it had them or its login was measured with them (quota.LineAccount), else enterprise. The account of a
+-- Max when it had them or its session had them on another line under the same login (quota.LineAccount), else enterprise. The account of a
 -- request is the session's newest line by its time; the guard checks each enterprise stretch against the projects
 -- active in it.
 -- Whether a quota line came with a response (its values are new); lines from before the field have no row.

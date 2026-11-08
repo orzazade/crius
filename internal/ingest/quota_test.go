@@ -1815,16 +1815,18 @@ func TestQuotaAnIdleTabsHeartbeatAfterTheEditIsNotS1(t *testing.T) {
 
 // crius:lead 11-08 09:01: at max2's weekly reset (05:00Z) each max2 session wrote one statusline line without rate
 // limits; read as enterprise, the 09:00 ingest posted five false S1s and "account mismatch: tag max, statusline
-// enterprise" for sessions on ~/.claude-max2. A line without rate limits is Max when its login was measured with them.
-// Controls: a line from an unlisted folder with no login, and an enterprise sign-in inside a Max row's folder (review of
-// 3c476e6 P2-1), are still S1.
+// enterprise" for sessions on ~/.claude-max2. A line without rate limits is Max when its session had them under the same
+// login. Controls, still S1: a line from an unlisted folder with no login, an enterprise sign-in inside a Max row's folder
+// (review of 3c476e6 P2-1), and a session that never had rate limits under a login another session had them under (one
+// user in a Max and an enterprise organization, or a /login in a running session's folder; review of c218976 P2-1, P2-2).
 func TestQuotaAMaxFolderLineWithoutRateLimitsIsMax(t *testing.T) {
 	x := quotaCase(t)
 	seats := testutil.MaxSeats(t, t.TempDir(), x.home)
 	onMax := "23d7a2d7-2222-3333-4444-555555555555"
 	unlisted := "e0dea215-2222-3333-4444-555555555555"
 	entInMax := "5ec40e56-2222-3333-4444-555555555555"
-	for _, sid := range []string{unlisted, entInMax} {
+	sameUser := "bb71ca05-2222-3333-4444-555555555555"
+	for _, sid := range []string{unlisted, entInMax, sameUser} {
 		x.session("work", sid, "/work/demo", "", qNow.Add(-50*time.Minute), qNow.Add(-20*time.Minute))
 	}
 	x.session("work", onMax, "/work/demo", "[crius account=max project=demo role=lead]", qNow.Add(-50*time.Minute), qNow.Add(-20*time.Minute))
@@ -1839,15 +1841,16 @@ func TestQuotaAMaxFolderLineWithoutRateLimitsIsMax(t *testing.T) {
 	x.spool(at(onMax, seats.WorkA, "0f3b07b4c7f2", 55*time.Minute, true), at(onMax, seats.WorkA, "0f3b07b4c7f2", 40*time.Minute, false),
 		at(onMax, seats.WorkA, "0f3b07b4c7f2", 10*time.Minute, false),
 		at(unlisted, "/elsewhere/.claude-work", "", 40*time.Minute, false),
-		at(entInMax, seats.WorkB, "27882fdc21f9", 40*time.Minute, false))
+		at(entInMax, seats.WorkB, "27882fdc21f9", 40*time.Minute, false),
+		at(sameUser, seats.WorkB, "0f3b07b4c7f2", 40*time.Minute, false))
 	x.run()
 	all := strings.Join(x.alerts(), "\n")
 	if strings.Contains(all, "23d7a2d7") {
 		t.Errorf("a Max login's line without rate limits read as enterprise: %q", all)
 	}
-	for _, id := range []string{"e0dea215", "5ec40e56"} {
+	for _, id := range []string{"e0dea215", "5ec40e56", "bb71ca05"} {
 		if !strings.Contains(all, "S1 personal work on the enterprise account: session "+id+", project demo (account from statusline)") {
-			t.Errorf("control %s: a line without rate limits from a login never measured with them is enterprise: %q", id, all)
+			t.Errorf("control %s: a line without rate limits in a session never measured with them is enterprise: %q", id, all)
 		}
 	}
 	var acct string

@@ -135,7 +135,7 @@ finds no `<project>-D<n>` or `<project>#<n>` id that exists only in private file
 | `assignment` | session, item, role, from_ts, to_ts, source (launch or task switch) |
 | `wait` | wait_id, session, kind, request_ref (notification or tool_use_id), opened, resolution_ref, resolved, resolved_by (`human/peer/timeout/none`), state `open/resolved` |
 | `quota` | ts, account, session, persona, epoch (seven-day `resets_at`), five_hour_pct, five_reset, seven_day_pct, sample_kind `session/change/heartbeat` |
-| `account_seen` | source_key, session, persona, ts, rl: one row per statusline line, rl 1 = `rate_limits` present, 0 = a response came without them. A line is Max when it had them or its login was measured with them elsewhere (a Max line can come without them at a reset), else enterprise (`quota.LineAccount`). A request's account is its session's newest line by the request time (2 min grace; requests before the first line take it), else its launch tag, else `unknown` |
+| `account_seen` | source_key, session, persona, ts, rl: one row per statusline line, rl 1 = `rate_limits` present, 0 = a response came without them. A line is Max when it had them or its session had them on another line under the same login (a Max line can come without them at a reset; the login alone does not decide, as one user can sign into a Max and an enterprise organization), else enterprise (`quota.LineAccount`). A request's account is its session's newest line by the request time (2 min grace; requests before the first line take it), else its launch tag, else `unknown` |
 | `item` | id `<project>#<n>`, parent (owner outcome), kind `code/research/falcon/other`, title, criteria (set at open), opened, state, taint |
 | `acceptance` | item, revision (sha or artifact sha256), checks (refs + results), reviewer + review_ref, accepted_by, ts, state `accepted/revoked`, revoked_ts, revoked_by, revoke_reason, defect, fix_item |
 | `evidence` | id, kind (`commit/ci/gate/review/artifact/bus`), ref, revision, ts, source_key |
@@ -229,7 +229,7 @@ Known gaps:
   guard (S1) still files an untagged session by its folder only: the folder is where the work ran, a title is a
   name someone typed.
   Otherwise project may come from cwd (`attrib_source=cwd`); role and item stay `unknown`. Never guessed.
-- **Account** is what the statusline saw last for the session (`account_seen`, read by `quota.LineAccount`: rate limits, or a login measured with them = `max`, else `enterprise`), and
+- **Account** is what the statusline saw last for the session (`account_seen`, read by `quota.LineAccount`: rate limits, or its session's under the same login = `max`, else `enterprise`), and
   wins over the tag's (the tag's stays on the assignment, where the guard compares the two). Sessions before
   2026-10-16 15:43Z have no statusline line and stay `unknown`.
 - **Subagents** have no session row: their requests are counted under the parent session, so a session's cost

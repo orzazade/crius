@@ -76,8 +76,9 @@ type Projects struct {
 
 type obs struct {
 	ts    time.Time
-	max   bool   // measured on a Max account (LineAccount): its rate limits, or a login measured with them
+	max   bool   // measured on a Max account (LineAccount): its rate limits, or its session's under the same login
 	login string // "" on a line from before the field or from a folder with no login
+	rl    bool   // the line had rate limits
 }
 
 // orgLine is a transcript line naming the session's organization, with the account learned for it ("" when none).
@@ -315,10 +316,9 @@ func (s *sess) guard(id string, ok rules) []Violation {
 // both accounts.
 func sessions(db Querier, p Projects) (out map[string]*sess, lastLine map[string]time.Time, both []string, err error) {
 	out, lastLine = map[string]*sess{}, map[string]time.Time{}
-	maxLogins, err := MaxLogins(db)
-	if err != nil {
-		return nil, nil, nil, err
-	}
+	// The logins each session's lines had rate limits under, from the same read as the lines (LineAccount): a second
+	// query could see an ingest the first did not.
+	sessionMax := map[string]map[string]bool{}
 	get := func(id string) *sess {
 		if out[id] == nil {
 			out[id] = &sess{}
@@ -364,7 +364,13 @@ func sessions(db Querier, p Projects) (out map[string]*sess, lastLine map[string
 			if t.After(lastLine[persona]) {
 				lastLine[persona] = t
 			}
-			s.obs = append(s.obs, obs{t, LineAccount(login, rl, maxLogins) == "max", login})
+			s.obs = append(s.obs, obs{ts: t, login: login, rl: rl})
+			if rl && login != "" {
+				if sessionMax[id] == nil {
+					sessionMax[id] = map[string]bool{}
+				}
+				sessionMax[id][login] = true
+			}
 			return nil
 		}},
 		{"select session, min(coalesce(ts_first, ts_last)), max(coalesce(ts_last, ts_first)) from request" +
@@ -429,6 +435,11 @@ func sessions(db Querier, p Projects) (out map[string]*sess, lastLine map[string
 		rows.Close()
 		if err := rows.Err(); err != nil {
 			return nil, nil, nil, err
+		}
+	}
+	for id, s := range out {
+		for i := range s.obs {
+			s.obs[i].max = LineAccount(s.obs[i].login, s.obs[i].rl, sessionMax[id]) == "max"
 		}
 	}
 	// An organization's account is the one the statusline measured in its sessions; measured on both, it is none.

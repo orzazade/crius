@@ -683,11 +683,11 @@ func (r *runner) rollUp(tx *sql.Tx, sid string) error {
 }
 
 // measuredAccount sets each session's account from the newest statusline line seen for it, when there is one, as
-// quota.LineAccount reads it: its rate limits, or a login measured with them. What the statusline saw wins over a tag
+// quota.LineAccount reads it: its rate limits, or its session's under the same login. What the statusline saw wins over a tag
 // (the tag's account stays on the assignment, where the guard compares the two). It runs after rollUp, which resets
 // the account.
 func measuredAccount(tx *sql.Tx) error {
-	maxLogins, err := quota.MaxLogins(tx)
+	sessionMax, err := quota.SessionMaxLogins(tx)
 	if err != nil {
 		return err
 	}
@@ -705,7 +705,7 @@ func measuredAccount(tx *sql.Tx) error {
 			rows.Close()
 			return err
 		}
-		set[id] = quota.LineAccount(login, rl, maxLogins)
+		set[id] = quota.LineAccount(login, rl, sessionMax[id])
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
