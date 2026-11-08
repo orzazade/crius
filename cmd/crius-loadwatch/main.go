@@ -52,6 +52,7 @@ const (
 // since when the 15-min load has been under 18 while they are.
 type state struct {
 	Failed     bool   `json:"failed,omitempty"`
+	HungFailed bool   `json:"hungFailed,omitempty"` // the hung-holder check's failure was posted (hungLoud)
 	NoExtra    bool   `json:"noExtra,omitempty"`
 	QuietSince string `json:"quietSince,omitempty"` // RFC3339
 	QuietLast  string `json:"quietLast,omitempty"`  // the last quiet reading, RFC3339
@@ -190,11 +191,7 @@ func run(d deps) int {
 	}
 	if cur != "1" && cur != "2" && cur != "3" && cur != "4" {
 		fmt.Fprintf(d.out, "%s slots file %s holds %q, not 1 to 4: left alone (%s)\n", now.Format(time.RFC3339), d.slots, cur, loads)
-		late = errors.Join(late, hung(d, &st, now))
-		if late != nil {
-			return fail(nil)
-		}
-		return save(d, &st, now)
+		return end(d, &st, now, late, fail)
 	}
 	if st.NoExtra {
 		back, err := quietLongEnough(&st, l15, now)
@@ -231,11 +228,40 @@ func run(d deps) int {
 			return fail(fmt.Errorf("extra slots off, but the bus line failed: %w", err))
 		}
 	}
-	late = errors.Join(late, hung(d, &st, now))
+	return end(d, &st, now, late, fail)
+}
+
+// end runs the hung-holder check, then ends the run: loud on a slot-rule failure (late), and exit 2 on a failed
+// hung-holder check, which hungLoud says apart from the slot rules (review of 9227798 P2-3).
+func end(d deps, st *state, now time.Time, late error, fail func(error) int) int {
+	herr := hungLoud(d, st, now)
 	if late != nil {
 		return fail(nil)
 	}
-	return save(d, &st, now)
+	if rc := save(d, st, now); rc != 0 || herr == nil {
+		return rc
+	}
+	return 2
+}
+
+// hungLoud runs the hung-holder check. Its failure is said in the log every run and on the bus once per spell, in its
+// own words and with its own flag: it is no failure of the slot rules, and a repeating one must not hide one of those.
+func hungLoud(d deps, st *state, now time.Time) error {
+	err := hung(d, st, now)
+	if err == nil {
+		st.HungFailed = false
+		return nil
+	}
+	fmt.Fprintf(d.out, "%s LOUD crius-loadwatch hung-holder check failed to look: %v\n", now.Format(time.RFC3339), err)
+	if !st.HungFailed {
+		if perr := watchdog.PostOn(d.home, "crius", "ALERT", "crius:loadwatch", "crius:lead", now,
+			"the hung-holder check failed to look (the slots still follow the load): "+err.Error()); perr != nil {
+			fmt.Fprintf(d.out, "%s LOUD the bus line failed too: %v\n", now.Format(time.RFC3339), perr)
+		} else {
+			st.HungFailed = true
+		}
+	}
+	return err
 }
 
 // quietLongEnough keeps the quiet clock of tripped extra slots: a 15-min load at quiet or more stops it, the first

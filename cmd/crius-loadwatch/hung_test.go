@@ -160,13 +160,14 @@ func TestAStaleHolderSaysStale(t *testing.T) {
 	}
 }
 
-// A holder of no known project goes to Crius; an unreadable output is said, never read as "no output".
+// A holder of no known project goes to Crius; an output it cannot see is said, with the CPU named as the only judge
+// (review of 9227798 P2-4), never read as "no output".
 func TestAnUnknownProjectGoesToCrius(t *testing.T) {
 	r := newRig(t, "2")
 	r.holder(t, 1, 100, 101, r.now.Add(-50*time.Minute), "tok1")
 	r.procs = job(1.2, 0.4, 7.5)
 	r.minutes(16, 10, 20)
-	want := "2026-11-08T03:15 INFO crius:loadwatch -> crius:lead — heavy slot 1 looks hung: pid 100 (go.sh) held 65 min, no CPU in its job for 15 min, output not readable (stdout is no file); check it or stop its group 101"
+	want := "2026-11-08T03:15 INFO crius:loadwatch -> crius:lead — heavy slot 1 looks hung: pid 100 (go.sh) held 65 min, no CPU in its job for 15 min, output unseen (stdout is no file): judged on CPU only; check it or stop its group 101"
 	if b := r.bus(t); len(b) != 1 || b[0] != want {
 		t.Fatalf("bus %q\nwant %q", b, want)
 	}
@@ -237,5 +238,56 @@ func TestASleepIsNotIdleTime(t *testing.T) {
 	}
 	if r.minutes(1, 10, 20); len(lines(t, bus)) != 1 {
 		t.Fatalf("15 idle minutes after the wake: bus %q", lines(t, bus))
+	}
+}
+
+// Review of 9227798 P2-1: a stuck lsof (a hung network mount) held the run, and with it the slot rules, forever.
+func TestAStuckLookIsCut(t *testing.T) {
+	stuck := filepath.Join(t.TempDir(), "lsof")
+	if err := os.WriteFile(stuck, []byte("#!/bin/sh\nsleep 30\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	defer func(p string, d time.Duration) { lsofPath, lookTimeout = p, d }(lsofPath, lookTimeout)
+	lsofPath, lookTimeout = stuck, 300*time.Millisecond
+	t0 := time.Now()
+	_, err := sysOutputs([]int{os.Getpid()})
+	if err == nil || !strings.Contains(err.Error(), "lsof gave no answer in 300ms") || time.Since(t0) > 5*time.Second {
+		t.Fatalf("err %v after %s", err, time.Since(t0))
+	}
+}
+
+// Review of 9227798 P2-2: once the job is gone and only the wrapper holds the slot, the line named the job's group,
+// which no longer exists and may name another job when the lead acts; it names the wrapper's pid.
+func TestAWrapperAloneIsNamedByItsPid(t *testing.T) {
+	r := newRig(t, "2")
+	bus := r.projectBus(t, "proj")
+	r.holder(t, 1, 100, 101, r.now.Add(-50*time.Minute), "tok1")
+	r.procs = job(1.2, 0.4, 7.5)[:2]
+	r.logFile(t, r.now.Add(-time.Hour))
+	r.minutes(16, 10, 20)
+	if b := lines(t, bus); len(b) != 1 || !strings.HasSuffix(b[0], "check it or stop pid 100 (its job ended; the wrapper holds the slot)") {
+		t.Fatalf("bus %q", b)
+	}
+}
+
+// Review of 9227798 P2-3: a failing hung-holder check raised "slots are not following the load" and, failing every
+// run, kept the one Failed flag set, so a real slot-rule failure after it got no ALERT. It has its own words and flag.
+func TestAFailingHungCheckIsNotASlotFailure(t *testing.T) {
+	r := newRig(t, "2")
+	r.holder(t, 1, 100, 101, r.now.Add(-50*time.Minute), "tok1")
+	r.psErr = errors.New("ps: no answer")
+	if rc := r.minutes(3, 10, 20); rc != 2 {
+		t.Fatalf("rc %d", rc)
+	}
+	b := r.bus(t)
+	if len(b) != 1 || !strings.Contains(b[0], "ALERT crius:loadwatch -> crius:lead — the hung-holder check failed to look (the slots still follow the load): hung-holder check: ps: no answer") {
+		t.Fatalf("bus %q", b)
+	}
+	if err := os.WriteFile(r.slotPath, []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r.minutes(1, 10, 20)
+	if b := r.bus(t); len(b) != 2 || !strings.Contains(b[1], "slots are not following the load") {
+		t.Fatalf("a slot failure after a failing hung check: bus %q", b)
 	}
 }

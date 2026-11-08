@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,6 +29,13 @@ const (
 	// cpuEps: CPU-time growth over a whole idle spell that still counts as none. ps shows centiseconds and an idle
 	// event loop wakes now and then; a job at work uses whole seconds a minute.
 	cpuEps = 0.5
+)
+
+// lookTimeout bounds each ps and lsof: a stuck lsof (a hung network or FUSE mount) would hold the run, and with it the
+// slot rules, since launchd starts no run while one goes (review of 9227798 P2-1). lsofPath is a var for its test.
+var (
+	lookTimeout = 10 * time.Second
+	lsofPath    = "/usr/sbin/lsof"
 )
 
 // proc is one process as ps shows it: cpu is its cumulative CPU time in seconds, start its lstart in single spaces.
@@ -103,8 +111,12 @@ func hung(d deps, st *state, now time.Time) error {
 		held := now.Sub(at)
 		wrapper := alive(byPID, h.PID, h.PIDStart)
 		tree := group(procs, byPID, kids, h.Child, h.ChildStart)
+		// what to stop: the job's group, or the wrapper's pid once the job is gone, as that group id may name another
+		// job by the time the lead acts (review of 9227798 P2-2)
+		stop := fmt.Sprintf("stop its group %d", h.Child)
 		if tree == nil && wrapper { // the job is gone and the wrapper still holds: the wrapper is what to watch
 			tree = descend(kids, []int{h.PID})
+			stop = fmt.Sprintf("stop pid %d (its job ended; the wrapper holds the slot)", h.PID)
 		}
 		if tree == nil { // neither the wrapper nor its job: a stale holder
 			if held >= heldMin && !w.Said {
@@ -134,7 +146,11 @@ func hung(d deps, st *state, now time.Time) error {
 		if w.Said || held < heldMin || idle < idleMin {
 			continue
 		}
-		outs, err := d.outputs(append([]int{h.PID}, tree...))
+		look := tree
+		if wrapper && !slices.Contains(tree, h.PID) { // a reused wrapper pid's fresh stdout would read as output (P3-5)
+			look = append([]int{h.PID}, tree...)
+		}
+		outs, err := d.outputs(look)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("hung-holder check: output of slot %s: %w", slot, err))
 			continue
@@ -154,15 +170,16 @@ func hung(d deps, st *state, now time.Time) error {
 				wrote, wroteName = fi.ModTime(), filepath.Base(o)
 			}
 		}
-		out := "output not readable (stdout is no file)"
+		// a pipe or terminal shows no output time: said plainly, as then only the CPU judged it (review of 9227798 P2-4)
+		out := "output unseen (stdout is no file): judged on CPU only"
 		if wroteName != "" {
 			if now.Sub(wrote) < idleMin {
 				continue // writing: working
 			}
 			out = fmt.Sprintf("last output %s (%s)", wrote.Local().Format("15:04"), wroteName)
 		}
-		text := fmt.Sprintf("heavy slot %s looks hung: pid %d (%s) held %d min, no CPU in its job for %d min, %s; check it or stop its group %d",
-			slot, h.PID, base(h.Cmd), int(held.Minutes()), int(idle.Minutes()), out, h.Child)
+		text := fmt.Sprintf("heavy slot %s looks hung: pid %d (%s) held %d min, no CPU in its job for %d min, %s; check it or %s",
+			slot, h.PID, base(h.Cmd), int(held.Minutes()), int(idle.Minutes()), out, stop)
 		sent, err := post(d, now, h.Cwd, text)
 		errs = append(errs, err)
 		w.Said = sent
@@ -258,18 +275,31 @@ func post(d deps, now time.Time, cwd, text string) (sent bool, err error) {
 // sysPS lists every process: pid, ppid, pgid, CPU time, lstart and command. Like the gate, it runs ps in the machine's
 // zone (no TZ) and the C locale, so lstart reads as the gate wrote it.
 func sysPS() ([]proc, error) {
-	cmd := exec.Command("/bin/ps", "-axww", "-o", "pid=,ppid=,pgid=,time=,lstart=,command=")
+	var env []string
 	for _, e := range os.Environ() {
 		if !strings.HasPrefix(e, "TZ=") && !strings.HasPrefix(e, "LC_") && !strings.HasPrefix(e, "LANG=") {
-			cmd.Env = append(cmd.Env, e)
+			env = append(env, e)
 		}
 	}
-	cmd.Env = append(cmd.Env, "LC_ALL=C")
-	b, err := cmd.Output()
+	b, err := timed(append(env, "LC_ALL=C"), "/bin/ps", "-axww", "-o", "pid=,ppid=,pgid=,time=,lstart=,command=")
 	if err != nil {
 		return nil, fmt.Errorf("ps: %w", err)
 	}
 	return parsePS(b)
+}
+
+// timed runs a tool within lookTimeout and gives its stdout; env nil keeps this process's environment.
+func timed(env []string, name string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), lookTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Env = env
+	cmd.WaitDelay = time.Second // a child left holding its pipe cannot keep the read open
+	b, err := cmd.Output()
+	if ctx.Err() != nil {
+		return nil, fmt.Errorf("%s gave no answer in %s", filepath.Base(name), lookTimeout)
+	}
+	return b, err
 }
 
 // parsePS reads sysPS's lines; a line it cannot read, or no line, is an error.
@@ -332,7 +362,8 @@ func sysOutputs(pids []int) ([]string, error) {
 	for i, p := range pids {
 		ids[i] = strconv.Itoa(p)
 	}
-	b, err := exec.Command("/usr/sbin/lsof", "-w", "-a", "-p", strings.Join(ids, ","), "-d", "1,2", "-Ftn").Output()
+	// -b: no kernel call that can block on a mount; -n -P: a socket on fd 1 or 2 never waits on DNS (P2-1)
+	b, err := timed(nil, lsofPath, "-w", "-b", "-n", "-P", "-a", "-p", strings.Join(ids, ","), "-d", "1,2", "-Ftn")
 	var ee *exec.ExitError
 	if err != nil && !(errors.As(err, &ee) && ee.ExitCode() == 1 && len(ee.Stderr) == 0) {
 		return nil, fmt.Errorf("lsof: %w", err)
