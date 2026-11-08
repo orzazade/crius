@@ -2,13 +2,13 @@
 // minute. It follows the Mac load rule in Crius's AGENTS.md (owner 11-08; crius:lead DECISION 11-08):
 //
 //   - the 5-min load is over 28: 1 slot, at once;
-//   - else the 15-min load is under 18 and memory is at least 40% free (memory_pressure): 3 slots (crius:lead DECISION
-//     11-08: 10 heavy jobs waited on 2 slots at load 13 with 83% free);
+//   - else memory is at least 40% free (memory_pressure) and the 15-min load is under 12: 4 slots, under 18: 3 slots
+//     (crius:lead DECISIONs 11-08: 10 heavy jobs waited on 2 slots at load 13, then 15 on 3 slots at load 14.5);
 //   - else the 15-min load is under 28: 2 slots;
 //   - else the count stays (easing on the 5-min load flipped 4 times on 11-05).
 //
-// The 5-min load over 28 while 3 slots are set turns the third slot off for good (the most it sets is then 2) and
-// posts the numbers to crius:lead; deleting "noThird" from the state file turns it back on.
+// The 5-min load over 28 while 3 or 4 slots are set turns the extra slots off for good (the most it sets is then 2) and
+// posts the numbers to crius:lead; deleting "noExtra" from the state file turns them back on.
 //
 // It writes the slots file (~/AppxiteRig/heavy/slots) only on a change, and then posts one INFO line on the Crius bus.
 // A file that holds another whole number was set by hand: it is left alone and said in the log; an empty or broken
@@ -35,16 +35,16 @@ import (
 )
 
 const (
-	limit    = 28.0
-	quiet    = 18.0 // the 15-min load under this, with memory free at least minFree, allows a third slot
-	minFree  = 40   // percent
-	maxSlots = "3"
+	limit   = 28.0
+	quiet   = 18.0 // the 15-min load under this, with memory free at least minFree, allows a third slot
+	idle    = 12.0 // and under this, a fourth
+	minFree = 40   // percent
 )
 
-// state is what one run leaves the next: whether a failure was already posted, and whether the third slot is off.
+// state is what one run leaves the next: whether a failure was already posted, and whether the extra slots are off.
 type state struct {
 	Failed  bool `json:"failed,omitempty"`
-	NoThird bool `json:"noThird,omitempty"`
+	NoExtra bool `json:"noExtra,omitempty"`
 }
 
 type deps struct {
@@ -99,12 +99,15 @@ func memFree() (int, error) {
 }
 
 // want gives the slot count the load asks for, cur when it asks for no change.
-func want(l5, l15 float64, free int, cur string, noThird bool) string {
+func want(l5, l15 float64, free int, cur string, noExtra bool) string {
+	extra := free >= minFree && !noExtra
 	switch {
 	case l5 > limit:
 		return "1"
-	case l15 < quiet && free >= minFree && !noThird:
-		return maxSlots
+	case l15 < idle && extra:
+		return "4"
+	case l15 < quiet && extra:
+		return "3"
 	case l15 < limit:
 		return "2"
 	}
@@ -125,7 +128,7 @@ func run(d deps) int {
 	if err != nil {
 		return failed(d, &st, now, err)
 	}
-	// memory it cannot read only rules out a third slot: the load rules still hold, and the run ends loud (review P2)
+	// memory it cannot read only rules out the extra slots: the load rules still hold, and the run ends loud (review P2)
 	free, memErr := d.mem()
 	mem := fmt.Sprintf("%d%%", free)
 	if memErr != nil {
@@ -140,15 +143,15 @@ func run(d deps) int {
 	if n, err := strconv.Atoi(cur); err != nil || n < 0 { // empty or broken: failing to look, never a hand value (review P3-1)
 		return failed(d, &st, now, fmt.Errorf("slots file %s holds %q, not a slot count", d.slots, cur))
 	}
-	if cur != "1" && cur != "2" && cur != maxSlots {
-		fmt.Fprintf(d.out, "%s slots file %s holds %q, not 1, 2 or 3: left alone (%s)\n", now.Format(time.RFC3339), d.slots, cur, loads)
+	if cur != "1" && cur != "2" && cur != "3" && cur != "4" {
+		fmt.Fprintf(d.out, "%s slots file %s holds %q, not 1 to 4: left alone (%s)\n", now.Format(time.RFC3339), d.slots, cur, loads)
 		return save(d, &st, now)
 	}
 	// the trip is kept before anything can fail: failed() saves the state too (review P1, P3)
-	trip := cur == maxSlots && l5 > limit && !st.NoThird
-	w := want(l5, l15, free, cur, st.NoThird)
+	trip := (cur == "3" || cur == "4") && l5 > limit && !st.NoExtra
+	w := want(l5, l15, free, cur, st.NoExtra)
 	if trip {
-		st.NoThird = true
+		st.NoExtra = true
 	}
 	if w != cur {
 		if err := writeAtomic(d.slots, w+"\n"); err != nil {
@@ -161,11 +164,11 @@ func run(d deps) int {
 		}
 	}
 	if trip {
-		line := fmt.Sprintf("third heavy slot off: load5 %.2f over %g with 3 slots (load15 %.2f, memory free %s); the most is 2 now. Delete noThird in %s to retry",
-			l5, limit, l15, mem, d.state)
+		line := fmt.Sprintf("extra heavy slots off: load5 %.2f over %g with %s slots (load15 %.2f, memory free %s); the most is 2 now. Delete noExtra in %s to retry",
+			l5, limit, cur, l15, mem, d.state)
 		fmt.Fprintf(d.out, "%s %s\n", now.Format(time.RFC3339), line)
 		if err := watchdog.PostOn(d.home, "crius", "INFO", "crius:loadwatch", "crius:lead", now, line); err != nil {
-			return failed(d, &st, now, fmt.Errorf("third slot off, but the bus line failed: %w", err))
+			return failed(d, &st, now, fmt.Errorf("extra slots off, but the bus line failed: %w", err))
 		}
 	}
 	if memErr != nil {
@@ -195,7 +198,7 @@ func failed(d deps, st *state, now time.Time, err error) int {
 			st.Failed = true
 		}
 	}
-	// saved even when the ALERT failed, so a tripped third slot stays off (review P1); best effort: an unwritable
+	// saved even when the ALERT failed, so tripped extra slots stay off (review P1); best effort: an unwritable
 	// state posts again next run
 	if b, merr := json.Marshal(st); merr == nil {
 		_ = writeAtomic(d.state, string(b)+"\n")

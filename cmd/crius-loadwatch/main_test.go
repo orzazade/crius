@@ -117,10 +117,10 @@ func TestTheOverRuleWins(t *testing.T) {
 	}
 }
 
-// A value set by hand (not 1, 2 or 3) is left alone, said in the log, and posts nothing.
+// A value set by hand (not 1 to 4) is left alone, said in the log, and posts nothing.
 func TestAHandSetValueIsLeftAlone(t *testing.T) {
 	r := newRig(t, "5")
-	if rc := r.minutes(20, 40, 40); rc != 0 || r.slots(t) != "5" || r.bus(t) != nil || !strings.Contains(r.out.String(), `holds "5", not 1, 2 or 3: left alone`) {
+	if rc := r.minutes(20, 40, 40); rc != 0 || r.slots(t) != "5" || r.bus(t) != nil || !strings.Contains(r.out.String(), `holds "5", not 1 to 4: left alone`) {
 		t.Fatalf("rc %d slots %s bus %q out %q", rc, r.slots(t), r.bus(t), r.out.String())
 	}
 }
@@ -209,26 +209,26 @@ func TestAQuietMachineGetsAThirdSlot(t *testing.T) {
 	// from 1, a quiet machine goes straight to 3
 	r.free = 80
 	r.minutes(1, 29, 17)
-	if r.minutes(1, 10, 10); r.slots(t) != "3" {
+	if r.minutes(1, 10, 15); r.slots(t) != "3" {
 		t.Fatalf("1 -> 3: slots %s", r.slots(t))
 	}
 }
 
-// The 5-min load over 28 while 3 slots are set: 1 at once as before, and the third slot is turned off for good (the
-// most it sets is 2), with the numbers posted to crius:lead (DECISION 11-08: drop back to 2 and post the numbers).
+// The 5-min load over 28 while 3 or 4 slots are set: 1 at once as before, and the extra slots are turned off for good
+// (the most it sets is 2), with the numbers posted to crius:lead (DECISION 11-08: drop back to 2 and post the numbers).
 func TestOverloadWithThreeSlotsTurnsTheThirdOff(t *testing.T) {
 	r := newRig(t, "3")
 	r.minutes(1, 28.4, 17)
 	b := r.bus(t)
 	if r.slots(t) != "1" || len(b) != 2 || !strings.Contains(b[0], "heavy slots 3 -> 1 (load5 28.40, load15 17.00, memory free 80%)") ||
-		!strings.Contains(b[1], " INFO crius:loadwatch -> crius:lead — third heavy slot off: load5 28.40 over 28 with 3 slots (load15 17.00, memory free 80%)") {
+		!strings.Contains(b[1], " INFO crius:loadwatch -> crius:lead — extra heavy slots off: load5 28.40 over 28 with 3 slots (load15 17.00, memory free 80%)") {
 		t.Fatalf("slots %s bus %q", r.slots(t), b)
 	}
 	if r.minutes(30, 10, 10); r.slots(t) != "2" || len(r.bus(t)) != 3 {
 		t.Fatalf("after the trip the most is 2: slots %s bus %q", r.slots(t), r.bus(t))
 	}
 	r.minutes(1, 29, 10) // over 28 again with 2 slots: no second trip line
-	if b := r.bus(t); len(b) != 4 || strings.Contains(b[3], "third") {
+	if b := r.bus(t); len(b) != 4 || strings.Contains(b[3], "extra") {
 		t.Fatalf("bus %q", b)
 	}
 }
@@ -263,7 +263,7 @@ func TestTheTripIsKeptWhenTheBusFails(t *testing.T) {
 	}
 	before := len(r.bus(t))
 	r.minutes(1, 29, 17)
-	if b := r.bus(t); len(b) != before+1 || strings.Contains(b[len(b)-1], "third heavy slot off") {
+	if b := r.bus(t); len(b) != before+1 || strings.Contains(b[len(b)-1], "extra heavy slots off") {
 		t.Fatalf("bus %q", b)
 	}
 }
@@ -281,5 +281,39 @@ func TestTheLoadRulesHoldWhenMemoryCannotBeRead(t *testing.T) {
 	}
 	if b := r.bus(t); !strings.Contains(strings.Join(b, "\n"), "memory free unknown") {
 		t.Fatalf("bus %q", b)
+	}
+}
+
+// The 4-slot step (crius:lead DECISION 11-08: 15 jobs waited on 3 slots at load15 14.5, 76% free): 4 when the 15-min
+// load is under 12 and memory is at least 40% free; 3 between 12 and 18.
+func TestAVeryQuietMachineGetsAFourthSlot(t *testing.T) {
+	r := newRig(t, "3")
+	if r.minutes(1, 10, 12); r.slots(t) != "3" {
+		t.Fatalf("load15 12 is not under 12: slots %s", r.slots(t))
+	}
+	r.free = 39
+	if r.minutes(1, 10, 11.9); r.slots(t) != "2" {
+		t.Fatalf("39%% free: slots %s", r.slots(t))
+	}
+	r.free = 40
+	r.minutes(2, 7.8, 11.9)
+	if b := r.bus(t); r.slots(t) != "4" || !strings.HasSuffix(b[len(b)-1], "heavy slots 2 -> 4 (load5 7.80, load15 11.90, memory free 40%)") {
+		t.Fatalf("slots %s bus %q", r.slots(t), b)
+	}
+	if r.minutes(1, 14, 13); r.slots(t) != "3" {
+		t.Fatalf("load15 13: slots %s", r.slots(t))
+	}
+}
+
+// The 5-min load over 28 with 4 slots: 1 at once, and neither 3 nor 4 comes back.
+func TestOverloadWithFourSlotsTurnsTheExtrasOff(t *testing.T) {
+	r := newRig(t, "4")
+	r.minutes(1, 30, 11)
+	b := r.bus(t)
+	if r.slots(t) != "1" || len(b) != 2 || !strings.Contains(b[1], "extra heavy slots off: load5 30.00 over 28 with 4 slots") {
+		t.Fatalf("slots %s bus %q", r.slots(t), b)
+	}
+	if r.minutes(10, 5, 5); r.slots(t) != "2" {
+		t.Fatalf("after the trip the most is 2: slots %s", r.slots(t))
 	}
 }
