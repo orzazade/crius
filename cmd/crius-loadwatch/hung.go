@@ -178,8 +178,9 @@ func hung(d deps, st *state, now time.Time) error {
 			}
 			out = fmt.Sprintf("last output %s (%s)", wrote.Local().Format("15:04"), wroteName)
 		}
-		text := fmt.Sprintf("heavy slot %s looks hung: pid %d (%s) held %d min, no CPU in its job for %d min, %s; check it or %s",
-			slot, h.PID, base(h.Cmd), int(held.Minutes()), int(idle.Minutes()), out, stop)
+		// the advice before the output detail: the bus cuts a line at 300 runes, and a long log name must not cut it
+		text := fmt.Sprintf("heavy slot %s looks hung: pid %d (%s) held %d min, no CPU in its job for %d min; check it or %s; %s",
+			slot, h.PID, base(h.Cmd), int(held.Minutes()), int(idle.Minutes()), stop, out)
 		sent, err := post(d, now, h.Cwd, text)
 		errs = append(errs, err)
 		w.Said = sent

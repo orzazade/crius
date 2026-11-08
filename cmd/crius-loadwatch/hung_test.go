@@ -82,7 +82,7 @@ func TestAHungHolderIsPostedOnce(t *testing.T) {
 	if rc := r.minutes(1, 10, 20); rc != 0 {
 		t.Fatalf("rc %d, out %s", rc, r.out.String())
 	}
-	want := "2026-11-08T03:15 INFO crius:loadwatch -> proj:lead — heavy slot 1 looks hung: pid 100 (go.sh) held 45 min, no CPU in its job for 15 min, last output 02:00 (job.log); check it or stop its group 101"
+	want := "2026-11-08T03:15 INFO crius:loadwatch -> proj:lead — heavy slot 1 looks hung: pid 100 (go.sh) held 45 min, no CPU in its job for 15 min; check it or stop its group 101; last output 02:00 (job.log)"
 	if b := lines(t, bus); len(b) != 1 || b[0] != want {
 		t.Fatalf("bus %q\nwant %q", b, want)
 	}
@@ -167,7 +167,7 @@ func TestAnUnknownProjectGoesToCrius(t *testing.T) {
 	r.holder(t, 1, 100, 101, r.now.Add(-50*time.Minute), "tok1")
 	r.procs = job(1.2, 0.4, 7.5)
 	r.minutes(16, 10, 20)
-	want := "2026-11-08T03:15 INFO crius:loadwatch -> crius:lead — heavy slot 1 looks hung: pid 100 (go.sh) held 65 min, no CPU in its job for 15 min, output unseen (stdout is no file): judged on CPU only; check it or stop its group 101"
+	want := "2026-11-08T03:15 INFO crius:loadwatch -> crius:lead — heavy slot 1 looks hung: pid 100 (go.sh) held 65 min, no CPU in its job for 15 min; check it or stop its group 101; output unseen (stdout is no file): judged on CPU only"
 	if b := r.bus(t); len(b) != 1 || b[0] != want {
 		t.Fatalf("bus %q\nwant %q", b, want)
 	}
@@ -265,7 +265,7 @@ func TestAWrapperAloneIsNamedByItsPid(t *testing.T) {
 	r.procs = job(1.2, 0.4, 7.5)[:2]
 	r.logFile(t, r.now.Add(-time.Hour))
 	r.minutes(16, 10, 20)
-	if b := lines(t, bus); len(b) != 1 || !strings.HasSuffix(b[0], "check it or stop pid 100 (its job ended; the wrapper holds the slot)") {
+	if b := lines(t, bus); len(b) != 1 || !strings.Contains(b[0], "; check it or stop pid 100 (its job ended; the wrapper holds the slot); last output") {
 		t.Fatalf("bus %q", b)
 	}
 }

@@ -166,7 +166,7 @@ func run(d deps) int {
 	if err != nil {
 		// a state it cannot read or parse may have held a trip: keep the extras off and start a fresh quiet clock
 		// (review P2, r2 P2-1)
-		st = state{NoExtra: true, Failed: st.Failed}
+		st = state{NoExtra: true, Failed: st.Failed, HungFailed: st.HungFailed}
 		late = fmt.Errorf("state %s: %w; extra slots kept off", d.state, err)
 	}
 	l5, l15, err := d.load()
