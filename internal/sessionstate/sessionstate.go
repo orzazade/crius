@@ -37,6 +37,7 @@ type Input struct {
 	NotificationType string `json:"notification_type"`
 	Source           string `json:"source"` // SessionStart: startup, resume, clear, compact
 	Reason           string `json:"reason"` // SessionEnd
+	Error            string `json:"error"`  // StopFailure: the API error that ended the turn (rate_limit, …)
 	ToolName         string `json:"tool_name"`
 	Prompt           string `json:"prompt"`
 	AgentID          string `json:"agent_id"` // set when a subagent fired the event
@@ -120,6 +121,8 @@ func Apply(prev State, in Input, now time.Time) State {
 		}
 	case "Stop":
 		s.State, s.Waits = Idle, nil
+	case "StopFailure": // the turn ended on an API error (a weekly-limit 429): no Stop comes (crius:lead 11-08)
+		s.State, s.Detail, s.Waits = Idle, in.Error, nil
 	case "SessionEnd":
 		s.State, s.Detail, s.Waits = Ended, in.Reason, nil
 	}

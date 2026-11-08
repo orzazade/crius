@@ -1,9 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -149,7 +152,7 @@ func (m mover) file(project, role, id, config, filed string) error {
 // idle is nil when the session's turn has ended and no background job but its bus waiter runs under its Claude (pid);
 // it counts the waiters.
 func (m mover) idle(r sessionstate.State, pid int) (int, error) {
-	st, err := m.state(r.SessionID)
+	st, err := m.turnState(r)
 	if err != nil {
 		return 0, err
 	}
@@ -167,6 +170,71 @@ func (m mover) idle(r sessionstate.State, pid int) (int, error) {
 		return 0, fmt.Errorf("1 background job runs (%s)", jobs[0])
 	}
 	return 0, fmt.Errorf("%d background jobs run (%s)", len(jobs), strings.Join(jobs, "; "))
+}
+
+// turnState is crius-hook's state of the session, idle when it says running but the turn ended on an API error.
+func (m mover) turnState(r sessionstate.State) (string, error) {
+	st, err := m.state(r.SessionID)
+	if err != nil || st != sessionstate.Running {
+		return st, err
+	}
+	if ended, err := turnFailed(r.Config, r.SessionID); err != nil {
+		return st, fmt.Errorf("a turn is running (state %q), and its transcript does not read: %w", st, err)
+	} else if ended {
+		return sessionstate.Idle, nil
+	}
+	return st, nil
+}
+
+// turnFailed says whether the session's turn ended on an API error its hook never reported (crius:lead 11-08:
+// backend-core's turn ended on a weekly-limit 429 before crius-hook took StopFailure, so its state stayed "running"):
+// the newest prompt or reply in its transcript is Claude Code's API-error message. No transcript is not known to end.
+func turnFailed(config, id string) (bool, error) {
+	paths, err := filepath.Glob(filepath.Join(config, "projects", "*", id+".jsonl"))
+	if err != nil || len(paths) == 0 {
+		return false, err
+	}
+	path, newest := "", time.Time{}
+	for _, p := range paths {
+		if fi, err := os.Stat(p); err == nil && fi.ModTime().After(newest) {
+			path, newest = p, fi.ModTime()
+		}
+	}
+	if path == "" {
+		return false, fmt.Errorf("%s: cannot stat its transcript", paths[0])
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return false, err
+	}
+	const tail = 256 << 10 // the newest lines: a transcript can run to tens of MB
+	if fi.Size() > tail {
+		if _, err := f.Seek(fi.Size()-tail, io.SeekStart); err != nil {
+			return false, err
+		}
+	}
+	b, err := io.ReadAll(f)
+	if err != nil {
+		return false, err
+	}
+	lines := strings.Split(string(b), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		var e struct {
+			Type     string `json:"type"`
+			APIError bool   `json:"isApiErrorMessage"`
+			Meta     bool   `json:"isMeta"`
+		}
+		if json.Unmarshal([]byte(lines[i]), &e) != nil || e.Meta || e.Type != "user" && e.Type != "assistant" {
+			continue // a cut first line, a system or request line, a meta line
+		}
+		return e.Type == "assistant" && e.APIError, nil
+	}
+	return false, nil
 }
 
 // kids counts the bus waiters (team-wait.sh) among the shell children of a Claude (pid) and names its other shell jobs.
@@ -256,7 +324,7 @@ func (m mover) exit(r sessionstate.State, pid, waiters int) error {
 		// A turn that started between the idle check and Enter (a bus line woke it) holds /exit queued until it ends:
 		// wait for it rather than give up and leave the queued /exit to end the session with nothing resumed (review of
 		// fe19215 P2-2).
-		if st, err := m.state(r.SessionID); err == nil && st == sessionstate.Running && time.Now().Before(turn) {
+		if st, err := m.turnState(r); err == nil && st == sessionstate.Running && time.Now().Before(turn) {
 			time.Sleep(m.wait)
 			continue
 		}

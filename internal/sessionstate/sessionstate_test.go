@@ -423,3 +423,13 @@ func TestQueuedEventsKeepNoPromptComeInTimeOrderAndArePruned(t *testing.T) {
 		t.Errorf("left %v", left)
 	}
 }
+
+// crius:lead 11-08: a turn that ends on an API error (a weekly-limit 429) fires StopFailure, not Stop: the session is
+// idle at its prompt, its dialogs gone.
+func TestAStopFailureEndsTheTurn(t *testing.T) {
+	prev := State{SessionID: "s-1", State: Waiting, Waits: []string{"main"}}
+	s := Apply(prev, Input{SessionID: "s-1", Event: "StopFailure", Error: "rate_limit"}, time.Now())
+	if s.State != Idle || s.Waits != nil || s.Detail != "rate_limit" {
+		t.Errorf("%+v", s)
+	}
+}

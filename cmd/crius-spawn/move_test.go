@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/orzazade/crius/internal/sessionstate"
 	"github.com/orzazade/crius/internal/testutil"
@@ -307,5 +308,62 @@ func TestAMoveCountsTheJobsAgainAtTheDialog(t *testing.T) {
 	_, err := x.m.move("team", "dev")
 	if last := x.typed[len(x.typed)-1]; err == nil || !strings.HasSuffix(last, " escape") || len(x.resumed) != 0 {
 		t.Fatalf("a build in the waiter's place: %v, last key %q, resumed %q", err, last, x.resumed)
+	}
+}
+
+// crius:lead 11-08: backend-core's turn ended on a weekly-limit 429, which records no Stop, so its state stayed
+// "running" and -move refused a tab idle at its prompt. A turn whose transcript ends on Claude Code's API-error message
+// has ended; one whose transcript ends on a tool call still runs.
+func TestATurnThatEndedOnAnAPIErrorIsABoundary(t *testing.T) {
+	transcript := func(x *moveRig, last string) {
+		testutil.Write(t, filepath.Join(x.m1, "projects", "-w-team-wt", x.id+".jsonl"),
+			`{"type":"user","message":{"role":"user","content":"go on"}}`+"\n"+
+				`{"type":"api-request"}`+"\n"+last+"\n"+`{"type":"system","subtype":"x"}`+"\n")
+	}
+	x := newMoveRig(t)
+	x.state = sessionstate.Running
+	transcript(x, `{"type":"assistant","isApiErrorMessage":true,"error":"rate_limit","message":{"role":"assistant","content":[{"type":"text","text":"You've hit your weekly limit"}]}}`)
+	if _, err := x.m.move("team", "dev"); err != nil {
+		t.Fatalf("a turn ended on a 429: %v", err)
+	}
+	if len(x.resumed) != 1 {
+		t.Errorf("resumed %q", x.resumed)
+	}
+	// its exit dialog (its bus waiter) is answered at once, not waited on as a running turn for turnCap
+	x = newMoveRig(t)
+	x.state, x.exits, x.m.wait = sessionstate.Running, false, time.Millisecond
+	x.m.tries = 3
+	transcript(x, `{"type":"assistant","isApiErrorMessage":true,"error":"rate_limit"}`)
+	x.children = []proc{{pid: 70, ppid: os.Getpid(), command: "/bin/zsh -c eval '~/.claude/skills/cmux-team/bin/team-wait.sh --mode worker'"}}
+	shown := false
+	x.m.cmux = func(args ...string) (string, error) {
+		x.typed = append(x.typed, strings.Join(args, " "))
+		switch {
+		case args[0] == "read-screen" && strings.Contains(strings.Join(x.typed, "\n"), "/exit"):
+			shown = true
+			return "   Background work is running\n   The following will stop when you exit:\n\n   shell · team-wait\n\n" +
+				"   ❯ 1. Exit and stop tasks\n     2. Move to background and exit\n     3. Stay\n\n   Enter to confirm · Esc to cancel\n", nil
+		case args[0] == "send-key" && shown && args[len(args)-1] == "enter":
+			if err := os.Remove(filepath.Join(x.m1, "sessions", "1.json")); err != nil && !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+		}
+		return "", nil
+	}
+	done := make(chan error, 1)
+	go func() { _, err := x.m.move("team", "dev"); done <- err }()
+	select {
+	case err := <-done:
+		if err != nil || len(x.resumed) != 1 {
+			t.Errorf("exit dialog after a 429: %v, resumed %q", err, x.resumed)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the exit waited on the stale running state")
+	}
+	x = newMoveRig(t)
+	x.state = sessionstate.Running
+	transcript(x, `{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash"}]}}`)
+	if _, err := x.m.move("team", "dev"); err == nil || !strings.Contains(err.Error(), "a turn is running") {
+		t.Errorf("a turn in a tool call: %v", err)
 	}
 }

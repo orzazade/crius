@@ -1,5 +1,5 @@
 // Command crius-hook is a Claude Code hook for SessionStart, UserPromptSubmit, PreToolUse, PostToolUse,
-// PostToolUseFailure, PermissionRequest, PermissionDenied, Notification, Stop and SessionEnd. It keeps one state
+// PostToolUseFailure, PermissionRequest, PermissionDenied, Notification, Stop, StopFailure and SessionEnd. It keeps one state
 // file per session in ~/.crius/sessions/ (package sessionstate), so wakewatch and promptwatch can read what a
 // session is doing instead of guessing from its screen (docs/notes/OPENRIG-LESSONS.md, row A).
 //
