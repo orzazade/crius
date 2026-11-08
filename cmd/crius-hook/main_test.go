@@ -161,8 +161,18 @@ func TestNoHomeAtAllStillExitsZero(t *testing.T) {
 // file; without a lock the last writer drops what the others wrote (review P2, 10-22).
 func TestParallelEventsLoseNothing(t *testing.T) {
 	w := newWorld(t)
+	fire(t, w, 0, 50)
+	s, err := sessionstate.Read(filepath.Join(w.crius, "sessions"), "s-1")
+	if err != nil || len(s.Waits) != 50 {
+		t.Errorf("%d of 50 dialogs kept: %v %v", len(s.Waits), s.Waits, err)
+	}
+}
+
+// fire sends the PermissionRequests of agents a<from>..a<to-1> in parallel.
+func fire(t *testing.T, w world, from, to int) {
+	t.Helper()
 	var wg sync.WaitGroup
-	for i := range 20 {
+	for i := from; i < to; i++ {
 		wg.Go(func() {
 			cmd := exec.Command(bin)
 			cmd.Env = w.env()
@@ -173,9 +183,26 @@ func TestParallelEventsLoseNothing(t *testing.T) {
 		})
 	}
 	wg.Wait()
-	s, err := sessionstate.Read(filepath.Join(w.crius, "sessions"), "s-1")
-	if err != nil || len(s.Waits) != 20 {
-		t.Errorf("%d of 20 dialogs kept: %v %v", len(s.Waits), s.Waits, err)
+}
+
+// crius:lead 11-08: under full-suite load 7 of 20 parallel events were lost: an event that waited 1 s for the
+// session's lock was skipped. Here the lock is held longer than any hook waits; every event still lands, applied by the
+// session's next hook once the lock is free.
+func TestEventsWhileTheLockIsHeldLandWithTheNextEvent(t *testing.T) {
+	w := newWorld(t)
+	dir := filepath.Join(w.crius, "sessions")
+	unlock, err := sessionstate.Lock(dir, "s-1", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	free := make(chan struct{})
+	time.AfterFunc(1500*time.Millisecond, func() { unlock(); close(free) })
+	fire(t, w, 0, 20)
+	<-free
+	fire(t, w, 20, 21)
+	s, err := sessionstate.Read(dir, "s-1")
+	if err != nil || len(s.Waits) != 21 {
+		t.Errorf("%d of 21 dialogs kept: %v %v", len(s.Waits), s.Waits, err)
 	}
 }
 
@@ -233,8 +260,8 @@ func TestALiveStatusFileWithNoNameClearsTheOldName(t *testing.T) {
 	}
 }
 
-// One session's held lock must not stop another session's hook, and a lock held too long is logged, not waited on
-// until Claude Code's hook timeout (review P3, 10-22).
+// One session's held lock must not stop another session's hook, nor its own: a hook that finds the lock held queues
+// its event for the next hook and does not wait until Claude Code's hook timeout (review P3, 10-22; crius:lead 11-08).
 func TestALockHeldByOneSessionDoesNotStopAnother(t *testing.T) {
 	w := newWorld(t)
 	run(t, w.env(), `{"session_id":"s-1","hook_event_name":"Stop"}`)
@@ -263,8 +290,17 @@ func TestALockHeldByOneSessionDoesNotStopAnother(t *testing.T) {
 	if s, err := sessionstate.Read(filepath.Join(w.crius, "sessions"), "s-2"); err != nil || s.State != sessionstate.Running {
 		t.Errorf("s-2: %+v %v", s, err)
 	}
-	if l := logText(t, w); !strings.Contains(l, "UserPromptSubmit s-1") || !strings.Contains(l, ".lock locked for 1s, event skipped\n") {
-		t.Errorf("log %q", l)
+	// s-1's prompt waits in its queue, not lost: the session's next hook after the lock is free applies it first
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
+	run(t, w.env(), `{"session_id":"s-1","hook_event_name":"PreToolUse","tool_name":"Bash"}`)
+	if s, err := sessionstate.Read(filepath.Join(w.crius, "sessions"), "s-1"); err != nil || s.State != sessionstate.Running ||
+		s.PromptSHA != sessionstate.PromptSHA("go") || s.Event != "PreToolUse" {
+		t.Errorf("s-1: %+v %v", s, err)
+	}
+	if b, err := os.ReadFile(filepath.Join(w.crius, "logs", "crius-hook.log")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("log %q, %v", b, err)
 	}
 }
 
@@ -478,11 +514,59 @@ func TestASessionStartPrunesOldSessions(t *testing.T) {
 	}
 	run(t, w.env(), `{"session_id":"s-1","hook_event_name":"SessionStart","source":"startup"}`)
 	left, _ := filepath.Glob(filepath.Join(dir, "*"))
-	want := []string{filepath.Join(dir, "s-1.json"), filepath.Join(dir, "s-1.json.lock")}
+	want := []string{filepath.Join(dir, ".queue"), filepath.Join(dir, "s-1.json"), filepath.Join(dir, "s-1.json.lock")}
 	if !reflect.DeepEqual(left, want) {
 		t.Errorf("left %q, want %q", left, want)
 	}
+	if q, _ := os.ReadDir(filepath.Join(dir, ".queue")); len(q) != 0 {
+		t.Errorf("queue left %v", q)
+	}
 	if b, err := os.ReadFile(filepath.Join(w.crius, "logs", "crius-hook.log")); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("log %q, %v", b, err)
+	}
+}
+
+// Review of the queue P3-1: Prune holds a session's lock without applying its queue, and a hook killed while it held
+// the lock leaves its queue: the next start of any session applies it.
+func TestAStartAppliesAQueueLeftBehind(t *testing.T) {
+	w := newWorld(t)
+	dir := filepath.Join(w.crius, "sessions")
+	stopped := time.Now().Add(-time.Hour).Round(time.Second)
+	if err := sessionstate.Queue(dir, sessionstate.Event{In: sessionstate.Input{SessionID: "s-2", Event: "Stop"}, Time: stopped}); err != nil {
+		t.Fatal(err)
+	}
+	run(t, w.env(), `{"session_id":"s-1","hook_event_name":"SessionStart","source":"startup"}`)
+	// applied an hour late, it keeps its own time: an old Stop is not "idle since now" (review r2 P3-3)
+	if s, err := sessionstate.Read(dir, "s-2"); err != nil || s.State != sessionstate.Idle || !s.Time.Equal(stopped) {
+		t.Errorf("s-2: %+v %v", s, err)
+	}
+	if left, _ := sessionstate.Queued(dir, "s-2"); len(left) != 0 {
+		t.Errorf("left %v", left)
+	}
+}
+
+// Review of the queue P2-1: a hook applies queued events only up to its limit, inside Claude Code's hook timeout; the
+// rest wait for the session's next hook and the error says how many.
+func TestADrainPastItsLimitLeavesTheRestAndSaysSo(t *testing.T) {
+	w := newWorld(t)
+	t.Setenv("CRIUS_HOME", w.crius)
+	dir := filepath.Join(w.crius, "sessions")
+	for _, e := range []string{"UserPromptSubmit", "Stop"} {
+		if err := sessionstate.Queue(dir, sessionstate.Event{In: sessionstate.Input{SessionID: "s-1", Event: e}, Time: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	err := drain(w.crius, dir, "s-1", time.Now().Add(-time.Second))
+	if err == nil || !strings.Contains(err.Error(), "s-1: 2 queued events left for its next hook at the 3s limit") {
+		t.Errorf("drain: %v", err)
+	}
+	if left, _ := sessionstate.Queued(dir, "s-1"); len(left) != 2 {
+		t.Errorf("left %v", left)
+	}
+	if err := drain(w.crius, dir, "s-1", time.Now().Add(drainFor)); err != nil {
+		t.Fatal(err)
+	}
+	if s, err := sessionstate.Read(dir, "s-1"); err != nil || s.State != sessionstate.Idle || s.Event != "Stop" {
+		t.Errorf("s-1: %+v %v", s, err)
 	}
 }

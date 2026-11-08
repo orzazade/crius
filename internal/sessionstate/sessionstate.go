@@ -259,7 +259,8 @@ const (
 )
 
 // Prune removes from dir the files of sessions kept longer than KeepEnded or KeepAny, with their lock files. Each session's
-// files go while Prune holds its lock; one whose lock is held is in use and stays. A file Prune cannot judge or remove is
+// files go while Prune holds its lock; one whose lock is held is in use and stays. Queued events no hook applied go after
+// KeepAny. A file Prune cannot judge or remove is
 // named in the error and the others are still pruned.
 func Prune(dir string, now time.Time) error {
 	entries, err := os.ReadDir(dir)
@@ -291,6 +292,9 @@ func Prune(dir string, now time.Time) error {
 		if err := prune(dir, id, now); err != nil {
 			errs = append(errs, err)
 		}
+	}
+	if err := pruneQueue(dir, now); err != nil {
+		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
 }

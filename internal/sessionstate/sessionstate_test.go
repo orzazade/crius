@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -372,5 +373,53 @@ func TestALockFilePrunedWhileWaitedOnIsOpenedAgain(t *testing.T) {
 	}
 	if !errors.Is(err, ErrLocked) {
 		t.Fatalf("third: %v, want ErrLocked", err)
+	}
+}
+
+// A queued event keeps only its prompt's hash, comes back in the order the events happened (not the order the files
+// were written), and one no hook applied goes after KeepAny.
+func TestQueuedEventsKeepNoPromptComeInTimeOrderAndArePruned(t *testing.T) {
+	dir := t.TempDir()
+	t1 := time.Date(2026, 11, 8, 7, 0, 0, 0, time.UTC)
+	for _, ev := range []Event{
+		{In: Input{SessionID: "s-1", Event: "Stop"}, Time: t1.Add(time.Second)},
+		{In: Input{SessionID: "s-1", Event: "UserPromptSubmit", Prompt: "secret plan"}, Time: t1},
+		{In: Input{SessionID: "s-2", Event: "Stop"}, Time: t1},
+	} {
+		if err := Queue(dir, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	paths, err := Queued(dir, "s-1")
+	if err != nil || len(paths) != 2 {
+		t.Fatalf("%v %v", paths, err)
+	}
+	var got []string
+	for _, p := range paths {
+		b, _ := os.ReadFile(p)
+		if strings.Contains(string(b), "secret") {
+			t.Errorf("prompt stored: %s", b)
+		}
+		ev, err := ReadQueued(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, ev.In.Event+" "+ev.PromptSHA)
+	}
+	if want := []string{"UserPromptSubmit " + PromptSHA("secret plan"), "Stop "}; !slices.Equal(got, want) {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	old := time.Now().Add(-KeepAny - time.Hour)
+	if err := os.Chtimes(paths[0], old, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := Prune(dir, time.Now()); err == nil || !strings.Contains(err.Error(), "dropped queued event "+filepath.Base(paths[0])+", never applied") {
+		t.Fatalf("prune: %v", err)
+	}
+	if ids, err := QueuedSessions(dir); err != nil || !slices.Equal(ids, []string{"s-1", "s-2"}) {
+		t.Errorf("sessions %v %v", ids, err)
+	}
+	if left, _ := Queued(dir, "s-1"); len(left) != 1 || left[0] != paths[1] {
+		t.Errorf("left %v", left)
 	}
 }

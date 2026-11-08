@@ -26,6 +26,7 @@ import (
 )
 
 func main() {
+	at := time.Now() // the event's time, before any slow read: one drain applies its queued events in this order
 	defer func() {
 		if r := recover(); r != nil {
 			fail(fmt.Errorf("panic: %v", r))
@@ -40,55 +41,147 @@ func main() {
 	if strings.HasPrefix(in.SessionID, "served:") {
 		return // Claude Code serving a remote caller's call: not a session of ours
 	}
-	if err := record(in); err != nil {
-		fail(fmt.Errorf("%s %s: %w", in.Event, in.SessionID, err))
+	if err := record(in, at); err != nil {
+		fail(err) // each error names its event: this process may apply others' events too
 	}
-	// Ended sessions' files would stay forever: each start prunes them, after its own lock has gone.
+	// Ended sessions' files would stay forever: each start prunes them, after its own lock has gone. Prune holds a
+	// session's lock without applying its queue, and a hook killed while it held one leaves its queue: each start then
+	// applies every session's queue it can lock.
 	if in.Event == "SessionStart" {
-		if err := sessionstate.Prune(filepath.Join(store.Home(), "sessions"), time.Now()); err != nil {
+		dir := filepath.Join(store.Home(), "sessions")
+		if err := sessionstate.Prune(dir, time.Now()); err != nil {
 			fail(fmt.Errorf("prune: %w", err))
+		}
+		ids, err := sessionstate.QueuedSessions(dir)
+		if err != nil {
+			err = fmt.Errorf("queued sessions: %w", err)
+		}
+		for _, id := range ids {
+			err = errors.Join(err, drain(store.Home(), dir, id, at.Add(drainFor)))
+		}
+		if err != nil {
+			fail(err)
 		}
 	}
 }
 
-// record applies one hook event to the session's file. A missing projects.toml or Claude Code status file loses
-// the project, role or name, not the state: it is logged and the state is written. A damaged file is logged and
-// replaced. Events of one session run as parallel processes, so the read, change and write hold the session's lock.
-func record(in sessionstate.Input) error {
+// record queues one hook event and applies the session's queue (drain). What only this process can see (its config
+// folder, the session's live status file, its cmux env) goes into the event. A missing projects.toml or Claude Code
+// status file loses the project, role or name, not the state: it is logged and the state is written.
+func record(in sessionstate.Input, at time.Time) error {
 	home := store.Home()
 	dir := filepath.Join(home, "sessions")
-	pid, name := 0, ""
+	ev := sessionstate.Event{In: in, Time: at, Workspace: os.Getenv("CMUX_WORKSPACE_ID"), Surface: os.Getenv("CMUX_SURFACE_ID")}
 	cfg, err := claudeConfig()
 	if err == nil {
-		pid, name, err = sessionstate.Process(cfg, in.SessionID)
+		ev.PID, ev.Name, err = sessionstate.Process(cfg, in.SessionID)
 	}
 	if err != nil {
 		fail(err)
 	}
-	// A lock held for a second skips the event rather than wait until Claude Code's hook timeout.
-	unlock, err := sessionstate.Lock(dir, in.SessionID, time.Second)
-	if err != nil {
-		return fmt.Errorf("%w, event skipped", err)
+	ev.Config = cfg
+	if err := sessionstate.Queue(dir, ev); err != nil {
+		return fmt.Errorf("%s %s: queue: %w, event lost", in.Event, in.SessionID, err)
 	}
-	defer unlock()
+	return drain(home, dir, in.SessionID, at.Add(drainFor))
+}
+
+// drainFor is how long after its start a hook applies queued events: well inside Claude Code's 5 s hook timeout, as
+// the holder may be a PreToolUse hook that holds up the tool (review of the queue P2-1).
+const drainFor = 3 * time.Second
+
+// drain applies the session's queued events while it can take the session's lock at once. A hook that finds the lock
+// held leaves them to the holder, and every holder looks at the queue again after it lets go: the last hook to let go
+// sees every event queued before it did, so none is lost and none waits on the lock (crius:lead 11-08). Events left at
+// the deadline wait for the session's next hook and are logged; one applied a minute late is logged too.
+func drain(home, dir, id string, deadline time.Time) error {
+	var errs []error
+	for {
+		unlock, err := sessionstate.Lock(dir, id, 0)
+		if errors.Is(err, sessionstate.ErrLocked) {
+			return errors.Join(errs...)
+		} else if err != nil {
+			return errors.Join(append(errs, fmt.Errorf("%s: %w, its queued events wait for its next hook", id, err))...)
+		}
+		paths, err := sessionstate.Queued(dir, id)
+		if err != nil {
+			unlock()
+			return errors.Join(append(errs, fmt.Errorf("%s: %w, its queued events wait for its next hook", id, err))...)
+		}
+		for i, p := range paths {
+			if time.Now().After(deadline) {
+				unlock()
+				return errors.Join(append(errs, fmt.Errorf("%s: %d queued events left for its next hook at the %s limit", id, len(paths)-i, drainFor))...)
+			}
+			if err := applyQueued(home, dir, id, p); err != nil {
+				errs = append(errs, err)
+			}
+			// applied or not, it goes: kept, it would be applied again; gone already, Prune took it
+			if err := os.Remove(p); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				unlock()
+				return errors.Join(append(errs, fmt.Errorf("%w, its queue waits for its next hook", err))...)
+			}
+		}
+		unlock()
+		if left, err := sessionstate.Queued(dir, id); err != nil || len(left) == 0 {
+			return errors.Join(append(errs, err)...)
+		}
+	}
+}
+
+// applyQueued applies one queued file. A panic is that event's error, so one bad event cannot stop its session's queue.
+func applyQueued(home, dir, id, path string) (err error) {
+	name := filepath.Base(path)
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("%s %s: panic: %v", name, id, r)
+		}
+	}()
+	ev, err := sessionstate.ReadQueued(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil // Prune took it after 30 days and named it
+	} else if err != nil {
+		return fmt.Errorf("%s: %w", id, err)
+	}
+	name = ev.In.Event
+	if late := time.Since(ev.Time); late > time.Minute {
+		fail(fmt.Errorf("%s %s applied %s late", name, id, late.Round(time.Second)))
+	}
+	if err := apply(home, dir, ev); err != nil {
+		return fmt.Errorf("%s %s: %w", name, id, err)
+	}
+	return nil
+}
+
+// apply writes one queued event into the session's file, and its role's file when it names the role's session. The
+// caller holds the session's lock.
+func apply(home, dir string, ev sessionstate.Event) error {
+	in := ev.In
 	prev, err := sessionstate.Read(dir, in.SessionID)
 	if errors.Is(err, sessionstate.ErrDamaged) {
 		fail(fmt.Errorf("replacing it: %w", err))
 	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
-	s := sessionstate.Apply(prev, in, time.Now())
-	if pid != 0 { // a live session resumed without -n has no name now
-		s.Name = name
+	at := ev.Time // its own time, so one applied late is not news; never before the last, so time does not go back
+	if at.Before(prev.Time) {
+		at = prev.Time
 	}
-	s.Config = cfg
+	s := sessionstate.Apply(prev, in, at)
+	if in.Event == "UserPromptSubmit" {
+		s.PromptSHA = ev.PromptSHA // the queue keeps only the prompt's hash
+	}
+	if ev.PID != 0 { // a live session resumed without -n has no name now
+		s.Name = ev.Name
+	}
+	s.Config = ev.Config
 	if p, r, err := ingest.Filing(home, s.Cwd, s.Name); err != nil {
 		configFailed(home, dir, err)
 	} else {
 		s.Project, s.Role = p, r
 	}
 	// the session's own env on every event: one resumed outside cmux no longer names its old surface
-	s.Workspace, s.Surface = os.Getenv("CMUX_WORKSPACE_ID"), os.Getenv("CMUX_SURFACE_ID")
+	s.Workspace, s.Surface = ev.Workspace, ev.Surface
 	if err := sessionstate.Write(dir, s); err != nil {
 		return err
 	}
