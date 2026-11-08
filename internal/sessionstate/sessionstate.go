@@ -122,7 +122,10 @@ func Apply(prev State, in Input, now time.Time) State {
 	case "Stop":
 		s.State, s.Waits = Idle, nil
 	case "StopFailure": // the turn ended on an API error (a weekly-limit 429): no Stop comes (crius:lead 11-08)
-		s.State, s.Detail, s.Waits = Idle, in.Error, nil
+		s.Detail = in.Error
+		if in.AgentID == "" { // a subagent's failed request ends its own work, not the turn (review of 002bed0 P2-2)
+			s.State, s.Waits = Idle, nil
+		}
 	case "SessionEnd":
 		s.State, s.Detail, s.Waits = Ended, in.Reason, nil
 	}

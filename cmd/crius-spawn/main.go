@@ -93,9 +93,8 @@ func main() {
 		}
 		m := mover{home: store.Home(), want: *account, tries: 60, wait: time.Second, procs: psProcs, cmux: runCmux,
 			pick: d.Pick,
-			state: func(id string) (string, error) {
-				s, err := sessionstate.Read(filepath.Join(store.Home(), "sessions"), id)
-				return s.State, err
+			state: func(id string) (sessionstate.State, error) {
+				return sessionstate.Read(filepath.Join(store.Home(), "sessions"), id)
 			},
 			resume: func(project, role, id, cwd, acct, dir string) (string, string, error) {
 				return launch.Resume(project, role, id, cwd, acct, dir, d)

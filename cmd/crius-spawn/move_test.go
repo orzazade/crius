@@ -15,8 +15,9 @@ import (
 // moveRig is a role whose session runs on max1 (folder m1) in tab ws/sf, with max2 (folder m2) picked by the rule.
 type moveRig struct {
 	home, m1, m2, id string
-	state            string // crius-hook's state of the session
-	children         []proc // the old Claude's child processes
+	state            string    // crius-hook's state of the session
+	prompt           time.Time // when its last prompt was submitted (zero: none on file)
+	children         []proc    // the old Claude's child processes
 	typed            []string
 	resumed          []string // project role id cwd acct dir of each resume
 	exits            bool     // /exit stops the old Claude
@@ -46,8 +47,8 @@ func newMoveRig(t *testing.T) *moveRig {
 	x.m = mover{
 		home: x.home,
 		pick: func(project, want string) (string, string, error) { return "max2", x.m2, nil },
-		state: func(id string) (string, error) {
-			return x.state, nil
+		state: func(id string) (sessionstate.State, error) {
+			return sessionstate.State{State: x.state, PromptTime: x.prompt}, nil
 		},
 		procs: func() ([]proc, error) {
 			return append([]proc{{pid: os.Getpid(), ppid: 1, command: "claude"}}, x.children...), nil
@@ -138,24 +139,25 @@ func TestAMoveThatLandsElsewhereFails(t *testing.T) {
 	}
 }
 
-// Review of fe19215 P2-2: a bus line can start a turn between the idle check and Enter; /exit then waits behind the turn.
-// The move waits for it, where it used to give up after its reads and leave the queued /exit to end the session later.
+// Review of fe19215 P2-2: a bus line can start a turn between the idle check and Enter (Claude Code 2.1.319 runs /exit at
+// once, so such a turn is cut; a session that runs on after /exit is still waited on).
+// The move waits for it to exit, where it used to give up after its reads and leave the session to end unresumed.
 func TestAMoveWaitsForATurnThatStartedAfterExit(t *testing.T) {
 	x := newMoveRig(t)
 	x.exits = false
 	reads := 0
-	x.m.state = func(id string) (string, error) {
+	x.m.state = func(id string) (sessionstate.State, error) {
 		if !strings.Contains(strings.Join(x.typed, "\n"), "/exit") {
-			return sessionstate.Idle, nil
+			return sessionstate.State{State: sessionstate.Idle}, nil
 		}
 		reads++
-		if reads == 6 { // the turn ends and the queued /exit runs
+		if reads == 6 { // the session exits
 			if err := os.Remove(filepath.Join(x.m1, "sessions", "1.json")); err != nil {
 				t.Fatal(err)
 			}
-			return sessionstate.Idle, nil
+			return sessionstate.State{State: sessionstate.Idle}, nil
 		}
-		return sessionstate.Running, nil
+		return sessionstate.State{State: sessionstate.Running}, nil
 	}
 	if _, err := x.m.move("team", "dev"); err != nil || len(x.resumed) != 1 {
 		t.Fatalf("turn after /exit: %v, resumed %q", err, x.resumed)
@@ -260,7 +262,7 @@ func TestAMoveAnswersOnlyAnOpenDialogAndOnlyOnce(t *testing.T) {
 		x.children = []proc{{pid: 70, ppid: os.Getpid(), command: "/bin/zsh -c eval '~/.claude/skills/cmux-team/bin/team-wait.sh --mode worker'"}}
 		x.exits = false
 		reads, passes := 0, 0
-		x.m.state = func(string) (string, error) {
+		x.m.state = func(id string) (sessionstate.State, error) {
 			if strings.Contains(strings.Join(x.typed, "\n"), "/exit") {
 				if passes++; passes == 4 { // Claude ends on the fourth pass after /exit
 					if err := os.Remove(filepath.Join(x.m1, "sessions", "1.json")); err != nil {
@@ -268,7 +270,7 @@ func TestAMoveAnswersOnlyAnOpenDialogAndOnlyOnce(t *testing.T) {
 					}
 				}
 			}
-			return sessionstate.Idle, nil
+			return sessionstate.State{State: sessionstate.Idle}, nil
 		}
 		x.m.cmux = func(args ...string) (string, error) {
 			x.typed = append(x.typed, strings.Join(args, " "))
@@ -311,18 +313,30 @@ func TestAMoveCountsTheJobsAgainAtTheDialog(t *testing.T) {
 	}
 }
 
-// crius:lead 11-08: backend-core's turn ended on a weekly-limit 429, which records no Stop, so its state stayed
-// "running" and -move refused a tab idle at its prompt. A turn whose transcript ends on Claude Code's API-error message
-// has ended; one whose transcript ends on a tool call still runs.
+// crius:lead 11-08: backend-orders' turn ended on a weekly-limit 429, which records no Stop, so its state stayed
+// "running" and -move refused a tab idle at its prompt. Its transcript (lines as Claude Code 2.1.319 wrote them) ends on
+// the API-error message and the turn_duration line after it: the turn ended. Review of 002bed0: an API-error message
+// alone is no end, as Claude Code retries a cut connection in the same turn (P1: 54 such retries in 30 days of
+// transcripts); a scheduled wake's meta prompt after the line starts a turn (P2-1); a prompt submitted after the line is
+// a new turn (P3-2); and a turn in a tool call runs.
 func TestATurnThatEndedOnAnAPIErrorIsABoundary(t *testing.T) {
-	transcript := func(x *moveRig, last string) {
-		testutil.Write(t, filepath.Join(x.m1, "projects", "-w-team-wt", x.id+".jsonl"),
-			`{"type":"user","message":{"role":"user","content":"go on"}}`+"\n"+
-				`{"type":"api-request"}`+"\n"+last+"\n"+`{"type":"system","subtype":"x"}`+"\n")
+	prompt := time.Date(2026, 11, 8, 6, 14, 59, 153000000, time.UTC)
+	const (
+		user     = `{"type":"user","message":{"role":"user","content":"go on"},"timestamp":"2026-11-08T06:14:59.200Z"}`
+		limit    = `{"type":"assistant","isApiErrorMessage":true,"error":"rate_limit","message":{"role":"assistant","content":[{"type":"text","text":"You've hit your weekly limit · resets Nov 12 at 2am (Asia/Baku)"}]},"timestamp":"2026-11-08T06:15:00.097Z"}`
+		cut      = `{"type":"assistant","isApiErrorMessage":true,"error":"server_error","message":{"role":"assistant","content":[{"type":"text","text":"API Error: Connection lost mid-response. The response above may be incomplete."}]},"timestamp":"2026-11-08T06:15:00.097Z"}`
+		turnLine = `{"type":"system","subtype":"turn_duration","isMeta":false,"timestamp":"2026-11-08T06:15:00.109Z"}`
+		wake     = `{"type":"user","isMeta":true,"message":{"role":"user","content":"hourly line"},"timestamp":"2026-11-08T07:00:00.004Z"}`
+		tool     = `{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash"}]},"timestamp":"2026-11-08T06:15:00.300Z"}`
+	)
+	transcript := func(x *moveRig, lines ...string) {
+		all := append([]string{user, `{"type":"api-request","timestamp":"2026-11-08T06:14:59.277Z"}`}, lines...)
+		all = append(all, `{"type":"atis-latch"}`)
+		testutil.Write(t, filepath.Join(x.m1, "projects", "-w-team-wt", x.id+".jsonl"), strings.Join(all, "\n")+"\n")
 	}
 	x := newMoveRig(t)
-	x.state = sessionstate.Running
-	transcript(x, `{"type":"assistant","isApiErrorMessage":true,"error":"rate_limit","message":{"role":"assistant","content":[{"type":"text","text":"You've hit your weekly limit"}]}}`)
+	x.state, x.prompt = sessionstate.Running, prompt
+	transcript(x, limit, turnLine)
 	if _, err := x.m.move("team", "dev"); err != nil {
 		t.Fatalf("a turn ended on a 429: %v", err)
 	}
@@ -331,9 +345,9 @@ func TestATurnThatEndedOnAnAPIErrorIsABoundary(t *testing.T) {
 	}
 	// its exit dialog (its bus waiter) is answered at once, not waited on as a running turn for turnCap
 	x = newMoveRig(t)
-	x.state, x.exits, x.m.wait = sessionstate.Running, false, time.Millisecond
+	x.state, x.prompt, x.exits, x.m.wait = sessionstate.Running, prompt, false, time.Millisecond
 	x.m.tries = 3
-	transcript(x, `{"type":"assistant","isApiErrorMessage":true,"error":"rate_limit"}`)
+	transcript(x, limit, turnLine)
 	x.children = []proc{{pid: 70, ppid: os.Getpid(), command: "/bin/zsh -c eval '~/.claude/skills/cmux-team/bin/team-wait.sh --mode worker'"}}
 	shown := false
 	x.m.cmux = func(args ...string) (string, error) {
@@ -360,10 +374,44 @@ func TestATurnThatEndedOnAnAPIErrorIsABoundary(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the exit waited on the stale running state")
 	}
-	x = newMoveRig(t)
-	x.state = sessionstate.Running
-	transcript(x, `{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash"}]}}`)
-	if _, err := x.m.move("team", "dev"); err == nil || !strings.Contains(err.Error(), "a turn is running") {
-		t.Errorf("a turn in a tool call: %v", err)
+	for _, c := range []struct {
+		name   string
+		prompt time.Time
+		lines  []string
+	}{
+		{"a cut connection Claude Code retries in the same turn", prompt, []string{cut}},
+		{"a weekly limit with no turn line yet", prompt, []string{limit}},
+		{"a scheduled wake after the turn line", prompt, []string{limit, turnLine, wake}},
+		{"a prompt submitted after the turn line", prompt.Add(2 * time.Second), []string{limit, turnLine}},
+		{"a turn in a tool call", prompt, []string{tool}},
+	} {
+		x = newMoveRig(t)
+		x.state, x.prompt = sessionstate.Running, c.prompt
+		transcript(x, c.lines...)
+		if _, err := x.m.move("team", "dev"); err == nil || !strings.Contains(err.Error(), "a turn is running") || len(x.resumed) != 0 {
+			t.Errorf("%s: %v, typed %q", c.name, err, x.typed)
+		}
+	}
+}
+
+// Review of 002bed0 P3-1: a state that does not read after /exit is waited on like a running turn, as the session may
+// still be in it; the move used to spend its reads and give up while the session went on to exit.
+func TestAMoveWaitsOnAStateThatDoesNotReadAfterExit(t *testing.T) {
+	x := newMoveRig(t)
+	x.exits = false
+	reads := 0
+	x.m.state = func(id string) (sessionstate.State, error) {
+		if !strings.Contains(strings.Join(x.typed, "\n"), "/exit") {
+			return sessionstate.State{State: sessionstate.Idle}, nil
+		}
+		if reads++; reads == 5 {
+			if err := os.Remove(filepath.Join(x.m1, "sessions", "1.json")); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return sessionstate.State{}, fmt.Errorf("read %d: unexpected end of JSON input", reads)
+	}
+	if _, err := x.m.move("team", "dev"); err != nil || len(x.resumed) != 1 {
+		t.Fatalf("a state unread after /exit: %v, resumed %q", err, x.resumed)
 	}
 }

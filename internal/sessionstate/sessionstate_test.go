@@ -432,4 +432,9 @@ func TestAStopFailureEndsTheTurn(t *testing.T) {
 	if s.State != Idle || s.Waits != nil || s.Detail != "rate_limit" {
 		t.Errorf("%+v", s)
 	}
+	// review of 002bed0 P2-2: a subagent's request that failed after its retries ends the subagent, not the turn
+	run := State{SessionID: "s-1", State: Running}
+	if s := Apply(run, Input{SessionID: "s-1", Event: "StopFailure", Error: "server_error", AgentID: "a359a54a2937da471"}, time.Now()); s.State != Running {
+		t.Errorf("a subagent's StopFailure: %+v", s)
+	}
 }

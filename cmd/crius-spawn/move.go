@@ -28,7 +28,7 @@ type proc struct {
 type mover struct {
 	home   string
 	pick   func(project, want string) (name, dir string, err error) // the account by the rule (quota.Pick)
-	state  func(id string) (string, error)                          // crius-hook's state of a session
+	state  func(id string) (sessionstate.State, error)              // crius-hook's state of a session
 	procs  func() ([]proc, error)
 	cmux   func(args ...string) (string, error)
 	resume func(project, role, id, cwd, acct, dir string) (ws, surface string, err error) // launch.Resume
@@ -172,24 +172,27 @@ func (m mover) idle(r sessionstate.State, pid int) (int, error) {
 	return 0, fmt.Errorf("%d background jobs run (%s)", len(jobs), strings.Join(jobs, "; "))
 }
 
-// turnState is crius-hook's state of the session, idle when it says running but the turn ended on an API error.
+// turnState is crius-hook's state of the session, idle when it says running but the turn ended after its last prompt.
 func (m mover) turnState(r sessionstate.State) (string, error) {
-	st, err := m.state(r.SessionID)
-	if err != nil || st != sessionstate.Running {
-		return st, err
+	s, err := m.state(r.SessionID)
+	if err != nil || s.State != sessionstate.Running {
+		return s.State, err
 	}
-	if ended, err := turnFailed(r.Config, r.SessionID); err != nil {
-		return st, fmt.Errorf("a turn is running (state %q), and its transcript does not read: %w", st, err)
+	if ended, err := turnEnded(r.Config, r.SessionID, s.PromptTime); err != nil {
+		return s.State, fmt.Errorf("a turn is running (state %q), and its transcript does not read: %w", s.State, err)
 	} else if ended {
 		return sessionstate.Idle, nil
 	}
-	return st, nil
+	return s.State, nil
 }
 
-// turnFailed says whether the session's turn ended on an API error its hook never reported (crius:lead 11-08:
-// backend-core's turn ended on a weekly-limit 429 before crius-hook took StopFailure, so its state stayed "running"):
-// the newest prompt or reply in its transcript is Claude Code's API-error message. No transcript is not known to end.
-func turnFailed(config, id string) (bool, error) {
+// turnEnded says whether the session's turn ended with no Stop its hook saw (crius:lead 11-08: backend-core's turn
+// ended on a weekly-limit 429 before crius-hook took StopFailure, so its state stayed "running"): the newest prompt,
+// reply or turn line in its transcript is Claude Code's turn_duration line, written after the last prompt (since).
+// An API-error message alone is no end: after a cut connection Claude Code retries in the same turn (review of
+// 002bed0 P1). A meta prompt counts: a scheduled wake starts a turn with one (P2-1). A prompt submitted after the line
+// is a new turn whose first entry is not written yet (P3-2). No transcript is not known to end.
+func turnEnded(config, id string, since time.Time) (bool, error) {
 	paths, err := filepath.Glob(filepath.Join(config, "projects", "*", id+".jsonl"))
 	if err != nil || len(paths) == 0 {
 		return false, err
@@ -225,14 +228,18 @@ func turnFailed(config, id string) (bool, error) {
 	lines := strings.Split(string(b), "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
 		var e struct {
-			Type     string `json:"type"`
-			APIError bool   `json:"isApiErrorMessage"`
-			Meta     bool   `json:"isMeta"`
+			Type      string    `json:"type"`
+			Subtype   string    `json:"subtype"`
+			Timestamp time.Time `json:"timestamp"`
 		}
-		if json.Unmarshal([]byte(lines[i]), &e) != nil || e.Meta || e.Type != "user" && e.Type != "assistant" {
-			continue // a cut first line, a system or request line, a meta line
+		if json.Unmarshal([]byte(lines[i]), &e) != nil {
+			continue // a cut first line
 		}
-		return e.Type == "assistant" && e.APIError, nil
+		turnLine := e.Type == "system" && e.Subtype == "turn_duration"
+		if !turnLine && e.Type != "user" && e.Type != "assistant" {
+			continue // another system line, a request or title line
+		}
+		return turnLine && e.Timestamp.After(since), nil
 	}
 	return false, nil
 }
@@ -321,10 +328,11 @@ func (m mover) exit(r sessionstate.State, pid, waiters int) error {
 		if pid == 0 {
 			return nil
 		}
-		// A turn that started between the idle check and Enter (a bus line woke it) holds /exit queued until it ends:
-		// wait for it rather than give up and leave the queued /exit to end the session with nothing resumed (review of
-		// fe19215 P2-2).
-		if st, err := m.turnState(r); err == nil && st == sessionstate.Running && time.Now().Before(turn) {
+		// A turn that runs after Enter (one that started between the idle check and Enter: a bus line woke it) is waited
+		// on, as is a state that does not read now (review of 002bed0 P3-1), so the session is resumed once it exits
+		// (review of fe19215 P2-2). Claude Code 2.1.319 runs /exit at once (immediate), not after the turn: such a turn is
+		// cut; the idle check just before Enter keeps that window short.
+		if st, err := m.turnState(r); (err != nil || st == sessionstate.Running) && time.Now().Before(turn) {
 			time.Sleep(m.wait)
 			continue
 		}
@@ -354,7 +362,7 @@ func (m mover) exit(r sessionstate.State, pid, waiters int) error {
 		}
 		time.Sleep(m.wait)
 	}
-	return fmt.Errorf("session %s did not exit after /exit in %s %s: nothing resumed; if a turn runs, /exit may be queued behind it and end the session later, then resume it with crius-spawn -resume %s %s", r.SessionID, r.Workspace, r.Surface, r.Project, r.Role)
+	return fmt.Errorf("session %s did not exit after /exit in %s %s: nothing resumed; once it exits, resume it with crius-spawn -resume %s %s", r.SessionID, r.Workspace, r.Surface, r.Project, r.Role)
 }
 
 // psProcs lists every process with its parent and command.
