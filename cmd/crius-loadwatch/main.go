@@ -1,18 +1,20 @@
 // Command crius-loadwatch sets the heavy-slot count of the Appxite rig from the machine load; launchd runs it every
-// minute. It follows the Mac load rule in Crius's AGENTS.md (owner 11-08; crius:lead DECISION 11-08):
+// minute. It follows the Mac load rule (owner 11-08; crius:lead DECISIONs 11-08, 11-09):
 //
 //   - the 5-min load is over 28: 1 slot, at once;
-//   - else memory is at least 40% free (memory_pressure) and the 15-min load is under 12: 4 slots, under 18: 3 slots
-//     (crius:lead DECISIONs 11-08: 10 heavy jobs waited on 2 slots at load 13, then 15 on 3 slots at load 14.5);
-//   - else the 15-min load is under 28: 2 slots;
-//   - else the count stays (easing on the 5-min load flipped 4 times on 11-05).
+//   - else the 15-min load is 28 or more: no step up (easing on the 5-min load flipped 4 times on 11-05);
+//   - else, by CPU idle (top's second sample) with memory at least 40% free (memory_pressure): up to 4 slots at idle
+//     40% or more, 3 at 25% or more; else 2 slots.
 //
-// Those are the up-steps. The extra slots come down only past a dead band: 4 to 3 at a 15-min load of 16, 3 to 2 at 22
-// (4 goes straight to 2 at 22), or at once to 2 when memory is under 40% free.
+// The up-steps follow CPU idle, not the load average: on 11-09 a load of 17-28 came with CPU 56% idle and 53% memory
+// free, 18 jobs waited 25 min on 2 slots, and the slots changed 111 times that day. The extra slots come down, whatever
+// the 15-min load, only past a dead band of 10 points held for three readings in a row (one 5 s reading fell from 60%
+// to 19% here): 4 to 3 under 30% idle, 3 to 2 under 15% (4 goes straight to 2 there); at once to 2 when memory is under
+// 40% free. CPU idle or memory it cannot read rules the extra slots out, and the run is loud.
 //
 // The 5-min load over 28 while 3 or 4 slots are set turns the extra slots off (the most it sets is then 2) and posts the
-// numbers to crius:lead. They come back, with one more line to crius:lead, once the 15-min load has been under 18 for 30
-// minutes after that; a minute at 18 or more starts the 30 minutes again (crius:lead DECISION 11-08).
+// numbers to crius:lead. They come back, with one more line to crius:lead, once the 15-min load has been under 28 for 10
+// minutes after that; a minute at 28 or more starts the 10 minutes again.
 //
 // It writes the slots file (~/AppxiteRig/heavy/slots) only on a change, and then posts one INFO line on the Crius bus.
 // A file that holds another whole number was set by hand: it is left alone and said in the log; an empty or broken
@@ -30,6 +32,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -40,28 +43,31 @@ import (
 
 const (
 	limit = 28.0
-	quiet = 18.0 // the 15-min load under this, with memory free at least minFree, allows a third slot
-	idle  = 12.0 // and under this, a fourth
-	// the dead band: the extra slots come down only at these 15-min loads (crius:lead DECISION 11-08)
-	downFour  = 16.0
-	downThree = 22.0
+	// CPU idle percent for the up-steps (crius:lead 11-09) and, 10 points lower, the dead band the extras come down past
+	fourIdle  = 40.0
+	threeIdle = 25.0
+	downFour  = 30.0
+	downThree = 15.0
 	minFree   = 40 // percent
+	downRuns  = 3  // readings in a row under the band before a step down
 )
 
 // state is what one run leaves the next: whether a failure was already posted, whether the extra slots are off, and
-// since when the 15-min load has been under 18 while they are.
+// since when the 15-min load has been under 28 while they are.
 type state struct {
 	Failed     bool   `json:"failed,omitempty"`
 	HungFailed bool   `json:"hungFailed,omitempty"` // the hung-holder check's failure was posted (hungLoud)
 	NoExtra    bool   `json:"noExtra,omitempty"`
 	QuietSince string `json:"quietSince,omitempty"` // RFC3339
 	QuietLast  string `json:"quietLast,omitempty"`  // the last quiet reading, RFC3339
+	// Idle: the last downRuns CPU idle readings, newest last (a step down needs all of them under the band)
+	Idle []float64 `json:"idle,omitempty"`
 	// Holders: each slot holder's job as last seen, by slot file and token (hung.go)
 	Holders map[string]holderSeen `json:"holders,omitempty"`
 }
 
-// backAfter is how long the 15-min load must stay under quiet before tripped extra slots come back.
-const backAfter = 30 * time.Minute
+// backAfter is how long the 15-min load must stay under limit before tripped extra slots come back.
+const backAfter = 10 * time.Minute
 
 // maxGap is the longest time between two quiet readings that keeps the quiet clock running (the job runs every minute).
 const maxGap = 3 * time.Minute
@@ -71,6 +77,7 @@ type deps struct {
 	now                func() time.Time
 	load               func() (load5, load15 float64, err error)
 	mem                func() (freePct int, err error)
+	cpu                func() (idlePct float64, err error)
 	ps                 func() ([]proc, error)             // every process (hung.go)
 	outputs            func(pids []int) ([]string, error) // the regular files those processes have as stdout or stderr
 	lead               func(cwd string) (project string, leads []string, err error)
@@ -80,7 +87,7 @@ type deps struct {
 func main() {
 	home := store.Home()
 	os.Exit(run(deps{home: home, slots: filepath.Join(os.Getenv("HOME"), "AppxiteRig", "heavy", "slots"),
-		state: filepath.Join(home, "state", "loadwatch.json"), now: time.Now, load: sysLoad, mem: memFree,
+		state: filepath.Join(home, "state", "loadwatch.json"), now: time.Now, load: sysLoad, mem: memFree, cpu: cpuIdle,
 		ps: sysPS, outputs: sysOutputs, lead: leadOf(home), out: os.Stdout}))
 }
 
@@ -121,31 +128,66 @@ func memFree() (int, error) {
 	return 0, fmt.Errorf("memory_pressure: no %q line", key)
 }
 
-// want gives the slot count the load asks for (cur is "1" to "4"). Up-steps go straight to the level; the extra slots
-// come down only past a dead band: 4 to 3 at load15 16, 3 to 2 at 22 (the up-steps alone flipped 2 -> 3 -> 2 -> 3 in
-// 10 min at load15 ~18 on 11-08). 2 to 1 is the over-28 rule only.
-func want(l5, l15 float64, free int, cur string, noExtra bool) string {
+// cpuIdle reads the CPU idle percentage from top's second sample over 5 seconds (one second is too noisy to set slots by).
+func cpuIdle() (float64, error) {
+	b, err := timed(nil, "/usr/bin/top", "-l", "2", "-n", "0", "-s", "5") // a stuck top would hold every run (review P2-2)
+	if err != nil {
+		return 0, fmt.Errorf("top: %w", err)
+	}
+	return parseTopIdle(string(b))
+}
+
+// parseTopIdle reads idle from the last of top's two "CPU usage: 30.25% user, 13.50% sys, 56.25% idle" lines; the first
+// covers the time since boot.
+func parseTopIdle(out string) (float64, error) {
+	var lines []string
+	for _, l := range strings.Split(out, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(l), "CPU usage:") {
+			lines = append(lines, strings.TrimSpace(l))
+		}
+	}
+	if len(lines) < 2 {
+		return 0, fmt.Errorf("top: %d CPU usage lines, want 2", len(lines))
+	}
+	l := lines[len(lines)-1]
+	for _, f := range strings.Split(strings.TrimPrefix(l, "CPU usage:"), ",") {
+		if v, ok := strings.CutSuffix(strings.TrimSpace(f), "% idle"); ok {
+			n, err := strconv.ParseFloat(v, 64)
+			if err != nil {
+				return 0, fmt.Errorf("top: %q: %w", l, err)
+			}
+			return n, nil
+		}
+	}
+	return 0, fmt.Errorf("top: no idle in %q", l)
+}
+
+// want gives the slot count the machine asks for (cur is "1" to "4"; idle is CPU idle %, -1 when unread; held is the
+// highest of the last downRuns readings, -1 while there are fewer). Up-steps go straight to the level on this reading;
+// the extra slots come down only when every recent reading is past the dead band. 2 to 1 is the over-28 rule only.
+func want(l5, l15, idle, held float64, free int, cur string, noExtra bool) string {
 	if l5 > limit {
 		return "1"
 	}
-	extra := free >= minFree && !noExtra
+	extra := free >= minFree && idle >= 0 && !noExtra
 	up := 0
 	switch {
-	case l15 < idle && extra:
+	case l15 >= limit:
+	case idle >= fourIdle && extra:
 		up = 4
-	case l15 < quiet && extra:
+	case idle >= threeIdle && extra:
 		up = 3
-	case l15 < limit:
+	default:
 		up = 2
 	}
 	n, _ := strconv.Atoi(cur)
 	if up > n {
 		return strconv.Itoa(up)
 	}
-	if n == 4 && (!extra || l15 >= downFour) {
+	if n == 4 && (!extra || held >= 0 && held < downFour) {
 		n = 3
 	}
-	if n == 3 && (!extra || l15 >= downThree) {
+	if n == 3 && (!extra || held >= 0 && held < downThree) {
 		n = 2
 	}
 	return strconv.Itoa(n)
@@ -180,12 +222,26 @@ func run(d deps) int {
 		free, mem = -1, "unknown"
 		late = errors.Join(late, memErr)
 	}
+	// CPU idle it cannot read rules out the extra slots too, and the run ends loud
+	idle, cpuErr := d.cpu()
+	cpu := fmt.Sprintf("%.1f%%", idle) // one decimal: 39.6% must not read as the 40% of a step it did not take
+	if cpuErr != nil {
+		idle, cpu = -1, "unknown"
+		late = errors.Join(late, cpuErr)
+		st.Idle = nil
+	} else if st.Idle = append(st.Idle, idle); len(st.Idle) > downRuns {
+		st.Idle = st.Idle[len(st.Idle)-downRuns:]
+	}
+	held := -1.0
+	if len(st.Idle) == downRuns {
+		held = slices.Max(st.Idle)
+	}
 	b, err = os.ReadFile(d.slots)
 	if err != nil {
 		return fail(err)
 	}
 	cur := strings.TrimSpace(string(b))
-	loads := fmt.Sprintf("load5 %.2f, load15 %.2f, memory free %s", l5, l15, mem)
+	loads := fmt.Sprintf("load5 %.2f, load15 %.2f, cpu idle %s, memory free %s", l5, l15, cpu, mem)
 	if n, err := strconv.Atoi(cur); err != nil || n < 0 { // empty or broken: failing to look, never a hand value (review P3-1)
 		return fail(fmt.Errorf("slots file %s holds %q, not a slot count", d.slots, cur))
 	}
@@ -197,7 +253,7 @@ func run(d deps) int {
 		back, err := quietLongEnough(&st, l15, now)
 		late = errors.Join(late, err)
 		if back {
-			line := fmt.Sprintf("extra heavy slots allowed again: load15 under %g for %d min (%s)", quiet, int(backAfter.Minutes()), loads)
+			line := fmt.Sprintf("extra heavy slots allowed again: load15 under %g for %d min (%s)", limit, int(backAfter.Minutes()), loads)
 			fmt.Fprintf(d.out, "%s %s\n", now.Format(time.RFC3339), line)
 			if err := watchdog.PostOn(d.home, "crius", "INFO", "crius:loadwatch", "crius:lead", now, line); err != nil {
 				return fail(fmt.Errorf("extra slots back, but the bus line failed: %w", err))
@@ -206,7 +262,7 @@ func run(d deps) int {
 	}
 	// the trip is kept before anything can fail: failed() saves the state too (review P1, P3)
 	trip := (cur == "3" || cur == "4") && l5 > limit && !st.NoExtra
-	w := want(l5, l15, free, cur, st.NoExtra)
+	w := want(l5, l15, idle, held, free, cur, st.NoExtra)
 	if trip {
 		st.NoExtra = true
 	}
@@ -221,8 +277,8 @@ func run(d deps) int {
 		}
 	}
 	if trip {
-		line := fmt.Sprintf("extra heavy slots off: load5 %.2f over %g with %s slots (load15 %.2f, memory free %s); the most is 2 until load15 has been under %g for %d min",
-			l5, limit, cur, l15, mem, quiet, int(backAfter.Minutes()))
+		line := fmt.Sprintf("extra heavy slots off: load5 %.2f over %g with %s slots (load15 %.2f, cpu idle %s, memory free %s); the most is 2 until load15 has been under %g for %d min",
+			l5, limit, cur, l15, cpu, mem, limit, int(backAfter.Minutes()))
 		fmt.Fprintf(d.out, "%s %s\n", now.Format(time.RFC3339), line)
 		if err := watchdog.PostOn(d.home, "crius", "INFO", "crius:loadwatch", "crius:lead", now, line); err != nil {
 			return fail(fmt.Errorf("extra slots off, but the bus line failed: %w", err))
@@ -264,12 +320,12 @@ func hungLoud(d deps, st *state, now time.Time) error {
 	return err
 }
 
-// quietLongEnough keeps the quiet clock of tripped extra slots: a 15-min load at quiet or more stops it, the first
+// quietLongEnough keeps the quiet clock of tripped extra slots: a 15-min load at limit or more stops it, the first
 // minute under starts it, and once it has run backAfter the extras are back on (true). A gap of more than maxGap since
 // the last quiet reading (Mac asleep, missed or failed runs), a clock set back, or a stamp it cannot parse (said in the
 // error) starts it again (review P2, P3).
 func quietLongEnough(st *state, l15 float64, now time.Time) (bool, error) {
-	if l15 >= quiet {
+	if l15 >= limit {
 		st.QuietSince, st.QuietLast = "", ""
 		return false, nil
 	}

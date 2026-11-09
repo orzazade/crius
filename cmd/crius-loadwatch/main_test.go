@@ -18,6 +18,8 @@ type rig struct {
 	l5, l15  float64
 	loadErr  error
 	free     int
+	idle     float64
+	cpuErr   error
 	memErr   error
 	busPath  string
 	slotPath string
@@ -33,7 +35,7 @@ type rig struct {
 func newRig(t *testing.T, slots string) *rig {
 	t.Helper()
 	dir := t.TempDir()
-	r := &rig{now: time.Date(2026, 11, 8, 3, 0, 0, 0, time.Local), free: 80}
+	r := &rig{now: time.Date(2026, 11, 8, 3, 0, 0, 0, time.Local), free: 80, idle: 20} // idle under 25%: 2 slots unless a test asks for more
 	if err := os.MkdirAll(filepath.Join(dir, "home", "bus"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -47,6 +49,7 @@ func newRig(t *testing.T, slots string) *rig {
 	r.d = deps{home: filepath.Join(dir, "home"), slots: r.slotPath, state: filepath.Join(dir, "home", "state", "loadwatch.json"),
 		now: func() time.Time { return r.now }, load: func() (float64, float64, error) { return r.l5, r.l15, r.loadErr },
 		mem: func() (int, error) { return r.free, r.memErr }, out: &r.out,
+		cpu:     func() (float64, error) { return r.idle, r.cpuErr },
 		ps:      func() ([]proc, error) { return r.procs, r.psErr },
 		outputs: func([]int) ([]string, error) { return r.outFiles, r.outErr },
 		lead: func(string) (string, []string, error) {
@@ -104,7 +107,7 @@ func TestFiveMinuteLoadOverDropsToOneAtOnce(t *testing.T) {
 		t.Fatalf("first minute over: rc %d slots %s", rc, r.slots(t))
 	}
 	r.minutes(10, 30, 29)
-	want := "2026-11-08T03:03 INFO crius:loadwatch -> all — heavy slots 2 -> 1 (load5 28.50, load15 29.00, memory free 80%)"
+	want := "2026-11-08T03:03 INFO crius:loadwatch -> all — heavy slots 2 -> 1 (load5 28.50, load15 29.00, cpu idle 20.0%, memory free 80%)"
 	if b := r.bus(t); len(b) != 1 || b[0] != want || r.slots(t) != "1" {
 		t.Fatalf("bus %q, want one line %q; slots %s", b, want, r.slots(t))
 	}
@@ -119,7 +122,7 @@ func TestBackToTwoOnlyWhenTheFifteenMinuteLoadIsUnder(t *testing.T) {
 		t.Fatalf("load5 back under, load15 28: slots %s bus %q", r.slots(t), r.bus(t))
 	}
 	r.minutes(1, 20, 27.9)
-	if b := r.bus(t); r.slots(t) != "2" || len(b) != 2 || !strings.HasSuffix(b[1], "heavy slots 1 -> 2 (load5 20.00, load15 27.90, memory free 80%)") {
+	if b := r.bus(t); r.slots(t) != "2" || len(b) != 2 || !strings.HasSuffix(b[1], "heavy slots 1 -> 2 (load5 20.00, load15 27.90, cpu idle 20.0%, memory free 80%)") {
 		t.Fatalf("slots %s bus %q", r.slots(t), b)
 	}
 }
@@ -194,52 +197,18 @@ func TestAnEmptySlotsFileIsLoud(t *testing.T) {
 	}
 }
 
-// The queue rule (crius:lead DECISION 11-08: 10 jobs waited on 2 slots at load 13 and 83% memory free): 3 slots when
-// the 15-min load is under 18 and memory is at least 40% free; 2 between that and the over-28 rule.
-func TestAQuietMachineGetsAThirdSlot(t *testing.T) {
-	r := newRig(t, "2")
-	if r.minutes(1, 17, 18); r.slots(t) != "2" {
-		t.Fatalf("load15 18 is not under 18: slots %s", r.slots(t))
-	}
-	r.free = 39
-	if r.minutes(1, 17, 17.9); r.slots(t) != "2" {
-		t.Fatalf("39%% free is under 40: slots %s", r.slots(t))
-	}
-	r.free = 40
-	r.minutes(3, 17, 17.9)
-	b := r.bus(t)
-	if r.slots(t) != "3" || len(b) != 1 || !strings.HasSuffix(b[0], "heavy slots 2 -> 3 (load5 17.00, load15 17.90, memory free 40%)") {
-		t.Fatalf("slots %s bus %q", r.slots(t), b)
-	}
-	// load15 at 22 (or memory under 40%): 2, not 1
-	r.minutes(1, 20, 22)
-	if b := r.bus(t); r.slots(t) != "2" || len(b) != 2 || !strings.Contains(b[1], "heavy slots 3 -> 2") {
-		t.Fatalf("slots %s bus %q", r.slots(t), b)
-	}
-	r.minutes(1, 17, 17)
-	r.free = 30
-	if r.minutes(1, 17, 17); r.slots(t) != "2" {
-		t.Fatalf("memory 30%% free with 3 slots: slots %s", r.slots(t))
-	}
-	// from 1, a quiet machine goes straight to 3
-	r.free = 80
-	r.minutes(1, 29, 17)
-	if r.minutes(1, 10, 15); r.slots(t) != "3" {
-		t.Fatalf("1 -> 3: slots %s", r.slots(t))
-	}
-}
-
 // The 5-min load over 28 while 3 or 4 slots are set: 1 at once as before, and the extra slots are turned off (the most
 // it sets is 2), with the numbers posted to crius:lead (DECISION 11-08: drop back to 2 and post the numbers).
 func TestOverloadWithThreeSlotsTurnsTheThirdOff(t *testing.T) {
 	r := newRig(t, "3")
 	r.minutes(1, 28.4, 17)
 	b := r.bus(t)
-	if r.slots(t) != "1" || len(b) != 2 || !strings.Contains(b[0], "heavy slots 3 -> 1 (load5 28.40, load15 17.00, memory free 80%)") ||
-		!strings.Contains(b[1], " INFO crius:loadwatch -> crius:lead — extra heavy slots off: load5 28.40 over 28 with 3 slots (load15 17.00, memory free 80%)") {
+	if r.slots(t) != "1" || len(b) != 2 || !strings.Contains(b[0], "heavy slots 3 -> 1 (load5 28.40, load15 17.00, cpu idle 20.0%, memory free 80%)") ||
+		!strings.Contains(b[1], " INFO crius:loadwatch -> crius:lead — extra heavy slots off: load5 28.40 over 28 with 3 slots (load15 17.00, cpu idle 20.0%, memory free 80%)") {
 		t.Fatalf("slots %s bus %q", r.slots(t), b)
 	}
-	if r.minutes(20, 10, 10); r.slots(t) != "2" || len(r.bus(t)) != 3 {
+	r.idle = 80
+	if r.minutes(5, 10, 10); r.slots(t) != "2" || len(r.bus(t)) != 3 {
 		t.Fatalf("after the trip the most is 2: slots %s bus %q", r.slots(t), r.bus(t))
 	}
 	r.minutes(1, 29, 10) // over 28 again with 2 slots: no second trip line
@@ -299,53 +268,15 @@ func TestTheLoadRulesHoldWhenMemoryCannotBeRead(t *testing.T) {
 	}
 }
 
-// The 4-slot step (crius:lead DECISION 11-08: 15 jobs waited on 3 slots at load15 14.5, 76% free): 4 when the 15-min
-// load is under 12 and memory is at least 40% free; 3 between 12 and 18.
-func TestAVeryQuietMachineGetsAFourthSlot(t *testing.T) {
-	r := newRig(t, "3")
-	if r.minutes(1, 10, 12); r.slots(t) != "3" {
-		t.Fatalf("load15 12 is not under 12: slots %s", r.slots(t))
-	}
-	r.free = 39
-	if r.minutes(1, 10, 11.9); r.slots(t) != "2" {
-		t.Fatalf("39%% free: slots %s", r.slots(t))
-	}
-	r.free = 40
-	r.minutes(2, 7.8, 11.9)
-	if b := r.bus(t); r.slots(t) != "4" || !strings.HasSuffix(b[len(b)-1], "heavy slots 2 -> 4 (load5 7.80, load15 11.90, memory free 40%)") {
-		t.Fatalf("slots %s bus %q", r.slots(t), b)
-	}
-	// down from 4 only at load15 16, from 3 only at 22 (dead band, crius:lead DECISION 11-08)
-	for _, c := range []struct {
-		l15  float64
-		want string
-	}{{13, "4"}, {15.9, "4"}, {16, "3"}, {17.9, "3"}, {21.9, "3"}, {22, "2"}, {17.9, "3"}} {
-		if r.minutes(1, 14, c.l15); r.slots(t) != c.want {
-			t.Fatalf("load15 %.1f: slots %s, want %s", c.l15, r.slots(t), c.want)
-		}
-	}
-}
-
-// The flap of 11-08 04:41-04:51 (2 -> 3 -> 2 -> 3 in 10 min at load15 ~18) is one step up with the dead band.
-func TestTheFlapOf0441IsOneStep(t *testing.T) {
-	r := newRig(t, "2")
-	r.free = 78
-	for _, l := range [][2]float64{{14.12, 17.50}, {22.66, 18.55}, {21.0, 18.3}, {19.77, 17.96}} {
-		r.minutes(1, l[0], l[1])
-	}
-	if b := r.bus(t); r.slots(t) != "3" || len(b) != 1 || !strings.Contains(b[0], "heavy slots 2 -> 3 (load5 14.12, load15 17.50") {
-		t.Fatalf("slots %s bus %q", r.slots(t), b)
-	}
-}
-
-// 4 slots with load15 at 22 or more goes straight to 2; memory under 40% takes 4 to 2 as well.
+// 4 slots under 15% CPU idle goes straight to 2; memory under 40% takes 4 to 2 as well.
 func TestAStepDownFromFourGoesToTheRightLevel(t *testing.T) {
 	r := newRig(t, "4")
-	if r.minutes(1, 20, 23); r.slots(t) != "2" {
-		t.Fatalf("load15 23: slots %s", r.slots(t))
+	r.idle = 10
+	if r.minutes(3, 20, 23); r.slots(t) != "2" {
+		t.Fatalf("idle 10%%: slots %s", r.slots(t))
 	}
 	r = newRig(t, "4")
-	r.free = 39
+	r.idle, r.free = 80, 39
 	if r.minutes(1, 10, 10); r.slots(t) != "2" {
 		t.Fatalf("39%% free: slots %s", r.slots(t))
 	}
@@ -358,6 +289,7 @@ func TestAStepDownFromFourGoesToTheRightLevel(t *testing.T) {
 // The 5-min load over 28 with 4 slots: 1 at once, and neither 3 nor 4 comes back.
 func TestOverloadWithFourSlotsTurnsTheExtrasOff(t *testing.T) {
 	r := newRig(t, "4")
+	r.idle = 80
 	r.minutes(1, 30, 11)
 	b := r.bus(t)
 	if r.slots(t) != "1" || len(b) != 2 || !strings.Contains(b[1], "extra heavy slots off: load5 30.00 over 28 with 4 slots") {
@@ -368,54 +300,29 @@ func TestOverloadWithFourSlotsTurnsTheExtrasOff(t *testing.T) {
 	}
 }
 
-// The extras come back once the 15-min load has been under 18 for 30 minutes after the trip, with one INFO to
-// crius:lead; then the normal up-steps apply. A minute at 18 or more starts the 30 minutes again (crius:lead DECISION
-// 11-08: the 04:56 overload was npm ci and Spotlight, not the heavy jobs, so "off for good" was too strict).
-func TestTheExtrasComeBackAfterThirtyQuietMinutes(t *testing.T) {
-	r := newRig(t, "3")
-	r.minutes(1, 29, 17)  // 03:00 trip: 3 -> 1
-	r.minutes(10, 20, 17) // 03:01-03:10 quiet: 1 -> 2 at 03:01
-	r.minutes(1, 20, 18)  // 03:11 not under 18: the clock starts again
-	r.minutes(30, 20, 17) // 03:12-03:41: the clock starts at 03:12, 29 min by 03:41
-	if b := r.bus(t); r.slots(t) != "2" || len(b) != 3 {
-		t.Fatalf("29 quiet minutes: slots %s bus %q", r.slots(t), b)
-	}
-	r.minutes(1, 20, 17) // 03:42: 30 minutes since 03:12
-	b := r.bus(t)
-	if r.slots(t) != "3" || len(b) != 5 ||
-		!strings.Contains(b[3], " INFO crius:loadwatch -> crius:lead — extra heavy slots allowed again: load15 under 18 for 30 min (load5 20.00, load15 17.00, memory free 80%)") ||
-		!strings.Contains(b[4], "heavy slots 2 -> 3") {
-		t.Fatalf("slots %s bus %q", r.slots(t), b)
-	}
-	// and they can trip again
-	r.minutes(1, 29, 17)
-	if b := r.bus(t); r.slots(t) != "1" || !strings.Contains(b[len(b)-1], "extra heavy slots off") {
-		t.Fatalf("second trip: slots %s bus %q", r.slots(t), b)
-	}
-}
-
 // The trip line says how the extras come back.
 func TestTheTripLineSaysWhenTheExtrasReturn(t *testing.T) {
 	r := newRig(t, "4")
 	r.minutes(1, 30, 11)
-	if b := r.bus(t); len(b) != 2 || !strings.HasSuffix(b[1], "the most is 2 until load15 has been under 18 for 30 min") {
+	if b := r.bus(t); len(b) != 2 || !strings.HasSuffix(b[1], "the most is 2 until load15 has been under 28 for 10 min") {
 		t.Fatalf("bus %q", b)
 	}
 }
 
 // A gap in the readings (Mac asleep, missed or failed runs) or a clock set back restarts the quiet clock: the extras
-// come back only after 30 minutes of readings with no gap over 3 minutes (review P2, P3).
+// come back only after 10 minutes of readings with no gap over 3 minutes (review P2, P3).
 func TestAGapRestartsTheQuietClock(t *testing.T) {
 	for _, jump := range []time.Duration{40 * time.Minute, -2 * time.Hour} {
 		r := newRig(t, "3")
+		r.idle = 80
 		r.minutes(1, 29, 17)
 		r.minutes(5, 20, 17)
 		r.now = r.now.Add(jump)
-		if r.minutes(30, 20, 17); r.slots(t) != "2" {
-			t.Fatalf("jump %v: back within 30 min of the gap: slots %s", jump, r.slots(t))
+		if r.minutes(10, 20, 17); r.slots(t) != "2" {
+			t.Fatalf("jump %v: back within 10 min of the gap: slots %s", jump, r.slots(t))
 		}
-		if r.minutes(1, 20, 17); r.slots(t) != "3" {
-			t.Fatalf("jump %v: not back 30 min after the gap: slots %s", jump, r.slots(t))
+		if r.minutes(1, 20, 17); r.slots(t) != "4" {
+			t.Fatalf("jump %v: not back 10 min after the gap: slots %s", jump, r.slots(t))
 		}
 	}
 }
@@ -425,6 +332,7 @@ func TestAGapRestartsTheQuietClock(t *testing.T) {
 func TestABrokenStateKeepsTheExtrasOff(t *testing.T) {
 	for _, bad := range []string{"{garbage", `{"noExtra":true,"quietSince":"x","quietLast":"x"}`} {
 		r := newRig(t, "2")
+		r.idle = 80
 		if err := os.WriteFile(r.d.state, []byte(bad), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -434,12 +342,12 @@ func TestABrokenStateKeepsTheExtrasOff(t *testing.T) {
 		if rc := r.minutes(1, 29, 10); rc != 0 || r.slots(t) != "1" {
 			t.Fatalf("%s: over 28: rc %d slots %s", bad, rc, r.slots(t))
 		}
-		r.minutes(28, 20, 10) // the clock started at the first run (03:00): 29 min by 03:29
+		r.minutes(8, 20, 10) // the clock started at the first run (03:00): 9 min by 03:09
 		if r.slots(t) != "2" {
-			t.Fatalf("%s: back before 30 quiet minutes: slots %s", bad, r.slots(t))
+			t.Fatalf("%s: back before 10 quiet minutes: slots %s", bad, r.slots(t))
 		}
 		if r.minutes(1, 10, 10); r.slots(t) != "4" {
-			t.Fatalf("%s: not back after 30 quiet minutes: slots %s", bad, r.slots(t))
+			t.Fatalf("%s: not back after 10 quiet minutes: slots %s", bad, r.slots(t))
 		}
 	}
 }
@@ -472,5 +380,171 @@ func TestABrokenStateIsSaidWhenTheSlotWriteFails(t *testing.T) {
 	defer os.Chmod(dir, 0o700)
 	if rc := r.minutes(1, 29, 10); rc != 2 || len(r.bus(t)) != 1 || !strings.Contains(r.bus(t)[0], "extra slots kept off") {
 		t.Fatalf("rc %d bus %q", rc, r.bus(t))
+	}
+}
+
+// The up-steps follow CPU idle, not the load average (crius:lead 11-09: load 17-28 came with CPU 56% idle and 53% memory
+// free, and 18 jobs waited 25 min on 2 slots): 4 at idle 40% or more with memory at least 40% free, 3 at idle 25% or
+// more, else 2. The load average still decides the trip (5-min over 28) and the way back from 1 (15-min under 28).
+func TestUpStepsFollowCPUIdle(t *testing.T) {
+	r := newRig(t, "2")
+	r.idle, r.free = 56, 53
+	r.minutes(1, 20, 22)
+	if b := r.bus(t); r.slots(t) != "4" || len(b) != 1 || !strings.HasSuffix(b[0], "heavy slots 2 -> 4 (load5 20.00, load15 22.00, cpu idle 56.0%, memory free 53%)") {
+		t.Fatalf("the 11-09 case: slots %s bus %q", r.slots(t), b)
+	}
+	for _, c := range []struct {
+		idle float64
+		free int
+		want string
+	}{{40, 40, "4"}, {39.9, 80, "3"}, {25, 80, "3"}, {24.9, 80, "2"}, {80, 39, "2"}} {
+		r := newRig(t, "2")
+		r.idle, r.free = c.idle, c.free
+		if r.minutes(1, 27, 27.9); r.slots(t) != c.want {
+			t.Fatalf("idle %.1f%%, memory %d%%: slots %s, want %s", c.idle, c.free, r.slots(t), c.want)
+		}
+	}
+}
+
+// The extra slots come down only past a dead band of 10 points of idle held for three readings, so a noisy minute does
+// not flap them: 4 to 3 under 30% idle, 3 to 2 under 15% (straight from 4 to 2 under 15%), and at once to 2 with memory
+// under 40% free. Each row here is three minutes at that idle.
+func TestCPUIdleStepsDownPastADeadBand(t *testing.T) {
+	r := newRig(t, "4")
+	for _, c := range []struct {
+		idle float64
+		want string
+	}{{39, "4"}, {30, "4"}, {29.9, "3"}, {24, "3"}, {15, "3"}, {14.9, "2"}, {24.9, "2"}, {25, "3"}, {41, "4"}, {14, "2"}} {
+		r.idle = c.idle
+		if r.minutes(3, 20, 22); r.slots(t) != c.want {
+			t.Fatalf("idle %.1f%%: slots %s, want %s", c.idle, r.slots(t), c.want)
+		}
+	}
+	r = newRig(t, "4")
+	r.idle, r.free = 80, 39
+	if r.minutes(1, 10, 10); r.slots(t) != "2" {
+		t.Fatalf("39%% free: slots %s", r.slots(t))
+	}
+}
+
+// A trip ends once the 15-min load has been under 28 for 10 minutes (crius:lead 11-09; was under 18 for 30 min); a
+// minute at 28 starts the 10 minutes again.
+func TestTheTripEndsAfterTenMinutesUnderTwentyEight(t *testing.T) {
+	r := newRig(t, "3")
+	r.idle = 80
+	r.minutes(1, 29, 27)    // 03:00 trip: 3 -> 1
+	r.minutes(4, 20, 27)    // 03:01-03:04: 1 -> 2 at 03:01
+	r.minutes(1, 20, 28)    // 03:05 not under 28: the clock starts again
+	r.minutes(10, 20, 27.9) // 03:06-03:15: the clock starts at 03:06, 9 min by 03:15
+	if b := r.bus(t); r.slots(t) != "2" || len(b) != 3 {
+		t.Fatalf("9 minutes under 28: slots %s bus %q", r.slots(t), b)
+	}
+	r.minutes(1, 20, 27.9) // 03:16: 10 minutes since 03:06
+	b := r.bus(t)
+	if r.slots(t) != "4" || len(b) != 5 ||
+		!strings.Contains(b[3], " INFO crius:loadwatch -> crius:lead — extra heavy slots allowed again: load15 under 28 for 10 min (load5 20.00, load15 27.90, cpu idle 80.0%, memory free 80%)") ||
+		!strings.Contains(b[4], "heavy slots 2 -> 4") {
+		t.Fatalf("slots %s bus %q", r.slots(t), b)
+	}
+	// and they can trip again
+	r.minutes(1, 29, 17)
+	if b := r.bus(t); r.slots(t) != "1" || !strings.Contains(b[len(b)-1], "extra heavy slots off") {
+		t.Fatalf("second trip: slots %s bus %q", r.slots(t), b)
+	}
+}
+
+// CPU idle it cannot read rules out the extra slots like unread memory: the load rules hold and the run is loud.
+func TestCPUIdleItCannotReadIsLoud(t *testing.T) {
+	r := newRig(t, "4")
+	r.cpuErr = errors.New("top: exit status 1")
+	if rc := r.minutes(1, 10, 10); rc != 2 || r.slots(t) != "2" || !strings.Contains(strings.Join(r.bus(t), "\n"), "cpu idle unknown") ||
+		!strings.Contains(r.out.String(), "top: exit status 1") {
+		t.Fatalf("rc %d slots %s bus %q out %q", rc, r.slots(t), r.bus(t), r.out.String())
+	}
+	if rc := r.minutes(1, 29, 10); rc != 2 || r.slots(t) != "1" {
+		t.Fatalf("over 28: rc %d slots %s", rc, r.slots(t))
+	}
+}
+
+// top's second sample is the one that counts (the first covers the time since boot).
+func TestParseTopIdle(t *testing.T) {
+	out := "Processes: 900 total\nCPU usage: 5.10% user, 3.20% sys, 91.70% idle \nPhysMem: 40G used\n" +
+		"Processes: 901 total\nCPU usage: 30.25% user, 13.50% sys, 56.25% idle \nPhysMem: 40G used\n"
+	if v, err := parseTopIdle(out); err != nil || v != 56.25 {
+		t.Fatalf("got %v, %v", v, err)
+	}
+	if _, err := parseTopIdle("Processes: 900 total\nCPU usage: 5.10% user, 3.20% sys, 91.70% idle\n"); err == nil {
+		t.Fatalf("one sample: want an error")
+	}
+	if _, err := parseTopIdle("nothing here"); err == nil {
+		t.Fatalf("no CPU line: want an error")
+	}
+}
+
+// One noisy 5 s reading does not take a slot away: a step down needs three readings in a row under the band (review
+// P2-1: idle read 53-65% here, then 19% in one window). Up-steps stay at once.
+func TestANoisyMinuteDoesNotStepDown(t *testing.T) {
+	r := newRig(t, "4")
+	for _, idle := range []float64{55, 19.3, 60, 12, 58, 29, 29, 41, 14, 14} {
+		r.idle = idle
+		if r.minutes(1, 20, 22); r.slots(t) != "4" {
+			t.Fatalf("idle %.1f%%: slots %s, bus %q", idle, r.slots(t), r.bus(t))
+		}
+	}
+	r.idle = 14
+	if r.minutes(1, 20, 22); r.slots(t) != "2" || len(r.bus(t)) != 1 || !strings.Contains(r.bus(t)[0], "heavy slots 4 -> 2") {
+		t.Fatalf("three readings under 15%%: slots %s bus %q", r.slots(t), r.bus(t))
+	}
+	r.idle = 41
+	if r.minutes(1, 20, 22); r.slots(t) != "4" {
+		t.Fatalf("up at once: slots %s", r.slots(t))
+	}
+}
+
+// The 15-min load at 28 or more stops the up-steps only: from 2 a free CPU does not raise the count, 4 stays while
+// idle holds, and from 1 the way back can go straight to 4 once it is under 28 (review P3-1, P3-5).
+func TestTheFifteenMinuteLoadStopsOnlyTheUpSteps(t *testing.T) {
+	r := newRig(t, "2")
+	r.idle = 80
+	if r.minutes(3, 20, 28); r.slots(t) != "2" {
+		t.Fatalf("2 at load15 28: slots %s", r.slots(t))
+	}
+	r = newRig(t, "4")
+	r.idle = 80
+	if r.minutes(3, 20, 30); r.slots(t) != "4" {
+		t.Fatalf("4 at load15 30, idle 80%%: slots %s", r.slots(t))
+	}
+	r = newRig(t, "2")
+	r.idle = 80
+	r.minutes(1, 29, 29)
+	if r.minutes(1, 20, 27); r.slots(t) != "4" {
+		t.Fatalf("1 -> 4: slots %s", r.slots(t))
+	}
+}
+
+// 3 slots need memory at least 40% free as well as 4 (review P3-5).
+func TestThreeSlotsNeedFreeMemory(t *testing.T) {
+	r := newRig(t, "2")
+	r.idle, r.free = 30, 39
+	if r.minutes(1, 20, 22); r.slots(t) != "2" {
+		t.Fatalf("idle 30%%, 39%% free: slots %s", r.slots(t))
+	}
+}
+
+// The bus line says idle to one decimal, so 39.6% never reads as the 40% of a step it did not take (review P3-4).
+func TestTheIdleOnTheBusLineMatchesTheStep(t *testing.T) {
+	r := newRig(t, "2")
+	r.idle = 39.6
+	if r.minutes(1, 20, 22); r.slots(t) != "3" || !strings.Contains(r.bus(t)[0], "cpu idle 39.6%") {
+		t.Fatalf("slots %s bus %q", r.slots(t), r.bus(t))
+	}
+}
+
+// A CPU line with no idle field or a broken number is an error, never 0% (review P3-5).
+func TestParseTopIdleRefusesABrokenLine(t *testing.T) {
+	for _, l := range []string{"CPU usage: 30.25% user, 13.50% sys", "CPU usage: 30.25% user, 13.50% sys, x% idle"} {
+		if _, err := parseTopIdle("CPU usage: 5.10% user, 3.20% sys, 91.70% idle\n" + l + "\n"); err == nil {
+			t.Fatalf("%q: want an error", l)
+		}
 	}
 }
