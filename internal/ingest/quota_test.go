@@ -118,6 +118,16 @@ func (x *ic) report() *quota.Report {
 	return rep
 }
 
+// Owner 11-07, 11-08: never the enterprise account, not even as a fallback; when every Max account is spent, all work
+// stops until a reset. A quota push says that and offers enterprise to no work (the 11-09 09:00 push said "only
+// Appxite work () may continue, on enterprise").
+const maxOnly = "never the enterprise account; all Max spent means all work stops until a reset"
+
+func offersEnterprise(text string) bool {
+	return strings.Contains(text, "may continue") || strings.Contains(text, "on enterprise") ||
+		strings.Contains(text, "on the Appxite enterprise account") || strings.Contains(text, "Appxite work")
+}
+
 // Day 3 of the epoch (started 2.5 days ago) at 62%: one push (design §9), and a second run adds none. 62% by day 3
 // also runs out before the reset, so that one push is the runout push, carrying the pace facts too.
 func TestQuotaAtSixtyPercentOnDayThreePushesOnce(t *testing.T) {
@@ -129,8 +139,8 @@ func TestQuotaAtSixtyPercentOnDayThreePushesOnce(t *testing.T) {
 	x.run()
 	push := grepAlerts(x.alerts(), "— quota ")
 	if len(push) != 1 || !strings.Contains(push[0], "7d 62% day 3") || !strings.Contains(push[0], "top burner demo 100%, slow it") ||
-		!strings.Contains(push[0], "only Appxite work (axi) may continue") || !strings.Contains(push[0], "Enterprise this week") {
-		t.Fatalf("want one whole push naming the top burner and the Appxite rule, got %q", x.alerts())
+		!strings.Contains(push[0], maxOnly) || offersEnterprise(push[0]) || !strings.Contains(push[0], "Enterprise this week") {
+		t.Fatalf("want one whole push naming the top burner and the Max-only rule, got %q", x.alerts())
 	}
 	eq(t, x.one("select count(*) from quota"), "2")
 	eq(t, x.q("select rl from account_seen where session=?", x.sid), [][]string{{"1"}, {"1"}})
@@ -155,8 +165,9 @@ func TestQuotaBelowThePaceRuleDoesNotPush(t *testing.T) {
 	}
 }
 
-// At 100% the push names Appxite-only work and the enterprise account, with enterprise $ so far.
-func TestQuotaUsedUpNamesAppxiteOnlyAndTheEnterpriseAccount(t *testing.T) {
+// At 100% the push says the next Max account, never the enterprise account, and all work stops when every Max is
+// spent; with enterprise $ so far.
+func TestQuotaUsedUpSaysMaxOnly(t *testing.T) {
 	x := quotaCase(t)
 	reset := qNow.Add(24 * time.Hour)
 	x.session("personal", x.sid, "/work/demo", "", qNow.Add(-20*time.Minute))
@@ -167,9 +178,9 @@ func TestQuotaUsedUpNamesAppxiteOnlyAndTheEnterpriseAccount(t *testing.T) {
 	x.run()
 	x.run()
 	used := grepAlerts(x.alerts(), "quota used up")
-	if len(used) != 1 || !strings.Contains(used[0], "Only Appxite work (axi) may continue, on the Appxite enterprise account") ||
+	if len(used) != 1 || !strings.Contains(used[0], maxOnly) || offersEnterprise(used[0]) ||
 		!strings.Contains(used[0], "Enterprise this week $") || strings.Contains(used[0], "Enterprise this week $0.00 ") {
-		t.Fatalf("want one used-up push naming Appxite-only work and enterprise $, got %q", x.alerts())
+		t.Fatalf("want one used-up push naming the Max-only rule and enterprise $, got %q", x.alerts())
 	}
 	if got := grepAlerts(x.alerts(), "quota pace"); len(got) != 0 {
 		t.Fatalf("used up is one push, not two: %q", got)
@@ -606,8 +617,8 @@ func TestQuotaPaceFasterThanTheSevenDayAverage(t *testing.T) {
 	}
 }
 
-// §8: when the share will pass 100% before resets_at at this pace, one push (from day 2) says only Appxite work may
-// continue on the enterprise account.
+// §8: when the share will pass 100% before resets_at at this pace, one push (from day 2) says to move to the next Max
+// account, never the enterprise one (owner 11-07, 11-08).
 func TestQuotaRunsOutBeforeTheResetPushesOnce(t *testing.T) {
 	day := 24 * time.Hour
 	for _, c := range []struct {
@@ -627,7 +638,7 @@ func TestQuotaRunsOutBeforeTheResetPushesOnce(t *testing.T) {
 			x.run()
 			x.run()
 			got := grepAlerts(x.alerts(), "quota runs out")
-			if len(got) != c.want || c.want == 1 && (!strings.Contains(got[0], "only Appxite work (axi) may continue") ||
+			if len(got) != c.want || c.want == 1 && (!strings.Contains(got[0], maxOnly) || offersEnterprise(got[0]) ||
 				!strings.Contains(got[0], "Enterprise this week")) {
 				t.Fatalf("want %d, got %q", c.want, x.alerts())
 			}

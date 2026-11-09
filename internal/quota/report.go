@@ -1060,18 +1060,6 @@ func cash(v float64) string {
 	return ">$999T"
 }
 
-func names(ps []string) string {
-	var out []string
-	for i, p := range ps {
-		if i == 2 {
-			out = append(out, fmt.Sprintf("+%d more", len(ps)-2))
-			break
-		}
-		out = append(out, short(p))
-	}
-	return strings.Join(out, ", ")
-}
-
 // Burners is the top n Max projects with their share of Max $ (when there is a Max $ to share).
 func (r *Report) Burners(n int) string {
 	var out []string
@@ -1109,10 +1097,14 @@ func (r *Report) PaceText() string {
 	return "quota pace high: " + r.pace() + " · top burners: " + r.Burners(2) + r.suggestion() + ". " + r.entWeek()
 }
 
+// MaxOnly is the owner's rule a quota push ends on (11-07, 11-08): the enterprise account is never a fallback, and when
+// every Max account is spent all work stops until a reset.
+const MaxOnly = "never the enterprise account; all Max spent means all work stops until a reset"
+
 // RunoutText is the push when the subscription will be used up before the reset at this pace (design §8). It also
 // carries the pace facts and suggestion, so it can stand for the pace push when both are due in one run; it is the
 // longest push, so its wording is the shortest.
-func (r *Report) RunoutText(enterpriseOK map[string]bool) string {
+func (r *Report) RunoutText() string {
 	t := fmt.Sprintf("quota runs out ~%s: 7d %.0f%% day %d, %.1f%%/day", when(r.Runout()), r.SevenPct, r.Day, r.PerDay())
 	if r.AvgPerDay > 0 && r.PerDay() > r.AvgPerDay {
 		t += fmt.Sprintf(" (7-day avg %.1f)", r.AvgPerDay)
@@ -1120,15 +1112,13 @@ func (r *Report) RunoutText(enterpriseOK map[string]bool) string {
 	if len(r.Shares) > 0 {
 		t += " · top burner " + r.Burners(1) + ", slow it"
 	}
-	return t + fmt.Sprintf(" · only Appxite work (%s) may continue, on enterprise; personal/scifi work waits until %s · %s",
-		names(okList(enterpriseOK)), when(r.Reset), r.entWeek())
+	return t + " · at the limit use the next Max account, " + MaxOnly + " · " + r.entWeek()
 }
 
 // UsedUpText is the push when the subscription is used up (design §8, D1).
-func (r *Report) UsedUpText(enterpriseOK map[string]bool) string {
-	return fmt.Sprintf("quota used up: 7d %.0f%% until %s. Only Appxite work (%s) may continue, on the Appxite"+
-		" enterprise account; personal and scifi work waits until the reset. %s", r.SevenPct, when(r.Reset),
-		names(okList(enterpriseOK)), r.entWeek())
+func (r *Report) UsedUpText() string {
+	return fmt.Sprintf("quota used up: 7d %.0f%% until %s. Move its sessions to the next Max account (soonest reset"+
+		" under 95%%), %s. %s", r.SevenPct, when(r.Reset), MaxOnly, r.entWeek())
 }
 
 // entWeek is the enterprise $ of the week for a push (the total: by project is in `crius-rec quota`, and a push must
@@ -1142,15 +1132,6 @@ func (r *Report) entWeek() string {
 		return fmt.Sprintf("Enterprise this week ≥ %s + unknown %s.", cash(r.EntWeekUSD), cash(r.UnknownUSD))
 	}
 	return fmt.Sprintf("Enterprise this week unknown %s (not measured).", cash(r.UnknownUSD))
-}
-
-func okList(enterpriseOK map[string]bool) []string {
-	var ps []string
-	for p := range enterpriseOK {
-		ps = append(ps, p)
-	}
-	sort.Strings(ps)
-	return ps
 }
 
 // Text is the violation as the `quota` report says it, names in full.
@@ -1171,14 +1152,14 @@ func (v Violation) text(n int) string {
 			" ended %s; Appxite paid for it. Run this project on the Max account.", id, clip(v.Project, n),
 			clip(v.Source, n), when(v.Ended))
 	case v.Kind == "unmapped" && ended:
-		return fmt.Sprintf("enterprise session %s (ended %s) has no known project (account from %s): add its folder"+
-			" to projects.toml if it is Appxite work.", id, when(v.Ended), clip(v.Source, n))
+		return fmt.Sprintf("enterprise session %s (ended %s) has no known project (account from %s):"+
+			" never the enterprise account (owner 11-07): run its work on a Max account.", id, when(v.Ended), clip(v.Source, n))
 	case v.Kind == "s1":
 		return fmt.Sprintf("S1 personal work on the enterprise account: session %s, project %s (account from %s);"+
 			" Appxite pays for it. Stop it or move it to the Max account.", id, clip(v.Project, n), clip(v.Source, n))
 	case v.Kind == "unmapped":
-		return fmt.Sprintf("enterprise session %s has no known project (account from %s): add its folder to"+
-			" projects.toml, or stop it if it is not Appxite work.", id, clip(v.Source, n))
+		return fmt.Sprintf("enterprise session %s has no known project (account from %s): never the enterprise"+
+			" account (owner 11-07): stop it or move it to a Max account.", id, clip(v.Source, n))
 	}
 	return fmt.Sprintf("account mismatch in session %s (project %s): %s.", id, clip(v.Project, n), clip(v.Source, 2*n))
 }

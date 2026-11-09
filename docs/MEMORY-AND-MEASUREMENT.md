@@ -658,9 +658,8 @@ correct --corrects <row-id> --field project --value axi --reason`; `show <id> --
   days of samples, which needs 7 days of samples), ONE Remote Control push per epoch: speed, top burners, one
   suggestion. No stop. When the subscription is used up, or from day 2 will be before `resets_at` at the current
   pace (its own push, once per epoch; when it and the pace push are both due in one run, it goes alone and carries
-  the pace facts), the push says: only Appxite work (quotes, AXI) may continue, on the Appxite
-  enterprise account; personal and scifi work waits until the reset time. It also shows enterprise $ so far this
-  week. Every alert fits one bus line (≤ 300 chars) by construction: in a push a name is cut to 10 chars, a list to
+  the pace facts), the push says: move to the next Max account; never the enterprise account; when every Max account
+  is spent, all work stops until a reset (owner 11-07, 11-08). It also shows enterprise $ so far this week. Every alert fits one bus line (≤ 300 chars) by construction: in a push a name is cut to 10 chars, a list to
   two names and "+N more", $ to 7 chars ($12.3k); in a guard or stale alert a name to 40. `quota` has them in full.
 - **During the day**: wakes on bus events (Monitor in the pilot, the Falcon bus later); reads the line and `show
   <project>` (≤ 1K tokens); acts through leads.
@@ -679,7 +678,7 @@ correct --corrects <row-id> --field project --value axi --reason`; `show <id> --
 |---|---|---|
 | 1 | `~/.crius/` layout, git-leak test, decision files, item ids with criteria, dated bus grammar + provenance tag in cmux-team templates | leak test fails when a `.db` is tracked or `~/.crius` is in a work tree; 3 decisions incl. a supersede give the right active set; an undated line still parses |
 | 2 | `crius-ingest` v1 (transcripts, git, bus, files) -> durable rows; backup; heartbeat + local watchdog | fixture where one request spans two runs gives one row with max usage; partial line, truncation, replacement and late-arrival fixtures; second run adds 0 rows; stop the ingest -> alert in ≤ 30 min |
-| 3 | Quota sampling (personal statusline with 30-min heartbeat sample) + `quota` | samples at 60% on day 3 -> one push; at 100% the push names Appxite-only work and the enterprise account; a 2-hour gap with open sessions -> "uncovered", not 0; a scifi session on the enterprise account -> S1 |
+| 3 | Quota sampling (personal statusline with 30-min heartbeat sample) + `quota` | samples at 60% on day 3 -> one push; at 100% the push says the next Max account, never the enterprise account, all work stops when every Max is spent; a 2-hour gap with open sessions -> "uncovered", not 0; a scifi session on the enterprise account -> S1 |
 | 4 | `find`, `show`, `health`, `find --deep`, redaction on every sink | recall v0 (20 questions from STATUS.md: "when did mail stop" -> 09-21; "which commit armed k3s hooks" -> cf62176, and (Crius 23:53) at least 10 whose answers live elsewhere: bus lines, commits, hook events; both scores reported; asked as no session, of the store as it was when each question was written, so any caller gets the same score) ≥ 80% top 5; a silent lead appears in `health`; a 40-day-old question -> `expired`; a superseded decision is marked; a true "no" names its scope; a planted secret in a bus line never reaches output, error text or an alert |
 | 5 | Digest + Crius daily start | start ≤ 15K tokens; 5 owner questions answered with no lead tab opened |
 | 6 | `record accept` + scorecard; first descriptive read 10-23 next to the review-1016 scripts | accept refuses evidence on a different sha; numbers match review-1016 within 2%; restore-after-expiry passes; a revoke keeps the acceptance row and lowers the original week; a correction changes the view, not the row; `show --history` lists the chain; a second mistake of one class opens a guard item |
@@ -705,9 +704,11 @@ voice connector; size classes; any metric with no action attached.
 7. Over-building: drop any part nobody reads for 4 weeks.
 
 **Owner decisions, 2026-10-16.**
-- **D1. One Max account for both personas = one weekly quota.** When it is used up, only Appxite work (quotes, AXI)
-  may continue, on the Appxite enterprise account, which bills API cost to the employer. So: enterprise $ is tracked
-  apart (M2e), personal and scifi work never runs on it (account guard, §5), and `quota` and the pace push show both.
+- **D1. Max accounts only (rewritten by the owner 11-07, 11-08).** At a limit, move to the next Max account (soonest
+  reset under 95%). The enterprise account, which bills API cost to the employer, is never a fallback, not even for
+  Appxite work; when every Max account is spent, all work stops until a reset. Enterprise $ is still tracked apart
+  (M2e) and `quota` and the pace push show both. The account guard (§5) still lets a project that projects.toml
+  marks for `enterprise` run on it without an alert; no project is marked now, and dropping that exemption is open.
 - **D2. Everything local (Mac only) for now.** A remote Crius may come later (the owner holds `crius.ai`; note only).
 - **D3. Config changes approved, one at a time as each step comes:** personal statusline with quota samples (step 3),
   the `FINDINGS` line in the codex and quick-review agents (step 6), minimal hooks (step 7, if needed), OTel with an

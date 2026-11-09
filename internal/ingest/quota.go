@@ -219,7 +219,7 @@ func (r *runner) quotaChecks(tx *sql.Tx) error {
 		if err != nil {
 			return err
 		}
-		return r.queueAlert(tx, key, rep.UsedUpText(r.cfg.enterpriseOK()))
+		return r.queueAlert(tx, key, rep.UsedUpText())
 	}
 	// Pace and runout pushes have their own keys; when both are new in one run, the runout push (which carries the
 	// pace facts) goes alone and the pace key is marked as said, so the owner gets one push (design §9).
@@ -241,14 +241,14 @@ func (r *runner) quotaChecks(tx *sql.Tx) error {
 	}
 	switch {
 	case ro && pc:
-		if err := r.queueAlert(tx, runout, rep.RunoutText(r.cfg.enterpriseOK())); err != nil {
+		if err := r.queueAlert(tx, runout, rep.RunoutText()); err != nil {
 			return err
 		}
 		_, err := tx.Exec("insert or ignore into alert (key, ts, text, sent) values (?,?,?,?)", pace, utcNow(),
 			"said in "+runout, utcNow())
 		return err
 	case ro:
-		return r.queueAlert(tx, runout, rep.RunoutText(r.cfg.enterpriseOK()))
+		return r.queueAlert(tx, runout, rep.RunoutText())
 	case pc:
 		return r.queueAlert(tx, pace, rep.PaceText())
 	}
