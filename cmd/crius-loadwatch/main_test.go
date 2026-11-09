@@ -548,3 +548,28 @@ func TestParseTopIdleRefusesABrokenLine(t *testing.T) {
 		}
 	}
 }
+
+// top takes its sample time and more: 5.7 s for a 5 s sample at normal load, past 10 s at load 38 (ALERT 22:35 "top
+// gave no answer in 10s"). It samples over 2 s and has its own 20 s limit, apart from the 10 s of ps and lsof.
+func TestASlowTopIsWaitedFor(t *testing.T) {
+	dir := t.TempDir()
+	args := filepath.Join(dir, "args")
+	slow := filepath.Join(dir, "top")
+	script := "#!/bin/sh\necho \"$@\" > " + args + "\nsleep 0.6\n" +
+		"echo 'CPU usage: 5.10% user, 3.20% sys, 91.70% idle'\necho 'CPU usage: 30.25% user, 13.50% sys, 56.25% idle'\n"
+	if err := os.WriteFile(slow, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	defer func(p string, d time.Duration) { topPath, lookTimeout = p, d }(topPath, lookTimeout)
+	topPath, lookTimeout = slow, 300*time.Millisecond // ps and lsof's limit: top must not be held to it
+	v, err := cpuIdle()
+	if err != nil || v != 56.25 {
+		t.Fatalf("a top slower than the ps/lsof limit: %v, %v", v, err)
+	}
+	if b, _ := os.ReadFile(args); strings.TrimSpace(string(b)) != "-l 2 -n 0 -s 2" {
+		t.Fatalf("top args %q, want a 2 s sample", b)
+	}
+	if topTimeout != 20*time.Second {
+		t.Fatalf("top's limit is %s, want 20s", topTimeout)
+	}
+}

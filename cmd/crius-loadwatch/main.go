@@ -3,8 +3,8 @@
 //
 //   - the 5-min load is over 28: 1 slot, at once;
 //   - else the 15-min load is 28 or more: no step up (easing on the 5-min load flipped 4 times on 11-05);
-//   - else, by CPU idle (top's second sample) with memory at least 40% free (memory_pressure): up to 4 slots at idle
-//     40% or more, 3 at 25% or more; else 2 slots.
+//   - else, by CPU idle (top's second sample, over 2 s) with memory at least 40% free (memory_pressure): up to 4 slots
+//     at idle 40% or more, 3 at 25% or more; else 2 slots.
 //
 // The up-steps follow CPU idle, not the load average: on 11-09 a load of 17-28 came with CPU 56% idle and 53% memory
 // free, 18 jobs waited 25 min on 2 slots, and the slots changed 111 times that day. The extra slots come down, whatever
@@ -128,9 +128,16 @@ func memFree() (int, error) {
 	return 0, fmt.Errorf("memory_pressure: no %q line", key)
 }
 
-// cpuIdle reads the CPU idle percentage from top's second sample over 5 seconds (one second is too noisy to set slots by).
+// topPath is a var for its test. topTimeout bounds top apart from ps and lsof: top takes its sample time and more (5.7 s
+// for a 5 s sample at normal load, past 10 s at load 38: ALERT 22:35), so a 2 s sample gets 20 s.
+var (
+	topPath    = "/usr/bin/top"
+	topTimeout = 20 * time.Second
+)
+
+// cpuIdle reads the CPU idle percentage from top's second sample, over 2 seconds (want smooths the noise: see held).
 func cpuIdle() (float64, error) {
-	b, err := timed(nil, "/usr/bin/top", "-l", "2", "-n", "0", "-s", "5") // a stuck top would hold every run (review P2-2)
+	b, err := timedFor(topTimeout, nil, topPath, "-l", "2", "-n", "0", "-s", "2") // a stuck top would hold every run
 	if err != nil {
 		return 0, fmt.Errorf("top: %w", err)
 	}

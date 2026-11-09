@@ -291,14 +291,19 @@ func sysPS() ([]proc, error) {
 
 // timed runs a tool within lookTimeout and gives its stdout; env nil keeps this process's environment.
 func timed(env []string, name string, args ...string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), lookTimeout)
+	return timedFor(lookTimeout, env, name, args...)
+}
+
+// timedFor is timed with its own limit.
+func timedFor(limit time.Duration, env []string, name string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), limit)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Env = env
 	cmd.WaitDelay = time.Second // a child left holding its pipe cannot keep the read open
 	b, err := cmd.Output()
 	if ctx.Err() != nil {
-		return nil, fmt.Errorf("%s gave no answer in %s", filepath.Base(name), lookTimeout)
+		return nil, fmt.Errorf("%s gave no answer in %s", filepath.Base(name), limit)
 	}
 	return b, err
 }
