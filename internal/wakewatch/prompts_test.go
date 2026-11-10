@@ -18,16 +18,20 @@ import (
 // digest, and the tab check's dialog alert is muted for a prompt CRIUS-CLICK posted.
 
 type promptFake struct {
-	tabs    []Screen
-	crius   []string         // typed into Crius's tab
-	ops     []string         // "title: text" typed into another tab
-	live    map[string]error // surface -> why it has no live Claude
-	tabErr  error            // SendTab's error
-	failOn  string           // SendTab fails (not handed over) for a line holding this text
-	dead    map[string]bool  // tabs with no live Claude
-	handed  bool             // SendTab's error still hands the text over
-	at      time.Time
-	logLine func(string)
+	tabs     []Screen
+	crius    []string         // typed into Crius's tab
+	ops      []string         // "title: text" typed into another tab
+	live     map[string]error // surface -> why it has no live Claude
+	tabErr   error            // SendTab's error
+	failOn   string           // SendTab fails (not handed over) for a line holding this text
+	dead     map[string]bool  // tabs with no live Claude
+	handed   bool             // SendTab's error still hands the text over
+	at       time.Time
+	logLine  func(string)
+	pushes   []string // "surface title: body" pushed to the owner
+	pushErr  error
+	allowErr bool  // a run's error is kept in err, not fatal
+	err      error // the last run's error
 }
 
 func (f *promptFake) run(t *testing.T, home string, min int) {
@@ -45,6 +49,10 @@ func (f *promptFake) run(t *testing.T, home string, min int) {
 			return f.tabErr
 		},
 		HandedOver: func(error) bool { return f.handed },
+		Push: func(surface, title, body string) error {
+			f.pushes = append(f.pushes, surface+" "+title+": "+body)
+			return f.pushErr
+		},
 		Live: func(surface string) error {
 			if f.dead[surface] {
 				return errors.New("runs \"-zsh\" in front, not Claude")
@@ -52,8 +60,9 @@ func (f *promptFake) run(t *testing.T, home string, min int) {
 			return f.live[surface]
 		},
 	}
-	if err := Prompts(d); err != nil {
-		t.Fatal(err)
+	f.err = Prompts(d)
+	if f.err != nil && !f.allowErr {
+		t.Fatal(f.err)
 	}
 }
 
@@ -449,5 +458,173 @@ func TestHeldWakesTitleFirstAndStateFirst(t *testing.T) {
 		Live:      func(string) error { return nil }}
 	if err := Prompts(d); err == nil {
 		t.Fatal("a state that cannot be written gave no error")
+	}
+}
+
+// Crius froze 4h10 on 11-10 with its own tab stuck: the watch left that tab out ("only the owner answers it") and its
+// wakes were typed into it, where nobody read them. Crius's own tab stuck for 10 min pushes the owner, never a line
+// typed into that tab; again every 30 min while it lasts.
+func TestCriusOwnTabStuckTenMinPushesTheOwner(t *testing.T) {
+	const crius = "surface:1000070000"
+	for _, c := range []struct {
+		name string
+		tab  *Screen
+		dead bool
+		want string
+	}{
+		{"prompt", &Screen{Surface: crius, Title: "crius", Text: permission("crius", "date +%Y-%m-%d", "")}, false,
+			"Crius's own tab (" + crius + ") has a prompt open: date +%Y-%m-%d Run the check: stuck 10 min"},
+		{"no input box", &Screen{Surface: crius, Title: "crius", Text: "⏺ Reading the bus.\n  ⎿  (no output)\n"}, false,
+			"(" + crius + ") shows no input box and no working line: stuck 10 min"},
+		{"no live Claude", &Screen{Surface: crius, Title: "crius", Text: idleTab("crius")}, true,
+			"(" + crius + ") has no live Claude (runs \"-zsh\" in front, not Claude): stuck 10 min"},
+		{"unreadable", &Screen{Surface: crius, Title: "crius", Err: "cmux read-screen: timed out"}, false,
+			"(" + crius + ") cannot be read (cmux read-screen: timed out): stuck 10 min"},
+		{"no tab", nil, false, "Crius's own tab is not found (no cmux tab titled crius): stuck 10 min"},
+	} {
+		home := promptHome(t)
+		f := &promptFake{tabs: []Screen{opsIdle()}, dead: map[string]bool{crius: c.dead}}
+		if c.tab != nil {
+			f.tabs = append(f.tabs, *c.tab)
+		}
+		for min := 0; min <= 9; min++ {
+			f.run(t, home, min)
+		}
+		if len(f.pushes) != 0 {
+			t.Fatalf("%s: pushed before 10 min: %q", c.name, f.pushes)
+		}
+		f.run(t, home, 10)
+		if len(f.pushes) != 1 || !strings.Contains(f.pushes[0], c.want) {
+			t.Fatalf("%s: want one push %q, got %q", c.name, c.want, f.pushes)
+		}
+		if c.tab != nil && !strings.HasPrefix(f.pushes[0], crius+" Crius is stuck: ") {
+			t.Fatalf("%s: the push does not point at Crius's tab: %q", c.name, f.pushes[0])
+		}
+		for _, l := range f.crius {
+			if strings.Contains(l, crius) {
+				t.Fatalf("%s: typed into Crius's own tab: %q", c.name, f.crius)
+			}
+		}
+		for min := 11; min < 40; min++ {
+			f.run(t, home, min)
+		}
+		if len(f.pushes) != 1 {
+			t.Fatalf("%s: pushed again inside 30 min: %q", c.name, f.pushes)
+		}
+		f.run(t, home, 40)
+		if len(f.pushes) != 2 {
+			t.Fatalf("%s: not pushed again after 30 min: %q", c.name, f.pushes)
+		}
+	}
+}
+
+// Crius's tab is found by its title: another tab's dialog quoted on Crius's screen names that tab on its border, and an
+// idle Crius was pushed "not found" (review 2, P2-1).
+func TestCriusOwnTabIsFoundByTitle(t *testing.T) {
+	const crius = "surface:1000070000"
+	home := promptHome(t)
+	quoted := "⏺ Read the lead's tab:\n  ⎿  Pick one:\n     1. Yes\n     ──── quotes · lead ────\n     ❯\n" + idleTab("crius")
+	f := &promptFake{tabs: []Screen{{Surface: crius, Title: "crius", Text: quoted}, opsIdle()}}
+	for min := 0; min <= 15; min++ {
+		f.run(t, home, min)
+	}
+	if len(f.pushes) != 0 {
+		t.Fatalf("pushed for an idle Crius: %q", f.pushes)
+	}
+}
+
+// Working is no freeze, with the box hidden too (the transcript view; today's working line has no "esc to interrupt":
+// review P2-1), and neither is an idle input box. A freeze that ends and comes back is timed afresh; one that changes
+// form (a prompt, a failed liveness read, the next prompt) is timed on (review P3-2).
+func TestCriusOwnTabWorkingOrIdleIsNoFreeze(t *testing.T) {
+	const crius = "surface:1000070000"
+	home := promptHome(t)
+	f := &promptFake{tabs: []Screen{{Surface: crius, Title: "crius", Text: "⏺ Bash(go test ./...)\n\n✻ Burrowing… (9m 43s · ↓ 17.1k tokens)\n"}, opsIdle()}}
+	for min := 0; min <= 15; min++ {
+		f.run(t, home, min)
+	}
+	f.tabs[0].Text = idleTab("crius")
+	for min := 16; min <= 30; min++ {
+		f.run(t, home, min)
+	}
+	if len(f.pushes) != 0 {
+		t.Fatalf("pushed for a working or idle tab: %q", f.pushes)
+	}
+	f.tabs[0].Text = permission("crius", "git push", "")
+	for min := 31; min <= 40; min++ {
+		if min == 34 {
+			f.live = map[string]error{crius: errors.New("cmux tree: no answer in 10s")}
+		}
+		if min == 35 {
+			f.live = nil
+			f.tabs[0].Text = permission("crius", "git push --tags", "")
+		}
+		f.run(t, home, min)
+	}
+	if len(f.pushes) != 0 {
+		t.Fatalf("a prompt from 31 pushed before 41: %q", f.pushes)
+	}
+	f.run(t, home, 41)
+	if len(f.pushes) != 1 || !strings.Contains(f.pushes[0], "git push --tags Run the check: stuck 10 min") {
+		t.Fatalf("want one push at 41: %q", f.pushes)
+	}
+}
+
+// A push that fails becomes a NEED-OWNER line (a row in the owner's pane; an ALERT would reach only the stuck Crius:
+// review P2-2), and the other tabs' wakes of that run still go out (P2-3).
+func TestAFailedPushIsAnOwnerRow(t *testing.T) {
+	const crius = "surface:1000070000"
+	home := promptHome(t)
+	f := &promptFake{tabs: []Screen{{Surface: crius, Title: "crius", Text: permission("crius", "git push", "")}, opsIdle()},
+		pushErr: errors.New("cmux notify: exit status 1")}
+	for min := 0; min <= 10; min++ {
+		f.run(t, home, min)
+	}
+	b, _ := os.ReadFile(filepath.Join(home, "bus", "crius.log"))
+	if !strings.Contains(string(b), " NEED-OWNER crius:watchdog -> owner — desktop push failed (cmux notify: exit status 1): Crius's own tab ("+crius+") has a prompt open: git push Run the check: stuck 10 min; only you can free it") {
+		t.Fatalf("bus %q", b)
+	}
+	for min := 11; min <= 75; min++ { // pushes at 40 and 70 fail too: still one row for the spell
+		f.run(t, home, min)
+	}
+	b, _ = os.ReadFile(filepath.Join(home, "bus", "crius.log"))
+	if n := strings.Count(string(b), " NEED-OWNER "); n != 1 || len(f.pushes) != 3 {
+		t.Fatalf("want 1 row for 3 failed pushes, got %d rows, %d pushes", n, len(f.pushes))
+	}
+	f.tabs[0].Text = idleTab("crius") // freed: the next spell opens a row again
+	f.run(t, home, 76)
+	f.tabs[0].Text = permission("crius", "crius-bus-post DECISION crius:lead -> quotes:lead — [queue q3] owner: go", "")
+	for min := 77; min <= 87; min++ {
+		f.run(t, home, min)
+	}
+	b, _ = os.ReadFile(filepath.Join(home, "bus", "crius.log"))
+	if n := strings.Count(string(b), " NEED-OWNER "); n != 2 || strings.Contains(string(b), "[queue q3]") || !strings.Contains(string(b), "(queue q3) owner: go") {
+		t.Fatalf("want a second row with the queue tag defused: %q", b)
+	}
+
+	home = promptHome(t)
+	build := Screen{Surface: buildSurface, Title: "crius · build", Text: permission("crius · build", "go vet ./...", "")}
+	f = &promptFake{tabs: []Screen{{Surface: crius, Title: "crius", Text: permission("crius", "git push", "")}, opsIdle()},
+		pushErr: errors.New("cmux notify: exit status 1"), allowErr: true}
+	for min := 0; min <= 6; min++ {
+		f.run(t, home, min)
+	}
+	f.tabs = append(f.tabs, build)
+	for min := 7; min <= 9; min++ {
+		f.run(t, home, min)
+	}
+	bus := filepath.Join(home, "bus", "crius.log") // the NEED-OWNER line cannot be written
+	if err := os.WriteFile(bus, nil, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(bus, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	f.run(t, home, 10)
+	if f.err == nil || !strings.Contains(f.err.Error(), "the NEED-OWNER line was not posted") {
+		t.Fatalf("want the failed post said, got %v", f.err)
+	}
+	if len(f.crius) != 1 || !strings.Contains(f.crius[0], "crius · build ("+buildSurface+") has had a permission prompt open for 3 min") {
+		t.Fatalf("the build tab's wake was dropped: %q", f.crius)
 	}
 }

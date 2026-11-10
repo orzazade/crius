@@ -3,9 +3,11 @@ package wakewatch
 import (
 	"cmp"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -23,7 +25,9 @@ import (
 //   - crius:ops with no live Claude wakes Crius at once; while it is on a prompt, or its tab cannot be typed into, the
 //     prompts it would get go to Crius at once instead.
 //
-// Crius's own tab is left out: only the owner can answer it. Each wake is said again every clickRepeat while it lasts.
+// Crius's own tab is the owner's: on a prompt, with no input box while nothing runs, or with no live Claude for
+// criusAfter, it pushes the owner a desktop alert, never a line typed into that tab (11-10: Crius froze 4h10 while its
+// wakes were typed into it). Each wake and push is said again every clickRepeat while it lasts.
 const (
 	ownAfter   = 3 * time.Minute
 	opsAfter   = 2 * time.Minute
@@ -43,6 +47,8 @@ type PromptDeps struct {
 	SendTab    func(title, text string) error
 	HandedOver func(err error) bool
 	Live       func(surface string) error
+	// Push sends the owner a desktop alert pointing at a tab (Crius's own tab stuck: a line typed into it reaches no one)
+	Push func(surface, title, body string) error
 }
 
 // openPrompt is one tab's open dialog: its hash, when first seen, and when crius:ops and Crius were last told of it.
@@ -55,6 +61,15 @@ type promptState struct {
 	Tabs      map[string]openPrompt
 	DownSince time.Time // when crius:ops was first seen with no live Claude in this spell; zero while it has one
 	OpsDown   time.Time // when Crius was last told so
+	Crius     stuck     // Crius's own tab, while it is stuck
+}
+
+// stuck is Crius's own tab while it cannot go on by itself: since when, and when the owner was last pushed. The timer
+// runs through changes of form (one prompt to the next, a failed liveness read: review P3-2) and ends only when the
+// tab is seen free.
+type stuck struct {
+	Since, Pushed time.Time
+	Row           bool // a failed push opened the owner's row in this spell: one row per spell, not one per 30 min
 }
 
 // Prompts runs the prompt watch once. A run that fails says so on the bus as an ALERT, once per error.
@@ -125,6 +140,7 @@ func prompts(d PromptDeps) error {
 	} else if _, open := openDialog(ops.Text); open {
 		blocked = "it is on a prompt of its own"
 	}
+	pushTab, push := criusStuck(d, screens, &st)
 	next := map[string]openPrompt{}
 	for _, s := range screens {
 		if s.Err != "" {
@@ -180,6 +196,29 @@ func prompts(d PromptDeps) error {
 	if err := writeJSON(path, st); err != nil {
 		return err
 	}
+	var pushErr error
+	if push != "" {
+		// the owner is the only one who can free Crius's tab. A push that fails becomes a NEED-OWNER line, a row in the
+		// owner's "Waiting on you" pane (an ALERT would go to the stuck Crius's own waiter: review P2-2); the wakes below
+		// still go out whatever happens here (P2-3: the state already says they were sent)
+		err := fmt.Errorf("no push is set up")
+		if d.Push != nil {
+			err = d.Push(pushTab, "Crius is stuck", Clean(push))
+		}
+		if err != nil && !st.Crius.Row {
+			// the reason first (a line is cut at 300 runes), and no "[queue qN]" from the stuck command: the owner queue
+			// reads a tagged NEED-OWNER line as Crius closing a row and opens none (review 2, P3-2)
+			text := "desktop push failed (" + err.Error() + "): " + queueTag.ReplaceAllString(push, "(queue $1)")
+			if perr := watchdog.PostOn(d.Home, "crius", "NEED-OWNER", "crius:watchdog", "owner", d.Now, text); perr != nil {
+				pushErr = fmt.Errorf("push to the owner failed: %v; and the NEED-OWNER line was not posted: %v", err, perr)
+			} else {
+				st.Crius.Row = true
+				if werr := writeJSON(path, st); werr != nil {
+					pushErr = werr
+				}
+			}
+		}
+	}
 	if len(toOps) > 0 {
 		var failed []string
 		var why error
@@ -201,7 +240,7 @@ func prompts(d PromptDeps) error {
 		}
 		if why != nil {
 			if err := writeJSON(path, st); err != nil {
-				return err
+				return errors.Join(pushErr, err)
 			}
 		}
 		if len(failed) > 0 {
@@ -213,11 +252,75 @@ func prompts(d PromptDeps) error {
 		// Crius's waiter wakes on an ALERT line: a wake that cannot be typed, nor held to be typed later, goes there
 		if err := d.SendCrius(Prefix + text); err != nil && (d.HandedOver == nil || !d.HandedOver(err)) {
 			if perr := watchdog.Post(d.Home, d.Now, text); perr != nil {
-				return fmt.Errorf("%v; and the ALERT was not posted: %v", err, perr)
+				return errors.Join(pushErr, fmt.Errorf("%v; and the ALERT was not posted: %v", err, perr))
 			}
 		}
 	}
-	return nil
+	return pushErr
+}
+
+// criusStuck times Crius's own tab and gives the push for the owner when it has been stuck criusAfter, again every
+// clickRepeat, with the tab's surface ("" when no tab is found); "" otherwise. Stuck is: no tab titled crius, a tab
+// that cannot be read, no live Claude in it, a dialog open, or no input box while no working line shows (the
+// transcript view or a tall draft hides the box while Claude works: review P2-1).
+func criusStuck(d PromptDeps, screens []Screen, st *promptState) (surface, text string) {
+	var tab *Screen
+	for i := range screens {
+		if screens[i].Title == CriusTitle { // by title, as outbox types into it: a dialog of another tab quoted on Crius's
+			tab = &screens[i] // screen names that tab on its border (review 2, P2-1)
+			break
+		}
+	}
+	form := ""
+	if tab == nil {
+		form = "is not found (no cmux tab titled " + CriusTitle + ")"
+	} else {
+		surface = tab.Surface
+		prompt, open := openDialog(tab.Text)
+		_, _, boxed := split(tab.Text)
+		var dead error
+		if tab.Err == "" {
+			dead = d.Live(surface) // the screen cannot say: a Claude that exited leaves its last frame, box and all
+		}
+		switch {
+		case tab.Err != "":
+			form = "(" + surface + ") cannot be read (" + tab.Err + ")"
+		case dead != nil:
+			form = "(" + surface + ") has no live Claude (" + dead.Error() + ")"
+		case open:
+			form = "(" + surface + ") has a prompt open: " + command(tab.Text, prompt)
+		case !boxed && !working(tab.Text):
+			form = "(" + surface + ") shows no input box and no working line"
+		}
+	}
+	if form == "" {
+		st.Crius = stuck{}
+		return "", ""
+	}
+	if st.Crius.Since.IsZero() {
+		st.Crius.Since = d.Now
+	}
+	age := d.Now.Sub(st.Crius.Since)
+	if age < criusAfter || d.Now.Sub(st.Crius.Pushed) < clickRepeat {
+		return "", ""
+	}
+	st.Crius.Pushed = d.Now
+	return surface, fmt.Sprintf("Crius's own tab %s: stuck %d min; only you can free it", form, int(age.Minutes()))
+}
+
+// queueTag is the owner queue's row tag, "[queue q3]".
+var queueTag = regexp.MustCompile(`\[queue (q\d+)\]`)
+
+// working says whether Claude Code's working line ("✻ Burrowing… (9m 43s · ↓ 17.1k tokens)") is among a screen's last
+// 20 lines, with or without an input box under it.
+func working(text string) bool {
+	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
+	for _, l := range lines[max(0, len(lines)-20):] {
+		if spinRe.MatchString(l) {
+			return true
+		}
+	}
+	return false
 }
 
 // ownerOnly says whether a tab's prompt is an Azure DevOps ask only the owner may answer: the ones Clicks posts as

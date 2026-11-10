@@ -51,7 +51,7 @@ func main() {
 		read := func() ([]wakewatch.Screen, error) { return tabs, terr }
 		err := errors.Join(wakewatch.Clicks(wakewatch.ClickDeps{Home: home, Now: now, Screens: read}),
 			wakewatch.Prompts(wakewatch.PromptDeps{Home: home, Now: now, Screens: read, SendCrius: send,
-				SendTab: func(title, text string) error { return outbox.Send(home, title, text) }, HandedOver: handedOver, Live: live}))
+				SendTab: func(title, text string) error { return outbox.Send(home, title, text) }, HandedOver: handedOver, Live: live, Push: push}))
 		if err != nil {
 			fmt.Fprintln(os.Stderr, time.Now().Format(time.RFC3339), "crius-wakewatch clicks:", err)
 			os.Exit(1)
@@ -361,6 +361,25 @@ func live(surface string) error {
 		return nil
 	}
 	return fmt.Errorf("cmux tree --all lists no terminal %s", surface)
+}
+
+// push posts a macOS banner and a cmux notification on the tab, for the owner (the launchd job has no Claude Code
+// session to send a mobile push from).
+func push(surface, title, body string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), toolWait)
+	defer cancel()
+	args := []string{"notify", "--title", title, "--body", body, "--desktop", "true"}
+	if surface != "" { // no tab found: a banner with no tab to point at
+		args = append(args, "--surface", surface)
+	}
+	out, err := exec.CommandContext(ctx, "cmux", args...).CombinedOutput()
+	if ctx.Err() != nil {
+		return fmt.Errorf("cmux notify: no answer in %v", toolWait)
+	}
+	if err != nil {
+		return fmt.Errorf("cmux notify: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 // handedOver: outbox.Send kept the text (typed by a later run) or set it aside after it may have gone.
