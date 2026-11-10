@@ -13,6 +13,15 @@
 //	cap = 3                      # rows building at once (rows in pr or merged keep their sessions and are not counted)
 //	prefix = "pilot-"            # a row's role is prefix + its id in lower case (AC12 -> pilot-ac12)
 //	prompt = "Your criterion: {id}. Read ~/.crius/state/<project>/PILOT-BRIEF.md first and follow it."
+//	pipeline = 42                # optional: the pipeline whose run proves a PR into a branch with no Build policy
+//
+// The merge queue (plan step 3, until a program may complete PRs): the rows in pr, oldest PR number first. The first
+// whose ci-proof passes is named to <project>:lead in one MERGE line, once per PR, head and build; the next is named
+// only after it leaves pr (merged, blocked, or back to building) or stops passing (FAIL, STALE, or a new head not yet
+// green; a NONE on the named head holds it only while in progress); a new passing head or build on it is said again.
+// When the named one ends and none passes, the lead hears "none ready" once, with each PR's state (a STALE one needs a new build). A run that
+// could not read every row's proof, or in which a row in pr left it or changed its PR, leaves the queue as it was.
+// What was said is in mergeq.told beside the board.
 package dispatch
 
 import (
@@ -33,8 +42,9 @@ import (
 
 // Deps is what one run needs. Spawn starts a session for a role with a first prompt, Close marks a role's session
 // closed on purpose (crius-spawn -close; it does not end the Claude), Alive says whether a role's session runs, PRState
-// gives a PR's status ("active", "completed", "abandoned"), Post writes a bus line from crius:dispatch on the project's
-// bus.
+// gives a PR's status ("active", "completed", "abandoned"), Proof gives ci-proof's line for an active PR (exit 1 is a
+// line, never an error; pipeline is DISPATCH.toml's, 0 for none), Post writes a bus line from crius:dispatch on the
+// project's bus.
 type Deps struct {
 	Home, Project string
 	Now           time.Time
@@ -42,6 +52,7 @@ type Deps struct {
 	Close         func(role string) error
 	Alive         func(role string) (bool, error)
 	PRState       func(pr int) (string, error)
+	Proof         func(pr, pipeline int) (string, error)
 	Post          func(typ, to, text string) error
 }
 
@@ -49,6 +60,8 @@ type config struct {
 	Cap    int    `toml:"cap"`
 	Prefix string `toml:"prefix"`
 	Prompt string `toml:"prompt"`
+	// Pipeline proves a PR into a branch with no Build policy: ci-proof -pipeline (0: the Build policy alone)
+	Pipeline int `toml:"pipeline"`
 }
 
 const (
@@ -91,6 +104,7 @@ func Run(d Deps) error {
 	}
 	var errs []error
 	prs := map[int]string{}
+	proofs := map[int]string{}
 	for _, r := range b0.Rows {
 		if r.State != board.PR {
 			continue
@@ -101,11 +115,24 @@ func Run(d Deps) error {
 			continue
 		}
 		prs[r.PR] = st
+		if st != "active" {
+			if st != "completed" && st != "abandoned" {
+				errs = append(errs, fmt.Errorf("%s PR %d: state %q is none the dispatcher knows", r.ID, r.PR, st))
+			}
+			continue
+		}
+		line, err := d.Proof(r.PR, cfg.Pipeline)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s PR %d: %w", r.ID, r.PR, err))
+			continue
+		}
+		proofs[r.PR] = line
 	}
 
 	var posts []post
 	var spawns []spawn
-	var closes []string // sessions to close, after the board is saved
+	var closes []string   // sessions to close, after the board is saved
+	var queue []board.Row // rows in pr once the board is saved
 	upto := int64(-1)
 	err = board.Update(boardPath, d.Now, func(b *board.Board) error {
 		lines, n, err := newLines(filepath.Join(d.Home, "bus", d.Project+".log"), filepath.Join(dir, "dispatch.cursor"))
@@ -280,6 +307,11 @@ func Run(d Deps) error {
 			}
 			building++
 		}
+		for _, r := range b.Rows {
+			if r.State == board.PR {
+				queue = append(queue, r)
+			}
+		}
 		return nil
 	})
 	if err != nil {
@@ -312,7 +344,127 @@ func Run(d Deps) error {
 			errs = append(errs, fmt.Errorf("posting %q: %w", p.text, err))
 		}
 	}
+	// settled: every row in pr when the proofs were read is still in pr on the same PR (none merged, was abandoned, was
+	// verified, blocked or sent back), so the target did not move under those proofs through the board
+	settled := true
+	for _, r := range b0.Rows {
+		if r.State == board.PR {
+			settled = settled && slices.ContainsFunc(queue, func(q board.Row) bool { return q.ID == r.ID && q.PR == r.PR })
+		}
+	}
+	if err := mergeQueue(d, dir, queue, proofs, settled); err != nil {
+		errs = append(errs, err)
+	}
 	return errors.Join(errs...)
+}
+
+// mergeQueue tells the project's lead which PR to merge next (see the package comment). A run in which a queued row
+// left pr or changed its PR (settled false) decides nothing: the others' proofs may be read against the old target.
+func mergeQueue(d Deps, dir string, queue []board.Row, proofs map[int]string, settled bool) error {
+	if !settled {
+		return nil
+	}
+	slices.SortFunc(queue, func(a, b board.Row) int { return a.PR - b.PR })
+	for _, r := range queue {
+		if _, ok := proofs[r.PR]; !ok {
+			return nil // not read in this run (it reached pr in it, or the read failed and is said): decide nothing
+		}
+	}
+	toldPath := filepath.Join(dir, "mergeq.told")
+	b, err := os.ReadFile(toldPath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("reading what the merge queue said: %w", err)
+	}
+	told := strings.TrimSpace(string(b))
+	keyOf := func(i int) string {
+		f := proofFields(proofs[queue[i].PR])
+		return fmt.Sprintf("next %d %s %s", queue[i].PR, f["head"], f["build"])
+	}
+	next, key := -1, "none"
+	if len(queue) == 0 {
+		key = ""
+	}
+	for i, r := range queue {
+		if strings.HasPrefix(told+" ", fmt.Sprintf("next %d ", r.PR)) {
+			// the named PR stays named while it passes, or reads NONE on the named head while its merge or build is in
+			// progress; a new passing head or build on it is said again; anything else (FAIL, STALE, a NONE that does
+			// not clear by itself such as merge-conflicts, a new head not yet green) ends it (review r3 P2-1, P2-2)
+			f := proofFields(proofs[r.PR])
+			pending := f["result"] == "inProgress" || f["result"] == "notStarted" || f["result"] == "merge-queued"
+			switch {
+			case f["state"] == "PASS" && keyOf(i) == told,
+				f["state"] == "NONE" && pending && strings.HasPrefix(told, fmt.Sprintf("next %d %s ", r.PR, f["head"])):
+				return nil
+			case f["state"] == "PASS":
+				next = i
+			}
+			break
+		}
+	}
+	for i, r := range queue {
+		if next < 0 && proofFields(proofs[r.PR])["state"] == "PASS" {
+			next = i
+		}
+	}
+	if next >= 0 {
+		key = keyOf(next)
+	}
+	if key == told {
+		return nil
+	}
+	var others []string
+	for i, r := range queue {
+		if i == next {
+			continue
+		}
+		f := proofFields(proofs[r.PR])
+		o := fmt.Sprintf("%s PR %d %s", r.ID, r.PR, f["state"])
+		if f["state"] != "PASS" {
+			o += " (" + f["result"] + ")"
+		}
+		others = append(others, o)
+	}
+	if len(others) > 4 {
+		others = append(others[:4], fmt.Sprintf("+%d more", len(others)-4))
+	}
+	text := ""
+	switch {
+	case next >= 0:
+		r, f := queue[next], proofFields(proofs[queue[next].PR])
+		text = fmt.Sprintf("merge queue: next %s PR %d @ %s (build %s PASS): yours to merge.", r.ID, r.PR, f["head"], f["build"])
+		if len(others) > 0 {
+			text += " After it: " + strings.Join(others, ", ") + "."
+		}
+	case key == "none" && strings.HasPrefix(told, "next "):
+		text = "merge queue: none ready: " + strings.Join(others, ", ") + "."
+	}
+	if text != "" {
+		if err := d.Post("MERGE", d.Project+":lead", text); err != nil {
+			return fmt.Errorf("posting %q: %w", text, err)
+		}
+	}
+	tmp := toldPath + ".tmp"
+	if err := os.WriteFile(tmp, []byte(key+"\n"), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, toldPath)
+}
+
+// proofFields reads ci-proof's line: its state word and its key=value fields up to suites (which may hold spaces).
+func proofFields(line string) map[string]string {
+	f := map[string]string{"result": "unknown"}
+	words := strings.Fields(line)
+	if len(words) > 0 {
+		f["state"] = words[0]
+	}
+	for _, w := range words[1:] {
+		k, v, ok := strings.Cut(w, "=")
+		if !ok || k == "suites" {
+			break
+		}
+		f[k] = v
+	}
+	return f
 }
 
 func role(cfg config, id string) string { return cfg.Prefix + strings.ToLower(id) }

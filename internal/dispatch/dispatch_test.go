@@ -4,6 +4,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -23,6 +25,10 @@ type fake struct {
 	failing  map[string]bool // roles whose spawn fails
 	during   func()          // runs inside each Spawn
 	prs      map[int]string
+	proofs   map[int]string // ci-proof's line per PR; none is NONE no-run-on-merge
+	proofErr error
+	proofed  []string // "pr pipeline" per Proof call
+	postErr  error    // a MERGE post fails with it
 	at       time.Time
 	err      error
 	allowErr bool
@@ -38,11 +44,11 @@ func newFake(t *testing.T, cap int) *fake {
 	if err := os.MkdirAll(filepath.Join(home, "bus"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	cfg := "cap = " + string(rune('0'+cap)) + "\nprefix = \"pilot-\"\nprompt = \"Your criterion: {id}. Read ~/brief.md first.\"\n"
+	cfg := "cap = " + string(rune('0'+cap)) + "\nprefix = \"pilot-\"\nprompt = \"Your criterion: {id}. Read ~/brief.md first.\"\npipeline = 42\n"
 	if err := os.WriteFile(filepath.Join(dir, "DISPATCH.toml"), []byte(cfg), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	return &fake{home: home, dead: map[string]bool{}, live: map[string]bool{}, failing: map[string]bool{}, prs: map[int]string{}}
+	return &fake{home: home, dead: map[string]bool{}, live: map[string]bool{}, failing: map[string]bool{}, prs: map[int]string{}, proofs: map[int]string{}}
 }
 
 func (f *fake) run(t *testing.T, min int) {
@@ -76,7 +82,23 @@ func (f *fake) run(t *testing.T, min int) {
 			}
 			return "active", nil
 		},
-		Post: func(typ, to, text string) error { f.posts = append(f.posts, typ+" "+to+": "+text); return nil },
+		Proof: func(pr, pipeline int) (string, error) {
+			f.proofed = append(f.proofed, strconv.Itoa(pr)+" "+strconv.Itoa(pipeline))
+			if f.proofErr != nil {
+				return "", f.proofErr
+			}
+			if l, ok := f.proofs[pr]; ok {
+				return l, nil
+			}
+			return "NONE pr=" + strconv.Itoa(pr) + " head=00000000 merge=00000000 build=none result=no-run-on-merge", nil
+		},
+		Post: func(typ, to, text string) error {
+			if typ == "MERGE" && f.postErr != nil {
+				return f.postErr
+			}
+			f.posts = append(f.posts, typ+" "+to+": "+text)
+			return nil
+		},
 	})
 	f.err = err
 	if err != nil && !f.allowErr {
@@ -542,5 +564,285 @@ func TestADoneWithTwoPRsAsksCrius(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(f.posts, "\n"), "NEED crius:lead: AC20: its DONE names PR 41 and PR 57; set the right one with crius-board demo set AC20 pr --pr <n>") {
 		t.Fatalf("posts %q", f.posts)
+	}
+}
+
+func (f *fake) merges() []string {
+	var m []string
+	for _, p := range f.posts {
+		if strings.HasPrefix(p, "MERGE ") {
+			m = append(m, p)
+		}
+	}
+	return m
+}
+
+// Plan step 3 (crius:lead DECISION 11-10 17:04: no program completes PRs yet): the queue names to the project's lead one
+// PR at a time, the oldest (lowest number) whose build passed on its current merge, and says it once; the next one
+// only after that one leaves the queue. A new head on the named PR is a new merge to name.
+func TestTheMergeQueueNamesTheOldestGreenPROnce(t *testing.T) {
+	f := newFake(t, 3)
+	for _, id := range []string{"AC1", "AC2", "AC3"} {
+		f.ready(t, id, "src/"+id+".go")
+	}
+	f.run(t, 1)
+	f.proofs[8001] = "STALE pr=8001 head=aaaaaaaa merge=a1a1a1a1 build=4 result=target-moved"
+	f.proofs[8002] = "PASS pr=8002 head=bbbbbbbb merge=b1b1b1b1 build=5 result=succeeded suites=X 1/1"
+	f.proofs[8003] = "PASS pr=8003 head=cccccccc merge=c1c1c1c1 build=6 result=succeeded suites=X 1/1"
+	f.bus(t, "2026-11-10T17:00 DONE demo:pilot-ac1 -> crius:lead — AC1 PR 8003 @ cccccccc",
+		"2026-11-10T17:00 DONE demo:pilot-ac2 -> crius:lead — AC2 PR 8001 @ aaaaaaaa",
+		"2026-11-10T17:00 DONE demo:pilot-ac3 -> crius:lead — AC3 PR 8002 @ bbbbbbbb")
+	f.run(t, 2) // the rows reach pr in this run; their PRs are read from the next one
+	if m := f.merges(); len(m) != 0 {
+		t.Fatalf("named a PR before reading its proof: %q", m)
+	}
+	f.run(t, 3)
+	want := "MERGE demo:lead: merge queue: next AC3 PR 8002 @ bbbbbbbb (build 5 PASS): yours to merge. After it: AC2 PR 8001 STALE (target-moved), AC1 PR 8003 PASS."
+	if m := f.merges(); len(m) != 1 || m[0] != want {
+		t.Fatalf("merges\n got %q\nwant %q", m, want)
+	}
+	if !slices.Contains(f.proofed, "8002 42") {
+		t.Fatalf("Proof not given the pipeline: %q", f.proofed)
+	}
+	f.run(t, 4)
+	if m := f.merges(); len(m) != 1 {
+		t.Fatalf("said twice: %q", m)
+	}
+	f.prs[8002] = "completed"
+	f.run(t, 5) // the run that sees the merge decides nothing (review P2-2)
+	if m := f.merges(); len(m) != 1 {
+		t.Fatalf("decided in the run that saw the merge: %q", m)
+	}
+	f.run(t, 6)
+	if m := f.merges(); len(m) != 2 || !strings.Contains(m[1], "next AC1 PR 8003 @ cccccccc (build 6 PASS)") || !strings.Contains(m[1], "After it: AC2 PR 8001 STALE (target-moved).") {
+		t.Fatalf("after the merge: %q", m)
+	}
+	f.proofs[8003] = "PASS pr=8003 head=dddddddd merge=d1d1d1d1 build=7 result=succeeded suites=X 1/1"
+	f.run(t, 7)
+	if m := f.merges(); len(m) != 3 || !strings.Contains(m[2], "next AC1 PR 8003 @ dddddddd (build 7 PASS)") {
+		t.Fatalf("a new head: %q", m)
+	}
+	f.prs[8003] = "completed"
+	f.run(t, 8)
+	f.run(t, 9)
+	if m := f.merges(); len(m) != 4 || m[3] != "MERGE demo:lead: merge queue: none ready: AC2 PR 8001 STALE (target-moved)." {
+		t.Fatalf("none ready after a merge: %q", m)
+	}
+	f.run(t, 10)
+	if m := f.merges(); len(m) != 4 {
+		t.Fatalf("none ready said twice: %q", m)
+	}
+}
+
+// A PR still building wakes nobody: "none ready" is said only when something was ready before.
+func TestNoneReadyIsQuietUntilSomethingWasReady(t *testing.T) {
+	f := newFake(t, 1)
+	f.ready(t, "AC1")
+	f.run(t, 1)
+	f.proofs[8001] = "NONE pr=8001 head=aaaaaaaa merge=a1a1a1a1 build=9 result=inProgress"
+	f.bus(t, "2026-11-10T17:00 DONE demo:pilot-ac1 -> crius:lead — AC1 PR 8001 @ aaaaaaaa")
+	f.run(t, 2)
+	f.run(t, 3)
+	if m := f.merges(); len(m) != 0 {
+		t.Fatalf("woke the lead for a build in progress: %q", m)
+	}
+}
+
+// Failing to look, or to tell, is never taken as said: the run errs and the next run tries again.
+func TestTheQueueRetriesWhatFailed(t *testing.T) {
+	f := newFake(t, 1)
+	f.ready(t, "AC1")
+	f.run(t, 1)
+	f.proofs[8001] = "PASS pr=8001 head=aaaaaaaa merge=a1a1a1a1 build=9 result=succeeded suites=X 1/1"
+	f.bus(t, "2026-11-10T17:00 DONE demo:pilot-ac1 -> crius:lead — AC1 PR 8001 @ aaaaaaaa")
+	f.run(t, 2)
+	f.allowErr = true
+	f.proofErr = errors.New("LOUD ci-proof: PR 8001: cannot read the PR: az: no answer")
+	f.run(t, 3)
+	if f.err == nil || !strings.Contains(f.err.Error(), "AC1 PR 8001: LOUD ci-proof") || len(f.merges()) != 0 {
+		t.Fatalf("err %v merges %q", f.err, f.merges())
+	}
+	f.proofErr, f.postErr = nil, errors.New("bus is read-only")
+	f.run(t, 4)
+	if f.err == nil || !strings.Contains(f.err.Error(), "bus is read-only") {
+		t.Fatalf("a failed post not said: %v", f.err)
+	}
+	f.postErr = nil
+	f.run(t, 5)
+	if f.err != nil || len(f.merges()) != 1 {
+		t.Fatalf("not tried again: err %v merges %q", f.err, f.merges())
+	}
+	// a PR that is not active is not read
+	f.proofed = nil
+	f.prs[8001] = "completed"
+	f.run(t, 6)
+	if len(f.proofed) != 0 {
+		t.Fatalf("read the proof of a completed PR: %q", f.proofed)
+	}
+}
+
+// Review P2-1, P2-3: the named PR stays named until it leaves pr. A lower PR turning green, or the named one reading
+// NONE for a minute while its merge is computed, says nothing; only a new head or build on it is said again.
+func TestTheNamedPRStaysNamed(t *testing.T) {
+	f := newFake(t, 2)
+	f.ready(t, "AC1", "src/a.go")
+	f.ready(t, "AC2", "src/b.go")
+	f.run(t, 1)
+	f.proofs[8001] = "NONE pr=8001 head=aaaaaaaa merge=a1a1a1a1 build=4 result=inProgress"
+	f.proofs[8002] = "PASS pr=8002 head=bbbbbbbb merge=b1b1b1b1 build=5 result=succeeded suites=X 1/1"
+	f.bus(t, "2026-11-10T17:00 DONE demo:pilot-ac1 -> crius:lead — AC1 PR 8001 @ aaaaaaaa",
+		"2026-11-10T17:00 DONE demo:pilot-ac2 -> crius:lead — AC2 PR 8002 @ bbbbbbbb")
+	f.run(t, 2)
+	f.run(t, 3)
+	if m := f.merges(); len(m) != 1 || !strings.Contains(m[0], "next AC2 PR 8002 @ bbbbbbbb") {
+		t.Fatalf("first: %q", m)
+	}
+	f.proofs[8001] = "PASS pr=8001 head=aaaaaaaa merge=a1a1a1a1 build=4 result=succeeded suites=X 1/1"
+	f.run(t, 4)
+	f.proofs[8002] = "NONE pr=8002 head=bbbbbbbb merge=b1b1b1b1 build=none result=merge-queued"
+	f.run(t, 5)
+	f.proofs[8002] = "PASS pr=8002 head=bbbbbbbb merge=b1b1b1b1 build=5 result=succeeded suites=X 1/1"
+	f.run(t, 6)
+	if m := f.merges(); len(m) != 1 {
+		t.Fatalf("a second PR named while the first is in pr: %q", m)
+	}
+	f.proofs[8002] = "PASS pr=8002 head=eeeeeeee merge=e1e1e1e1 build=8 result=succeeded suites=X 1/1"
+	f.run(t, 7)
+	if m := f.merges(); len(m) != 2 || !strings.Contains(m[1], "next AC2 PR 8002 @ eeeeeeee (build 8 PASS)") {
+		t.Fatalf("a new head on the named PR: %q", m)
+	}
+}
+
+// Review P2-2: proofs read before a merge are measured against the old target; the run that sees a queued PR complete
+// decides nothing, and the next run reads them again.
+func TestARunThatSawAMergeDecidesNothing(t *testing.T) {
+	f := newFake(t, 2)
+	f.ready(t, "AC1", "src/a.go")
+	f.ready(t, "AC2", "src/b.go")
+	f.run(t, 1)
+	f.proofs[8001] = "PASS pr=8001 head=aaaaaaaa merge=a1a1a1a1 build=4 result=succeeded suites=X 1/1"
+	f.proofs[8002] = "PASS pr=8002 head=bbbbbbbb merge=b1b1b1b1 build=5 result=succeeded suites=X 1/1"
+	f.bus(t, "2026-11-10T17:00 DONE demo:pilot-ac1 -> crius:lead — AC1 PR 8001 @ aaaaaaaa",
+		"2026-11-10T17:00 DONE demo:pilot-ac2 -> crius:lead — AC2 PR 8002 @ bbbbbbbb")
+	f.run(t, 2)
+	f.run(t, 3)
+	f.prs[8001] = "completed"
+	f.run(t, 4)
+	if m := f.merges(); len(m) != 1 {
+		t.Fatalf("named a PR on a proof read before the merge: %q", m)
+	}
+	f.proofs[8002] = "STALE pr=8002 head=bbbbbbbb merge=b1b1b1b1 build=5 result=target-moved"
+	f.run(t, 5)
+	if m := f.merges(); len(m) != 2 || m[1] != "MERGE demo:lead: merge queue: none ready: AC2 PR 8002 STALE (target-moved)." {
+		t.Fatalf("after the merge: %q", m)
+	}
+}
+
+// Review P3-2: a PR state the dispatcher does not know is said, never a queue that waits in silence.
+func TestAnUnknownPRStateIsAnError(t *testing.T) {
+	f := newFake(t, 1)
+	f.ready(t, "AC1")
+	f.run(t, 1)
+	f.bus(t, "2026-11-10T17:00 DONE demo:pilot-ac1 -> crius:lead — AC1 PR 8001 @ aaaaaaaa")
+	f.run(t, 2)
+	f.prs[8001] = "notSet"
+	f.allowErr = true
+	f.run(t, 3)
+	if f.err == nil || !strings.Contains(f.err.Error(), `AC1 PR 8001: state "notSet"`) {
+		t.Fatalf("err %v", f.err)
+	}
+}
+
+// Review r2 P2-A: the hold is only for a NONE on the named head (its merge or build being worked out). A FAIL, a STALE
+// or a new head that is not yet green ends the name, and the lead hears it: the earlier "yours to merge" is void.
+func TestANamedPRThatFailsOrMovesIsNoLongerNamed(t *testing.T) {
+	f := newFake(t, 2)
+	f.ready(t, "AC1", "src/a.go")
+	f.ready(t, "AC2", "src/b.go")
+	f.run(t, 1)
+	f.proofs[8001] = "NONE pr=8001 head=aaaaaaaa merge=a1a1a1a1 build=4 result=inProgress"
+	f.proofs[8002] = "PASS pr=8002 head=bbbbbbbb merge=b1b1b1b1 build=5 result=succeeded suites=X 1/1"
+	f.bus(t, "2026-11-10T17:00 DONE demo:pilot-ac1 -> crius:lead — AC1 PR 8001 @ aaaaaaaa",
+		"2026-11-10T17:00 DONE demo:pilot-ac2 -> crius:lead — AC2 PR 8002 @ bbbbbbbb")
+	f.run(t, 2)
+	f.run(t, 3)
+	f.proofs[8002] = "FAIL pr=8002 head=cccccccc merge=c1c1c1c1 build=6 result=failed suites=X 0/1 (1 failed)"
+	f.run(t, 4)
+	want := "MERGE demo:lead: merge queue: none ready: AC1 PR 8001 NONE (inProgress), AC2 PR 8002 FAIL (failed)."
+	if m := f.merges(); len(m) != 2 || m[1] != want {
+		t.Fatalf("a failed named PR\n got %q\nwant %q", m, want)
+	}
+	f.proofs[8001] = "PASS pr=8001 head=aaaaaaaa merge=a1a1a1a1 build=4 result=succeeded suites=X 1/1"
+	f.run(t, 5)
+	if m := f.merges(); len(m) != 3 || !strings.Contains(m[2], "next AC1 PR 8001 @ aaaaaaaa (build 4 PASS)") {
+		t.Fatalf("the next green one: %q", m)
+	}
+	f.proofs[8001] = "NONE pr=8001 head=dddddddd merge=d1d1d1d1 build=9 result=inProgress" // a new head, building
+	f.run(t, 6)
+	if m := f.merges(); len(m) != 4 || !strings.HasPrefix(m[3], "MERGE demo:lead: merge queue: none ready: AC1 PR 8001 NONE (inProgress)") {
+		t.Fatalf("a new head not yet green: %q", m)
+	}
+}
+
+// Review r2 P3-A: a run in which a row that was in pr left it (here a VERIFIED before az says merged) decides
+// nothing: the target may have moved under the proofs it read.
+func TestARunInWhichARowLeftPRDecidesNothing(t *testing.T) {
+	f := newFake(t, 2)
+	f.ready(t, "AC1", "src/a.go")
+	f.ready(t, "AC2", "src/b.go")
+	f.run(t, 1)
+	f.proofs[8001] = "PASS pr=8001 head=aaaaaaaa merge=a1a1a1a1 build=4 result=succeeded suites=X 1/1"
+	f.proofs[8002] = "PASS pr=8002 head=bbbbbbbb merge=b1b1b1b1 build=5 result=succeeded suites=X 1/1"
+	f.bus(t, "2026-11-10T17:00 DONE demo:pilot-ac1 -> crius:lead — AC1 PR 8001 @ aaaaaaaa",
+		"2026-11-10T17:00 DONE demo:pilot-ac2 -> crius:lead — AC2 PR 8002 @ bbbbbbbb")
+	f.run(t, 2)
+	f.run(t, 3)
+	f.bus(t, "2026-11-10T17:10 VERIFIED crius:lead -> demo:pilot-ac1 — AC1 walked live on the merged code")
+	f.run(t, 4)
+	if m := f.merges(); len(m) != 1 {
+		t.Fatalf("named a PR in the run a row left pr: %q", m)
+	}
+	f.run(t, 5)
+	if m := f.merges(); len(m) != 2 || !strings.Contains(m[1], "next AC2 PR 8002") {
+		t.Fatalf("the next run: %q", m)
+	}
+}
+
+// Review r3 P2-1, P2-2: the key holds no state, so a STALE or FAIL on the named head and build (the usual state after
+// a merge into the target) must still end the name; a NONE holds it only while its merge or build is in progress, never
+// on a merge conflict or with no run on the merge.
+func TestOnlyAPassOrAnInProgressNoneHoldsTheName(t *testing.T) {
+	for _, c := range []struct{ name, line, want string }{
+		{"stale on the same build", "STALE pr=8001 head=aaaaaaaa merge=a1a1a1a1 build=4 result=target-moved", "AC1 PR 8001 STALE (target-moved)"},
+		{"fail on the same build", "FAIL pr=8001 head=aaaaaaaa merge=a1a1a1a1 build=4 result=failed suites=X 0/1", "AC1 PR 8001 FAIL (failed)"},
+		{"conflicts", "NONE pr=8001 head=aaaaaaaa merge=a1a1a1a1 build=none result=merge-conflicts", "AC1 PR 8001 NONE (merge-conflicts)"},
+		{"no run", "NONE pr=8001 head=aaaaaaaa merge=a1a1a1a1 build=none result=no-run-on-merge", "AC1 PR 8001 NONE (no-run-on-merge)"},
+	} {
+		f := newFake(t, 1)
+		f.ready(t, "AC1")
+		f.run(t, 1)
+		f.proofs[8001] = "PASS pr=8001 head=aaaaaaaa merge=a1a1a1a1 build=4 result=succeeded suites=X 1/1"
+		f.bus(t, "2026-11-10T17:00 DONE demo:pilot-ac1 -> crius:lead — AC1 PR 8001 @ aaaaaaaa")
+		f.run(t, 2)
+		f.run(t, 3)
+		f.proofs[8001] = c.line
+		f.run(t, 4)
+		if m := f.merges(); len(m) != 2 || m[1] != "MERGE demo:lead: merge queue: none ready: "+c.want+"." {
+			t.Errorf("%s: %q", c.name, m)
+		}
+	}
+	for _, res := range []string{"inProgress", "notStarted", "merge-queued"} {
+		f := newFake(t, 1)
+		f.ready(t, "AC1")
+		f.run(t, 1)
+		f.proofs[8001] = "PASS pr=8001 head=aaaaaaaa merge=a1a1a1a1 build=4 result=succeeded suites=X 1/1"
+		f.bus(t, "2026-11-10T17:00 DONE demo:pilot-ac1 -> crius:lead — AC1 PR 8001 @ aaaaaaaa")
+		f.run(t, 2)
+		f.run(t, 3)
+		f.proofs[8001] = "NONE pr=8001 head=aaaaaaaa merge=a1a1a1a1 build=7 result=" + res
+		f.run(t, 4)
+		if m := f.merges(); len(m) != 1 {
+			t.Errorf("%s did not hold: %q", res, m)
+		}
 	}
 }

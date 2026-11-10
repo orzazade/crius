@@ -14,6 +14,7 @@ import (
 // build's timeline (timeline) and its logs. calls records every call.
 type fakeAz struct {
 	pr, policy, timeline string            // pr defaults to pr.json
+	runs, ref, commit    string            // -pipeline: the pipeline's runs on the PR's merge branch, the target ref, the merge commit
 	timelines            map[string]string // a timeline per build id, over timeline
 	builds               map[string]string
 	fail                 string // an az call whose args contain this fails
@@ -40,6 +41,21 @@ func (f *fakeAz) az(args ...string) ([]byte, error) {
 		if !strings.Contains(a, "--project Example Project") {
 			return nil, errors.New("no project")
 		}
+	case strings.HasPrefix(a, "pipelines runs list "):
+		if !strings.Contains(a, "--project Example Project --pipeline-ids 42 --branch refs/pull/7001/merge ") {
+			return nil, errors.New("not pipeline 42 on the PR's merge branch in its project: az " + a)
+		}
+		file = f.runs
+	case strings.HasPrefix(a, "repos ref list "):
+		if !strings.Contains(a, "--project Example Project --repository 3c5f1e0a-7b2d-4c8e-9f61-0d2a4b6c8e10 --filter heads/integration/x-b1 ") {
+			return nil, errors.New("not the PR's target ref: az " + a)
+		}
+		file = f.ref
+	case strings.Contains(a, "--resource commits"):
+		if !strings.Contains(a, "repositoryId=3c5f1e0a-7b2d-4c8e-9f61-0d2a4b6c8e10 commitId=5d2e8a41c09f3b7716e4a2d8f0c95b13e7a6d402 ") {
+			return nil, errors.New("not the merge commit: az " + a)
+		}
+		file = f.commit
 	case strings.Contains(a, "--resource timeline"):
 		_, id, _ := strings.Cut(a, "buildId=")
 		id, _, _ = strings.Cut(id, " ")
@@ -55,10 +71,10 @@ func (f *fakeAz) az(args ...string) ([]byte, error) {
 	return os.ReadFile(filepath.Join("testdata", file))
 }
 
-func proof(t *testing.T, f *fakeAz) (string, int) {
+func proof(t *testing.T, f *fakeAz, flags ...string) (string, int) {
 	t.Helper()
 	var out bytes.Buffer
-	rc := run([]string{"7001"}, f.az, &out)
+	rc := run(append(flags, "7001"), f.az, &out)
 	return strings.TrimSpace(out.String()), rc
 }
 
@@ -195,5 +211,81 @@ func TestEveryPassingPolicyBuildsTestsAreRead(t *testing.T) {
 	want = "PASS pr=7001 head=9a0c47e1 merge=5d2e8a41 build=407,411 result=succeeded suites=407: Example.Core.Tests 391/391, Example.Api.Tests 1429/1429; 411: Example.Core.Tests 391/391, Example.Api.Tests 1429/1429"
 	if rc != 0 || line != want {
 		t.Fatalf("rc %d\n got %q\nwant %q", rc, line, want)
+	}
+}
+
+// Quotes lead 11-08 03:30: the integration branch has no Build policy, so every PR into it read NONE; its proof is the
+// team's own pipeline run on refs/pull/<pr>/merge. With -pipeline <id>, a PR with no blocking Build policy is proven by
+// the newest run of that pipeline on its merge branch at its current merge commit, and only while that merge commit is
+// still on the target's head (Azure DevOps does not compute a new merge commit when only the target moves).
+func TestAPipelineRunOnTheCurrentMergeProvesAPRWithNoBuildPolicy(t *testing.T) {
+	f := &fakeAz{pr: "pr-b1.json", policy: "policy-nobuild.json", runs: "runs-pass.json", ref: "ref-b1.json", commit: "commit-merge.json", timeline: "timeline.json"}
+	line, rc := proof(t, f, "-pipeline", "42")
+	want := "PASS pr=7001 head=9a0c47e1 merge=5d2e8a41 build=412 result=succeeded suites=Example.Core.Tests 391/391, Example.Api.Tests 1429/1429"
+	if rc != 0 || line != want {
+		t.Fatalf("rc %d\n got %q\nwant %q", rc, line, want)
+	}
+	// with no -pipeline the same PR still reads NONE: the flag is how a team names its pipeline
+	if line, rc := proof(t, &fakeAz{pr: "pr-b1.json", policy: "policy-nobuild.json"}); rc != 1 ||
+		line != "NONE pr=7001 head=9a0c47e1 merge=5d2e8a41 build=none result=no-blocking-build-policy" {
+		t.Errorf("no flag: rc %d %q", rc, line)
+	}
+}
+
+func TestPipelineRunStates(t *testing.T) {
+	for _, c := range []struct {
+		name, runs, ref string
+		rc              int
+		want            string
+	}{
+		{"target moved", "runs-pass.json", "ref-b1-moved.json", 1,
+			"STALE pr=7001 head=9a0c47e1 merge=5d2e8a41 build=412 result=target-moved"},
+		{"newest run failed", "runs-rerun-failed.json", "ref-b1.json", 1,
+			"FAIL pr=7001 head=9a0c47e1 merge=5d2e8a41 build=413 result=failed suites=Example.Core.Tests 391/391, Example.Api.Tests 1429/1429"},
+		{"running", "runs-running.json", "ref-b1.json", 1,
+			"NONE pr=7001 head=9a0c47e1 merge=5d2e8a41 build=412 result=inProgress"},
+		{"only on an older merge", "runs-othermerge.json", "ref-b1.json", 1,
+			"NONE pr=7001 head=9a0c47e1 merge=5d2e8a41 build=none result=no-run-on-merge"},
+		{"no run", "runs-none.json", "ref-b1.json", 1,
+			"NONE pr=7001 head=9a0c47e1 merge=5d2e8a41 build=none result=no-run-on-merge"},
+	} {
+		f := &fakeAz{pr: "pr-b1.json", policy: "policy-nobuild.json", runs: c.runs, ref: c.ref, commit: "commit-merge.json", timeline: "timeline.json"}
+		line, rc := proof(t, f, "-pipeline", "42")
+		if rc != c.rc || line != c.want {
+			t.Errorf("%s: rc %d\n got %q\nwant %q", c.name, rc, line, c.want)
+		}
+	}
+}
+
+// A blocking Build policy stays the only proof where one exists: -pipeline never reads the pipeline's runs then.
+func TestABuildPolicyWinsOverThePipeline(t *testing.T) {
+	f := &fakeAz{policy: "policy-pass.json", timeline: "timeline.json", builds: map[string]string{"407": "build-407.json"}}
+	line, rc := proof(t, f, "-pipeline", "42")
+	if rc != 0 || !strings.HasPrefix(line, "PASS pr=7001 head=9a0c47e1 merge=5d2e8a41 build=407 ") {
+		t.Fatalf("rc %d %q", rc, line)
+	}
+	for _, c := range f.calls {
+		if strings.HasPrefix(c, "pipelines runs list") {
+			t.Errorf("read the pipeline's runs beside a Build policy: %s", c)
+		}
+	}
+}
+
+func TestFailingToReadThePipelineIsLoud(t *testing.T) {
+	for _, fail := range []string{"pipelines runs list", "repos ref list", "--resource commits"} {
+		f := &fakeAz{pr: "pr-b1.json", policy: "policy-nobuild.json", runs: "runs-pass.json", ref: "ref-b1.json", commit: "commit-merge.json", timeline: "timeline.json", fail: fail}
+		line, rc := proof(t, f, "-pipeline", "42")
+		if rc != 2 || !strings.HasPrefix(line, "LOUD ci-proof: PR 7001: ") || !strings.Contains(line, "TF400813") {
+			t.Errorf("%s: rc %d %q", fail, rc, line)
+		}
+	}
+	// a target ref missing from the listing is a failure to look, never a pass
+	f := &fakeAz{pr: "pr-b1.json", policy: "policy-nobuild.json", runs: "runs-pass.json", ref: "runs-none.json", commit: "commit-merge.json", timeline: "timeline.json"}
+	if line, rc := proof(t, f, "-pipeline", "42"); rc != 2 || !strings.Contains(line, "refs/heads/integration/x-b1") {
+		t.Errorf("no target ref: rc %d %q", rc, line)
+	}
+	var out bytes.Buffer
+	if rc := run([]string{"-pipeline", "x", "7001"}, (&fakeAz{}).az, &out); rc != 2 {
+		t.Errorf("a bad pipeline id: rc %d %q", rc, out.String())
 	}
 }

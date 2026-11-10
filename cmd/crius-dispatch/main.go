@@ -1,6 +1,7 @@
 // Command crius-dispatch runs the dispatcher (package dispatch) once for every project with a
 // $CRIUS_HOME/state/<project>/DISPATCH.toml; launchd runs it every minute. No model runs in it: it starts sessions with
-// crius-spawn, ends them with crius-spawn -close, reads PR states with az (read-only) and posts on the project's bus.
+// crius-spawn, ends them with crius-spawn -close, reads PR states with az and builds with ci-proof (both read-only) and
+// posts on the project's bus.
 // A project with no DISPATCH.toml is left alone; remove the file to stop dispatching there.
 package main
 
@@ -97,9 +98,34 @@ func deps(home, project string, now time.Time) dispatch.Deps {
 			}
 			return p.Status, nil
 		},
+		Proof: func(pr, pipeline int) (string, error) { return ciProof(filepath.Join(bin, "ci-proof"), pr, pipeline) },
 		Post: func(typ, to, text string) error {
 			return watchdog.PostOn(home, project, typ, "crius:dispatch", to, time.Now(), text)
 		},
+	}
+}
+
+// ciProof runs ci-proof for one PR, with -pipeline when pipeline > 0. Its exit 1 (FAIL, STALE, NONE) is an answer; exit
+// 2, or any other failure, is an error that carries its LOUD line.
+func ciProof(bin string, pr, pipeline int) (string, error) {
+	args := []string{strconv.Itoa(pr)}
+	if pipeline > 0 {
+		args = append([]string{"-pipeline", strconv.Itoa(pipeline)}, args...)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.WaitDelay = time.Second
+	out, err := cmd.Output()
+	line := strings.TrimSpace(string(out))
+	var ee *exec.ExitError
+	switch {
+	case ctx.Err() != nil:
+		return "", fmt.Errorf("ci-proof %d: no answer in 3m", pr)
+	case line != "" && (err == nil || errors.As(err, &ee) && ee.ExitCode() == 1):
+		return line, nil
+	default:
+		return "", fmt.Errorf("ci-proof %d: %v: %s", pr, err, line)
 	}
 }
 

@@ -1,7 +1,7 @@
 // Command ci-proof prints one line of proof that an Azure DevOps pull request's required build passed on the PR's
 // current merge commit, for QA and merge steps to paste as evidence (owner 11-08):
 //
-//	ci-proof <pr-id>
+//	ci-proof [-pipeline <id>] <pr-id>
 //	PASS|FAIL|STALE|NONE pr=<id> head=<sha8> merge=<sha8> build=<id> result=<result> suites=<name passed/total,…>
 //
 // A PASS from several passing policies names each build: build=<id>,<id> suites=<id>: <suites>; <id>: <suites>.
@@ -14,6 +14,12 @@
 //   - STALE: the build ran on another commit than the PR's lastMergeCommit, the policy evaluated another head or
 //     merge, or the policy marks it expired or not current.
 //   - FAIL: it finished on the right commit with any result but succeeded, or its test step shows failed tests.
+//
+// -pipeline <id> (quotes lead 11-08: an integration branch has no Build policy, so every PR into it read NONE): a PR with
+// no blocking Build policy is proven by the newest run of that pipeline on refs/pull/<pr>/merge at its lastMergeCommit.
+// That run is STALE (result=target-moved) once the target's head is no longer the merge commit's first parent: Azure
+// DevOps does not compute a new merge commit when only the target moves. No run there yet is NONE result=no-run-on-merge.
+// A blocking Build policy, where one exists, stays the only proof.
 //
 // With several blocking Build policies the worst one is printed; when all pass, the tests of each build are read.
 // Suites are the test projects the build's test-step logs name (dotnet's "Passed!  - ... - X.Tests.dll" lines);
@@ -29,6 +35,7 @@ package main
 import (
 	"cmp"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -56,9 +63,11 @@ type pr struct {
 	PullRequestID   int     `json:"pullRequestId"`
 	Status          string  `json:"status"`
 	MergeStatus     string  `json:"mergeStatus"`
+	TargetRefName   string  `json:"targetRefName"`
 	LastMergeCommit *commit `json:"lastMergeCommit"`
 	LastMergeSource *commit `json:"lastMergeSourceCommit"`
 	Repository      struct {
+		ID      string                `json:"id"`
 		Project struct{ Name string } `json:"project"`
 	} `json:"repository"`
 }
@@ -102,13 +111,17 @@ type verdict struct {
 var rank = map[string]int{"PASS": 0, "NONE": 1, "STALE": 2, "FAIL": 3}
 
 func run(args []string, az func(...string) ([]byte, error), out io.Writer) int {
-	if len(args) != 1 {
-		fmt.Fprintln(out, "usage: ci-proof <ado-pr-id>")
+	fs := flag.NewFlagSet("ci-proof", flag.ContinueOnError)
+	fs.SetOutput(out)
+	pipeline := fs.Int("pipeline", 0, "the pipeline whose run on refs/pull/<pr>/merge proves a PR with no blocking Build policy")
+	if err := fs.Parse(args); err != nil || fs.NArg() != 1 || *pipeline < 0 {
+		fmt.Fprintln(out, "usage: ci-proof [-pipeline <id>] <ado-pr-id>")
 		return 2
 	}
+	args = fs.Args()
 	id, err := strconv.Atoi(args[0])
 	if err != nil || id <= 0 {
-		fmt.Fprintf(out, "usage: ci-proof <ado-pr-id>: %q is not a PR id\n", args[0])
+		fmt.Fprintf(out, "usage: ci-proof [-pipeline <id>] <ado-pr-id>: %q is not a PR id\n", args[0])
 		return 2
 	}
 	loud := func(what string, err error) int {
@@ -178,6 +191,16 @@ func run(args []string, az func(...string) ([]byte, error), out io.Writer) int {
 			worst = &v
 		}
 	}
+	if worst == nil && *pipeline > 0 {
+		v, err := pipelineRun(az, p, *pipeline, merge)
+		if err != nil {
+			return loud(fmt.Sprintf("cannot read pipeline %d", *pipeline), err)
+		}
+		worst = &v
+		if v.state == "PASS" {
+			passes = []int{v.build}
+		}
+	}
 	if worst == nil {
 		worst = &verdict{state: "NONE", result: "no-blocking-build-policy"}
 	}
@@ -211,6 +234,61 @@ func run(args []string, az func(...string) ([]byte, error), out io.Writer) int {
 		fmt.Fprintf(out, "%s %s build=%s result=%s\n", worst.state, pre, buildRef(worst.build), worst.result)
 	}
 	return 1
+}
+
+// pipelineRun is the verdict of the newest run of pipeline pl on the PR's merge branch at its merge commit.
+func pipelineRun(az func(...string) ([]byte, error), p pr, pl int, merge string) (verdict, error) {
+	proj, repo, branch := p.Repository.Project.Name, p.Repository.ID, fmt.Sprintf("refs/pull/%d/merge", p.PullRequestID)
+	var runs []build
+	if err := get(az, &runs, "pipelines", "runs", "list", "--project", proj, "--pipeline-ids", strconv.Itoa(pl), "--branch", branch, "--top", "50", "-o", "json"); err != nil {
+		return verdict{}, err
+	}
+	var newest *build
+	for i, r := range runs {
+		if r.SourceBranch == branch && r.SourceVersion == merge && (newest == nil || r.ID > newest.ID) {
+			newest = &runs[i]
+		}
+	}
+	if newest == nil {
+		return verdict{state: "NONE", result: "no-run-on-merge"}, nil
+	}
+	var refs []struct {
+		Name     string `json:"name"`
+		ObjectID string `json:"objectId"`
+	}
+	if err := get(az, &refs, "repos", "ref", "list", "--project", proj, "--repository", repo, "--filter", strings.TrimPrefix(p.TargetRefName, "refs/"), "-o", "json"); err != nil {
+		return verdict{}, err
+	}
+	target := ""
+	for _, r := range refs { // the filter is a prefix: integration/x-b1 also lists integration/x-b10
+		if r.Name == p.TargetRefName {
+			target = r.ObjectID
+		}
+	}
+	if len(target) != 40 {
+		return verdict{}, fmt.Errorf("no head for %s", cmp.Or(p.TargetRefName, "the target branch"))
+	}
+	var c struct {
+		Parents []string `json:"parents"`
+	}
+	if err := get(az, &c, "devops", "invoke", "--area", "git", "--resource", "commits", "--route-parameters", "project="+proj, "repositoryId="+repo, "commitId="+merge, "--api-version", "7.1", "-o", "json"); err != nil {
+		return verdict{}, err
+	}
+	if len(c.Parents) == 0 {
+		return verdict{}, fmt.Errorf("merge commit %s has no parents", short(merge))
+	}
+	v := verdict{build: newest.ID, result: newest.Result}
+	switch {
+	case c.Parents[0] != target:
+		v.state, v.result = "STALE", "target-moved"
+	case newest.Status != "completed":
+		v.state, v.result = "NONE", newest.Status
+	case newest.Result == "succeeded":
+		v.state = "PASS"
+	default:
+		v.state = "FAIL"
+	}
+	return v, nil
 }
 
 // get runs one az call with the organization az devops configure holds, never one detected from the current folder's

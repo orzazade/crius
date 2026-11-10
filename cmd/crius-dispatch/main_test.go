@@ -104,3 +104,32 @@ func TestTheSameErrorOnAnotherRowIsSaid(t *testing.T) {
 		t.Fatal("new surfaces or durations made a new key")
 	}
 }
+
+// ci-proof's FAIL, STALE and NONE exit 1 with a line: that is an answer for the merge queue, not an error. Exit 2 (it
+// could not look) is an error carrying its LOUD line.
+func TestCIProofsLineIsTheAnswerAndItsLoudExitAnError(t *testing.T) {
+	bin := t.TempDir()
+	fake := filepath.Join(bin, "ci-proof")
+	os.WriteFile(fake, []byte("#!/bin/sh\ncase \"$*\" in\n"+
+		"'-pipeline 7 8001') echo 'STALE pr=8001 head=aaaaaaaa merge=bbbbbbbb build=4 result=target-moved'; exit 1;;\n"+
+		"'8002') echo 'PASS pr=8002 head=cccccccc merge=dddddddd build=5 result=succeeded suites=X 1/1'; exit 0;;\n"+
+		"*) echo \"LOUD ci-proof: PR 8003: cannot read the PR: $*\"; exit 2;;\nesac\n"), 0o755)
+	if l, err := ciProof(fake, 8001, 7); err != nil || l != "STALE pr=8001 head=aaaaaaaa merge=bbbbbbbb build=4 result=target-moved" {
+		t.Errorf("exit 1: %q %v", l, err)
+	}
+	if l, err := ciProof(fake, 8002, 0); err != nil || !strings.HasPrefix(l, "PASS pr=8002 ") {
+		t.Errorf("no pipeline: %q %v", l, err)
+	}
+	if l, err := ciProof(fake, 8003, 0); err == nil || !strings.Contains(err.Error(), "LOUD ci-proof: PR 8003: cannot read the PR: 8003") {
+		t.Errorf("exit 2: %q %v", l, err)
+	}
+}
+
+// Review P3-3: an exit 0 with no line is a failure to look, not an answer.
+func TestCIProofWithNoLineIsAnError(t *testing.T) {
+	fake := filepath.Join(t.TempDir(), "ci-proof")
+	os.WriteFile(fake, []byte("#!/bin/sh\nexit 0\n"), 0o755)
+	if l, err := ciProof(fake, 8001, 0); err == nil {
+		t.Errorf("no line taken as an answer: %q", l)
+	}
+}

@@ -1,0 +1,13 @@
+[
+  {
+    "configuration": {
+      "isBlocking": true,
+      "isEnabled": true,
+      "type": {
+        "displayName": "Minimum number of reviewers"
+      }
+    },
+    "context": null,
+    "status": "approved"
+  }
+]
