@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -570,5 +571,39 @@ func TestWaitSweepJobRunsTheTrackedScript(t *testing.T) {
 	}
 	if err != nil || !strings.HasPrefix(last, "wait-sweep: ") || !strings.HasSuffix(last, " passed, 0 failed") {
 		t.Fatalf("wait-sweep suite: %v: %s", err, last)
+	}
+}
+
+// The dispatcher runs every minute, not at load twice over, and its PATH has cmux (crius-spawn opens tabs with it) and
+// az (PR states): without either every run fails.
+func TestDispatchJobFindsCmuxAndAz(t *testing.T) {
+	in, err := os.ReadFile("space.scifilab.crius.dispatch.plist.in")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plist := filepath.Join(t.TempDir(), "p.plist")
+	if err := os.WriteFile(plist, []byte(strings.ReplaceAll(string(in), "@HOME@", "/Users/x")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command("plutil", "-convert", "json", "-o", "-", plist).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var job struct {
+		Label                string
+		ProgramArguments     []string
+		StartInterval        int
+		EnvironmentVariables map[string]string
+		StandardErrorPath    string
+	}
+	if err := json.Unmarshal(out, &job); err != nil {
+		t.Fatal(err)
+	}
+	path := strings.Split(job.EnvironmentVariables["PATH"], ":")
+	if job.Label != "space.scifilab.crius.dispatch" || job.StartInterval != 60 ||
+		!reflect.DeepEqual(job.ProgramArguments, []string{"/Users/x/.crius/bin/crius-dispatch"}) ||
+		!slices.Contains(path, "/Applications/cmux.app/Contents/Resources/bin") || !slices.Contains(path, "/opt/homebrew/bin") ||
+		job.StandardErrorPath != "/Users/x/.crius/logs/dispatch.log" {
+		t.Fatalf("%+v", job)
 	}
 }
