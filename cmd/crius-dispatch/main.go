@@ -114,6 +114,7 @@ func deps(home, project string, now time.Time) dispatch.Deps {
 			defer stop()
 			return runMerge(ctx, command, 20*time.Minute)
 		},
+		StartLand: startLand,
 		Post: func(typ, to, text string) error {
 			return watchdog.PostOn(home, project, typ, "crius:dispatch", to, time.Now(), text)
 		},
@@ -162,6 +163,25 @@ func runMerge(parent context.Context, command string, limit time.Duration) (stri
 		return string(out), fmt.Errorf("merge command: no answer in %v; it and all it started were stopped: %w", limit, dispatch.ErrOutcomeUnknown)
 	}
 	return string(out), err
+}
+
+// startLand starts the land command under bash in a session of its own (it outlives this dispatcher run; launchd ends
+// only this job's group), inside lockf on lock, so the lock is held exactly while it runs; its output goes to log and its
+// exit code into rc when it ends. A lock already held makes lockf exit 75 with no rc: read as a run that ended with none.
+func startLand(command, lock, log, rc string) error {
+	out, err := os.OpenFile(log, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	q := func(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
+	cmd := exec.Command("/usr/bin/lockf", "-t", "0", lock, "/bin/bash", "-c", "(\n"+command+"\n)\necho $? > "+q(rc)) // a subshell: an exit in it still writes rc
+	cmd.Stdout, cmd.Stderr = out, out
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	return cmd.Process.Release()
 }
 
 // alive says whether the role's current session (crius-hook's role file) runs in a Claude now, not closed on purpose.

@@ -16,6 +16,7 @@
 //	pipeline = 42                # optional: the pipeline whose run proves a PR into a branch with no Build policy
 //	merge = "~/bin/land.sh {pr} {build} {target}"  # optional: the queue completes the named PR with this command
 //	merge_into = ["refs/heads/integration/x"]      # the only branches it may complete into; never main, master or develop
+//	land = "~/bin/land-all.sh"   # optional, not with merge: lands every ready PR itself (below)
 //
 // The merge queue (plan step 3, until a program may complete PRs): the rows in pr, oldest PR number first. The first
 // whose ci-proof passes is named to <project>:lead in one MERGE line, once per PR, head and build; the next is named
@@ -34,9 +35,19 @@
 // or MERGE "not completed" with the command's last line, recorded before it is posted. So the command runs once per
 // PR, head and build: no second run beside a live one; one stopped at its limit, or whose dispatcher ended during it,
 // is said once as "outcome unknown". A new head or build, or removing mergeq.told, tries again. While it runs, the dispatcher does nothing else.
+//
+// With land set (crius:lead 11-10: the queue had landed nothing; a build takes 30 min, so PRs ride in batches), the queue
+// above is off and no proofs are read: the land command picks every ready PR, gates and lands them with its own gates
+// (it, not the dispatcher, keeps the branch rules). It runs detached (bash, its own session, under lockf on landq.lock, so
+// the lock is held exactly while it runs; output in landq.log, exit code in landq.rc), one run at a time. Each run of the
+// dispatcher reads the log's new whole lines: a "LANDED PR ..." line goes into landed.log with its time and to
+// <project>:lead as one INFO. When the run has ended: rc 0 starts the next run at once; rc 3 (nothing to land) waits 10
+// min quietly; any other rc, or none, is said to the lead in one MERGE line with the log's last line, then waits 10 min.
 package dispatch
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -68,7 +79,10 @@ type Deps struct {
 	Proof         func(pr, pipeline int) (string, error)
 	Target        func(pr int) (string, error)         // a PR's target branch (refs/heads/...)
 	Merge         func(command string) (string, error) // runs the project's merge command; its output and how it ended
-	Post          func(typ, to, text string) error
+	// StartLand starts the project's land command detached, under lock (held while it runs), its output to log and its exit
+	// code into rc when it ends; it returns once started
+	StartLand func(command, lock, log, rc string) error
+	Post      func(typ, to, text string) error
 }
 
 type config struct {
@@ -80,6 +94,8 @@ type config struct {
 	// Merge completes the named PR ({pr}, {build}) when its target is one of MergeInto; none: the lead is told only
 	Merge     string   `toml:"merge"`
 	MergeInto []string `toml:"merge_into"`
+	// Land lands every ready PR (it picks, gates and completes them, its own gates deciding), run detached one at a time
+	Land string `toml:"land"`
 }
 
 const (
@@ -110,6 +126,9 @@ func Run(d Deps) error {
 	}
 	if cfg.Cap < 1 || cfg.Prefix == "" || !strings.Contains(cfg.Prompt, "{id}") {
 		return fmt.Errorf("DISPATCH.toml needs cap >= 1, a prefix and a prompt with {id}")
+	}
+	if cfg.Land != "" && cfg.Merge != "" {
+		return fmt.Errorf("DISPATCH.toml: land and merge both land PRs; set one")
 	}
 	if cfg.Merge != "" && len(cfg.MergeInto) == 0 {
 		return fmt.Errorf("DISPATCH.toml: merge needs merge_into, the branches it may complete PRs into")
@@ -147,11 +166,11 @@ func Run(d Deps) error {
 			continue
 		}
 		prs[r.PR] = st
-		if st != "active" {
-			if st != "completed" && st != "abandoned" {
+		if st != "active" || cfg.Land != "" {
+			if st != "active" && st != "completed" && st != "abandoned" {
 				errs = append(errs, fmt.Errorf("%s PR %d: state %q is none the dispatcher knows", r.ID, r.PR, st))
 			}
-			continue
+			continue // with land set, the land command picks and proves the PRs
 		}
 		line, err := d.Proof(r.PR, cfg.Pipeline)
 		if err != nil {
@@ -384,10 +403,165 @@ func Run(d Deps) error {
 			settled = settled && slices.ContainsFunc(queue, func(q board.Row) bool { return q.ID == r.ID && q.PR == r.PR })
 		}
 	}
-	if err := mergeQueue(d, cfg, dir, queue, proofs, settled); err != nil {
+	if cfg.Land != "" {
+		if err := landQueue(d, cfg, dir); err != nil {
+			errs = append(errs, err)
+		}
+	} else if err := mergeQueue(d, cfg, dir, queue, proofs, settled); err != nil {
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
+}
+
+// landState is what the land queue keeps between runs (landq.json): the run it started last, how much of its log was read,
+// whether its end was handled, and when the next run may start.
+type landState struct {
+	Run    int
+	Offset int64
+	Open   bool
+	Next   time.Time
+}
+
+const landWait = 10 * time.Minute // after a run that found nothing to land or stopped
+
+// landQueue runs the project's land command, one run at a time (see the package comment).
+func landQueue(d Deps, cfg config, dir string) error {
+	var (
+		statePath = filepath.Join(dir, "landq.json")
+		lockPath  = filepath.Join(dir, "landq.lock")
+		logPath   = filepath.Join(dir, "landq.log")
+		rcPath    = filepath.Join(dir, "landq.rc")
+	)
+	var st landState
+	if b, err := os.ReadFile(statePath); err == nil {
+		if err := json.Unmarshal(b, &st); err != nil {
+			return fmt.Errorf("reading %s: %w", statePath, err)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	save := func() error {
+		b, _ := json.Marshal(st)
+		tmp := statePath + ".tmp"
+		if err := os.WriteFile(tmp, b, 0o644); err != nil {
+			return err
+		}
+		return os.Rename(tmp, statePath)
+	}
+	// a live run holds the lock (lockf around it); the lock is taken here only to look, and let go at once
+	running := false
+	if l, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644); err != nil {
+		return err
+	} else {
+		err := syscall.Flock(int(l.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		l.Close()
+		switch {
+		case errors.Is(err, syscall.EWOULDBLOCK):
+			running = true
+		case err != nil:
+			return fmt.Errorf("looking at the land lock: %w", err)
+		}
+	}
+	last := ""
+	if st.Open {
+		// each whole new line of the log: a LANDED line is kept in landed.log and said to the lead, then read past
+		b, err := os.ReadFile(logPath)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if st.Offset > int64(len(b)) {
+			st.Offset = 0
+		}
+		for _, l := range strings.Split(string(b[:bytes.LastIndexByte(b, '\n')+1]), "\n") {
+			if strings.TrimSpace(l) != "" {
+				last = strings.TrimSpace(l)
+			}
+		}
+		rest := b[st.Offset:]
+		for {
+			i := bytes.IndexByte(rest, '\n')
+			if i < 0 {
+				break
+			}
+			line := strings.TrimSpace(string(rest[:i]))
+			if strings.HasPrefix(line, "LANDED PR ") {
+				// said, then read past and kept: a failed post is tried again next run, a said line never twice (review P3)
+				if err := d.Post("INFO", d.Project+":lead", "merge queue: "+line); err != nil {
+					return errors.Join(fmt.Errorf("posting %q: %w", line, err), save())
+				}
+				st.Offset += int64(i + 1)
+				if err := appendLine(filepath.Join(dir, "landed.log"), d.Now.Format(time.RFC3339)+" "+line); err != nil {
+					return errors.Join(err, save())
+				}
+				rest = rest[i+1:]
+				continue
+			}
+			st.Offset += int64(i + 1)
+			rest = rest[i+1:]
+		}
+	}
+	if running {
+		return save()
+	}
+	if r := []rune(last); len(r) > 160 {
+		last = string(r[:160]) + "…"
+	}
+	if st.Open { // the run ended: how
+		b, err := os.ReadFile(rcPath)
+		rc := strings.TrimSpace(string(b))
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			st.Next = d.Now.Add(landWait)
+			if err := d.Post("MERGE", d.Project+":lead", fmt.Sprintf("merge queue: landing run %d ended with no exit code (stopped?): %s", st.Run, last)); err != nil {
+				return errors.Join(err, save())
+			}
+		case err != nil:
+			return err
+		case rc == "0":
+			st.Next = d.Now
+		case rc == "3":
+			st.Next = d.Now.Add(landWait)
+		default:
+			st.Next = d.Now.Add(landWait)
+			if err := d.Post("MERGE", d.Project+":lead", fmt.Sprintf("merge queue: landing run %d stopped (rc %s): %s", st.Run, rc, last)); err != nil {
+				return errors.Join(err, save())
+			}
+		}
+		st.Open = false
+		if err := save(); err != nil {
+			return err
+		}
+	}
+	if d.Now.Before(st.Next) {
+		return nil
+	}
+	if err := os.Remove(rcPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.Rename(logPath, filepath.Join(dir, "landq.prev.log")); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	// marked open before it starts: a dispatcher that ends during the start still reads its end next time
+	st.Run, st.Offset, st.Open = st.Run+1, 0, true
+	if err := save(); err != nil {
+		return err
+	}
+	if err := d.StartLand(cfg.Land, lockPath, logPath, rcPath); err != nil {
+		return fmt.Errorf("starting landing run %d: %w", st.Run, err)
+	}
+	return nil
+}
+
+func appendLine(path, line string) error {
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := f.WriteString(line + "\n"); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 // mergeQueue tells the project's lead which PR to merge next (see the package comment). A run in which a queued row

@@ -38,6 +38,8 @@ type fake struct {
 	reproof     string         // the proof a second read in the same run gives (the queue's read just before merging)
 	proofN      map[int]int    // reads per PR in this run
 	toldAtMerge string         // mergeq.told when the merge command started
+	lands       []string       // each land command started, with the paths it was given
+	postFailAll bool           // postErr fails every post, not only MERGE
 	at          time.Time
 	err         error
 	allowErr    bool
@@ -120,8 +122,19 @@ func (f *fake) run(t *testing.T, min int) {
 			f.toldAtMerge = string(b)
 			return f.mergeOut, f.mergeErr
 		},
+		StartLand: func(command, lock, log, rc string) error {
+			f.lands = append(f.lands, command)
+			dir := filepath.Join(f.home, "state", "demo")
+			if lock != filepath.Join(dir, "landq.lock") || log != filepath.Join(dir, "landq.log") || rc != filepath.Join(dir, "landq.rc") {
+				t.Fatalf("land paths %s %s %s", lock, log, rc)
+			}
+			if _, err := os.Stat(rc); err == nil {
+				t.Fatalf("a land run started with the last run's %s still there", rc)
+			}
+			return os.WriteFile(log, nil, 0o644)
+		},
 		Post: func(typ, to, text string) error {
-			if typ == "MERGE" && f.postErr != nil {
+			if (typ == "MERGE" || f.postFailAll) && f.postErr != nil {
 				return f.postErr
 			}
 			f.posts = append(f.posts, typ+" "+to+": "+text)
@@ -1085,5 +1098,144 @@ func TestTheMergeCommandMustTakeTheTarget(t *testing.T) {
 		if f.err == nil || !strings.Contains(f.err.Error(), c.want) {
 			t.Errorf("%q: %v", c.want, f.err)
 		}
+	}
+}
+
+// landing writes the land command's config and gives a helper that holds its lock (the run is live) until released.
+func landing(t *testing.T, f *fake) (dir string, hold func() func()) {
+	t.Helper()
+	dir = filepath.Join(f.home, "state", "demo")
+	cfg := "cap = 1\nprefix = \"pilot-\"\nprompt = \"Your criterion: {id}.\"\nland = \"bash land.sh\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "DISPATCH.toml"), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir, func() func() {
+		l, err := os.OpenFile(filepath.Join(dir, "landq.lock"), os.O_CREATE|os.O_RDWR, 0o644)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := syscall.Flock(int(l.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+			t.Fatal(err)
+		}
+		return func() { l.Close() }
+	}
+}
+
+// crius:lead 11-10 23:2x: the merge queue completed 0 PRs in an hour while 9 were ready: it took only board rows (pilot
+// PRs) and one PR per 30-min build. With land set, the dispatcher runs the project's landing command (it picks every
+// QA-passed PR, gates them as one train and lands the green ones) detached, one run at a time, and posts each "LANDED PR"
+// line it prints as one INFO to the lead, once. A run that ends rc 0 is followed at once by the next; rc 3 (nothing to
+// land) waits 10 min quietly; any other end is said to the lead with its last line, then waits 10 min.
+func TestTheLandCommandRunsOneAtATimeAndSaysEachLandedPR(t *testing.T) {
+	f := newFake(t, 1)
+	dir, hold := landing(t, f)
+	logf := filepath.Join(dir, "landq.log")
+	add := func(s string) {
+		l, err := os.OpenFile(logf, os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer l.Close()
+		l.WriteString(s)
+	}
+	end := func(rc string) {
+		if rc != "" {
+			if err := os.WriteFile(filepath.Join(dir, "landq.rc"), []byte(rc+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	f.run(t, 0)
+	if len(f.lands) != 1 || f.lands[0] != "bash land.sh" {
+		t.Fatalf("lands %q, want the land command started once", f.lands)
+	}
+	release := hold()
+	add("gate: batch-gate.sh --bisect 8009 8032\nLANDED PR 8009 (build 128700) 23:59\nLANDED PR 80")
+	f.run(t, 1)
+	add("32 (build 128700) 23:59\n")
+	f.run(t, 2)
+	f.run(t, 3)
+	want := []string{"INFO demo:lead: merge queue: LANDED PR 8009 (build 128700) 23:59", "INFO demo:lead: merge queue: LANDED PR 8032 (build 128700) 23:59"}
+	if len(f.lands) != 1 || !slices.Equal(f.posts, want) {
+		t.Fatalf("while it runs: lands %q posts\n got %q\nwant %q", f.lands, f.posts, want)
+	}
+	b, _ := os.ReadFile(filepath.Join(dir, "landed.log"))
+	if strings.Count(string(b), "LANDED PR") != 2 {
+		t.Fatalf("landed.log %q, want both LANDED lines kept with their time", b)
+	}
+	// a post that fails is tried again next run; a line said is never said or kept twice (review P3)
+	add("LANDED PR 8046 (build 128700) 23:59\n")
+	f.postErr, f.postFailAll = errors.New("bus down"), true
+	f.allowErr = true
+	f.run(t, 3)
+	f.postErr, f.postFailAll, f.allowErr = nil, false, false
+	f.run(t, 3)
+	f.run(t, 3)
+	want = append(want, "INFO demo:lead: merge queue: LANDED PR 8046 (build 128700) 23:59")
+	b, _ = os.ReadFile(filepath.Join(dir, "landed.log"))
+	if !slices.Equal(f.posts, want) || strings.Count(string(b), "LANDED PR") != 3 {
+		t.Fatalf("after a failed post: posts %q landed.log %q", f.posts, b)
+	}
+	// rc 0: the next run starts at once, on a fresh log
+	add("TRAIN LANDED: 3 PRs\n")
+	release()
+	end("0")
+	f.run(t, 4)
+	if len(f.lands) != 2 || len(f.posts) != 3 {
+		t.Fatalf("after rc 0: lands %q posts %q, want a second run and nothing said", f.lands, f.posts)
+	}
+	// rc 3: nothing to land, quiet for 10 min
+	add("nothing to gate (21 unlanded)\n")
+	end("3")
+	f.run(t, 5)
+	f.run(t, 14)
+	if len(f.lands) != 2 || len(f.posts) != 3 {
+		t.Fatalf("after rc 3: lands %q posts %q, want quiet for 10 min", f.lands, f.posts)
+	}
+	f.run(t, 15)
+	if len(f.lands) != 3 {
+		t.Fatalf("10 min after rc 3: lands %q, want a third run", f.lands)
+	}
+	// any other end: said once with its last line, then 10 min
+	add("gate: x\nSTOP: vote.sh rc 13 on PR 8032: refused\n")
+	end("1")
+	f.run(t, 16)
+	f.run(t, 17)
+	stop := "MERGE demo:lead: merge queue: landing run 3 stopped (rc 1): STOP: vote.sh rc 13 on PR 8032: refused"
+	if len(f.posts) != 4 || f.posts[3] != stop || len(f.lands) != 3 {
+		t.Fatalf("after rc 1: posts %q lands %q, want %q once", f.posts, f.lands, stop)
+	}
+	f.run(t, 26)
+	// a run that ended with no exit code (stopped, or the machine restarted)
+	add("gate: y\n")
+	f.run(t, 27)
+	gone := "MERGE demo:lead: merge queue: landing run 4 ended with no exit code (stopped?): gate: y"
+	if len(f.lands) != 4 || len(f.posts) != 5 || f.posts[4] != gone {
+		t.Fatalf("no rc: lands %q posts %q, want %q", f.lands, f.posts, gone)
+	}
+}
+
+// With land set the per-PR queue is off (one lander moves the branch), and land with merge is refused.
+func TestLandReplacesTheMergeQueue(t *testing.T) {
+	f := newFake(t, 1)
+	dir, hold := landing(t, f)
+	f.ready(t, "AC1", "src/AC1.go")
+	f.run(t, 0)
+	defer hold()() // the land run started in run 0 lives on
+	f.proofs[8001] = "PASS pr=8001 head=aaaaaaaa merge=a1a1a1a1 build=4 result=succeeded suites=X 1/1"
+	f.bus(t, "2026-11-10T17:00 DONE demo:pilot-ac1 -> crius:lead — AC1 PR 8001 @ aaaaaaaa")
+	f.run(t, 1)
+	f.run(t, 2)
+	if f.row(t, "AC1").State != board.PR || len(f.proofed) != 0 || len(f.merges()) != 0 {
+		t.Fatalf("with land set: AC1 %s, proofs read %q, merges %q; want in pr with no proof read and nothing named", f.row(t, "AC1").State, f.proofed, f.merges())
+	}
+	cfg := "cap = 1\nprefix = \"pilot-\"\nprompt = \"{id}\"\nland = \"x\"\nmerge = \"m {pr} {build} {target}\"\nmerge_into = [\"refs/heads/integration/x\"]\n"
+	if err := os.WriteFile(filepath.Join(dir, "DISPATCH.toml"), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.allowErr = true
+	f.run(t, 2)
+	if f.err == nil || !strings.Contains(f.err.Error(), "land and merge") {
+		t.Fatalf("land with merge: err %v, want refused", f.err)
 	}
 }

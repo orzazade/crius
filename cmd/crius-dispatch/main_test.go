@@ -189,3 +189,44 @@ func TestAMergeStopsWithItsDispatcher(t *testing.T) {
 		t.Fatalf("child %d still runs after its dispatcher stopped", pid)
 	}
 }
+
+// The land command runs detached under its lock: the lock is held while it runs, its output is in the log, its exit code
+// lands in rc, and startLand returns before it ends.
+func TestStartLandRunsDetachedUnderItsLock(t *testing.T) {
+	dir := t.TempDir()
+	lock, log, rc := filepath.Join(dir, "landq.lock"), filepath.Join(dir, "landq.log"), filepath.Join(dir, "it's rc")
+	if err := startLand("echo hi; sleep 1; exit 7", lock, log, rc); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(rc); err == nil {
+		t.Fatal("startLand returned after the command ended: it must not wait for it")
+	}
+	held := false
+	for i := 0; i < 50 && !held; i++ {
+		l, err := os.OpenFile(lock, os.O_CREATE|os.O_RDWR, 0o644)
+		if err != nil {
+			t.Fatal(err)
+		}
+		held = errors.Is(syscall.Flock(int(l.Fd()), syscall.LOCK_EX|syscall.LOCK_NB), syscall.EWOULDBLOCK)
+		l.Close()
+		if !held {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	if !held {
+		t.Fatal("the lock was not held while the command ran")
+	}
+	var b []byte
+	for i := 0; i < 100; i++ {
+		if b, _ = os.ReadFile(rc); len(b) > 0 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if strings.TrimSpace(string(b)) != "7" {
+		t.Fatalf("rc file %q, want 7", b)
+	}
+	if o, _ := os.ReadFile(log); strings.TrimSpace(string(o)) != "hi" {
+		t.Fatalf("log %q, want hi", o)
+	}
+}
