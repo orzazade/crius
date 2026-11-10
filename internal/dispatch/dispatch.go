@@ -14,6 +14,8 @@
 //	prefix = "pilot-"            # a row's role is prefix + its id in lower case (AC12 -> pilot-ac12)
 //	prompt = "Your criterion: {id}. Read ~/.crius/state/<project>/PILOT-BRIEF.md first and follow it."
 //	pipeline = 42                # optional: the pipeline whose run proves a PR into a branch with no Build policy
+//	merge = "~/bin/land.sh {pr} {build} {target}"  # optional: the queue completes the named PR with this command
+//	merge_into = ["refs/heads/integration/x"]      # the only branches it may complete into; never main, master or develop
 //
 // The merge queue (plan step 3, until a program may complete PRs): the rows in pr, oldest PR number first. The first
 // whose ci-proof passes is named to <project>:lead in one MERGE line, once per PR, head and build; the next is named
@@ -22,6 +24,16 @@
 // When the named one ends and none passes, the lead hears "none ready" once, with each PR's state (a STALE one needs a new build). A run that
 // could not read every row's proof, or in which a row in pr left it or changed its PR, leaves the queue as it was.
 // What was said is in mergeq.told beside the board.
+//
+// With merge set (owner 11-10: the queue may complete PRs into the integration branch), the named PR is not told to the
+// lead but completed: its target must be in merge_into and its proof must name one build, and the proof is read again
+// just before (one that changed waits for the next run). Under mergeq.lock (held while the queue decides and merges),
+// "running <key>" goes into mergeq.told and the merge command runs (bash, after the board is saved, up to 20 min, given
+// {pr}, {build} and {target}, the branch name without refs/heads/; its own gates decide:
+// review, QA, vote, build, and it must refuse a PR whose target is no longer {target}). The lead hears INFO "completed"
+// or MERGE "not completed" with the command's last line, recorded before it is posted. So the command runs once per
+// PR, head and build: no second run beside a live one; one stopped at its limit, or whose dispatcher ended during it,
+// is said once as "outcome unknown". A new head or build, or removing mergeq.told, tries again. While it runs, the dispatcher does nothing else.
 package dispatch
 
 import (
@@ -34,6 +46,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -53,6 +66,8 @@ type Deps struct {
 	Alive         func(role string) (bool, error)
 	PRState       func(pr int) (string, error)
 	Proof         func(pr, pipeline int) (string, error)
+	Target        func(pr int) (string, error)         // a PR's target branch (refs/heads/...)
+	Merge         func(command string) (string, error) // runs the project's merge command; its output and how it ended
 	Post          func(typ, to, text string) error
 }
 
@@ -62,6 +77,9 @@ type config struct {
 	Prompt string `toml:"prompt"`
 	// Pipeline proves a PR into a branch with no Build policy: ci-proof -pipeline (0: the Build policy alone)
 	Pipeline int `toml:"pipeline"`
+	// Merge completes the named PR ({pr}, {build}) when its target is one of MergeInto; none: the lead is told only
+	Merge     string   `toml:"merge"`
+	MergeInto []string `toml:"merge_into"`
 }
 
 const (
@@ -92,6 +110,20 @@ func Run(d Deps) error {
 	}
 	if cfg.Cap < 1 || cfg.Prefix == "" || !strings.Contains(cfg.Prompt, "{id}") {
 		return fmt.Errorf("DISPATCH.toml needs cap >= 1, a prefix and a prompt with {id}")
+	}
+	if cfg.Merge != "" && len(cfg.MergeInto) == 0 {
+		return fmt.Errorf("DISPATCH.toml: merge needs merge_into, the branches it may complete PRs into")
+	}
+	if cfg.Merge != "" && !(strings.Contains(cfg.Merge, "{pr}") && strings.Contains(cfg.Merge, "{build}") && strings.Contains(cfg.Merge, "{target}")) {
+		// the command checks the PR still targets the branch the queue checked (review P2-3)
+		return fmt.Errorf("DISPATCH.toml: merge needs {pr}, {build} and {target}")
+	}
+	for _, b := range cfg.MergeInto { // owner 11-10: never develop or main
+		for _, d := range []string{"refs/heads/main", "refs/heads/master", "refs/heads/develop"} {
+			if strings.EqualFold(b, d) {
+				return fmt.Errorf("DISPATCH.toml: merge_into may not name %s", b)
+			}
+		}
 	}
 	boardPath := filepath.Join(dir, "BOARD.toml")
 	session := func(id string) string { return d.Project + ":" + role(cfg, id) }
@@ -352,7 +384,7 @@ func Run(d Deps) error {
 			settled = settled && slices.ContainsFunc(queue, func(q board.Row) bool { return q.ID == r.ID && q.PR == r.PR })
 		}
 	}
-	if err := mergeQueue(d, dir, queue, proofs, settled); err != nil {
+	if err := mergeQueue(d, cfg, dir, queue, proofs, settled); err != nil {
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
@@ -360,7 +392,7 @@ func Run(d Deps) error {
 
 // mergeQueue tells the project's lead which PR to merge next (see the package comment). A run in which a queued row
 // left pr or changed its PR (settled false) decides nothing: the others' proofs may be read against the old target.
-func mergeQueue(d Deps, dir string, queue []board.Row, proofs map[int]string, settled bool) error {
+func mergeQueue(d Deps, cfg config, dir string, queue []board.Row, proofs map[int]string, settled bool) error {
 	if !settled {
 		return nil
 	}
@@ -371,11 +403,32 @@ func mergeQueue(d Deps, dir string, queue []board.Row, proofs map[int]string, se
 		}
 	}
 	toldPath := filepath.Join(dir, "mergeq.told")
+	if cfg.Merge != "" {
+		// held while the queue decides and merges; the system frees it when its dispatcher ends (review r2 P3-A, P3-B)
+		lock, err := os.OpenFile(filepath.Join(dir, "mergeq.lock"), os.O_CREATE|os.O_RDWR, 0o644)
+		if err != nil {
+			return err
+		}
+		defer lock.Close()
+		if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); errors.Is(err, syscall.EWOULDBLOCK) {
+			return nil // another dispatcher is deciding or merging
+		} else if err != nil {
+			return fmt.Errorf("locking the merge queue: %w", err)
+		}
+	}
 	b, err := os.ReadFile(toldPath)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("reading what the merge queue said: %w", err)
 	}
 	told := strings.TrimSpace(string(b))
+	if key, ok := strings.CutPrefix(told, "running "); ok {
+		// a merge command was started by a run that ended during it (a live one holds the lock): say so once
+		f := strings.Fields(key) // next <pr> <head> <build>
+		if len(f) != 4 {
+			return fmt.Errorf("mergeq.told %q: not running next <pr> <head> <build>", told)
+		}
+		return sayDone(d, toldPath, key, unknown(f[1], f[2], f[3], "with no answer (its dispatcher ended)"))
+	}
 	keyOf := func(i int) string {
 		f := proofFields(proofs[queue[i].PR])
 		return fmt.Sprintf("next %d %s %s", queue[i].PR, f["head"], f["build"])
@@ -431,7 +484,21 @@ func mergeQueue(d Deps, dir string, queue []board.Row, proofs map[int]string, se
 	switch {
 	case next >= 0:
 		r, f := queue[next], proofFields(proofs[queue[next].PR])
-		text = fmt.Sprintf("merge queue: next %s PR %d @ %s (build %s PASS): yours to merge.", r.ID, r.PR, f["head"], f["build"])
+		why := ""
+		if cfg.Merge != "" {
+			done, w, err := complete(d, cfg, r, f, key, toldPath)
+			if err != nil {
+				return err // the target or the proof was not read: decide nothing, try again next run
+			}
+			if done == "skip" {
+				return nil // the proof changed since step 0: the next run decides on the new one
+			}
+			if done != "" {
+				return sayDone(d, toldPath, key, done)
+			}
+			why = w
+		}
+		text = fmt.Sprintf("merge queue: next %s PR %d @ %s (build %s PASS): yours to merge%s.", r.ID, r.PR, f["head"], f["build"], why)
 		if len(others) > 0 {
 			text += " After it: " + strings.Join(others, ", ") + "."
 		}
@@ -448,6 +515,84 @@ func mergeQueue(d Deps, dir string, queue []board.Row, proofs map[int]string, se
 		return err
 	}
 	return os.Rename(tmp, toldPath)
+}
+
+var oneBuild = regexp.MustCompile(`^[0-9]+$`)
+
+// complete runs the merge command on the named PR when it may: done is the line to post when it ran ("skip" when the
+// proof changed since step 0); why says, when it did not run, what the lead is told instead. An error is a target or
+// proof that could not be read.
+func complete(d Deps, cfg config, r board.Row, f map[string]string, key, toldPath string) (done, why string, err error) {
+	target, err := d.Target(r.PR)
+	if err != nil {
+		return "", "", fmt.Errorf("%s PR %d: reading its target: %w", r.ID, r.PR, err)
+	}
+	switch {
+	case !slices.Contains(cfg.MergeInto, target):
+		return "", " (it targets " + target + ")", nil
+	case !oneBuild.MatchString(f["build"]):
+		return "", " (builds " + f["build"] + ": not one build)", nil
+	}
+	// the proof is read again just before: one that changed since step 0 (minutes ago) is not merged on (review P2-2)
+	line, err := d.Proof(r.PR, cfg.Pipeline)
+	if err != nil {
+		return "", "", fmt.Errorf("%s PR %d: reading its proof again: %w", r.ID, r.PR, err)
+	}
+	if g := proofFields(line); g["state"] != "PASS" || fmt.Sprintf("next %d %s %s", r.PR, g["head"], g["build"]) != key {
+		return "skip", "", nil
+	}
+	// recorded before it starts, under the lock: no second run beside it, and none after a dispatcher that ended
+	// during it (review P2-1)
+	if err := writeTold(toldPath, "running "+key); err != nil {
+		return "", "", err
+	}
+	branch := strings.TrimPrefix(target, "refs/heads/")
+	cmd := strings.NewReplacer("{pr}", strconv.Itoa(r.PR), "{build}", f["build"], "{target}", branch).Replace(cfg.Merge)
+	out, err := d.Merge(cmd)
+	last := ""
+	for _, l := range strings.Split(strings.TrimSpace(out), "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			last = l
+		}
+	}
+	if r := []rune(last); len(r) > 160 {
+		last = string(r[:160]) + "…"
+	}
+	what := fmt.Sprintf("%s PR %d @ %s (build %s)", r.ID, r.PR, f["head"], f["build"])
+	if errors.Is(err, ErrOutcomeUnknown) { // stopped at its limit or with its dispatcher: it may have completed (review r2 P3-C)
+		return unknown(strconv.Itoa(r.PR), f["head"], f["build"], "("+err.Error()+")"), "", nil
+	}
+	if err != nil {
+		return fmt.Sprintf("MERGE merge queue: %s not completed (%v): %s. Tried again on a new head or build, or once mergeq.told is removed.", what, err, last), "", nil
+	}
+	return fmt.Sprintf("INFO merge queue completed %s into %s: %s", what, target, last), "", nil
+}
+
+// sayDone records a merge command that ran before it is posted: a lost post must never run the command twice.
+func sayDone(d Deps, toldPath, key, done string) error {
+	if err := writeTold(toldPath, key); err != nil {
+		return err
+	}
+	typ, text, _ := strings.Cut(done, " ")
+	if err := d.Post(typ, d.Project+":lead", text); err != nil {
+		return fmt.Errorf("posting %q: %w", text, err)
+	}
+	return nil
+}
+
+func writeTold(path, s string) error {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(s+"\n"), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// ErrOutcomeUnknown is a merge command stopped before it said how it ended (its limit, or its dispatcher stopping).
+var ErrOutcomeUnknown = errors.New("outcome unknown")
+
+func unknown(pr, head, build, how string) string {
+	return fmt.Sprintf("MERGE merge queue: the merge command for PR %s @ %s (build %s) stopped %s; outcome unknown: check the PR. Tried again on a new head or build, or once mergeq.told is removed.", pr, head, build, how)
 }
 
 // proofFields reads ci-proof's line: its state word and its key=value fields up to suites (which may hold spaces).

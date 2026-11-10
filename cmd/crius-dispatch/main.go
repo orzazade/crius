@@ -12,10 +12,12 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/orzazade/crius/internal/dispatch"
@@ -99,6 +101,19 @@ func deps(home, project string, now time.Time) dispatch.Deps {
 			return p.Status, nil
 		},
 		Proof: func(pr, pipeline int) (string, error) { return ciProof(filepath.Join(bin, "ci-proof"), pr, pipeline) },
+		Target: func(pr int) (string, error) {
+			out, err := tool(time.Minute, "az", "repos", "pr", "show", "--id", strconv.Itoa(pr), "--query", "targetRefName", "-o", "tsv")
+			if t := strings.TrimSpace(string(out)); err != nil || !strings.HasPrefix(t, "refs/heads/") {
+				return "", fmt.Errorf("az repos pr show %d: no target branch in %q: %v", pr, t, err)
+			}
+			return strings.TrimSpace(string(out)), nil
+		},
+		Merge: func(command string) (string, error) {
+			// launchd stops the job with SIGTERM (a reinstall): the merge command, in its own group, stops with it
+			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+			defer stop()
+			return runMerge(ctx, command, 20*time.Minute)
+		},
 		Post: func(typ, to, text string) error {
 			return watchdog.PostOn(home, project, typ, "crius:dispatch", to, time.Now(), text)
 		},
@@ -127,6 +142,26 @@ func ciProof(bin string, pr, pipeline int) (string, error) {
 	default:
 		return "", fmt.Errorf("ci-proof %d: %v: %s", pr, err, line)
 	}
+}
+
+// runMerge runs the project's merge command under bash with a time limit and gives its output, stdout and stderr
+// together; a non-zero exit is an error.
+func runMerge(parent context.Context, command string, limit time.Duration) (string, error) {
+	ctx, cancel := context.WithTimeout(parent, limit)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "/bin/bash", "-c", command)
+	// its own process group, killed whole at the limit: an az call it started could still complete the PR (review P3-1)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = time.Second
+	out, err := cmd.CombinedOutput()
+	switch {
+	case parent.Err() != nil:
+		return string(out), fmt.Errorf("merge command: its dispatcher was stopped, and it with all it started: %w", dispatch.ErrOutcomeUnknown)
+	case ctx.Err() != nil:
+		return string(out), fmt.Errorf("merge command: no answer in %v; it and all it started were stopped: %w", limit, dispatch.ErrOutcomeUnknown)
+	}
+	return string(out), err
 }
 
 // alive says whether the role's current session (crius-hook's role file) runs in a Claude now, not closed on purpose.

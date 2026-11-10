@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -131,5 +134,58 @@ func TestCIProofWithNoLineIsAnError(t *testing.T) {
 	os.WriteFile(fake, []byte("#!/bin/sh\nexit 0\n"), 0o755)
 	if l, err := ciProof(fake, 8001, 0); err == nil {
 		t.Errorf("no line taken as an answer: %q", l)
+	}
+}
+
+// The merge command's output (stdout and stderr) comes back with how it ended; a non-zero exit is an error.
+func TestRunMergeGivesItsOutputAndExit(t *testing.T) {
+	out, err := runMerge(context.Background(), "echo gate ok; echo 'REFUSED merge.sh rc 16: no vote' >&2; exit 16", time.Minute)
+	if err == nil || err.Error() != "exit status 16" || !strings.Contains(out, "gate ok") || !strings.Contains(out, "REFUSED merge.sh rc 16: no vote") {
+		t.Errorf("refused: %q %v", out, err)
+	}
+	if out, err := runMerge(context.Background(), "echo 'merge.sh: PR 8001 completed'", time.Minute); err != nil || strings.TrimSpace(out) != "merge.sh: PR 8001 completed" {
+		t.Errorf("completed: %q %v", out, err)
+	}
+	if _, err := runMerge(context.Background(), "sleep 5", 100*time.Millisecond); err == nil || !strings.Contains(err.Error(), "no answer in") {
+		t.Errorf("limit: %v", err)
+	}
+}
+
+// Review P3-1: a merge command past its limit is killed with everything it started (an az call in flight could
+// still complete the PR), and its outcome is said as unknown.
+func TestAMergePastItsLimitIsKilledWholeAndUnknown(t *testing.T) {
+	pidf := filepath.Join(t.TempDir(), "child")
+	_, err := runMerge(context.Background(), "sleep 30 & echo $! > "+pidf+"; wait", 300*time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "outcome unknown") {
+		t.Fatalf("err %v", err)
+	}
+	b, rerr := os.ReadFile(pidf)
+	pid, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+	if rerr != nil || pid <= 0 {
+		t.Fatalf("no child pid: %v %q", rerr, b)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if syscall.Kill(pid, 0) == nil {
+		syscall.Kill(pid, syscall.SIGKILL)
+		t.Fatalf("child %d still runs after the limit", pid)
+	}
+}
+
+// Review r2 P2-A: the command runs in its own process group, so a dispatcher stopped by launchd (SIGTERM, on a reinstall)
+// must stop it too: cancelling the parent context kills the whole group, and the outcome is unknown.
+func TestAMergeStopsWithItsDispatcher(t *testing.T) {
+	pidf := filepath.Join(t.TempDir(), "child")
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(300*time.Millisecond, cancel)
+	_, err := runMerge(ctx, "sleep 30 & echo $! > "+pidf+"; wait", time.Minute)
+	if err == nil || !errors.Is(err, dispatch.ErrOutcomeUnknown) {
+		t.Fatalf("err %v", err)
+	}
+	b, _ := os.ReadFile(pidf)
+	pid, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+	time.Sleep(200 * time.Millisecond)
+	if pid <= 0 || syscall.Kill(pid, 0) == nil {
+		syscall.Kill(pid, syscall.SIGKILL)
+		t.Fatalf("child %d still runs after its dispatcher stopped", pid)
 	}
 }

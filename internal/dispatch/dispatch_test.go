@@ -2,11 +2,13 @@ package dispatch
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -16,22 +18,29 @@ import (
 var t0 = time.Date(2026, 11, 10, 16, 0, 0, 0, time.FixedZone("+04", 4*3600))
 
 type fake struct {
-	home     string
-	spawned  []string // "role: prompt"
-	closed   []string
-	posts    []string // "TYPE to: text"
-	dead     map[string]bool
-	live     map[string]bool // roles started once
-	failing  map[string]bool // roles whose spawn fails
-	during   func()          // runs inside each Spawn
-	prs      map[int]string
-	proofs   map[int]string // ci-proof's line per PR; none is NONE no-run-on-merge
-	proofErr error
-	proofed  []string // "pr pipeline" per Proof call
-	postErr  error    // a MERGE post fails with it
-	at       time.Time
-	err      error
-	allowErr bool
+	home        string
+	spawned     []string // "role: prompt"
+	closed      []string
+	posts       []string // "TYPE to: text"
+	dead        map[string]bool
+	live        map[string]bool // roles started once
+	failing     map[string]bool // roles whose spawn fails
+	during      func()          // runs inside each Spawn
+	prs         map[int]string
+	proofs      map[int]string // ci-proof's line per PR; none is NONE no-run-on-merge
+	proofErr    error
+	proofed     []string       // "pr pipeline" per Proof call
+	postErr     error          // a MERGE post fails with it
+	targets     map[int]string // a PR's target branch; none is refs/heads/integration/x-b1
+	merges_     []string       // each merge command run
+	mergeOut    string         // what the merge command prints
+	mergeErr    error          // and how it ends
+	reproof     string         // the proof a second read in the same run gives (the queue's read just before merging)
+	proofN      map[int]int    // reads per PR in this run
+	toldAtMerge string         // mergeq.told when the merge command started
+	at          time.Time
+	err         error
+	allowErr    bool
 }
 
 func newFake(t *testing.T, cap int) *fake {
@@ -48,12 +57,13 @@ func newFake(t *testing.T, cap int) *fake {
 	if err := os.WriteFile(filepath.Join(dir, "DISPATCH.toml"), []byte(cfg), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	return &fake{home: home, dead: map[string]bool{}, live: map[string]bool{}, failing: map[string]bool{}, prs: map[int]string{}, proofs: map[int]string{}}
+	return &fake{home: home, dead: map[string]bool{}, live: map[string]bool{}, failing: map[string]bool{}, prs: map[int]string{}, proofs: map[int]string{}, targets: map[int]string{}}
 }
 
 func (f *fake) run(t *testing.T, min int) {
 	t.Helper()
 	f.at = t0.Add(time.Duration(min) * time.Minute)
+	f.proofN = nil
 	err := Run(Deps{Home: f.home, Project: "demo", Now: f.at,
 		Spawn: func(role, prompt string) error {
 			f.spawned = append(f.spawned, role+": "+prompt)
@@ -84,6 +94,12 @@ func (f *fake) run(t *testing.T, min int) {
 		},
 		Proof: func(pr, pipeline int) (string, error) {
 			f.proofed = append(f.proofed, strconv.Itoa(pr)+" "+strconv.Itoa(pipeline))
+			if f.proofN == nil {
+				f.proofN = map[int]int{}
+			}
+			if f.proofN[pr]++; f.proofN[pr] > 1 && f.reproof != "" {
+				return f.reproof, nil
+			}
 			if f.proofErr != nil {
 				return "", f.proofErr
 			}
@@ -91,6 +107,18 @@ func (f *fake) run(t *testing.T, min int) {
 				return l, nil
 			}
 			return "NONE pr=" + strconv.Itoa(pr) + " head=00000000 merge=00000000 build=none result=no-run-on-merge", nil
+		},
+		Target: func(pr int) (string, error) {
+			if s, ok := f.targets[pr]; ok {
+				return s, nil
+			}
+			return "refs/heads/integration/x-b1", nil
+		},
+		Merge: func(command string) (string, error) {
+			f.merges_ = append(f.merges_, command)
+			b, _ := os.ReadFile(filepath.Join(f.home, "state", "demo", "mergeq.told"))
+			f.toldAtMerge = string(b)
+			return f.mergeOut, f.mergeErr
 		},
 		Post: func(typ, to, text string) error {
 			if typ == "MERGE" && f.postErr != nil {
@@ -843,6 +871,219 @@ func TestOnlyAPassOrAnInProgressNoneHoldsTheName(t *testing.T) {
 		f.run(t, 4)
 		if m := f.merges(); len(m) != 1 {
 			t.Errorf("%s did not hold: %q", res, m)
+		}
+	}
+}
+
+// mergeOn turns on completing: the queue runs the project's merge command on the named PR (owner 11-10 22:22 via
+// crius:lead: the queue may complete PRs into the integration branch, never develop or main).
+func (f *fake) mergeOn(t *testing.T, into string) {
+	t.Helper()
+	p := filepath.Join(f.home, "state", "demo", "DISPATCH.toml")
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b = append(b, []byte("merge = \"~/bin/land.sh {pr} {build} {target}\"\nmerge_into = [\""+into+"\"]\n")...)
+	if err := os.WriteFile(p, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (f *fake) namedOne(t *testing.T, proof string) {
+	t.Helper()
+	f.ready(t, "AC1")
+	f.run(t, 1)
+	f.proofs[8001] = proof
+	f.bus(t, "2026-11-10T17:00 DONE demo:pilot-ac1 -> crius:lead — AC1 PR 8001 @ aaaaaaaa")
+	f.run(t, 2)
+}
+
+func (f *fake) infos() []string {
+	var m []string
+	for _, p := range f.posts {
+		if strings.HasPrefix(p, "INFO demo:lead: merge queue") {
+			m = append(m, p)
+		}
+	}
+	return m
+}
+
+func TestTheQueueCompletesTheNamedPRIntoAnAllowedBranch(t *testing.T) {
+	f := newFake(t, 1)
+	f.mergeOn(t, "refs/heads/integration/x-b1")
+	f.mergeOut = "review-gate OK\nmerge.sh: PR 8001 completed, merge commit 77777777"
+	f.namedOne(t, "PASS pr=8001 head=aaaaaaaa merge=a1a1a1a1 build=4 result=succeeded suites=X 1/1")
+	f.run(t, 3)
+	if len(f.merges_) != 1 || f.merges_[0] != "~/bin/land.sh 8001 4 integration/x-b1" {
+		t.Fatalf("merge commands %q", f.merges_)
+	}
+	want := "INFO demo:lead: merge queue completed AC1 PR 8001 @ aaaaaaaa (build 4) into refs/heads/integration/x-b1: merge.sh: PR 8001 completed, merge commit 77777777"
+	if i := f.infos(); len(i) != 1 || i[0] != want || len(f.merges()) != 0 {
+		t.Fatalf("infos\n got %q\nwant %q\nmerges %q", i, want, f.merges())
+	}
+	f.run(t, 4)
+	if len(f.merges_) != 1 {
+		t.Fatalf("ran twice for one head and build: %q", f.merges_)
+	}
+}
+
+// A refusal by the command (its gates: review, QA, vote, build) is said once to the lead; the queue tries again only
+// on a new head or build, or when the lead removes mergeq.told.
+func TestARefusedMergeIsSaidOnceAndTriedAgainOnANewBuild(t *testing.T) {
+	f := newFake(t, 1)
+	f.mergeOn(t, "refs/heads/integration/x-b1")
+	f.mergeOut, f.mergeErr = "REFUSED merge.sh rc 16: PR 8001: no approve vote", errors.New("exit status 16")
+	f.namedOne(t, "PASS pr=8001 head=aaaaaaaa merge=a1a1a1a1 build=4 result=succeeded suites=X 1/1")
+	f.run(t, 3)
+	m := f.merges()
+	if len(m) != 1 || !strings.HasPrefix(m[0], "MERGE demo:lead: merge queue: AC1 PR 8001 @ aaaaaaaa (build 4) not completed (exit status 16): REFUSED merge.sh rc 16: PR 8001: no approve vote.") {
+		t.Fatalf("merges %q", m)
+	}
+	f.run(t, 4)
+	if len(f.merges_) != 1 || len(f.merges()) != 1 {
+		t.Fatalf("tried again on the same build: %q %q", f.merges_, f.merges())
+	}
+	f.mergeOut, f.mergeErr = "merge.sh: PR 8001 completed, merge commit 88888888", nil
+	f.proofs[8001] = "PASS pr=8001 head=aaaaaaaa merge=a1a1a1a1 build=5 result=succeeded suites=X 1/1"
+	f.run(t, 5)
+	if len(f.merges_) != 2 || f.merges_[1] != "~/bin/land.sh 8001 5 integration/x-b1" || len(f.infos()) != 1 {
+		t.Fatalf("a new build: %q %q", f.merges_, f.infos())
+	}
+}
+
+// Owner 11-10: never develop or main. A PR into a branch not listed is only named to the lead, and a config that lists
+// a default branch is refused.
+func TestTheQueueCompletesNothingOutsideItsBranches(t *testing.T) {
+	f := newFake(t, 1)
+	f.mergeOn(t, "refs/heads/integration/x-b1")
+	f.targets[8001] = "refs/heads/develop"
+	f.namedOne(t, "PASS pr=8001 head=aaaaaaaa merge=a1a1a1a1 build=4 result=succeeded suites=X 1/1")
+	f.run(t, 3)
+	if len(f.merges_) != 0 {
+		t.Fatalf("completed into develop: %q", f.merges_)
+	}
+	if m := f.merges(); len(m) != 1 || !strings.Contains(m[0], "next AC1 PR 8001 @ aaaaaaaa (build 4 PASS): yours to merge (it targets refs/heads/develop).") {
+		t.Fatalf("merges %q", m)
+	}
+	for _, into := range []string{"refs/heads/develop", "refs/heads/main", "refs/heads/master"} {
+		g := newFake(t, 1)
+		g.mergeOn(t, into)
+		g.allowErr = true
+		g.run(t, 1)
+		if g.err == nil || !strings.Contains(g.err.Error(), "merge_into may not name "+into) {
+			t.Errorf("%s: %v", into, g.err)
+		}
+	}
+	// two builds (two Build policies) are not one build the command can check: named, not run
+	h := newFake(t, 1)
+	h.mergeOn(t, "refs/heads/integration/x-b1")
+	h.namedOne(t, "PASS pr=8001 head=aaaaaaaa merge=a1a1a1a1 build=4,5 result=succeeded suites=4: X 1/1; 5: Y 1/1")
+	h.run(t, 3)
+	if len(h.merges_) != 0 || len(h.merges()) != 1 || !strings.Contains(h.merges()[0], "yours to merge (builds 4,5: not one build).") {
+		t.Fatalf("two builds: %q %q", h.merges_, h.merges())
+	}
+}
+
+// What ran is recorded before it is posted: a post that fails is an error, never a second run of the command.
+func TestALostPostNeverRunsTheMergeTwice(t *testing.T) {
+	f := newFake(t, 1)
+	f.mergeOn(t, "refs/heads/integration/x-b1")
+	f.mergeOut, f.mergeErr = "REFUSED merge.sh rc 14: 1 text thread(s) on the PR", errors.New("exit status 14")
+	f.namedOne(t, "PASS pr=8001 head=aaaaaaaa merge=a1a1a1a1 build=4 result=succeeded suites=X 1/1")
+	f.postErr, f.allowErr = errors.New("bus is read-only"), true
+	f.run(t, 3)
+	if f.err == nil || !strings.Contains(f.err.Error(), "bus is read-only") {
+		t.Fatalf("a lost post not said: %v", f.err)
+	}
+	f.postErr = nil
+	f.run(t, 4)
+	if len(f.merges_) != 1 {
+		t.Fatalf("ran again after a lost post: %q", f.merges_)
+	}
+}
+
+// Review r1 P2-1, r2 P3-A/B: the run is recorded before the command starts, under a lock held while the queue decides
+// and merges: a second dispatcher never runs it alongside, and a run whose dispatcher ended during it (lock gone,
+// "running" left) is said once as "outcome unknown", never run again.
+func TestAMergeIsRecordedBeforeItRuns(t *testing.T) {
+	f := newFake(t, 1)
+	f.mergeOn(t, "refs/heads/integration/x-b1")
+	f.mergeOut = "merge.sh: PR 8001 completed"
+	f.namedOne(t, "PASS pr=8001 head=aaaaaaaa merge=a1a1a1a1 build=4 result=succeeded suites=X 1/1")
+	f.run(t, 3)
+	if f.toldAtMerge != "running next 8001 aaaaaaaa 4\n" {
+		t.Fatalf("told at merge %q", f.toldAtMerge)
+	}
+	told := filepath.Join(f.home, "state", "demo", "mergeq.told")
+	os.WriteFile(told, []byte("running next 8001 aaaaaaaa 4\n"), 0o644)
+	lock, err := os.OpenFile(filepath.Join(f.home, "state", "demo", "mergeq.lock"), os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
+	f.run(t, 4) // another dispatcher holds the lock: this one does nothing
+	if len(f.merges_) != 1 || len(f.merges()) != 0 {
+		t.Fatalf("ran beside a live run: %q %q", f.merges_, f.merges())
+	}
+	lock.Close() // that dispatcher ended during its merge
+	f.run(t, 5)
+	if m := f.merges(); len(f.merges_) != 1 || len(m) != 1 || !strings.Contains(m[0], "merge queue: the merge command for PR 8001 @ aaaaaaaa (build 4) stopped with no answer (its dispatcher ended); outcome unknown") {
+		t.Fatalf("a dead run: %q %q", f.merges_, m)
+	}
+	f.run(t, 6)
+	if len(f.merges_) != 1 || len(f.merges()) != 1 {
+		t.Fatalf("after the dead run: %q %q", f.merges_, f.merges())
+	}
+}
+
+// Review r2 P3-C: a command stopped at its limit or by a signal may have completed the PR: "outcome unknown", never
+// "not completed".
+func TestAStoppedMergeIsUnknown(t *testing.T) {
+	f := newFake(t, 1)
+	f.mergeOn(t, "refs/heads/integration/x-b1")
+	f.mergeErr = fmt.Errorf("merge command: no answer in 20m0s: %w", ErrOutcomeUnknown)
+	f.namedOne(t, "PASS pr=8001 head=aaaaaaaa merge=a1a1a1a1 build=4 result=succeeded suites=X 1/1")
+	f.run(t, 3)
+	if m := f.merges(); len(m) != 1 || !strings.HasPrefix(m[0], "MERGE demo:lead: merge queue: the merge command for PR 8001 @ aaaaaaaa (build 4) stopped (merge command: no answer in 20m0s: outcome unknown); outcome unknown: check the PR.") {
+		t.Fatalf("merges %q", m)
+	}
+}
+
+// Review r1 P2-2: the proof is read again just before the merge; one that changed since step 0 runs nothing.
+func TestAProofThatChangedBeforeTheMergeRunsNothing(t *testing.T) {
+	f := newFake(t, 1)
+	f.mergeOn(t, "refs/heads/integration/x-b1")
+	f.namedOne(t, "PASS pr=8001 head=aaaaaaaa merge=a1a1a1a1 build=4 result=succeeded suites=X 1/1")
+	f.reproof = "STALE pr=8001 head=aaaaaaaa merge=a1a1a1a1 build=4 result=target-moved"
+	f.run(t, 3)
+	if len(f.merges_) != 0 || len(f.merges())+len(f.infos()) != 0 {
+		t.Fatalf("merged on an old proof: %q %q", f.merges_, f.posts)
+	}
+	f.reproof = ""
+	f.run(t, 4)
+	if len(f.merges_) != 1 {
+		t.Fatalf("not run once the proof holds: %q", f.merges_)
+	}
+}
+
+// Review r1 P2-3, P3-3: the command is given the target the queue checked ({target} is required), and a default
+// branch in any spelling is refused.
+func TestTheMergeCommandMustTakeTheTarget(t *testing.T) {
+	for _, c := range []struct{ conf, want string }{
+		{"merge = \"~/bin/land.sh {pr} {build}\"\nmerge_into = [\"refs/heads/integration/x-b1\"]\n", "merge needs {pr}, {build} and {target}"},
+		{"merge = \"~/bin/land.sh {pr} {build} {target}\"\nmerge_into = [\"refs/heads/Develop\"]\n", "merge_into may not name refs/heads/Develop"},
+	} {
+		f := newFake(t, 1)
+		p := filepath.Join(f.home, "state", "demo", "DISPATCH.toml")
+		b, _ := os.ReadFile(p)
+		os.WriteFile(p, append(b, c.conf...), 0o644)
+		f.allowErr = true
+		f.run(t, 1)
+		if f.err == nil || !strings.Contains(f.err.Error(), c.want) {
+			t.Errorf("%q: %v", c.want, f.err)
 		}
 	}
 }
