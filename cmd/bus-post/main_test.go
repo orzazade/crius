@@ -510,3 +510,74 @@ func TestAnOwnerRelayWhenTheQueueCannotBeRead(t *testing.T) {
 		t.Fatal(rc, errs)
 	}
 }
+
+// crius:lead 11-10 16:39: "run log crius-cd8c7c0.log" (a bare name, its file in ~/.crius/runs with sha and pass) was
+// refused as naming no run log. A run log's bare name counts like its path; a bare name that is not in runs is said.
+func TestARunLogsBareNameCounts(t *testing.T) {
+	home, log := setup(t)
+	testutil.Write(t, filepath.Join(home, "runs", "crius-cd8c7c0.log"), "sha: cd8c7c0\npass: 35\nfail: 0\n")
+	text := "cd8c7c0 · stuck-tab push alert: go test ./... 35 ok 0 fail on a clean checkout, run log crius-cd8c7c0.log; installed binary dated 16:17"
+	if rc, errs := post(t, at("2026-11-10T16:39"), log, "VERIFIED", "crius:lead", "crius:build", text); rc != 0 {
+		t.Fatalf("rc %d: %s", rc, errs)
+	}
+	rc, errs := post(t, at("2026-11-10T16:39"), log, "VERIFIED", "crius:lead", "crius:build", "cd8c7c0 · run log crius-cd8c7c1.log")
+	if rc != 2 || !strings.Contains(errs, "crius-cd8c7c1.log is not in ") {
+		t.Fatalf("a bare name not in runs: want it said, got rc %d: %s", rc, errs)
+	}
+}
+
+// crius:lead 11-10: a live walk (a criterion walked on the running app) has screenshots, not a test run. Its run log
+// says `walk: N` and lists N `shot: <path>` lines, each an existing, non-empty file; a missing or empty shot, or a count
+// that does not match, is refused and named.
+func TestALiveWalkRunLogCounts(t *testing.T) {
+	home, log := setup(t)
+	shots := filepath.Join(home, "shots")
+	testutil.Write(t, filepath.Join(shots, "1.png"), "png")
+	testutil.Write(t, filepath.Join(shots, "2.png"), "png")
+	testutil.Write(t, filepath.Join(shots, "empty.png"), "")
+	walk := func(name, body string) string {
+		p := filepath.Join(home, "runs", name)
+		testutil.Write(t, p, body)
+		return p
+	}
+	good := walk("ac12-walk.log", "sha: 25f5eef41\nwalk: 2\ncmd: live walk of AC12 on :4200\nshot: "+filepath.Join(shots, "1.png")+"\nshot: "+filepath.Join(shots, "2.png")+"\n")
+	if rc, errs := post(t, at("2026-11-10T16:39"), log, "VERIFIED", "crius:lead", "quotes:pilot-ac12", "row AC12 · 25f5eef41 · live walk, every sentence passes "+good); rc != 0 {
+		t.Fatalf("rc %d: %s", rc, errs)
+	}
+	for _, c := range []struct{ name, body, want string }{
+		{"missing.log", "sha: 25f5eef41\nwalk: 1\nshot: " + filepath.Join(shots, "3.png") + "\n", "3.png does not exist"},
+		{"empty.log", "sha: 25f5eef41\nwalk: 1\nshot: " + filepath.Join(shots, "empty.png") + "\n", "empty.png is empty"},
+		{"count.log", "sha: 25f5eef41\nwalk: 2\nshot: " + filepath.Join(shots, "1.png") + "\n", "walk: 2 but 1 shot file"},
+		{"none.log", "sha: 25f5eef41\nwalk: 0\n", "no pass count of 1 or more"},
+		{"dir.log", "sha: 25f5eef41\nwalk: 1\nshot: " + shots + "\n", "is not a file"},
+		{"twice.log", "sha: 25f5eef41\nwalk: 2\nshot: " + filepath.Join(shots, "1.png") + "\nshot: " + filepath.Join(shots, "1.png") + "\n", "walk: 2 but 1 shot file"},
+		{"zero.log", "sha: 25f5eef41\npass: 0\nwalk: 1\nshot: " + filepath.Join(shots, "1.png") + "\n", "no pass count of 1 or more"},
+		{"relative.log", "sha: 25f5eef41\nwalk: 1\nshot: shots/1.png\n", "is not an absolute or ~/ path"},
+		{"long.log", "sha: 25f5eef41\npass: 3\n" + strings.Repeat("x", 70000) + "\n", ""},
+	} {
+		rc, errs := post(t, at("2026-11-10T16:39"), log, "VERIFIED", "crius:lead", "quotes:pilot-ac12", "row AC12 · 25f5eef41 · live walk "+walk(c.name, c.body))
+		if c.want == "" {
+			if rc != 0 {
+				t.Errorf("%s: want posted, got rc %d: %s", c.name, rc, errs)
+			}
+			continue
+		}
+		if rc != 2 || !strings.Contains(errs, c.want) {
+			t.Errorf("%s: want %q, got rc %d: %s", c.name, c.want, rc, errs)
+		}
+	}
+}
+
+// Review P2-3: a bare name follows the same rule as a path: a link in runs to a file outside it does not count.
+func TestABareNameLinkedOutOfRunsIsRefused(t *testing.T) {
+	home, log := setup(t)
+	outside := filepath.Join(home, "elsewhere.log")
+	testutil.Write(t, outside, "sha: abc1234\npass: 3\n")
+	if err := os.Symlink(outside, filepath.Join(home, "runs", "link.log")); err != nil {
+		t.Fatal(err)
+	}
+	rc, errs := post(t, at("2026-11-10T16:39"), log, "VERIFIED", "crius:lead", "crius:build", "abc1234 · run log link.log")
+	if rc != 2 || !strings.Contains(errs, "is not under") {
+		t.Fatalf("want refused, got rc %d: %s", rc, errs)
+	}
+}

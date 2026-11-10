@@ -151,3 +151,21 @@ func tellLeads(d Deps, project string, to []string, what string) (bool, error) {
 	}
 	return true, watchdog.PostOn(d.Home, project, "ALERT", "crius:wakewatch", strings.Join(to, ", "), d.Now, what)
 }
+
+// closedOnPurpose says whether the role "project:role" names has its current session closed with crius-spawn -close.
+// A name that is no role, or a role with no file, is not closed: the idle check goes on as before.
+// Known gap: a closed session given new work in its own tab (cmux send) stays out of the idle check until -resume or a
+// new session of the role clears the mark.
+func closedOnPurpose(home, who string) bool {
+	project, role, ok := strings.Cut(strings.ToLower(who), ":")
+	if !ok {
+		return false
+	}
+	dir := filepath.Join(home, "roles")
+	r, err := sessionstate.ReadRole(dir, project, role)
+	if err != nil {
+		return false
+	}
+	closed, err := sessionstate.ClosedRole(dir, project, role)
+	return err == nil && closed != "" && closed == r.SessionID
+}

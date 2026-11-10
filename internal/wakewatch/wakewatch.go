@@ -663,6 +663,11 @@ func waiting(st *state, d Deps, watch projects, park parked, screens []Screen, h
 			if who, _ = session(s.Text, s.Title); who == "" {
 				continue
 			}
+			// a role closed on purpose (crius-spawn -close) is done, not idle, until another session takes it (crius:lead
+			// 11-10 16:47: pilot-ac19 and pilot-ac27 flagged after their result), as in the dead-role check
+			if closedOnPurpose(d.Home, who) {
+				continue
+			}
 			clear = clearReady(body)
 			var found bool
 			var err error

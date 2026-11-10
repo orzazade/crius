@@ -10,6 +10,9 @@
 // `sha: <sha>` and `pass: <N>` with N >= 1, for the sha the line checked: the one sha its ref names, else the first
 // word after a ref like "row F-177" (`row F-177 · <sha> · …`). Twice a VERIFIED went out before its run (10-21 12:08 and
 // 14:54). Other shas and numbers after the ref (a baseline, a CI run id) are free of it (Crius 10-29).
+// The run log may be named by its path or by its bare name in ~/.crius/runs (crius:lead 11-10). A live walk (a criterion
+// walked on the running app, no test run) has `walk: N` instead of `pass:`, and N `shot: <path>` lines, each an existing,
+// non-empty screenshot.
 //
 // A recipient name with a project part is lower case: a line to quotes:P5 went unread for 2 h (quotes:lead 04:58).
 //
@@ -58,10 +61,13 @@ const (
 )
 
 var (
-	shaRe   = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
-	pathRe  = regexp.MustCompile(`(?:^|\s)((?:~|/)[^\s,;·]*)`)
-	headSha = regexp.MustCompile(`^sha:\s*([0-9a-f]{7,40})\s*$`)
-	headRun = regexp.MustCompile(`^pass:\s*(\d+)\s*$`)
+	shaRe    = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
+	pathRe   = regexp.MustCompile(`(?:^|\s)((?:~|/)[^\s,;·]*)`)
+	bareRe   = regexp.MustCompile(`(?:^|\s)([A-Za-z0-9][A-Za-z0-9._-]*\.log)(?:$|[\s,;:.)])`) // a run log's bare name, no slash
+	headSha  = regexp.MustCompile(`^sha:\s*([0-9a-f]{7,40})\s*$`)
+	headRun  = regexp.MustCompile(`^pass:\s*(\d+)\s*$`)
+	headWalk = regexp.MustCompile(`^walk:\s*(\d+)\s*$`) // a live walk: N screenshots, each a `shot: <path>` line
+	shotRe   = regexp.MustCompile(`^shot:\s*(\S.*?)\s*$`)
 )
 
 func main() { os.Exit(run(os.Args[1:], time.Now(), os.Stderr)) }
@@ -415,6 +421,23 @@ func checkRunLog(text string) error {
 		return fmt.Errorf("no runs folder for run logs: %v", err)
 	}
 	var problems, ran []string
+	// prove takes a named run log (p as named, real its path with links resolved): it must be in runs and pass
+	prove := func(p, real string) {
+		if !strings.HasPrefix(real, runs+string(filepath.Separator)) {
+			problems = append(problems, p+" is not under "+runs)
+			return
+		}
+		sha, pass, err := readHeader(real)
+		if err != nil {
+			problems = append(problems, err.Error())
+			return
+		}
+		if pass < 1 {
+			problems = append(problems, p+": header has no pass count of 1 or more (`pass: <N>`)")
+			return
+		}
+		ran = append(ran, sha)
+	}
 	for _, m := range pathRe.FindAllStringSubmatch(text, -1) {
 		p := m[1]
 		if strings.HasPrefix(p, "~/") {
@@ -436,20 +459,16 @@ func checkRunLog(text string) error {
 			problems = append(problems, err.Error())
 			continue
 		}
-		if !strings.HasPrefix(real, runs+string(filepath.Separator)) {
-			problems = append(problems, p+" is not under "+runs)
-			continue
-		}
-		sha, pass, err := readHeader(real)
+		prove(p, real)
+	}
+	// a run log named bare ("run log crius-cd8c7c0.log"), as crius:lead wrote it 11-10 16:39: looked up in runs
+	for _, m := range bareRe.FindAllStringSubmatch(text, -1) {
+		real, err := filepath.EvalSymlinks(filepath.Join(runs, m[1]))
 		if err != nil {
-			problems = append(problems, err.Error())
+			problems = append(problems, m[1]+" is not in "+runs)
 			continue
 		}
-		if pass < 1 {
-			problems = append(problems, p+": header has no pass count of 1 or more (`pass: <N>`)")
-			continue
-		}
-		ran = append(ran, sha)
+		prove(m[1], real)
 	}
 	// Other paths (an evidence folder, say) may stand beside the run log; only an unproven sha refuses the line. The
 	// line may shorten the run's sha, never lengthen it.
@@ -457,8 +476,8 @@ func checkRunLog(text string) error {
 		return nil
 	}
 	if len(ran) == 0 {
-		return errors.New(strings.Join(append([]string{"a VERIFIED line names its run log (a file under ~/.crius/runs " +
-			"with `sha:` and `pass:` in its header)"}, problems...), "; "))
+		return errors.New(strings.Join(append([]string{"a VERIFIED line names its run log (a file under ~/.crius/runs, by path or bare name, " +
+			"with `sha:` and `pass:` in its header; a live walk has `walk: N` and N `shot: <path>` lines instead of `pass:`)"}, problems...), "; "))
 	}
 	problems = append(problems, fmt.Sprintf("no passing run log named here ran %s (they ran: %s)",
 		sha, strings.Join(ran, ", ")))
@@ -472,16 +491,63 @@ func readHeader(path string) (sha string, pass int, err error) {
 	}
 	defer f.Close()
 	sc := bufio.NewScanner(f)
-	for i := 0; i < headerLines && sc.Scan(); i++ {
+	sc.Buffer(make([]byte, 64*1024), 16*1024*1024) // a run log may hold long lines of test output
+	walk, hasPass := 0, false
+	var shots []string
+	for i := 0; sc.Scan(); i++ {
+		if m := shotRe.FindStringSubmatch(sc.Text()); m != nil {
+			shots = append(shots, m[1]) // a walk lists every shot, past the header too
+		}
+		if i >= headerLines {
+			continue
+		}
 		if m := headSha.FindStringSubmatch(sc.Text()); m != nil {
 			sha = m[1]
 		}
 		if m := headRun.FindStringSubmatch(sc.Text()); m != nil {
 			pass, _ = strconv.Atoi(m[1])
+			hasPass = true
 		}
+		if m := headWalk.FindStringSubmatch(sc.Text()); m != nil {
+			walk, _ = strconv.Atoi(m[1])
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return "", 0, fmt.Errorf("%s: %w", path, err)
 	}
 	if sha == "" {
 		return "", 0, fmt.Errorf("%s: header has no `sha: <sha>` line", path)
 	}
-	return sha, pass, sc.Err()
+	if walk < 1 || hasPass { // a test run's log is proven by its pass count alone, never by shots added to it
+		return sha, pass, nil
+	}
+	// a live walk: N distinct screenshots, each a regular, non-empty file named by an absolute or ~/ path (crius:lead 11-10)
+	seen := map[string]bool{}
+	for _, s := range shots {
+		if strings.HasPrefix(s, "~/") {
+			home, _ := os.UserHomeDir()
+			s = filepath.Join(home, s[2:])
+		}
+		if !filepath.IsAbs(s) {
+			return "", 0, fmt.Errorf("%s: shot %s is not an absolute or ~/ path", path, s)
+		}
+		real, err := filepath.EvalSymlinks(s)
+		if err != nil {
+			return "", 0, fmt.Errorf("%s: shot %s does not exist", path, s)
+		}
+		st, err := os.Stat(real)
+		switch {
+		case err != nil:
+			return "", 0, fmt.Errorf("%s: shot %s: %w", path, s, err)
+		case !st.Mode().IsRegular() || real == path:
+			return "", 0, fmt.Errorf("%s: shot %s is not a file", path, s)
+		case st.Size() == 0:
+			return "", 0, fmt.Errorf("%s: shot %s is empty", path, s)
+		}
+		seen[real] = true
+	}
+	if len(seen) != walk {
+		return "", 0, fmt.Errorf("%s: walk: %d but %d shot file(s)", path, walk, len(seen))
+	}
+	return sha, walk, nil
 }

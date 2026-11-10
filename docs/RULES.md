@@ -82,7 +82,8 @@ Details: [docs/MEMORY-AND-MEASUREMENT.md](MEMORY-AND-MEASUREMENT.md) §7b, `~/.c
    (e.g. F-126) or its exact text. The lead's QA may post these too. Prose like "checked PASS" does not count.
    bus-post checks the sha the line checked against the named run log in ~/.crius/runs: the one sha the ref names, else
    the first word after it (`row F-118 · <sha> · …`); other shas and numbers after the ref (a baseline, a CI run id)
-   are free of it.
+   are free of it. The run log is named by path or by its bare name. A live walk (a criterion walked on the running
+   app, no test run) writes `sha: <code walked>`, `walk: N` and N `shot: <screenshot path>` lines; each shot must exist.
 5. **A lead never stops while its goal has work it can do.** A session cannot continue after its turn ends, so
    "Next I'll do X" followed by ✅ is an idle lead. End a turn only on ❓ (owner needed, with the question) or ⏳
    (own background work running, named). ✅ is only for a finished goal. Crius's bus watch flags a lead that stops

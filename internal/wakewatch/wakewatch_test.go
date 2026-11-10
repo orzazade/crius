@@ -2754,3 +2754,29 @@ func TestAnUnwatchedLeadParkedOrWithNoBusKeepsItsQueueRow(t *testing.T) {
 		}
 	}
 }
+
+// crius:lead 11-10 16:47: pilot-ac19 and pilot-ac27, closed with crius-spawn -close after their result, were flagged
+// idle. A tab whose role's current session is closed on purpose is done, not idle; the same tab not closed still is
+// (the control), and a new session of the role is watched again.
+func TestAClosedRolesTabIsNotIdle(t *testing.T) {
+	for _, closed := range []bool{true, false} {
+		home := setup(t, map[string]string{"quotes.log": stamp(t0.Add(-time.Hour)) + " DONE quotes:pilot-ac19 -> crius:lead — AC19 walked live\n"})
+		fileRole(t, home, role("pilot-ac19", "s19", t0.Add(-2*time.Hour)))
+		if closed {
+			if err := sessionstate.CloseRole(filepath.Join(home, "roles"), "quotes", "pilot-ac19", "s19"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		f := &fake{}
+		draw := func(at time.Time) []Screen {
+			return []Screen{screen("quotes · pilot-ac19", tab("quotes · pilot-ac19", "AC19 posted; role closed.\n\n✅", "", at))}
+		}
+		runAt(t, home, f, draw, 0, 11, 20)
+		if closed && strings.Contains(strings.Join(f.sent, "\n"), "is idle") {
+			t.Fatal("a closed role was flagged:", f.sent)
+		}
+		if !closed && !strings.Contains(strings.Join(f.sent, "\n"), "quotes:pilot-ac19 (tab \"quotes · pilot-ac19\", surface:7) is idle") {
+			t.Fatal("control: an open role idle 20 min was not flagged:", f.sent)
+		}
+	}
+}
