@@ -2780,3 +2780,53 @@ func TestAClosedRolesTabIsNotIdle(t *testing.T) {
 		}
 	}
 }
+
+// crius:lead 11-10: a tab closed on purpose alerted three times as "could not read a cmux tab's restore record". A tab
+// cmux has no record of (ErrTabGone) is dropped from the restore check with one INFO line in wakewatch-state.log, said
+// once while it stays gone; any other failure to read a record still wakes Crius.
+func TestARestoreRecordOfAClosedTabIsDroppedQuietly(t *testing.T) {
+	home := setup(t, nil)
+	cfg := filepath.Join(t.TempDir(), ".claude-max2")
+	os.MkdirAll(cfg, 0o700)
+	role := hookState("s1", sessionstate.Idle, "quotes", "p3")
+	role.Config, role.Filed, role.Workspace = cfg, cfg, "W1"
+	if err := sessionstate.WriteRole(filepath.Join(home, "roles"), role, true); err != nil {
+		t.Fatal(err)
+	}
+	f := &fake{ses: []Session{{Name: "quotes: p3", ID: "s1"}}, states: []sessionstate.State{role}}
+	statelog := filepath.Join(home, "logs", "wakewatch-state.log")
+	gone := func() int {
+		b, _ := os.ReadFile(statelog)
+		return strings.Count(string(b), "INFO restore-gone:"+sfID)
+	}
+	at := t0
+	for i, c := range []struct {
+		err   error
+		wake  string // a part of the one wake; "": none
+		lines int    // INFO restore-gone lines in the log after the run
+	}{
+		{fmt.Errorf("cmux surface resume show --surface %s: %w", sfID, ErrTabGone), "", 1},
+		{fmt.Errorf("cmux surface resume show --surface %s: %w", sfID, ErrTabGone), "", 1}, // once
+		{nil, "sessions", 1}, // blind to the sessions: the tab stays known as gone
+		{fmt.Errorf("cmux surface resume show --surface %s: %w", sfID, ErrTabGone), "", 1},
+		{errors.New("cmux: socket gone"), "socket gone", 1},
+	} {
+		f.sent, f.rsErr, f.sesErr = nil, c.err, nil
+		if c.err == nil {
+			f.sesErr = errors.New("sessions: no answer")
+		}
+		at = at.Add(30 * time.Minute)
+		if err := Run(f.deps(home, at)); err != nil {
+			t.Fatal(err)
+		}
+		if c.wake == "" && len(f.sent) != 0 {
+			t.Errorf("run %d (%v): sent %q, want nothing", i, c.err, f.sent)
+		}
+		if c.wake != "" && (len(f.sent) != 1 || !strings.Contains(f.sent[0], c.wake)) {
+			t.Errorf("run %d (%v): sent %q, want one wake naming %q", i, c.err, f.sent, c.wake)
+		}
+		if n := gone(); n != c.lines {
+			t.Errorf("run %d (%v): %d INFO restore-gone lines in the state log, want %d", i, c.err, n, c.lines)
+		}
+	}
+}

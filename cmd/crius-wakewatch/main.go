@@ -160,7 +160,12 @@ func workspaces() ([]wakewatch.Workspace, error) {
 func restore(surface string) ([]string, error) {
 	b, err := outbox.Cmux("surface", "resume", "show", "--json", "--surface", surface)
 	if err != nil {
-		return nil, fmt.Errorf("cmux surface resume show --surface %s: %v: %s", surface, err, strings.TrimSpace(string(b)))
+		out := strings.TrimSpace(string(b))
+		// cmux's answer for a surface id it has no tab for (seen 11-10); a bad handle reads invalid_params instead
+		if slices.ContainsFunc(strings.Split(out, "\n"), func(l string) bool { return strings.HasPrefix(l, "Error: not_found:") }) {
+			return nil, fmt.Errorf("cmux surface resume show --surface %s: %s: %w", surface, out, wakewatch.ErrTabGone)
+		}
+		return nil, fmt.Errorf("cmux surface resume show --surface %s: %v: %s", surface, err, out)
 	}
 	return restoreFolders(b)
 }

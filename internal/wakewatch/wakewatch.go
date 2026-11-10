@@ -117,6 +117,10 @@ type Deps struct {
 	Claudes func() ([]Claude, error)
 }
 
+// ErrTabGone marks a Restore of a surface id cmux has no tab for (it answers not_found): the tab was closed, so it keeps
+// no restore record to check (crius:lead 11-10).
+var ErrTabGone = errors.New("cmux has no tab with that surface id")
+
 // Proc is one process as ps lists it.
 type Proc struct {
 	PID, PPID int
@@ -159,6 +163,7 @@ type state struct {
 	Waits       map[string]roleWait  // <project>.<role> -> its session's team-wait waiter (rearm)
 	Rig         map[string]string    // project -> the down rig services last said to its leads (rigDown)
 	RigBoot     map[string]time.Time // project -> the boot rigDown last looked at for it: a newer one is a boot since
+	TabsGone    map[string]bool      // surface ids cmux has no tab for, said once in wakewatch-state.log while they stay gone (wrongFolder)
 }
 
 // waitGap is when a bus log was first seen with no waiter, and whether that gap was said to Crius. From is the log's size
@@ -232,7 +237,8 @@ func Run(d Deps) error {
 	alerts = append(alerts, paid(d, ss)...)
 	hv, ha := readHooks(d, st.Views, ss, sesErr)
 	alerts = append(alerts, ha...)
-	alerts = append(alerts, wrongFolder(d, hv)...)
+	tabsGone := st.TabsGone
+	alerts = append(alerts, wrongFolder(d, &st, hv)...)
 	alerts = append(alerts, deadRoles(d, &st, ss, sesErr, watch, park)...)
 	screens, scrErr := d.Screens()
 	alerts = append(alerts, rearm(d, &st, ss, sesErr, screens, scrErr, watch, park)...)
@@ -255,6 +261,7 @@ func Run(d Deps) error {
 	st.Views = hv.views
 	if err := appendLines(filepath.Join(d.Home, "logs", "wakewatch-state.log"), hv.log); err != nil {
 		st.Views = hv.prev // the log holds none of this run's lines: the next run logs them anew, a "gone" line too (OF6)
+		st.TabsGone = tabsGone
 		alerts = append(alerts, [2]string{"statelog-failed", "wakewatch could not write its screen-versus-state log: " + err.Error()})
 	}
 
@@ -1427,9 +1434,15 @@ func readHooks(d Deps, prev map[string][2]string, ss []Session, sesErr error) (*
 // The same goes before a restart for the folder its cmux tab would restore it in, or none, where Claude begins on
 // ~/.claude (crius:lead 10-29 05:56: alert only, cmux's records are its own). A folder of another Max account of the
 // same persona is the role's own seat (quota.SameSeat; crius:lead 11-07 19:58); with accounts.toml unread, it is not,
-// and that is said.
-func wrongFolder(d Deps, h *hooks) [][2]string {
+// and that is said. A tab cmux has no record of (ErrTabGone: closed) is dropped from the check with one INFO line in the
+// state log, said again only after a run that did not find it gone (crius:lead 11-10: a tab closed on purpose alerted three times).
+func wrongFolder(d Deps, st *state, h *hooks) [][2]string {
 	var out [][2]string
+	gone := map[string]bool{}
+	if h.blind { // a run that could not see every session keeps the tabs known as gone, or the next run says them again
+		maps.Copy(gone, st.TabsGone)
+	}
+	defer func() { st.TabsGone = gone }()
 	var unread error
 	var as *quota.Accounts
 	var asErr error
@@ -1465,6 +1478,14 @@ func wrongFolder(d Deps, h *hooks) [][2]string {
 			continue
 		}
 		cs, err := d.Restore(s.Surface)
+		if errors.Is(err, ErrTabGone) {
+			gone[s.Surface] = true
+			if !st.TabsGone[s.Surface] {
+				h.log = append(h.log, fmt.Sprintf("%s INFO restore-gone:%s %s · %s (session %s): cmux has no tab %s, so it keeps no restore record; dropped from the restore check: %v",
+					h.now.Format(time.RFC3339), s.Surface, s.Project, s.Role, id, s.Surface, err))
+			}
+			continue
+		}
 		if err != nil {
 			unread = cmp.Or(unread, err)
 			continue

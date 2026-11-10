@@ -798,3 +798,28 @@ func TestBootTimeIsThisMachines(t *testing.T) {
 		t.Fatalf("boot %v, %v", b, err)
 	}
 }
+
+// crius:lead 11-10: a tab closed on purpose alerted three times as "could not read a cmux tab's restore record". cmux
+// answers a surface id it has no tab for with "Error: not_found: Surface not found" (cmux 11-10, seen live): that is
+// wakewatch.ErrTabGone. Any other failure stays a plain error.
+func TestRestoreSaysATabCmuxDoesNotKnowIsGone(t *testing.T) {
+	real := outbox.Cmux
+	t.Cleanup(func() { outbox.Cmux = real })
+	for _, c := range []struct {
+		out  string
+		gone bool
+	}{
+		{"Error: not_found: Surface not found\n", true},
+		{"Error: invalid_params: Missing or invalid surface_id\n", false},
+		{"Error: socket closed\n", false},
+	} {
+		outbox.Cmux = func(args ...string) ([]byte, error) { return []byte(c.out), errors.New("exit status 1") }
+		_, err := restore("7EA4A082-278B-40C0-841B-432A9BFCBDE9")
+		if err == nil {
+			t.Fatalf("%q: no error", c.out)
+		}
+		if errors.Is(err, wakewatch.ErrTabGone) != c.gone {
+			t.Errorf("%q: errors.Is(err, ErrTabGone) = %v, want %v (err %v)", c.out, !c.gone, c.gone, err)
+		}
+	}
+}
