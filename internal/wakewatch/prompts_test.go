@@ -30,8 +30,9 @@ type promptFake struct {
 	logLine  func(string)
 	pushes   []string // "surface title: body" pushed to the owner
 	pushErr  error
-	allowErr bool  // a run's error is kept in err, not fatal
-	err      error // the last run's error
+	allowErr bool                              // a run's error is kept in err, not fatal
+	err      error                             // the last run's error
+	held     func() (time.Time, string, error) // Crius's outbox: the oldest message t3 did not take
 }
 
 func (f *promptFake) run(t *testing.T, home string, min int) {
@@ -59,6 +60,7 @@ func (f *promptFake) run(t *testing.T, home string, min int) {
 			}
 			return f.live[surface]
 		},
+		CriusHeld: f.held,
 	}
 	f.err = Prompts(d)
 	if f.err != nil && !f.allowErr {

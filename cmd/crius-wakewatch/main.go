@@ -51,7 +51,8 @@ func main() {
 		read := func() ([]wakewatch.Screen, error) { return tabs, terr }
 		err := errors.Join(wakewatch.Clicks(wakewatch.ClickDeps{Home: home, Now: now, Screens: read}),
 			wakewatch.Prompts(wakewatch.PromptDeps{Home: home, Now: now, Screens: read, SendCrius: send,
-				SendTab: func(title, text string) error { return outbox.Send(home, title, text) }, HandedOver: handedOver, Live: live, Push: push}))
+				SendTab: func(title, text string) error { return outbox.Send(home, title, text) }, HandedOver: handedOver, Live: live, Push: push,
+				CriusHeld: func() (time.Time, string, error) { return outbox.Held(home, wakewatch.CriusTitle) }}))
 		if err != nil {
 			fmt.Fprintln(os.Stderr, time.Now().Format(time.RFC3339), "crius-wakewatch clicks:", err)
 			os.Exit(1)

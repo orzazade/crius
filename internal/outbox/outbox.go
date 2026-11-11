@@ -29,6 +29,9 @@ import (
 // Cmux runs cmux. Tests replace it.
 var Cmux = runCmux
 
+// T3 is the T3 Code CLI that takes Crius's messages once Crius runs in a T3 Code thread. Tests replace it.
+var T3 = "t3"
+
 // readFile reads a stored message. Tests replace it.
 var readFile = os.ReadFile
 
@@ -113,7 +116,7 @@ func Send(home, to, text string) error {
 		passed = passed && s.path != m.path
 	}
 	if err == nil {
-		err = typeOut(to, all)
+		err = typeOut(home, to, all)
 	}
 	name := filepath.Base(m.path)
 	// aside says this text was set aside untyped; after an earlier Enter on it, it may have gone all the same.
@@ -329,11 +332,21 @@ func flush(home, to string) error {
 	if err != nil {
 		return err
 	}
-	return typeOut(to, all)
+	return typeOut(home, to, all)
 }
 
-// typeOut types the listed messages for the tab titled to, as flush does.
-func typeOut(to string, all []stored) error {
+// typeOut types the listed messages for the tab titled to, as flush does. While wakewatch.CriusThreadFile exists,
+// Crius's messages go to its T3 Code thread instead (sendT3), never to a cmux tab; a file with no id holds them.
+func typeOut(home, to string, all []stored) error {
+	deliver := deliver
+	if to == wakewatch.CriusTitle {
+		switch id, err := wakewatch.CriusThread(home); {
+		case err != nil:
+			deliver = func(string, string, bool, func(bool) error) error { return err }
+		case id != "":
+			deliver = func(_, text string, _ bool, _ func(bool) error) error { return sendT3(home, id, text) }
+		}
+	}
 	for i, m := range all {
 		if m.To != to {
 			continue
@@ -376,6 +389,55 @@ func typeOut(to string, all []stored) error {
 		}
 	}
 	return nil
+}
+
+// sendT3 hands text to a T3 Code thread: `t3 thread send <id> -` with the text on stdin, which a busy thread takes as
+// its next turn. A failure is the error, so the message stays stored as after a failed cmux send. A t3 killed at
+// CmuxTimeout may have taken it: it is sent again, as a lost wake costs more than a second one. t3 is the link in the
+// Crius bin folder when there is one: nvm keeps t3 off the PATH of launchd jobs and of other shells.
+func sendT3(home, id, text string) error {
+	t3 := T3
+	if p := filepath.Join(home, "bin", "t3"); fileExists(p) {
+		t3 = p
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), CmuxTimeout)
+	defer cancel()
+	var out bytes.Buffer
+	cmd := exec.CommandContext(ctx, t3, "thread", "send", id, "-")
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = strings.NewReader(text), &out, &out
+	cmd.WaitDelay = time.Second
+	if err := cmd.Run(); err != nil && !(errors.Is(err, exec.ErrWaitDelay) && ctx.Err() == nil) {
+		said, _, _ := strings.Cut(strings.TrimSpace(out.String()), "\n") // a Node stack trace after it says no more
+		return fmt.Errorf("t3 thread send %s: %v: %s", id, err, said)
+	}
+	return nil
+}
+
+// fileExists says p is there, a link that points nowhere too: running it then fails under its own name.
+func fileExists(p string) bool { _, err := os.Lstat(p); return err == nil }
+
+// Held gives, for the tab titled to, when the oldest stored message that a send already tried and failed was stored,
+// and its last error; a zero time when none is. It only reads: a file that does not parse is left to sweep.
+func Held(home, to string) (since time.Time, why string, err error) {
+	paths, err := filepath.Glob(filepath.Join(home, "outbox", "*.json"))
+	if err != nil {
+		return time.Time{}, "", err
+	}
+	sort.Strings(paths) // oldest first: a file's name starts with its creation time
+	for _, p := range paths {
+		var m Message
+		b, err := os.ReadFile(p)
+		if errors.Is(err, os.ErrNotExist) { // sent or set aside since the glob
+			continue
+		}
+		if err != nil {
+			return time.Time{}, "", err
+		}
+		if json.Unmarshal(b, &m) == nil && m.To == to && m.Tries > 0 && m.Onto == "" {
+			return m.Created, m.LastError, nil
+		}
+	}
+	return time.Time{}, "", nil
 }
 
 // Terminal is one terminal tab in cmux.

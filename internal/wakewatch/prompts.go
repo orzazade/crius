@@ -49,6 +49,9 @@ type PromptDeps struct {
 	Live       func(surface string) error
 	// Push sends the owner a desktop alert pointing at a tab (Crius's own tab stuck: a line typed into it reaches no one)
 	Push func(surface, title, body string) error
+	// CriusHeld gives, while Crius runs in a T3 Code thread, when the oldest message the outbox tried and failed to hand
+	// it was stored and why it failed; a zero time when none is held.
+	CriusHeld func() (since time.Time, why string, err error)
 }
 
 // openPrompt is one tab's open dialog: its hash, when first seen, and when crius:ops and Crius were last told of it.
@@ -62,6 +65,7 @@ type promptState struct {
 	DownSince time.Time // when crius:ops was first seen with no live Claude in this spell; zero while it has one
 	OpsDown   time.Time // when Crius was last told so
 	Crius     stuck     // Crius's own tab, while it is stuck
+	T3        string    // the T3 Code thread Crius runs in, once its INFO is posted ("" while Crius is in a cmux tab)
 }
 
 // stuck is Crius's own tab while it cannot go on by itself: since when, and when the owner was last pushed. The timer
@@ -140,7 +144,28 @@ func prompts(d PromptDeps) error {
 	} else if _, open := openDialog(ops.Text); open {
 		blocked = "it is on a prompt of its own"
 	}
-	pushTab, push := criusStuck(d, screens, &st)
+	// Crius in a T3 Code thread has no cmux tab: the tab check is left out, said once per thread id as an INFO, and the
+	// thread is checked by what the outbox could not hand it instead.
+	var pushTab, what string
+	var infoErr error
+	switch thread, terr := CriusThread(d.Home); {
+	case terr != nil:
+		st.T3 = ""
+		what = "Crius's T3 Code thread cannot be named, so its messages are held: " + terr.Error()
+	case thread != "":
+		if st.T3 != thread {
+			infoErr = watchdog.PostOn(d.Home, "crius", "INFO", "crius:wakewatch", "crius:lead", d.Now, "Crius runs in T3 Code thread "+
+				thread+" ("+CriusThreadFile(d.Home)+"): the checks of a cmux tab titled "+CriusTitle+" are off while that file exists")
+			if infoErr == nil {
+				st.T3 = thread
+			}
+		}
+		what = criusThreadStuck(d, thread)
+	default:
+		st.T3 = ""
+		pushTab, what = criusStuck(d, screens)
+	}
+	push := stuckPush(d, &st, what)
 	next := map[string]openPrompt{}
 	for _, s := range screens {
 		if s.Err != "" {
@@ -256,14 +281,13 @@ func prompts(d PromptDeps) error {
 			}
 		}
 	}
-	return pushErr
+	return errors.Join(pushErr, infoErr)
 }
 
-// criusStuck times Crius's own tab and gives the push for the owner when it has been stuck criusAfter, again every
-// clickRepeat, with the tab's surface ("" when no tab is found); "" otherwise. Stuck is: no tab titled crius, a tab
-// that cannot be read, no live Claude in it, a dialog open, or no input box while no working line shows (the
-// transcript view or a tall draft hides the box while Claude works: review P2-1).
-func criusStuck(d PromptDeps, screens []Screen, st *promptState) (surface, text string) {
+// criusStuck says what keeps Crius's own tab stuck, with the tab's surface ("" when no tab is found); "" when it is
+// free. Stuck is: no tab titled crius, a tab that cannot be read, no live Claude in it, a dialog open, or no input box
+// while no working line shows (the transcript view or a tall draft hides the box while Claude works: review P2-1).
+func criusStuck(d PromptDeps, screens []Screen) (surface, what string) {
 	var tab *Screen
 	for i := range screens {
 		if screens[i].Title == CriusTitle { // by title, as outbox types into it: a dialog of another tab quoted on Crius's
@@ -294,18 +318,45 @@ func criusStuck(d PromptDeps, screens []Screen, st *promptState) (surface, text 
 		}
 	}
 	if form == "" {
-		st.Crius = stuck{}
 		return "", ""
+	}
+	return surface, "Crius's own tab " + form
+}
+
+// criusThreadStuck says what keeps Crius's T3 Code thread from its messages: one the outbox tried to hand it and still
+// holds (t3 failed: the app is closed, the link to t3 is broken, the thread is gone), or an outbox it cannot read; ""
+// when nothing is held.
+func criusThreadStuck(d PromptDeps, thread string) string {
+	if d.CriusHeld == nil {
+		return ""
+	}
+	since, why, err := d.CriusHeld()
+	switch {
+	case err != nil:
+		return "Crius's outbox cannot be read, so its T3 Code thread " + thread + " is not checked: " + err.Error()
+	case since.IsZero():
+		return ""
+	}
+	return fmt.Sprintf("Crius's T3 Code thread %s has not taken a message held since %s (%s)", thread, since.Format("15:04"), why)
+}
+
+// stuckPush times what keeps Crius stuck ("" when it is free) and gives the push for the owner when it has lasted
+// criusAfter, again every clickRepeat; "" otherwise. The timer runs through changes of form and ends only when Crius is
+// seen free.
+func stuckPush(d PromptDeps, st *promptState, what string) string {
+	if what == "" {
+		st.Crius = stuck{}
+		return ""
 	}
 	if st.Crius.Since.IsZero() {
 		st.Crius.Since = d.Now
 	}
 	age := d.Now.Sub(st.Crius.Since)
 	if age < criusAfter || d.Now.Sub(st.Crius.Pushed) < clickRepeat {
-		return "", ""
+		return ""
 	}
 	st.Crius.Pushed = d.Now
-	return surface, fmt.Sprintf("Crius's own tab %s: stuck %d min; only you can free it", form, int(age.Minutes()))
+	return fmt.Sprintf("%s: stuck %d min; only you can free it", what, int(age.Minutes()))
 }
 
 // queueTag is the owner queue's row tag, "[queue q3]".
