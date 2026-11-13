@@ -26,6 +26,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -465,15 +466,54 @@ func answered(typ, from, line string, park parked) bool {
 	return true
 }
 
+// waitCursor reads Crius's bus waiter cursor (home/wait-cursor-all, written by team-wait.sh --mode crius through
+// crius-wait): per log, the number of lines already handed to Crius, a tab, and the log's path under the real path of
+// the bus folder. With no file nothing counts as delivered. A file that cannot be read or parsed is an alert, and then
+// too nothing counts as delivered.
+func waitCursor(home string) (map[string]int, [][2]string) {
+	path := filepath.Join(home, "wait-cursor-all")
+	b, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	bad := func(why string) (map[string]int, [][2]string) {
+		return nil, [][2]string{{"wait-cursor-failed", path + " " + why + ", so lines Crius's waiter delivered may wake Crius again"}}
+	}
+	if err != nil {
+		return bad("could not be read: " + err.Error())
+	}
+	cur := map[string]int{}
+	for _, line := range strings.Split(strings.TrimSuffix(string(b), "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		n, log, ok := strings.Cut(line, "\t")
+		v, err := strconv.Atoi(n)
+		if !ok || err != nil || v < 0 || !filepath.IsAbs(log) {
+			return bad(fmt.Sprintf("has a line that is not <lines><tab><log path>: %q", line))
+		}
+		cur[log] = v
+	}
+	return cur, nil
+}
+
 // missed gives [key, text] for each wake line to Crius, 20 min to 12 h old, with no reply after it in its file (a
-// crius:lead line of a reply type, or of any type sent to the asker) and not answered otherwise.
+// crius:lead line of a reply type, or of any type sent to the asker), not answered otherwise, and not yet delivered by
+// Crius's bus waiter (its cursor is past the line: Crius woke for it, and handles routine lines quietly by design).
 func missed(home string, now time.Time, watch projects, park parked) ([][2]string, error) {
+	// the cursor first: a log only grows, so a cursor read before it never names more lines than the log has
+	cur, out := waitCursor(home)
 	logs, err := filepath.Glob(filepath.Join(home, "bus", "*.log"))
 	if err != nil {
 		return nil, err
 	}
 	sort.Strings(logs)
-	var out [][2]string
+	bus := filepath.Join(home, "bus")
+	if cur != nil {
+		if real, err := filepath.EvalSymlinks(bus); err == nil {
+			bus = real
+		}
+	}
 	for _, log := range logs {
 		if !watch.has(strings.TrimSuffix(filepath.Base(log), ".log")) {
 			continue
@@ -484,8 +524,14 @@ func missed(home string, now time.Time, watch projects, park parked) ([][2]strin
 		}
 		// Only whole lines: a last line with no newline may still be being written.
 		text := string(b[:bytes.LastIndexByte(b, '\n')+1])
+		lines := strings.Split(text, "\n")
+		delivered := cur[filepath.Join(bus, filepath.Base(log))] // the waiter's count of whole lines, as wc -l
+		if delivered > len(lines)-1 {
+			out = append(out, [2]string{"wait-cursor-ahead:" + filepath.Base(log), fmt.Sprintf("Crius's waiter cursor (wait-cursor-all) says %d lines of %s were delivered, but it has %d: it was cut or replaced, so its lines count as not delivered", delivered, log, len(lines)-1)})
+			delivered = 0
+		}
 		var open []string
-		for _, line := range strings.Split(text, "\n") {
+		for i, line := range lines {
 			m := lineRe.FindStringSubmatch(line)
 			if m == nil {
 				continue
@@ -505,7 +551,7 @@ func missed(home string, now time.Time, watch projects, park parked) ([][2]strin
 					return asker != "crius:lead" && addressed(to, asker, team)
 				})
 			}
-			if !wakeTypes[typ] || !toCrius(to) || answered(typ, from, line, park) {
+			if !wakeTypes[typ] || !toCrius(to) || answered(typ, from, line, park) || i < delivered {
 				continue
 			}
 			// A team's line on another team's bus ("aitch:build" on crius.log) goes by the sender's team.

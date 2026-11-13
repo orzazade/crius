@@ -217,6 +217,80 @@ func TestACriusLeadLineToTheAskerAnswersIt(t *testing.T) {
 	}
 }
 
+// Crius 11-13: quotes:dev's 17:29 ASK, answered by a DECISION (or a CORRECTED) to quotes:dev in the same minute, must
+// not wake Crius. Real lines from quotes.log. A guard, not a red test: a crius:lead line of any type to the asker
+// already answered it (a20321f); the 11-13 repeat on that log was the 17:33 DONE, the waiter-cursor case below.
+func TestAnAskAnsweredByADecisionOrCorrectedIsNotForwarded(t *testing.T) {
+	ask := "2026-11-13T17:29 ASK quotes:dev -> crius:lead — re 16:06 Cancel off: Items.jsx:143 is the old prototype\n"
+	for _, reply := range []string{
+		"2026-11-13T17:29 DECISION crius:lead -> quotes:dev — re 17:29: skip the old prototype (poc/ui-app)\n",
+		"2026-11-13T17:30 CORRECTED crius:lead -> quotes:dev — re 17:29: skip the old prototype, not build it\n",
+		"2026-11-13T17:30 DECISION crius:lead -> quotes:dev,quotes:qa — re 17:29: skip the old prototype\n",
+	} {
+		home := setup(t, map[string]string{"quotes.log": ask + reply})
+		f := &fake{}
+		if err := Run(f.deps(home, time.Date(2026, 11, 13, 17, 55, 0, 0, time.Local))); err != nil || len(f.sent) != 0 {
+			t.Fatal(reply, err, f.sent)
+		}
+	}
+}
+
+// writeCursor writes Crius's waiter cursor (~/.crius/wait-cursor-all) as team-wait.sh does: per log, the number of
+// lines already handed to Crius, a tab, and the log's path under the real path of the bus folder (crius-wait: pwd -P).
+func writeCursor(t *testing.T, home string, lines map[string]int) {
+	bus, err := filepath.EvalSymlinks(filepath.Join(home, "bus"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var b strings.Builder
+	for name, n := range lines {
+		fmt.Fprintf(&b, "%d\t%s\n", n, filepath.Join(bus, name))
+	}
+	testutil.Write(t, filepath.Join(home, "wait-cursor-all"), b.String())
+}
+
+// Crius 11-13: a builder's DONE to crius:lead and its QA, delivered by Crius's waiter (crius-wait moved its cursor past
+// the line, so Crius woke) and handled quietly by design, was typed into Crius again 20 min later, 5 times that day.
+// A line the waiter's cursor is past is handled; a line after the cursor, or a log the cursor does not name, still wakes.
+func TestALineCriusWaiterDeliveredIsNotForwarded(t *testing.T) {
+	bus := stamp(t0) + " DONE quotes:builder-2 -> crius:lead,quotes:qa — 8149 landed on b1 as cfa3596e\n" +
+		stamp(t0) + " INFO quotes:qa -> all — qa-live HOLD\n" +
+		stamp(t0.Add(time.Minute)) + " DONE quotes:dev -> crius:lead — 8084 closed, after the cursor\n"
+	home := setup(t, map[string]string{"quotes.log": bus, "axi.log": stamp(t0) + " NEED axi:lead -> crius — not in the cursor\n"})
+	writeCursor(t, home, map[string]int{"quotes.log": 2, "crius.log": 0})
+	f := &fake{}
+	if err := Run(f.deps(home, t0.Add(25*time.Minute))); err != nil {
+		t.Fatal(err)
+	}
+	all := strings.Join(f.sent, "\n")
+	if strings.Contains(all, "8149") {
+		t.Error("woke for a line the waiter delivered:", all)
+	}
+	for _, want := range []string{"after the cursor", "not in the cursor"} { // positive controls
+		if !strings.Contains(all, want) {
+			t.Error("no wake for", want, all)
+		}
+	}
+}
+
+// A cursor that cannot be read, or that says more lines were read than a log has (cut or replaced), proves nothing:
+// every line counts as not delivered, and Crius is told the cursor is bad.
+func TestABadWaiterCursorIsAnAlertAndHidesNothing(t *testing.T) {
+	for _, cursor := range []string{"garbage\n", "9\t%s\n"} {
+		home := setup(t, map[string]string{"quotes.log": done(t0)})
+		bus, _ := filepath.EvalSymlinks(filepath.Join(home, "bus"))
+		testutil.Write(t, filepath.Join(home, "wait-cursor-all"), strings.ReplaceAll(cursor, "%s", filepath.Join(bus, "quotes.log")))
+		f := &fake{}
+		if err := Run(f.deps(home, t0.Add(25*time.Minute))); err != nil {
+			t.Fatal(err)
+		}
+		all := strings.Join(f.sent, "\n")
+		if !strings.Contains(all, "F-86") || !strings.Contains(all, "wait-cursor-all") {
+			t.Error(cursor, all)
+		}
+	}
+}
+
 // Crius 10-23 09:45: wakewatch re-woke Crius for a digest DONE (a report, it needs no reply) and for the quota guard's
 // NEED at 06:36 after Crius had parked quotes. A pause NEED is answered once its project, or every role it paused, is
 // in ~/.crius/parked; a NEED with roles still unparked, or about something else, still wakes.
