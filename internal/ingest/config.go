@@ -407,3 +407,17 @@ func ForSpawn(home, slug string) (root string, pauseAt int, err error) {
 	}
 	return "", 0, fmt.Errorf("projects.toml has no project %s", slug)
 }
+
+// ProjectCwds gives each project's working folders from home's projects.toml,
+// expanded on this machine: slug -> folders.
+func ProjectCwds(home string) (map[string][]string, error) {
+	c, err := loadConfig(home)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string][]string{}
+	for _, p := range c.projects {
+		out[p.slug] = append(out[p.slug], p.cwd...)
+	}
+	return out, nil
+}

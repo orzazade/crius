@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -67,6 +68,8 @@ type Config struct {
 	// ProjectOf names the projects.toml project of a session folder ("" for
 	// none), so transcript findings file under the same name as the bus.
 	ProjectOf func(cwd string) string
+	Hosts     []Host // other machines: their transcripts are pulled first, the book pushed after
+	CacheDir  string // where pulled transcripts are kept, one folder per host
 }
 
 // Calls counts model calls in one run.
@@ -83,6 +86,7 @@ type Result struct {
 	Dropped    []string // model answers that could not be applied, with the reason
 	Failed     []string // model batches that failed; their candidates wait in the cursor for the next run
 	Lost       int      // candidates given up after maxTries; kept in dropped.jsonl
+	Hosts      []HostResult
 	Calls      Calls
 	Read       ReadStats
 	Review     Review
@@ -92,7 +96,7 @@ type Result struct {
 // batch, no answer that could not be applied. A night that is not healthy is
 // reported as an ALERT, never as a quiet night.
 func (r *Result) Healthy() bool {
-	return len(r.Read.Errors) == 0 && len(r.Failed) == 0 && len(r.Dropped) == 0 && r.Lost == 0 && r.Read.ShownBad == 0
+	return len(r.Read.Errors) == 0 && len(r.Failed) == 0 && len(r.Dropped) == 0 && r.Lost == 0 && r.Read.ShownBad == 0 && hostsOK(r.Hosts)
 }
 
 const (
@@ -121,6 +125,21 @@ func Run(ctx context.Context, cfg Config, m Model) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Other hosts first: their new transcript lines join the local ones. A host
+	// that cannot be read is said in the report and makes the run unhealthy;
+	// the rest of the night goes on.
+	var hosts []HostResult
+	for _, h := range cfg.Hosts {
+		dir, n, err := pull(ctx, h, cfg.CacheDir)
+		r := HostResult{Name: h.Name, Files: n}
+		if err != nil {
+			r.Err = err.Error()
+		}
+		if _, serr := os.Stat(dir); serr == nil {
+			cfg.TxRoots = append(cfg.TxRoots, dir) // read what came, even from a pull cut short
+		}
+		hosts = append(hosts, r)
+	}
 	cands, stats, err := Gather(cfg, cur, now)
 	if err != nil {
 		return nil, err
@@ -129,7 +148,7 @@ func Run(ctx context.Context, cfg Config, m Model) (*Result, error) {
 	// Candidates a past run could not get an answer for come first.
 	cands = append(cur.Pending, cands...)
 	cur.Pending = nil
-	res := &Result{Candidates: cands, Read: stats}
+	res := &Result{Candidates: cands, Read: stats, Hosts: hosts}
 	if cfg.DryRun {
 		return res, nil
 	}
@@ -243,7 +262,31 @@ func Run(ctx context.Context, cfg Config, m Model) (*Result, error) {
 	res.Lost = len(lost)
 	cur.LastRun = now
 	cur.ShownChecked = shownEnd
-	return res, cur.save(cfg.StateDir, now)
+	if err := cur.save(cfg.StateDir, now); err != nil {
+		return res, err
+	}
+	// The book goes to each host after it is saved here, so a failed copy
+	// leaves the host on last night's book, not a half one.
+	for i, h := range cfg.Hosts {
+		if h.Book == "" {
+			continue
+		}
+		if err := push(ctx, h, cfg.BookDir); err != nil {
+			res.Hosts[i].Err = strings.TrimPrefix(strings.TrimSpace(res.Hosts[i].Err+"; push: "+err.Error()), "; ")
+			continue
+		}
+		res.Hosts[i].Pushed = true
+	}
+	return res, nil
+}
+
+func hostsOK(hs []HostResult) bool {
+	for _, h := range hs {
+		if h.Err != "" {
+			return false
+		}
+	}
+	return true
 }
 
 // saveLost appends candidates that got no answer after maxTries to

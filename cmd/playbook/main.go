@@ -17,9 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/orzazade/crius/internal/ingest"
 	"github.com/orzazade/crius/internal/playbook"
-	"github.com/orzazade/crius/internal/store"
 )
 
 func main() {
@@ -33,6 +31,9 @@ func main() {
 	case "seed":
 		// Old lesson files go through the same pick and write as a night's record.
 		err = run(append([]string{"-seed"}, os.Args[2:]...))
+	case "map":
+		// The project map the other hosts read (show -map), written now.
+		err = writeMap(filepath.Join(must(os.UserHomeDir()), ".claude", "skills", "playbook"))
 	case "show":
 		show(os.Args[2:])
 		return
@@ -46,7 +47,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: playbook run [-since YYYY-MM-DD] [-dry] [-candidates file.json] | playbook show [-cwd dir] (SessionStart hook: reads the hook JSON on stdin)")
+	fmt.Fprintln(os.Stderr, "usage: playbook run [-since YYYY-MM-DD] [-dry] [-candidates file.json] | playbook map | playbook show [-cwd dir] [-map projects.json] (SessionStart hook: reads the hook JSON on stdin)")
 	os.Exit(2)
 }
 
@@ -64,6 +65,7 @@ func run(args []string) error {
 	bus := fl.String("bus", filepath.Join(home, ".crius", "bus"), "bus log folders, comma separated")
 	tx := fl.String("tx", "", "transcript roots, comma separated (default ~/.claude*/projects)")
 	post := fl.String("post", "", "after a real run, post the report line to this bus log as playbook:watch -> crius:lead")
+	hostsFile := fl.String("hosts", filepath.Join(home, ".crius", "state", "playbook", "hosts.json"), "other machines to pull transcripts from and push the book to (no file: none)")
 	seed := fl.Bool("seed", false, "seed from the lesson files named after the flags, not from the bus and transcripts")
 	_ = fl.Parse(args)
 
@@ -98,6 +100,16 @@ func run(args []string) error {
 		return alert(home, *post, err)
 	}
 	cfg.ProjectOf = po
+	hs, err := playbook.LoadHosts(*hostsFile)
+	if err != nil {
+		return alert(home, *post, err)
+	}
+	cfg.Hosts, cfg.CacheDir = hs, filepath.Join(*state, "hosts")
+	if !*dry {
+		if err := writeMap(*book); err != nil {
+			return alert(home, *post, err)
+		}
+	}
 	return finish(cfg, home, *state, *candOut, *post, *dry)
 }
 
@@ -156,6 +168,11 @@ func health(res *playbook.Result) string {
 	if res.Lost > 0 {
 		p = append(p, fmt.Sprintf("%d candidates lost to dropped.jsonl", res.Lost))
 	}
+	for _, h := range res.Hosts {
+		if h.Err != "" {
+			p = append(p, "host "+h.Name+" down")
+		}
+	}
 	if res.Read.ShownBad > 0 {
 		p = append(p, fmt.Sprintf("%d bad shown.log lines", res.Read.ShownBad))
 	}
@@ -185,6 +202,9 @@ func report(res *playbook.Result, took time.Duration, runErr error) string {
 		fmt.Printf("  dropped: %s\n", d)
 	}
 	fmt.Printf("model calls: pick (haiku) %d, write (sonnet) %d; took %s\n", res.Calls.Pick, res.Calls.Write, took.Round(time.Second))
+	if hl := playbook.HostLine(res.Hosts); hl != "" {
+		fmt.Println(hl)
+	}
 	r := res.Review
 	for _, u := range r.Uses {
 		if u.Shown > 0 {
@@ -194,6 +214,9 @@ func report(res *playbook.Result, took time.Duration, runErr error) string {
 	line := fmt.Sprintf("playbook %s: +%d entries, +%d evidence, %d live; promote %s; needs a check %s; archived %d; calls haiku %d sonnet %d; health %s",
 		time.Now().Format("2006-01-02"), res.New, res.Evidence, len(r.Uses), list(r.Promote), list(r.NeedsCheck), len(r.Archived),
 		res.Calls.Pick, res.Calls.Write, health(res))
+	if hl := playbook.HostLine(res.Hosts); hl != "" {
+		line += "; " + hl
+	}
 	if runErr != nil {
 		line += "; FAILED: " + runErr.Error()
 	}
@@ -237,6 +260,7 @@ func show(args []string) {
 	cwd := fl.String("cwd", "", "folder to match (default: the hook input's cwd)")
 	book := fl.String("book", filepath.Join(home, ".claude", "skills", "playbook"), "the playbook skill folder")
 	state := fl.String("state", filepath.Join(home, ".crius", "state", "playbook", "run"), "where shown.log goes")
+	mapFile := fl.String("map", "", "project map (projects.json in the book) to use instead of projects.toml; for the other hosts")
 	if fl.Parse(args) != nil {
 		return
 	}
@@ -259,7 +283,13 @@ func show(args []string) {
 		return
 	}
 	project := ""
-	if po, err := projectOf(); err != nil {
+	if *mapFile != "" {
+		if m, err := playbook.LoadProjectMap(*mapFile); err != nil {
+			fmt.Fprintln(os.Stderr, "playbook show:", err) // still show the key matches
+		} else {
+			project = m.Lookup(*cwd)
+		}
+	} else if po, err := projectOf(); err != nil {
 		fmt.Fprintln(os.Stderr, "playbook show:", err) // still show the key matches
 	} else {
 		project = po(*cwd)
@@ -283,26 +313,28 @@ func alert(home, post string, err error) error {
 	return err
 }
 
-// projectOf maps a session folder to its projects.toml project, the name its
-// bus log has. It checks projects.toml once before use and reads it again per
-// new folder (cached); a read that fails later is said on stderr, once.
-func projectOf() (func(cwd string) string, error) {
-	h := store.Home()
-	if _, _, err := ingest.Filing(h, "", ""); err != nil {
-		return nil, fmt.Errorf("projects.toml: %w", err)
+// writeMap writes the project map into the book folder. The other hosts match
+// sessions to projects with it: their sessions run in the Mac's own paths, so
+// the Mac's folders fit there.
+func writeMap(book string) error {
+	m, err := projectCwds()
+	if err != nil {
+		return fmt.Errorf("projects.toml: %w", err)
 	}
-	seen := map[string]string{}
-	warned := false
-	return func(cwd string) string {
-		if p, ok := seen[cwd]; ok {
-			return p
-		}
-		p, _, err := ingest.Filing(h, cwd, "")
-		if err != nil && !warned {
-			warned = true
-			fmt.Fprintln(os.Stderr, "playbook: projects.toml:", err, "(folder names used)")
-		}
-		seen[cwd] = p
-		return p
-	}, nil
+	data, err := json.MarshalIndent(m, "", " ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(book, 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(book, playbook.MapFile), data, 0o644)
+}
+
+func must(s string, err error) string {
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "playbook:", err)
+		os.Exit(1)
+	}
+	return s
 }
