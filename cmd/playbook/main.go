@@ -66,10 +66,13 @@ func run(args []string) error {
 	tx := fl.String("tx", "", "transcript roots, comma separated (default ~/.claude*/projects)")
 	post := fl.String("post", "", "after a real run, post the report line to this bus log as playbook:watch -> crius:lead")
 	hostsFile := fl.String("hosts", filepath.Join(home, ".crius", "state", "playbook", "hosts.json"), "other machines to pull transcripts from and push the book to (no file: none)")
+	rules := fl.String("rules", strings.Join([]string{filepath.Join(home, ".agents", "AGENTS.md"), filepath.Join(home, ".claude", "CLAUDE.md"),
+		filepath.Join(home, "Projects", "scifi", "crius", "AGENTS.md"), filepath.Join(home, "Projects", "scifi", "crius", "docs", "RULES.md")}, ","),
+		"the current rule files the stale check holds entries against, comma separated (\"\" = no check)")
 	seed := fl.Bool("seed", false, "seed from the lesson files named after the flags, not from the bus and transcripts")
 	_ = fl.Parse(args)
 
-	cfg := playbook.Config{BusDirs: split(*bus), BookDir: *book, StateDir: *state, DryRun: *dry}
+	cfg := playbook.Config{BusDirs: split(*bus), BookDir: *book, StateDir: *state, DryRun: *dry, RuleFiles: split(*rules)}
 	if *seed {
 		if fl.NArg() == 0 {
 			return errors.New("seed: name the lesson files")
@@ -204,7 +207,7 @@ func report(res *playbook.Result, took time.Duration, runErr error) string {
 	if len(res.Retired) > 0 {
 		fmt.Printf("retired (a later record says they no longer hold): %s\n", strings.Join(res.Retired, ", "))
 	}
-	fmt.Printf("model calls: pick (haiku) %d, write (sonnet) %d; took %s\n", res.Calls.Pick, res.Calls.Write, took.Round(time.Second))
+	fmt.Printf("model calls: pick (haiku) %d, write (sonnet) %d, stale check (sonnet) %d; took %s\n", res.Calls.Pick, res.Calls.Write, res.Calls.Check, took.Round(time.Second))
 	if hl := playbook.HostLine(res.Hosts); hl != "" {
 		fmt.Println(hl)
 	}
@@ -214,9 +217,9 @@ func report(res *playbook.Result, took time.Duration, runErr error) string {
 			fmt.Printf("  use %s: shown %d, followed %d %v, repeats %d\n", u.ID, u.Shown, u.Followed, u.Teams, u.Repeats)
 		}
 	}
-	line := fmt.Sprintf("playbook %s: +%d entries, +%d evidence, %d live; promote %s; needs a check %s; archived %d; retired %d; calls haiku %d sonnet %d; health %s",
+	line := fmt.Sprintf("playbook %s: +%d entries, +%d evidence, %d live; promote %s; needs a check %s; archived %d; retired %d; calls haiku %d sonnet %d check %d; health %s",
 		time.Now().Format("2006-01-02"), res.New, res.Evidence, len(r.Uses), list(r.Promote), list(r.NeedsCheck), len(r.Archived), len(res.Retired),
-		res.Calls.Pick, res.Calls.Write, health(res))
+		res.Calls.Pick, res.Calls.Write, res.Calls.Check, health(res))
 	if n := len(res.Read.Unmapped); n > 0 {
 		line += fmt.Sprintf("; unmapped folders %d", n)
 	}

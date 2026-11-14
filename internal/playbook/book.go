@@ -46,6 +46,7 @@ type Entry struct {
 	Added    string     `json:"added,omitempty"`   // the day the book got it
 	Archived bool       `json:"archived,omitempty"`
 	Retired  string     `json:"retired,omitempty"` // date of the record that showed it no longer holds
+	Checked  string     `json:"checked,omitempty"` // last day the stale check looked at it
 }
 
 // Book is every entry, kept in book.json; the markdown files are made from it.
@@ -161,6 +162,9 @@ func (b *Book) Apply(op Op, c Candidate, today string) (Applied, error) {
 			}
 		}
 		if e.Retired == "" || ev.Date >= e.Retired {
+			if e.Archived {
+				e.Checked = "" // back in the book: the stale check looks again the next night
+			}
 			e.Archived, e.Retired = false, "" // seen to hold again (an older sighting does not count)
 		}
 		e.Evidence = append(e.Evidence, ev)

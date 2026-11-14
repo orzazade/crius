@@ -69,12 +69,13 @@ type Config struct {
 	// ProjectOf names the projects.toml project of a session folder ("" for
 	// none), so transcript findings file under the same name as the bus.
 	ProjectOf func(cwd string) string
-	Hosts     []Host // other machines: their transcripts are pulled first, the book pushed after
-	CacheDir  string // where pulled transcripts are kept, one folder per host
+	Hosts     []Host   // other machines: their transcripts are pulled first, the book pushed after
+	CacheDir  string   // where pulled transcripts are kept, one folder per host
+	RuleFiles []string // the current rules; entries they show are gone are retired
 }
 
 // Calls counts model calls in one run.
-type Calls struct{ Pick, Write int }
+type Calls struct{ Pick, Write, Check int }
 
 // Result is what one run did.
 type Result struct {
@@ -264,7 +265,15 @@ func Run(ctx context.Context, cfg Config, m Model) (*Result, error) {
 		}
 		res.Unwritten += len(batch) - len(answered)
 	}
+	var overCap []string
+	if ck, ok := m.(Checker); ok && len(cfg.RuleFiles) > 0 {
+		var err error
+		if overCap, err = checkStale(ctx, ck, cfg, book, now, res); err != nil {
+			return res, err
+		}
+	}
 	res.Review = ReviewBook(book, shown, now)
+	res.Review.NeedsCheck = append(res.Review.NeedsCheck, overCap...)
 	if err := book.Save(cfg.BookDir); err != nil {
 		return res, err
 	}
@@ -349,3 +358,160 @@ func stop(ctx context.Context, err error) bool {
 
 // maxRetires caps the entries one run may retire.
 const maxRetires = 5
+
+// Stale is the checking model's answer for one entry.
+type Stale struct {
+	ID    string `json:"id"`
+	Stale bool   `json:"stale"`
+	Why   string `json:"why"`
+}
+
+// Checker checks live entries against the current rules (optional for a Model).
+type Checker interface {
+	Check(ctx context.Context, rules string, es []Entry) ([]Stale, error)
+}
+
+const (
+	checkBatch   = 60
+	checkBatches = 3        // up to 180 entries a night
+	checkEvery   = 7        // days before an entry is checked again
+	ruleCap      = 40 << 10 // bytes kept of each rule file
+	decisionDays = 7        // days of DECISION and CORRECTED lines shown
+	decisionCap  = 150      // newest lines kept
+)
+
+// checkStale shows the entries not checked in a week to the checking model with
+// the current rules, and retires those the rules show are gone. A night retires
+// at most a twentieth of the live book (5 at least); the rest are returned for
+// "needs a check". Seen 11-14: the write step never linked "post guard removed"
+// to the entry about that guard.
+func checkStale(ctx context.Context, ck Checker, cfg Config, book *Book, now time.Time, res *Result) ([]string, error) {
+	today := now.Format("2006-01-02")
+	due := now.AddDate(0, 0, -checkEvery).Format("2006-01-02")
+	var todo []*Entry
+	for i := range book.Entries {
+		if e := &book.Entries[i]; !e.Archived && e.Checked <= due {
+			todo = append(todo, e)
+		}
+	}
+	if len(todo) == 0 {
+		return nil, nil
+	}
+	sort.SliceStable(todo, func(i, j int) bool { return todo[i].Checked < todo[j].Checked })
+	todo = todo[:min(len(todo), checkBatch*checkBatches)]
+	rules, err := rulesText(cfg, now)
+	if err != nil {
+		res.Failed = append(res.Failed, "check: "+err.Error())
+		return nil, nil
+	}
+	limit := max(5, len(book.Live())/20)
+	retired := 0
+	var overCap []string
+	for i := 0; i < len(todo); i += checkBatch {
+		batch := todo[i:min(i+checkBatch, len(todo))]
+		es := make([]Entry, len(batch))
+		byID := map[string]*Entry{}
+		for j, e := range batch {
+			es[j], byID[e.ID] = *e, e
+		}
+		ss, err := ck.Check(ctx, rules, es)
+		res.Calls.Check++
+		if stop(ctx, err) {
+			return nil, fmt.Errorf("check: %w", err)
+		}
+		if err != nil {
+			res.Failed = append(res.Failed, "check: "+err.Error())
+			continue
+		}
+		for _, e := range batch {
+			e.Checked = today // an entry the model left out counts as not stale
+		}
+		for _, s := range ss {
+			e := byID[s.ID]
+			if e == nil || !s.Stale {
+				continue
+			}
+			// An owner preference is the owner's word: only a rule file (also the
+			// owner's word) ends it, never a decision line of Crius or a lead.
+			if e.Kind == "owner-preference" && !namesRuleFile(s.Why, cfg.RuleFiles) {
+				overCap = append(overCap, e.ID)
+				continue
+			}
+			if retired >= limit {
+				e.Checked = "" // tried again the next night, when the cap is new
+				overCap = append(overCap, e.ID)
+				continue
+			}
+			retired++
+			e.Archived, e.Retired = true, today
+			e.Evidence = append(e.Evidence, Evidence{Team: "crius", Date: today, Ref: "stale check " + today,
+				Note: clean(s.Why), Outcome: "retired", Added: today})
+			res.Retired = append(res.Retired, e.ID)
+		}
+	}
+	return overCap, nil
+}
+
+// namesRuleFile reports whether why names one of the rule files.
+func namesRuleFile(why string, files []string) bool {
+	for _, f := range files {
+		if strings.Contains(why, filepath.Base(f)) {
+			return true
+		}
+	}
+	return false
+}
+
+// rulesText is the rule files (each cut at ruleCap) and the newest DECISION and
+// CORRECTED bus lines of the last decisionDays, oldest first.
+func rulesText(cfg Config, now time.Time) (string, error) {
+	var s strings.Builder
+	for _, f := range cfg.RuleFiles {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			return "", err
+		}
+		if len(data) > ruleCap {
+			data = data[:ruleCap]
+		}
+		fmt.Fprintf(&s, "== %s\n%s\n", filepath.Base(f), data)
+	}
+	from := now.AddDate(0, 0, -decisionDays).Format("2006-01-02T15:04")
+	var lines []string
+	for _, dir := range cfg.BusDirs {
+		logs, _ := filepath.Glob(filepath.Join(dir, "*.log"))
+		for _, l := range logs {
+			data, err := os.ReadFile(l)
+			if err != nil {
+				return "", err
+			}
+			for _, ln := range strings.Split(string(data), "\n") {
+				if len(ln) < 17 || ln[:16] < from {
+					continue
+				}
+				if head := ln[16:min(len(ln), 28)]; strings.HasPrefix(head, " DECISION ") || strings.HasPrefix(head, " CORRECTED ") {
+					lines = append(lines, clean(ln))
+				}
+			}
+		}
+	}
+	sort.Strings(lines)
+	if len(lines) > decisionCap {
+		// The owner's words (a queue answer or a line naming the owner) are
+		// kept first; the newest other lines fill the rest.
+		var owner, other []string
+		for _, l := range lines {
+			if strings.Contains(l, "[queue ") || strings.Contains(strings.ToLower(l), "owner") {
+				owner = append(owner, l)
+			} else {
+				other = append(other, l)
+			}
+		}
+		owner = owner[max(0, len(owner)-decisionCap):]
+		other = other[max(0, len(other)-(decisionCap-len(owner))):]
+		lines = append(owner, other...)
+		sort.Strings(lines)
+	}
+	fmt.Fprintf(&s, "== latest decisions and corrections (oldest first)\n%s\n", strings.Join(lines, "\n"))
+	return s.String(), nil
+}
