@@ -293,7 +293,7 @@ func readTranscript(path string, since time.Time, cur *Cursor, st *ReadStats, no
 	team := teamOf(s.Cwd)
 	if projectOf != nil {
 		if p := projectOf(s.Cwd); p != "" {
-			team = p // the projects.toml slug, as on the bus (quotes, not svc_quote)
+			team = p // the projects.toml slug, as on the bus (the bus name, not the repo folder)
 		}
 	}
 	var out []Candidate

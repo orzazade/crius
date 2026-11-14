@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -113,7 +114,7 @@ func (b *Book) Apply(op Op, c Candidate, today string) (Applied, error) {
 	if !Outcomes[outcome] {
 		outcome = "same"
 	}
-	ev := Evidence{Team: c.Team, Date: c.Time.Local().Format("2006-01-02"), Ref: c.Ref, Note: op.Note, Outcome: outcome, Added: today}
+	ev := Evidence{Team: c.Team, Date: c.Time.Local().Format("2006-01-02"), Ref: c.Ref, Note: clean(op.Note), Outcome: outcome, Added: today}
 	target := op.SameAs
 	if target == "" && b.Find(op.Entry.ID) != nil {
 		target = op.Entry.ID
@@ -166,7 +167,13 @@ var keyRe = regexp.MustCompile(`^[a-z0-9][a-z0-9.+-]+$`)
 
 // clean makes s one line of at most maxField bytes with no < or >.
 func clean(s string) string {
-	s = strings.Join(strings.Fields(strings.NewReplacer("<", "", ">", "").Replace(s)), " ")
+	s = strings.Map(func(r rune) rune {
+		if r == '<' || r == '>' || (unicode.IsControl(r) && !unicode.IsSpace(r)) {
+			return -1
+		}
+		return r
+	}, s)
+	s = strings.Join(strings.Fields(s), " ")
 	if len(s) <= maxField {
 		return s
 	}
@@ -214,6 +221,13 @@ func contains(xs []string, x string) bool {
 // Save writes book.json, one markdown file per topic and the SKILL.md index.
 // Files are written to a temp name and renamed, so a reader never sees half.
 func (b *Book) Save(dir string) error {
+	for i := range b.Entries { // entries saved before text was cleaned are cleaned here
+		b.Entries[i] = tidy(b.Entries[i])
+		for j := range b.Entries[i].Evidence {
+			ev := &b.Entries[i].Evidence[j]
+			ev.Note = clean(ev.Note) // the model wrote it; Ref and Team come from our own code
+		}
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}

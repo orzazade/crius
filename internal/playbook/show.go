@@ -63,8 +63,10 @@ func Words(cwd string) map[string]bool {
 // so a folder nothing fits gets nothing.
 func (b *Book) Match(cwd, project string) []Entry {
 	words := Words(cwd)
-	own := map[string]bool{strings.ToLower(teamOf(cwd)): true}
-	delete(own, "unknown") // a session with no folder has no project
+	own := map[string]bool{}
+	if t := strings.ToLower(teamOf(cwd)); t != "unknown" && (project == "" || !grouping(cwd)) {
+		own[t] = true // the folder's own name, as older evidence was filed
+	}
 	if project != "" {
 		own[strings.ToLower(project)] = true
 		words[strings.ToLower(project)] = true
@@ -151,4 +153,15 @@ func clause(s string) string {
 		r[0] = unicode.ToLower(r[0])
 	}
 	return string(r)
+}
+
+// grouping reports whether teamOf named the first folder under Projects of a
+// deeper path, a folder that groups projects (Projects/Work/svc_x gives "Work").
+func grouping(cwd string) bool {
+	_, rest, ok := strings.Cut(cwd, "/Projects/")
+	if !ok {
+		return false
+	}
+	parts := strings.Split(rest, "/")
+	return len(parts) > 1 && strings.EqualFold(teamOf(cwd), parts[0])
 }

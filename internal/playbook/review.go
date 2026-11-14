@@ -34,6 +34,9 @@ func LoadShown(dir string, from int64) (out []Shown, bad int, end int64, err err
 		return nil, 0, 0, err
 	}
 	defer f.Close()
+	if fi, err := f.Stat(); err == nil && fi.Size() < from {
+		from = 0 // cut or replaced: a new file, checked from its start
+	}
 	r := bufio.NewReader(f)
 	for {
 		line, rerr := r.ReadString('\n')

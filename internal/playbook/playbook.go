@@ -142,6 +142,7 @@ func Run(ctx context.Context, cfg Config, m Model) (*Result, error) {
 		byID[c.ID] = c
 	}
 	var lost []Candidate
+	lostID := map[string]bool{}
 	// retry parks a batch for the next run; after maxTries it goes to dropped.jsonl.
 	retry := func(batch []Candidate, why error) {
 		res.Failed = append(res.Failed, why.Error())
@@ -217,7 +218,10 @@ func Run(ctx context.Context, cfg Config, m Model) (*Result, error) {
 			switch got, err := book.Apply(op, c, today); {
 			case err != nil:
 				res.Dropped = append(res.Dropped, fmt.Sprintf("%s: %v", op.Candidate, err))
-				lost = append(lost, c) // kept in dropped.jsonl, never only in the log
+				if !lostID[c.ID] { // kept in dropped.jsonl, never only in the log; once per candidate
+					lostID[c.ID] = true
+					lost = append(lost, c)
+				}
 			case got == AddedEntry:
 				res.New++
 				made[op.Candidate] = op.Entry.ID
