@@ -111,12 +111,21 @@ func rearm(d Deps, st *state, ss []Session, sesErr error, screens []Screen, scrE
 			failed = append(failed, "cannot read the tabs to type into "+k+": "+scrErr.Error())
 			continue
 		}
-		i := slices.IndexFunc(screens, func(s Screen) bool { return r.Surface != "" && s.ID == r.Surface })
+		since := w.Since.Local().Format("15:04")
+		if r.Surface == "" { // a T3 thread: no tab to type into; only a thread message wakes it
+			w.Said = true
+			st.Waits[k] = w
+			if err := postInfo(d, project, []string{"crius:lead"}, fmt.Sprintf("%s:%s has no tab to type into (a thread): no team-wait waiter since %s; wake it with a thread message",
+				project, role, since)); err != nil {
+				failed = append(failed, err.Error())
+			}
+			continue
+		}
+		i := slices.IndexFunc(screens, func(s Screen) bool { return s.ID == r.Surface })
 		if i < 0 {
 			failed = append(failed, fmt.Sprintf("no tab of surface %q for %s", r.Surface, k))
 			continue
 		}
-		since := w.Since.Local().Format("15:04")
 		text := Prefix + Clean(fmt.Sprintf("no team-wait waiter has run for %s · %s since %s and this tab is idle. Re-arm it in the background, then go on with your next step: %s",
 			project, role, since, w.Cmd))
 		if err := d.SendTab(screens[i].Title, text); err != nil && (d.HandedOver == nil || !d.HandedOver(err)) {

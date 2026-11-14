@@ -171,3 +171,30 @@ func TestAResumedSessionIsRearmed(t *testing.T) {
 		t.Fatalf("tabs %q", f.tabs)
 	}
 }
+
+// crius:lead 11-14: axi api-split runs as a T3 thread (no cmux tab, Surface ""), its waiter stopped at the 2 h harness
+// limit, and every run then said "failed to look: no tab of surface". A role with no tab gets no typed line and no
+// failure: one INFO to its lead names it, since only a thread message wakes it.
+func TestARoleWithNoTabIsNamedOnceNotAFailure(t *testing.T) {
+	home := roleHome(t, role("qa-backend-2", "s2", t0.Add(-time.Hour)))
+	f := &fake{ses: []Session{{Name: "quotes · qa-backend-2", ID: "s2", PID: 500}},
+		states:  []sessionstate.State{{SessionID: "s2", State: sessionstate.Idle}},
+		screens: []Screen{{Surface: "surface:7", ID: "SURF-2", Title: "quotes · other", Text: "❯ \n"}}}
+	at := func(m int, alive bool) {
+		t.Helper()
+		f.procs = waiterProcs(alive)
+		if err := Run(f.deps(home, t0.Add(time.Duration(m)*time.Minute))); err != nil {
+			t.Fatal(m, err)
+		}
+	}
+	at(0, true)
+	for _, m := range []int{5, 15, 25, 60} {
+		at(m, false)
+	}
+	if len(f.tabs) != 0 || strings.Contains(strings.Join(f.sent, "\n"), "failed to look") {
+		t.Fatalf("tabs %q sent %q", f.tabs, f.sent)
+	}
+	if l := rearmLines(t, home); len(l) != 1 || !strings.Contains(l[0], "quotes:qa-backend-2 has no tab to type into") {
+		t.Fatalf("bus %q", l)
+	}
+}
