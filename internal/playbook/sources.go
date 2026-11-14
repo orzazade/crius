@@ -312,7 +312,7 @@ func readTranscript(path string, since time.Time, cur *Cursor, st *ReadStats, no
 	team := teamOf(s.Cwd)
 	if projectOf != nil {
 		p := projectOf(s.Cwd)
-		if p == "" && s.Cwd != "" {
+		if p == "" && s.Cwd != "" && !tempDir(s.Cwd) {
 			if st.Unmapped == nil {
 				st.Unmapped = map[string]int{}
 			}
@@ -527,4 +527,15 @@ func Started(dir string) (bool, error) {
 		return false, err
 	}
 	return len(c.Bus) > 0 || len(c.Tx) > 0, nil
+}
+
+// tempDir reports a temp folder (scratch worktrees, test homes): never a
+// project, so it is not counted as an unmapped folder.
+func tempDir(cwd string) bool {
+	for _, p := range []string{"/tmp", "/private/tmp", "/var/folders", "/private/var/folders", strings.TrimRight(os.TempDir(), "/")} {
+		if cwd == p || strings.HasPrefix(cwd, p+"/") {
+			return true
+		}
+	}
+	return false
 }

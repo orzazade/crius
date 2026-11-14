@@ -1,6 +1,7 @@
 package playbook
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -85,5 +86,26 @@ func TestUnmappedFoldersAreCounted(t *testing.T) {
 	_, st, err := Gather(cfg, cur, time.Now())
 	if err != nil || len(st.Unmapped) != 1 || !strings.Contains(st.String(), "unmapped folders: 1 (/Users/x/Projects/scifi/crius)") {
 		t.Fatalf("unmapped %v, summary %q (%v); want 1 folder named in the summary", st.Unmapped, st.String(), err)
+	}
+}
+
+// Seen 11-14: 201 "unmapped folders" in one hour, nearly all temp folders and
+// scratch worktrees, which are never projects; they hid the real gaps.
+func TestTempFoldersAreNotCountedAsUnmapped(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "p", "a.jsonl")
+	writeSession(t, p, []string{"ok"})
+	data, _ := os.ReadFile(p)
+	for i, cwd := range []string{"/private/tmp", "/tmp/x", "/private/var/folders/ab/T/wt", "/Users/x/Projects/scifi/crius"} {
+		_ = os.WriteFile(filepath.Join(dir, "p", fmt.Sprintf("t%d.jsonl", i)),
+			[]byte(strings.ReplaceAll(strings.ReplaceAll(string(data), "/Users/x/Projects/scifi/crius", cwd), `"uuid":"`, fmt.Sprintf(`"uuid":"t%d`, i))), 0o644)
+	}
+	_ = os.Remove(p)
+	cfg := Config{TxRoots: []string{filepath.Join(dir, "p")}, Since: time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC),
+		ProjectOf: func(string) string { return "" }}
+	cur, _ := loadCursor(filepath.Join(dir, "state"))
+	_, st, err := Gather(cfg, cur, time.Now())
+	if err != nil || len(st.Unmapped) != 1 {
+		t.Fatalf("unmapped %v (%v); want only the project folder", st.Unmapped, err)
 	}
 }
