@@ -120,15 +120,15 @@ func TestProjectMapLongestPrefix(t *testing.T) {
 
 // Review 5: rsync --delete into a book folder like "/" or "~" wipes the host.
 func TestLoadHostsRefusesAWideBookFolder(t *testing.T) {
-	for _, book := range []string{"/", ".", "~", "/home", "/home/crius", "relative/playbook", "/playbook"} {
+	for _, book := range []string{"/", ".", "~", "/home", "/home/crius", "relative/playbook", "/playbook", "/home/playbook", "/home/u/Projects/playbook", "/x/link/../skills/playbook"} {
 		p := filepath.Join(t.TempDir(), "hosts.json")
 		_ = os.WriteFile(p, []byte(`[{"name":"h","target":"u@h","ssh":["ssh"],"book":"`+book+`"}]`), 0o644)
-		if _, err := LoadHosts(p); err == nil || !strings.Contains(err.Error(), "folder named playbook") {
+		if _, err := LoadHosts(p); err == nil || !strings.Contains(err.Error(), "ending in skills/playbook") {
 			t.Errorf("book %q: err %v, want a refusal", book, err)
 		}
 	}
 	p := filepath.Join(t.TempDir(), "hosts.json")
-	_ = os.WriteFile(p, []byte(`[{"name":"h","target":"u@h","ssh":["ssh"],"book":"/home/crius/.crius/playbook"}]`), 0o644)
+	_ = os.WriteFile(p, []byte(`[{"name":"h","target":"u@h","ssh":["ssh"],"book":"/home/crius/.claude/skills/playbook"}]`), 0o644)
 	if _, err := LoadHosts(p); err != nil {
 		t.Fatalf("a good book folder was refused: %v", err)
 	}
@@ -154,5 +154,26 @@ func TestHostPullRepairsAReplacedFile(t *testing.T) {
 	got, _ := os.ReadFile(filepath.Join(cache, "h", "0", "-Users-x-Projects-scifi-shop", "r1.jsonl"))
 	if string(got) != string(want) {
 		t.Fatalf("cache not repaired:\n%s\nwant\n%s", got, want)
+	}
+}
+
+// Review 6: a host whose pull failed is not written to (it is down, and a push
+// would wait out another timeout).
+func TestNoPushToAHostThatIsDown(t *testing.T) {
+	cfg, log := busConfig(t)
+	appendLine(t, log, time.Now().Add(-time.Hour).Format("2006-01-02T15:04")+" LEARNED shop:a -> crius:lead — testing: split the suite, 26 min to 9 min")
+	cfg.CacheDir = filepath.Join(t.TempDir(), "hosts")
+	calls := filepath.Join(t.TempDir(), "calls")
+	ssh := filepath.Join(t.TempDir(), "ssh")
+	_ = os.WriteFile(ssh, []byte("#!/bin/sh\necho call >> "+calls+"\necho 'ssh: connect to host x port 22: Operation timed out' >&2\nexit 255\n"), 0o755)
+	cfg.Hosts = []Host{{Name: "legion", Target: "x", SSH: []string{ssh}, Roots: []string{"/nowhere"},
+		Book: "/home/u/.claude/skills/playbook", Rsync: rsyncBin(t)}}
+	res, err := Run(context.Background(), cfg, &oneEach{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(calls)
+	if res.Hosts[0].Pushed || strings.Count(string(data), "call") != 1 || strings.Contains(res.Hosts[0].Err, "push") {
+		t.Fatalf("pushed %v, ssh calls %d, err %q: want the one failed list call and no push", res.Hosts[0].Pushed, strings.Count(string(data), "call"), res.Hosts[0].Err)
 	}
 }

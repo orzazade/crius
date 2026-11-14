@@ -55,8 +55,11 @@ func LoadHosts(path string) ([]Host, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	for _, h := range hs {
-		if h.Name == "" || h.Target == "" || len(h.SSH) == 0 || strings.HasPrefix(h.Target, "-") {
+		if h.Name == "" || h.Target == "" || len(h.SSH) == 0 {
 			return nil, fmt.Errorf("%s: host %q needs name, target and ssh", path, h.Name)
+		}
+		if strings.HasPrefix(h.Target, "-") {
+			return nil, fmt.Errorf("%s: host %q: target %q would be read as an ssh option", path, h.Name, h.Target)
 		}
 		if err := bookPathOK(h.Book); err != nil {
 			return nil, fmt.Errorf("%s: host %q: %w", path, h.Name, err)
@@ -66,15 +69,14 @@ func LoadHosts(path string) ([]Host, error) {
 }
 
 // bookPathOK refuses a book folder that rsync --delete could wipe more than
-// the book in: it must be absolute, at least two parts deep, and end in
-// "playbook".
+// the book in: it must be absolute and end in skills/playbook.
 func bookPathOK(p string) error {
 	if p == "" {
 		return nil
 	}
 	c := filepath.Clean(p)
-	if !filepath.IsAbs(c) || strings.Count(c, "/") < 2 || filepath.Base(c) != "playbook" {
-		return fmt.Errorf("book %q must be an absolute folder named playbook, two or more levels deep", p)
+	if !filepath.IsAbs(c) || !strings.HasSuffix(c, "/skills/playbook") || strings.Contains(p, "..") {
+		return fmt.Errorf("book %q must be an absolute folder ending in skills/playbook, with no ..", p)
 	}
 	return nil
 }
@@ -125,8 +127,9 @@ func runOut(name string, args ...string) (string, error) {
 
 // pull copies the host's transcripts changed in the last pullDays into
 // cache/<name>/<root index>/. Transcripts only grow, so rsync appends to the
-// cached copy; --append-verify sends a file again in full when the cached head
-// no longer matches (a file replaced on the host). It returns the
+// cached copy. --append-verify sends a file again in full when the host's copy
+// is longer and the cached head no longer matches it; a host file that is the
+// same size or shorter is not sent (a known gap: transcripts only grow). It returns the
 // cache folder of the host and how many files came.
 func pull(ctx context.Context, h Host, cache string) (string, int, error) {
 	dst := filepath.Join(cache, h.Name)
@@ -161,7 +164,7 @@ func pull(ctx context.Context, h Host, cache string) (string, int, error) {
 // push copies the book folder to the host (its git history stays here).
 func push(ctx context.Context, h Host, book string) error {
 	_, err := run(ctx, nil, h.rsync(), "-rt", "--delete", "--mkpath", "--exclude=.git",
-		"-e", h.remoteShell(), strings.TrimRight(book, "/")+"/", h.Target+":"+strings.TrimRight(h.Book, "/")+"/")
+		"-e", h.remoteShell(), strings.TrimRight(book, "/")+"/", h.Target+":"+filepath.Clean(h.Book)+"/")
 	return err
 }
 
