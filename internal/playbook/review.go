@@ -151,7 +151,7 @@ func ReviewBook(b *Book, shown []Shown, now time.Time) Review {
 				if ev.Date > f {
 					u.Repeats++
 				}
-			case ev.Outcome == "applied", fromShown && ev.Date >= sd:
+			case ev.Outcome == "applied", fromShown && ev.Date >= sd && ev.Outcome != "retired":
 				u.Followed++
 				teams[ev.Team] = true
 			}

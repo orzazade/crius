@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -28,10 +29,17 @@ type ClaudeCLI struct {
 var ErrAPIKey = errors.New("claude -p ran on an API key or a login it could not check; playbook runs only on a Max subscription login")
 
 const pickPrompt = `You read candidate snippets from the records of AI coding teams: bus log lines, session transcript replies, and the owner's own turns.
-Keep a candidate only when it states a finding another session could reuse later: a tactic that worked (with evidence), a trap to avoid, a tool or version fact, a team or harness fact, or a lasting owner preference or correction.
-Drop status updates, progress counts, plans, questions, one-off task details, and anything with no lesson in it.
+Keep a candidate only when it states a finding another session could reuse on a later, different task: a tactic that worked (with evidence), a trap to avoid, a tool or version fact, a team or harness fact, or a lasting owner preference or correction.
+Also keep a candidate that says an earlier rule, guard, gap or setup was removed, fixed or replaced: it may retire an old entry.
+Drop:
+- status updates, progress counts, plans, questions, and anything with no lesson in it;
+- one-off task or cleanup facts: what was removed, moved, stopped or set up once, where a branch or file was parked, the steps of one ticket;
+- narrow facts that hold for one file, one endpoint, one error code or one ticket only and teach nothing beyond it;
+- a record-keeping or note-format wish of one session.
+A tactic or trap seen on one suite, service or tool still counts when the same move would help elsewhere.
+When unsure, keep: the writing step drops what has no lasting lesson.
 Input: a JSON array of {"id","source","team","text"}.
-Reply with only a JSON array, one object per input id, in input order: {"id": "...", "keep": true|false, "topic": "<one of TOPICS>"}.
+Return "items": one object per input id, in input order: {"id": "...", "keep": true|false, "topic": "<one of TOPICS>"}.
 TOPICS: `
 
 const writePrompt = `You keep a playbook of what AI coding teams learned. Each entry reads: WHEN <situation>, DO <tactic>, BECAUSE <evidence>.
@@ -39,10 +47,12 @@ Input: {"candidates": [{"id","team","date","topic","text"}], "existing": [{"id",
 For each candidate return one object:
 - the same finding as an existing entry: {"candidate": "<id>", "same_as": "<existing entry id, never a candidate id>", "outcome": "hit|applied|same", "note": "<short evidence with its numbers>"}
   outcome: "hit" = the problem happened again; "applied" = someone used the advice and it worked; "same" = only stated again.
-- it contradicts an existing entry: as above plus "replace": true and the corrected "entry" (same id)
+- it contradicts an existing entry and gives the corrected advice: as above plus "replace": true and the corrected "entry" (same id)
+- it shows an existing entry no longer holds (the guard, gap, rule or setup it describes was removed or fixed): {"candidate": "<id>", "same_as": "<that entry id>", "retire": true, "note": "<what changed, with its date>"}
 - new: {"candidate": "<id>", "entry": {"id": "<kebab-case, 3-64 chars>", "topic": "<TOPICS>", "kind": "tactic|trap|tool-fact|team-fact|owner-preference", "when": "<the situation>", "do": "<what to do>", "because": "<evidence: team, date, numbers from the text>", "keys": ["<2-6 lowercase words a session start can match: project, stack, tool>"]}}
-Leave out a candidate with no lasting lesson. Plain English, short sentences, no filler. Keep numbers, names and versions exact; never invent them.
-Reply with only a JSON array.
+Leave out a candidate with no lasting lesson, a one-off task or cleanup fact, or a fact about one file, endpoint, error code or ticket that teaches nothing beyond it. Plain English, short sentences, no filler. Keep numbers, names and versions exact; never invent them.
+Candidates come oldest first, so a candidate is usually newer than the existing entries.
+Return the answers as "items".
 TOPICS: `
 
 // Pick asks the cheap model which candidates hold a reusable finding.
@@ -52,12 +62,12 @@ func (c ClaudeCLI) Pick(ctx context.Context, cs []Candidate) ([]Verdict, error) 
 		items = append(items, map[string]string{"id": x.ID, "source": x.Source, "team": x.Team, "text": x.Text})
 	}
 	in, _ := json.Marshal(items)
-	out, err := c.run(ctx, or(c.PickModel, "haiku"), pickPrompt+strings.Join(Topics, ", "), in)
+	out, err := c.run(ctx, or(c.PickModel, "haiku"), pickPrompt+strings.Join(Topics, ", "), pickSchema(cs), in)
 	if err != nil {
 		return nil, err
 	}
 	var vs []Verdict
-	if err := decodeArray(out, &vs); err != nil {
+	if err := decodeItems(out, &vs); err != nil {
 		return nil, fmt.Errorf("pick reply is not a JSON array: %w", err)
 	}
 	return vs, nil
@@ -89,15 +99,72 @@ func (c ClaudeCLI) Write(ctx context.Context, cs []Candidate, existing []Entry) 
 		in.Existing = append(in.Existing, ex{e.ID, e.Topic, e.When, e.Do})
 	}
 	data, _ := json.Marshal(in)
-	out, err := c.run(ctx, or(c.WriteModel, "sonnet"), writePrompt+strings.Join(Topics, ", "), data)
+	out, err := c.run(ctx, or(c.WriteModel, "sonnet"), writePrompt+strings.Join(Topics, ", "), writeSchema(cs), data)
 	if err != nil {
 		return nil, err
 	}
 	var ops []Op
-	if err := decodeArray(out, &ops); err != nil {
+	if err := decodeItems(out, &ops); err != nil {
 		return nil, fmt.Errorf("write reply is not a JSON array: %w", err)
 	}
 	return ops, nil
+}
+
+// The CLI makes the model answer in this shape (--json-schema), so a reply is
+// valid JSON, names only this batch's candidates, and every new entry has an
+// id, a topic and a kind. Seen 11-14: 6 of 57 free-text replies were broken.
+func itemsSchema(item map[string]any) []byte {
+	b, _ := json.Marshal(map[string]any{"type": "object", "required": []string{"items"}, "additionalProperties": false,
+		"properties": map[string]any{"items": map[string]any{"type": "array", "items": item}}})
+	return b
+}
+
+func batchIDs(cs []Candidate) []string {
+	ids := make([]string, 0, len(cs))
+	for _, c := range cs {
+		ids = append(ids, c.ID)
+	}
+	return ids
+}
+
+func pickSchema(cs []Candidate) []byte {
+	return itemsSchema(map[string]any{"type": "object", "required": []string{"id", "keep", "topic"},
+		"properties": map[string]any{
+			"id":    map[string]any{"type": "string", "enum": batchIDs(cs)},
+			"keep":  map[string]any{"type": "boolean"},
+			"topic": map[string]any{"type": "string", "enum": Topics},
+		}})
+}
+
+func writeSchema(cs []Candidate) []byte {
+	var kinds []string
+	for k := range Kinds {
+		kinds = append(kinds, k)
+	}
+	sort.Strings(kinds)
+	str := map[string]any{"type": "string", "minLength": 3}
+	return itemsSchema(map[string]any{"type": "object", "required": []string{"candidate"},
+		"anyOf": []map[string]any{{"required": []string{"same_as"}}, {"required": []string{"entry"}}},
+		"if":    map[string]any{"properties": map[string]any{"retire": map[string]any{"const": true}}, "required": []string{"retire"}},
+		"then":  map[string]any{"required": []string{"same_as"}},
+		"properties": map[string]any{
+			"candidate": map[string]any{"type": "string", "enum": batchIDs(cs)},
+			"same_as":   map[string]any{"type": "string"},
+			"replace":   map[string]any{"type": "boolean"},
+			"retire":    map[string]any{"type": "boolean"},
+			"note":      map[string]any{"type": "string"},
+			"outcome":   map[string]any{"type": "string", "enum": []string{"hit", "applied", "same"}},
+			"entry": map[string]any{"type": "object", "required": []string{"id", "kind", "when", "do", "because"},
+				"properties": map[string]any{
+					"id":      map[string]any{"type": "string", "minLength": 3, "maxLength": 64, "pattern": "^[a-z0-9][a-z0-9-]+$"},
+					"topic":   map[string]any{"type": "string", "enum": Topics},
+					"kind":    map[string]any{"type": "string", "enum": kinds},
+					"when":    str,
+					"do":      str,
+					"because": str,
+					"keys":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+				}},
+		}})
 }
 
 func or(s, def string) string {
@@ -105,6 +172,20 @@ func or(s, def string) string {
 		return def
 	}
 	return s
+}
+
+// decodeItems reads the "items" field of a schema reply into v by name; a reply
+// that is a bare array is read with decodeArray.
+func decodeItems(s string, v any) error {
+	var r struct {
+		Items json.RawMessage `json:"items"`
+	}
+	if i := strings.Index(s, "{"); i >= 0 && (strings.Index(s, "[") < 0 || i < strings.Index(s, "[")) {
+		if err := json.NewDecoder(strings.NewReader(s[i:])).Decode(&r); err == nil && len(r.Items) > 0 {
+			return json.Unmarshal(r.Items, v)
+		}
+	}
+	return decodeArray(s, v)
 }
 
 // decodeArray reads the first JSON array in a reply into v. Text around it (a
@@ -135,13 +216,16 @@ func cliEnv() []string {
 // CallTimeout ends one claude -p call that hangs.
 const CallTimeout = 10 * time.Minute
 
-func (c ClaudeCLI) run(ctx context.Context, model, prompt string, in []byte) (string, error) {
+func (c ClaudeCLI) run(ctx context.Context, model, prompt string, schema, in []byte) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, CallTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, or(c.Bin, "claude"), "-p", "--model", model,
 		"--tools", "", "--strict-mcp-config", "--disable-slash-commands",
 		"--no-session-persistence", "--setting-sources", "",
 		"--system-prompt", prompt, "--output-format", "stream-json", "--verbose")
+	if schema != nil {
+		cmd.Args = append(cmd.Args, "--json-schema", string(schema))
+	}
 	cmd.Env = cliEnv()
 	cmd.Dir = os.TempDir()
 	// Its own process group, so a kill (bad key, timeout) also ends what it

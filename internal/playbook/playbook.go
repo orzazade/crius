@@ -45,8 +45,9 @@ type Op struct {
 	Candidate string `json:"candidate"`
 	SameAs    string `json:"same_as,omitempty"`
 	Replace   bool   `json:"replace,omitempty"`
+	Retire    bool   `json:"retire,omitempty"` // a later record shows SameAs no longer holds
 	Note      string `json:"note,omitempty"`
-	Outcome   string `json:"outcome,omitempty"` // hit, applied or same
+	Outcome   string `json:"outcome,omitempty"` // hit, applied or same (a retire's evidence is stored as "retired")
 	Entry     Entry  `json:"entry"`
 }
 
@@ -82,6 +83,7 @@ type Result struct {
 	New        int
 	Evidence   int
 	Duplicates int      // answers that named a source line the entry already had
+	Retired    []string // entries a later record showed no longer hold
 	Unwritten  int      // kept candidates the writing model left out (no lasting lesson)
 	Dropped    []string // model answers that could not be applied, with the reason
 	Failed     []string // model batches that failed; their candidates wait in the cursor for the next run
@@ -234,6 +236,14 @@ func Run(ctx context.Context, cfg Config, m Model) (*Result, error) {
 			if id, ok := made[op.SameAs]; ok {
 				op.SameAs = id
 			}
+			if op.Retire && len(res.Retired) >= maxRetires {
+				res.Dropped = append(res.Dropped, fmt.Sprintf("%s: retire cap reached (%d per run), %s stays live", op.Candidate, maxRetires, op.SameAs))
+				if !lostID[c.ID] {
+					lostID[c.ID] = true
+					lost = append(lost, c)
+				}
+				continue
+			}
 			switch got, err := book.Apply(op, c, today); {
 			case err != nil:
 				res.Dropped = append(res.Dropped, fmt.Sprintf("%s: %v", op.Candidate, err))
@@ -246,6 +256,8 @@ func Run(ctx context.Context, cfg Config, m Model) (*Result, error) {
 				made[op.Candidate] = op.Entry.ID
 			case got == AddedEvidence:
 				res.Evidence++
+			case got == Retired:
+				res.Retired = append(res.Retired, op.SameAs)
 			default:
 				res.Duplicates++
 			}
@@ -334,3 +346,6 @@ const maxTries = 3
 func stop(ctx context.Context, err error) bool {
 	return err != nil && (errors.Is(err, ErrAPIKey) || ctx.Err() != nil)
 }
+
+// maxRetires caps the entries one run may retire.
+const maxRetires = 5

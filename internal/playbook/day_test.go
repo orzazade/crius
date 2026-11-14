@@ -148,7 +148,8 @@ func checkDay(t *testing.T, cfg Config, bookDir string, res *Result) (Config, *R
 		t.Fatalf("rules picked %d candidates, want the 3 findings: %v", len(res.Candidates), picked)
 	}
 	if res.New != 2 || res.Evidence != 1 {
-		t.Fatalf("want 2 new entries and 1 evidence, got new=%d evidence=%d", res.New, res.Evidence)
+		t.Fatalf("want 2 new entries and 1 evidence, got new=%d evidence=%d (kept %d, unwritten %d, retired %v, dropped %q, failed %q)",
+			res.New, res.Evidence, res.Kept, res.Unwritten, res.Retired, res.Dropped, res.Failed)
 	}
 	b, err := LoadBook(bookDir)
 	if err != nil {

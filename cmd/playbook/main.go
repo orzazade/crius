@@ -201,6 +201,9 @@ func report(res *playbook.Result, took time.Duration, runErr error) string {
 	for _, d := range res.Dropped {
 		fmt.Printf("  dropped: %s\n", d)
 	}
+	if len(res.Retired) > 0 {
+		fmt.Printf("retired (a later record says they no longer hold): %s\n", strings.Join(res.Retired, ", "))
+	}
 	fmt.Printf("model calls: pick (haiku) %d, write (sonnet) %d; took %s\n", res.Calls.Pick, res.Calls.Write, took.Round(time.Second))
 	if hl := playbook.HostLine(res.Hosts); hl != "" {
 		fmt.Println(hl)
@@ -211,8 +214,8 @@ func report(res *playbook.Result, took time.Duration, runErr error) string {
 			fmt.Printf("  use %s: shown %d, followed %d %v, repeats %d\n", u.ID, u.Shown, u.Followed, u.Teams, u.Repeats)
 		}
 	}
-	line := fmt.Sprintf("playbook %s: +%d entries, +%d evidence, %d live; promote %s; needs a check %s; archived %d; calls haiku %d sonnet %d; health %s",
-		time.Now().Format("2006-01-02"), res.New, res.Evidence, len(r.Uses), list(r.Promote), list(r.NeedsCheck), len(r.Archived),
+	line := fmt.Sprintf("playbook %s: +%d entries, +%d evidence, %d live; promote %s; needs a check %s; archived %d; retired %d; calls haiku %d sonnet %d; health %s",
+		time.Now().Format("2006-01-02"), res.New, res.Evidence, len(r.Uses), list(r.Promote), list(r.NeedsCheck), len(r.Archived), len(res.Retired),
 		res.Calls.Pick, res.Calls.Write, health(res))
 	if n := len(res.Read.Unmapped); n > 0 {
 		line += fmt.Sprintf("; unmapped folders %d", n)

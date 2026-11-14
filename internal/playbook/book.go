@@ -28,7 +28,7 @@ type Evidence struct {
 	Date    string `json:"date"`
 	Ref     string `json:"ref"`
 	Note    string `json:"note,omitempty"`
-	Outcome string `json:"outcome,omitempty"` // hit, applied or same (see Outcomes)
+	Outcome string `json:"outcome,omitempty"` // hit, applied or same (see Outcomes); "retired" on the record that retired it
 	Added   string `json:"added,omitempty"`   // the day the book got it
 }
 
@@ -45,6 +45,7 @@ type Entry struct {
 	Created  string     `json:"created,omitempty"` // date of its first evidence
 	Added    string     `json:"added,omitempty"`   // the day the book got it
 	Archived bool       `json:"archived,omitempty"`
+	Retired  string     `json:"retired,omitempty"` // date of the record that showed it no longer holds
 }
 
 // Book is every entry, kept in book.json; the markdown files are made from it.
@@ -100,6 +101,7 @@ const (
 	AddedEntry    Applied = iota // a new entry
 	AddedEvidence                // a new sighting of an existing entry
 	Duplicate                    // the same source line again: nothing changed
+	Retired                      // a later record showed the entry no longer holds
 )
 
 // Outcomes of a sighting: the problem happened again, the advice was used, or
@@ -115,6 +117,9 @@ func (b *Book) Apply(op Op, c Candidate, today string) (Applied, error) {
 		outcome = "same"
 	}
 	ev := Evidence{Team: c.Team, Date: c.Time.Local().Format("2006-01-02"), Ref: c.Ref, Note: clean(op.Note), Outcome: outcome, Added: today}
+	if op.Retire && op.SameAs == "" {
+		return 0, errors.New("retire needs same_as: the entry it retires")
+	}
 	target := op.SameAs
 	if target == "" && b.Find(op.Entry.ID) != nil {
 		target = op.Entry.ID
@@ -129,6 +134,21 @@ func (b *Book) Apply(op Op, c Candidate, today string) (Applied, error) {
 				return Duplicate, nil // the same line read twice is not a second sighting
 			}
 		}
+		if op.Retire {
+			// Limits, so one model answer cannot wipe a good entry: never an
+			// owner preference (only the owner changes those), never on a record
+			// older than the entry's last sighting.
+			if e.Kind == "owner-preference" {
+				return 0, fmt.Errorf("%s: an owner preference is not retired by a record; needs a check", e.ID)
+			}
+			if last := lastSeen(e); ev.Date < last {
+				return 0, fmt.Errorf("%s: retire is older than the entry's last sighting (%s < %s)", e.ID, ev.Date, last)
+			}
+			ev.Outcome = "retired"
+			e.Archived, e.Retired = true, ev.Date
+			e.Evidence = append(e.Evidence, ev)
+			return Retired, nil
+		}
 		if op.Replace {
 			fix := tidy(op.Entry)
 			fix.ID = e.ID // the corrected entry keeps its id, whatever the model wrote there
@@ -140,13 +160,18 @@ func (b *Book) Apply(op Op, c Candidate, today string) (Applied, error) {
 				e.Keys = fix.Keys
 			}
 		}
-		e.Archived = false
+		if e.Retired == "" || ev.Date >= e.Retired {
+			e.Archived, e.Retired = false, "" // seen to hold again (an older sighting does not count)
+		}
 		e.Evidence = append(e.Evidence, ev)
 		return AddedEvidence, nil
 	}
 	e := tidy(op.Entry)
 	if err := check(e); err != nil {
 		return 0, err
+	}
+	if !contains(Topics, e.Topic) {
+		e.Topic = c.Topic // the pick model's topic
 	}
 	if !contains(Topics, e.Topic) {
 		e.Topic = "other"
@@ -156,6 +181,17 @@ func (b *Book) Apply(op Op, c Candidate, today string) (Applied, error) {
 	e.Created, e.Added = ev.Date, today
 	b.Entries = append(b.Entries, e)
 	return AddedEntry, nil
+}
+
+// lastSeen is the date of the entry's newest evidence.
+func lastSeen(e *Entry) string {
+	last := ""
+	for _, ev := range e.Evidence {
+		if ev.Date > last {
+			last = ev.Date
+		}
+	}
+	return last
 }
 
 // maxField caps each text field of an entry. Entry text is printed into every
