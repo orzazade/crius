@@ -34,7 +34,7 @@ func TestTranscriptCapPerSessionDay(t *testing.T) {
 	texts = append(texts, "Root cause: the cache key had the date in it, so every run missed. 702 s to 198 s.")
 	writeSession(t, filepath.Join(dir, "p", "long.jsonl"), texts)
 	cur, _ := loadCursor(filepath.Join(dir, "state"))
-	cs, st, err := Gather(Config{TxRoots: []string{filepath.Join(dir, "p")}, Since: time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)}, cur)
+	cs, st, err := Gather(Config{TxRoots: []string{filepath.Join(dir, "p")}, Since: time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)}, cur, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}

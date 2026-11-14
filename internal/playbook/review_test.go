@@ -22,7 +22,7 @@ func TestReviewPromotesFlagsAndArchives(t *testing.T) {
 			{Team: "staff", Date: "2026-11-13", Ref: "/p/sB.jsonl#u2"}}},
 		{ID: "t3-wake", Kind: "trap", Created: "2026-11-10", Evidence: []Evidence{
 			{Team: "shop", Date: "2026-11-10", Ref: "bus shop.log 2026-11-10T11:00"},
-			{Team: "billing", Date: "2026-11-14", Ref: "bus billing.log 2026-11-14T09:00"}}},
+			{Team: "billing", Date: "2026-11-14", Ref: "bus billing.log 2026-11-14T09:00", Outcome: "hit"}}},
 		{ID: "stale", Kind: "tool-fact", Created: "2026-10-01", Evidence: []Evidence{
 			{Team: "shop", Date: "2026-10-01", Ref: "bus shop.log 2026-10-01T09:00"}}},
 	}}
@@ -52,14 +52,15 @@ func TestShownLogRoundTrip(t *testing.T) {
 	if err := LogShown(dir, "s1", "/x", []Entry{{ID: "a"}, {ID: "b"}}, now); err != nil {
 		t.Fatal(err)
 	}
-	got, err := LoadShown(dir)
-	if err != nil || len(got) != 2 || got[1].ID != "b" || got[0].Session != "s1" {
+	got, bad, err := LoadShown(dir)
+	if err != nil || bad != 0 || len(got) != 2 || got[1].ID != "b" || got[0].Session != "s1" {
 		t.Fatalf("LoadShown = %+v, %v", got, err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "shown.log"), []byte("garbage\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := LoadShown(dir); err == nil {
-		t.Fatal("a broken shown.log read as fine")
+	// A torn line is skipped and counted, never a reason to stop the night.
+	if got, bad, err := LoadShown(dir); err != nil || bad != 1 || len(got) != 0 {
+		t.Fatalf("LoadShown on a torn line = %v, %d bad, %v; want no lines, 1 bad, no error", got, bad, err)
 	}
 }

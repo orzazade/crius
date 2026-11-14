@@ -22,10 +22,12 @@ var Kinds = map[string]bool{"tactic": true, "trap": true, "tool-fact": true, "te
 
 // Evidence is one sighting of a finding.
 type Evidence struct {
-	Team string `json:"team"`
-	Date string `json:"date"`
-	Ref  string `json:"ref"`
-	Note string `json:"note,omitempty"`
+	Team    string `json:"team"`
+	Date    string `json:"date"`
+	Ref     string `json:"ref"`
+	Note    string `json:"note,omitempty"`
+	Outcome string `json:"outcome,omitempty"` // hit, applied or same (see Outcomes)
+	Added   string `json:"added,omitempty"`   // the day the book got it
 }
 
 // Entry is one finding: when <situation>, do <tactic>, because <evidence>.
@@ -38,7 +40,8 @@ type Entry struct {
 	Because  string     `json:"because"`
 	Keys     []string   `json:"keys,omitempty"` // project, stack and tool words the start-up hook matches on
 	Evidence []Evidence `json:"evidence"`
-	Created  string     `json:"created,omitempty"`
+	Created  string     `json:"created,omitempty"` // date of its first evidence
+	Added    string     `json:"added,omitempty"`   // the day the book got it
 	Archived bool       `json:"archived,omitempty"`
 }
 
@@ -88,11 +91,28 @@ func (b *Book) Live() []Entry {
 
 var idRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{2,63}$`)
 
-// Apply adds one model answer. It returns true when a new entry was added and
-// false when evidence went to an existing one. A new entry whose id is taken is
-// the same finding again, so it adds evidence too.
-func (b *Book) Apply(op Op, c Candidate) (bool, error) {
-	ev := Evidence{Team: c.Team, Date: c.Time.Local().Format("2006-01-02"), Ref: c.Ref, Note: op.Note}
+// Applied says what one model answer did to the book.
+type Applied int
+
+const (
+	AddedEntry    Applied = iota // a new entry
+	AddedEvidence                // a new sighting of an existing entry
+	Duplicate                    // the same source line again: nothing changed
+)
+
+// Outcomes of a sighting: the problem happened again, the advice was used, or
+// the finding was only stated again.
+var Outcomes = map[string]bool{"hit": true, "applied": true, "same": true}
+
+// Apply adds one model answer on day today (the book's own date, which the
+// archive counts from; the evidence date is the record's). A new entry whose id
+// is taken is the same finding again, so it adds evidence too.
+func (b *Book) Apply(op Op, c Candidate, today string) (Applied, error) {
+	outcome := op.Outcome
+	if !Outcomes[outcome] {
+		outcome = "same"
+	}
+	ev := Evidence{Team: c.Team, Date: c.Time.Local().Format("2006-01-02"), Ref: c.Ref, Note: op.Note, Outcome: outcome, Added: today}
 	target := op.SameAs
 	if target == "" && b.Find(op.Entry.ID) != nil {
 		target = op.Entry.ID
@@ -100,37 +120,40 @@ func (b *Book) Apply(op Op, c Candidate) (bool, error) {
 	if target != "" {
 		e := b.Find(target)
 		if e == nil {
-			return false, fmt.Errorf("same_as %q is not an entry", target)
+			return 0, fmt.Errorf("same_as %q is not an entry", target)
 		}
 		for _, old := range e.Evidence {
 			if old.Ref == ev.Ref {
-				return false, nil // the same line read twice is not a second sighting
+				return Duplicate, nil // the same line read twice is not a second sighting
 			}
 		}
 		if op.Replace {
-			if err := check(op.Entry); err != nil {
-				return false, err
+			fix := op.Entry
+			fix.ID = e.ID // the corrected entry keeps its id, whatever the model wrote there
+			if err := check(fix); err != nil {
+				return 0, err
 			}
-			e.When, e.Do, e.Because, e.Kind = op.Entry.When, op.Entry.Do, op.Entry.Because, op.Entry.Kind
-			if len(op.Entry.Keys) > 0 {
-				e.Keys = op.Entry.Keys
+			e.When, e.Do, e.Because, e.Kind = fix.When, fix.Do, fix.Because, fix.Kind
+			if len(fix.Keys) > 0 {
+				e.Keys = fix.Keys
 			}
 		}
 		e.Archived = false
 		e.Evidence = append(e.Evidence, ev)
-		return false, nil
+		return AddedEvidence, nil
 	}
 	e := op.Entry
 	if err := check(e); err != nil {
-		return false, err
+		return 0, err
 	}
 	if !contains(Topics, e.Topic) {
 		e.Topic = "other"
 	}
+	ev.Outcome = "same"
 	e.Evidence = []Evidence{ev}
-	e.Created = ev.Date
+	e.Created, e.Added = ev.Date, today
 	b.Entries = append(b.Entries, e)
-	return true, nil
+	return AddedEntry, nil
 }
 
 func check(e Entry) error {
@@ -188,11 +211,24 @@ func (b *Book) Save(dir string) error {
 }
 
 func writeAtomic(path string, data []byte) error {
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*.tmp")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		os.Remove(f.Name())
+		return err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(f.Name())
+		return err
+	}
+	if err := os.Chmod(f.Name(), 0o644); err != nil {
+		os.Remove(f.Name())
+		return err
+	}
+	return os.Rename(f.Name(), path)
 }
 
 func renderIndex(byTopic map[string][]Entry) string {

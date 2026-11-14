@@ -1,6 +1,7 @@
 package playbook
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -9,6 +10,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
+	"time"
 )
 
 // ClaudeCLI runs `claude -p` on the owner's Max login: haiku picks, sonnet writes.
@@ -34,8 +37,9 @@ TOPICS: `
 const writePrompt = `You keep a playbook of what AI coding teams learned. Each entry reads: WHEN <situation>, DO <tactic>, BECAUSE <evidence>.
 Input: {"candidates": [{"id","team","date","topic","text"}], "existing": [{"id","topic","when","do"}]}.
 For each candidate return one object:
-- the same finding as an existing entry: {"candidate": "<id>", "same_as": "<existing id>", "note": "<short evidence with its numbers>"}
-- it contradicts an existing entry: as above plus "replace": true and the corrected "entry"
+- the same finding as an existing entry: {"candidate": "<id>", "same_as": "<existing entry id, never a candidate id>", "outcome": "hit|applied|same", "note": "<short evidence with its numbers>"}
+  outcome: "hit" = the problem happened again; "applied" = someone used the advice and it worked; "same" = only stated again.
+- it contradicts an existing entry: as above plus "replace": true and the corrected "entry" (same id)
 - new: {"candidate": "<id>", "entry": {"id": "<kebab-case, 3-64 chars>", "topic": "<TOPICS>", "kind": "tactic|trap|tool-fact|team-fact|owner-preference", "when": "<the situation>", "do": "<what to do>", "because": "<evidence: team, date, numbers from the text>", "keys": ["<2-6 lowercase words a session start can match: project, stack, tool>"]}}
 Leave out a candidate with no lasting lesson. Plain English, short sentences, no filler. Keep numbers, names and versions exact; never invent them.
 Reply with only a JSON array.
@@ -53,7 +57,7 @@ func (c ClaudeCLI) Pick(ctx context.Context, cs []Candidate) ([]Verdict, error) 
 		return nil, err
 	}
 	var vs []Verdict
-	if err := json.Unmarshal([]byte(jsonArray(out)), &vs); err != nil {
+	if err := decodeArray(out, &vs); err != nil {
 		return nil, fmt.Errorf("pick reply is not a JSON array: %w", err)
 	}
 	return vs, nil
@@ -90,7 +94,7 @@ func (c ClaudeCLI) Write(ctx context.Context, cs []Candidate, existing []Entry) 
 		return nil, err
 	}
 	var ops []Op
-	if err := json.Unmarshal([]byte(jsonArray(out)), &ops); err != nil {
+	if err := decodeArray(out, &ops); err != nil {
 		return nil, fmt.Errorf("write reply is not a JSON array: %w", err)
 	}
 	return ops, nil
@@ -103,22 +107,24 @@ func or(s, def string) string {
 	return s
 }
 
-// jsonArray cuts a reply down to its outer JSON array (it may come in a ```json fence).
-func jsonArray(s string) string {
-	s = strings.TrimSpace(s)
-	if i := strings.Index(s, "["); i > 0 {
-		s = s[i:]
+// decodeArray reads the first JSON array in a reply into v. Text around it (a
+// ```json fence, a remark after the array) is ignored.
+func decodeArray(s string, v any) error {
+	i := strings.Index(s, "[")
+	if i < 0 {
+		return errors.New("no [ in the reply")
 	}
-	if j := strings.LastIndex(s, "]"); j >= 0 && j < len(s)-1 {
-		s = s[:j+1]
-	}
-	return s
+	return json.NewDecoder(strings.NewReader(s[i:])).Decode(v)
 }
 
+// cliEnv is the child's environment: no API credentials, and no
+// CLAUDE_CONFIG_DIR, so claude -p always uses the personal Max login in
+// ~/.claude, never the work persona's enterprise login.
 func cliEnv() []string {
 	var env []string
 	for _, kv := range os.Environ() {
-		if strings.HasPrefix(kv, "ANTHROPIC_") || strings.HasPrefix(kv, "CLAUDE_CODE_USE_") {
+		if strings.HasPrefix(kv, "ANTHROPIC_") || strings.HasPrefix(kv, "CLAUDE_CODE_USE_") ||
+			strings.HasPrefix(kv, "CLAUDE_CONFIG_DIR=") {
 			continue
 		}
 		env = append(env, kv)
@@ -126,24 +132,82 @@ func cliEnv() []string {
 	return env
 }
 
+// CallTimeout ends one claude -p call that hangs.
+const CallTimeout = 10 * time.Minute
+
 func (c ClaudeCLI) run(ctx context.Context, model, prompt string, in []byte) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, CallTimeout)
+	defer cancel()
 	cmd := exec.CommandContext(ctx, or(c.Bin, "claude"), "-p", "--model", model,
 		"--tools", "", "--strict-mcp-config", "--disable-slash-commands",
 		"--no-session-persistence", "--setting-sources", "",
 		"--system-prompt", prompt, "--output-format", "stream-json", "--verbose")
 	cmd.Env = cliEnv()
 	cmd.Dir = os.TempDir()
+	// Its own process group, so a kill (bad key, timeout) also ends what it
+	// started; WaitDelay stops a leftover child from holding the pipes open.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = 2 * time.Second
 	cmd.Stdin = bytes.NewReader(in)
-	var out, errb bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &out, &errb
-	if err := cmd.Run(); err != nil {
+	var errb bytes.Buffer
+	cmd.Stderr = &errb
+	pipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return "", err
+	}
+	if err := cmd.Start(); err != nil {
+		return "", fmt.Errorf("claude -p: %w", err)
+	}
+	// The init line comes first: a call on an API key is killed there, before
+	// it can run up a bill.
+	var out bytes.Buffer
+	var badKey error
+	sc := bufio.NewScanner(pipe)
+	sc.Buffer(make([]byte, 1<<20), 64<<20)
+	for sc.Scan() {
+		line := sc.Bytes()
+		out.Write(line)
+		out.WriteByte('\n')
+		if badKey == nil {
+			if ks, ok := initKeySource(line); ok && ks != "none" {
+				badKey = fmt.Errorf("%w (apiKeySource %q)", ErrAPIKey, ks)
+				_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+				break
+			}
+		}
+	}
+	werr := cmd.Wait()
+	if badKey != nil {
+		return "", badKey
+	}
+	if werr != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("claude -p: no answer in %s", CallTimeout)
+		}
 		why := strings.TrimSpace(tailStr(errb.String(), 300))
 		if r := streamError(out.Bytes()); r != "" {
 			why = r
 		}
-		return "", fmt.Errorf("claude -p: %w: %s", err, why)
+		return "", fmt.Errorf("claude -p: %w: %s", werr, why)
 	}
 	return readStream(out.Bytes())
+}
+
+// initKeySource reads the apiKeySource of a stream-json init line.
+func initKeySource(line []byte) (string, bool) {
+	var m struct {
+		Type         string  `json:"type"`
+		Subtype      string  `json:"subtype"`
+		APIKeySource *string `json:"apiKeySource"`
+	}
+	if json.Unmarshal(line, &m) != nil || m.Type != "system" || m.Subtype != "init" {
+		return "", false
+	}
+	if m.APIKeySource == nil {
+		return "", true // an init line with no source cannot be checked: refused
+	}
+	return *m.APIKeySource, true
 }
 
 func streamError(out []byte) string {

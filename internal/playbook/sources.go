@@ -2,6 +2,7 @@ package playbook
 
 import (
 	"bufio"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,13 +25,15 @@ type ReadStats struct {
 	TxFiles, TxSkipped  int // transcripts parsed, and ones unchanged since the cursor
 	TxTexts, OwnerTurns int
 	TxCapped            int // replies past the per-session-day cap
+	TxBadLines          int // transcript lines that were not valid JSON or had no time
 	DocFiles            int
+	ShownBad            int // shown.log lines that could not be read (skipped)
 	Errors              []string
 }
 
 func (s ReadStats) String() string {
-	return fmt.Sprintf("bus %d files %d new lines; transcripts %d read %d unchanged, %d assistant texts (%d past the cap) %d owner turns; %d read errors",
-		s.BusFiles, s.BusLines, s.TxFiles, s.TxSkipped, s.TxTexts, s.TxCapped, s.OwnerTurns, len(s.Errors))
+	return fmt.Sprintf("bus %d files %d new lines; transcripts %d read %d unchanged %d bad lines, %d assistant texts (%d past the cap) %d owner turns; docs %d; %d bad shown.log lines; %d read errors",
+		s.BusFiles, s.BusLines, s.TxFiles, s.TxSkipped, s.TxBadLines, s.TxTexts, s.TxCapped, s.OwnerTurns, s.DocFiles, s.ShownBad, len(s.Errors))
 }
 
 // The rules. A strong phrase is enough; a weaker cause word needs a measurement
@@ -100,7 +103,7 @@ func excerpt(text string) string {
 
 // Gather reads every source past the cursor and returns the candidates, oldest first.
 // The cursor is moved in memory; the caller saves it.
-func Gather(cfg Config, cur *Cursor) ([]Candidate, ReadStats, error) {
+func Gather(cfg Config, cur *Cursor, now time.Time) ([]Candidate, ReadStats, error) {
 	var out []Candidate
 	var st ReadStats
 	for _, dir := range cfg.BusDirs {
@@ -112,13 +115,21 @@ func Gather(cfg Config, cur *Cursor) ([]Candidate, ReadStats, error) {
 			st.Errors = append(st.Errors, "no bus logs in "+dir)
 		}
 		for _, p := range logs {
-			cs, n, err := readBus(p, cfg.Since, cur)
+			cs, n, err := readBus(p, cfg.Since, cur, now)
 			st.BusFiles++
 			st.BusLines += n
 			if err != nil {
 				st.Errors = append(st.Errors, err.Error())
 			}
 			out = append(out, cs...)
+		}
+	}
+	// Seen ids are kept seenDays; a transcript resumed later must not offer its
+	// older replies again, so nothing older than that window is read.
+	txSince := cfg.Since
+	if !cur.LastRun.IsZero() {
+		if w := cur.LastRun.AddDate(0, 0, -(seenDays - 10)); w.After(txSince) {
+			txSince = w
 		}
 	}
 	if len(cfg.TxRoots) > 0 {
@@ -133,11 +144,11 @@ func Gather(cfg Config, cur *Cursor) ([]Candidate, ReadStats, error) {
 				continue
 			}
 			mod := info.ModTime()
-			if mod.Before(cfg.Since) || !mod.After(cur.Tx[p]) {
+			if mod.Before(txSince) || !mod.After(cur.Tx[p]) {
 				st.TxSkipped++
 				continue
 			}
-			cs, err := readTranscript(p, cfg.Since, cur, &st)
+			cs, err := readTranscript(p, txSince, cur, &st, now)
 			st.TxFiles++
 			if err != nil {
 				st.Errors = append(st.Errors, err.Error())
@@ -148,7 +159,7 @@ func Gather(cfg Config, cur *Cursor) ([]Candidate, ReadStats, error) {
 		}
 	}
 	for _, p := range cfg.DocFiles {
-		cs, err := readDoc(p, cur)
+		cs, err := readDoc(p, cur, now)
 		if err != nil {
 			st.Errors = append(st.Errors, err.Error())
 			continue
@@ -163,9 +174,18 @@ func Gather(cfg Config, cur *Cursor) ([]Candidate, ReadStats, error) {
 	return out, st, nil
 }
 
+// OpenFail is a FAIL line whose fix has not been seen yet; it waits in the
+// cursor up to failWait, so a fix posted after the night's read still pairs.
+type OpenFail struct {
+	Candidate Candidate `json:"candidate"`
+	Project   string    `json:"project"`
+}
+
+const failWait = 24 * time.Hour
+
 // readBus reads one log from the cursor's offset. A file shorter than the offset
 // was rewritten, so it is read again from the start.
-func readBus(path string, since time.Time, cur *Cursor) ([]Candidate, int, error) {
+func readBus(path string, since time.Time, cur *Cursor, now time.Time) ([]Candidate, int, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, 0, err
@@ -176,57 +196,70 @@ func readBus(path string, since time.Time, cur *Cursor) ([]Candidate, int, error
 		return nil, 0, err
 	}
 	off := cur.Bus[path]
+	st := cur.BusState[path] // dates undated lines from where the last read stopped
 	if off > info.Size() {
-		off = 0
+		off, st = 0, store.State{}
 	}
 	if _, err := f.Seek(off, io.SeekStart); err != nil {
 		return nil, 0, err
 	}
 	name := filepath.Base(path)
-	var lines []*store.Line
-	var offs []int64
-	st := &store.State{}
 	r := bufio.NewReaderSize(f, 1<<16)
 	pos := off
 	n := 0
+	var out []Candidate
+	var readErr error
+	open := cur.Fails[path]
 	for {
 		raw, err := r.ReadString('\n')
-		if err != nil && !strings.HasSuffix(raw, "\n") {
+		if err != nil && err != io.EOF {
+			readErr = fmt.Errorf("%s at byte %d: %w", path, pos, err)
+			break
+		}
+		if !strings.HasSuffix(raw, "\n") {
 			break // a half-written last line is read next time
 		}
 		at := pos
 		pos += int64(len(raw))
 		n++
-		if l := store.ParseLine(raw, st, false); l != nil {
-			lines = append(lines, l)
-			offs = append(offs, at)
+		l := store.ParseLine(raw, &st, false)
+		if l == nil {
+			continue
 		}
-	}
-	cur.Bus[path] = pos
-	var out []Candidate
-	for i, l := range lines {
 		t, err := time.ParseInLocation("2006-01-02T15:04", l.Date+"T"+l.Time, time.Local)
 		if err != nil || t.Before(since) {
 			continue
+		}
+		if l.Project == "playbook" && l.Role == "watch" {
+			continue // the watcher's own report line
+		}
+		// A line that names a fix closes the oldest open FAIL of its project.
+		if l.Type != "FAIL" && fixRe.MatchString(l.Text) {
+			for i, of := range open {
+				if of.Project == l.Project && t.Sub(of.Candidate.Time) <= failWait {
+					c := of.Candidate
+					c.Text = excerpt(c.Text + "\nTHEN " + l.Type + " " + l.Project + ":" + l.Role + " — " + l.Text)
+					out = append(out, c)
+					open = append(open[:i:i], open[i+1:]...)
+					break
+				}
+			}
 		}
 		team := l.Project
 		if team == "" {
 			team = strings.TrimSuffix(name, ".log")
 		}
-		c := Candidate{ID: fmt.Sprintf("bus:%s:%d", name, offs[i]), Source: "bus", Team: team, Time: t,
-			Ref: fmt.Sprintf("bus %s %sT%s", name, l.Date, l.Time), Text: l.Type + " " + l.Project + ":" + l.Role + " — " + l.Text}
+		c := Candidate{ID: fmt.Sprintf("bus:%s:%d", path, at), Source: "bus", Team: team, Time: t,
+			Ref: fmt.Sprintf("bus %s %sT%s @%d", name, l.Date, l.Time, at), Text: l.Type + " " + l.Project + ":" + l.Role + " — " + l.Text}
 		switch {
 		case l.Type == "LEARNED":
 			c.Why = "LEARNED line"
 		case l.Type == "CORRECTED" || l.Type == "CORRECTION":
 			c.Why = "correction"
 		case l.Type == "FAIL":
-			fix := pairFix(lines[i+1:], l, t)
-			if fix == nil {
-				continue
-			}
 			c.Why = "fail then fix"
-			c.Text += "\nTHEN " + fix.Type + " " + fix.Project + ":" + fix.Role + " — " + fix.Text
+			open = append(open, OpenFail{Candidate: c, Project: l.Project})
+			continue
 		case l.Type == "DECISION" && l.Project == "crius" && standardRe.MatchString(l.Text):
 			c.Why = "standard set by crius"
 		default:
@@ -237,37 +270,33 @@ func readBus(path string, since time.Time, cur *Cursor) ([]Candidate, int, error
 		c.Text = excerpt(c.Text)
 		out = append(out, c)
 	}
-	return out, n, nil
-}
-
-// pairFix finds the first later line from the same project, within a day, that names a fix.
-func pairFix(rest []*store.Line, fail *store.Line, at time.Time) *store.Line {
-	for _, l := range rest {
-		t, err := time.ParseInLocation("2006-01-02T15:04", l.Date+"T"+l.Time, time.Local)
-		if err != nil || t.Sub(at) > 24*time.Hour {
-			return nil
-		}
-		if l.Project == fail.Project && l.Type != "FAIL" && fixRe.MatchString(l.Text) {
-			return l
+	var keep []OpenFail
+	for _, of := range open {
+		if now.Sub(of.Candidate.Time) <= failWait {
+			keep = append(keep, of)
 		}
 	}
-	return nil
+	cur.Fails[path] = keep
+	cur.Bus[path] = pos
+	cur.BusState[path] = st
+	return out, n, readErr
 }
 
 // readTranscript picks findings from the assistant's text and corrections from
 // the owner's turns, skipping ones a past run already picked.
-func readTranscript(path string, since time.Time, cur *Cursor, st *ReadStats) ([]Candidate, error) {
+func readTranscript(path string, since time.Time, cur *Cursor, st *ReadStats, now time.Time) ([]Candidate, error) {
 	s, err := transcript.ParseFile(path)
 	if err != nil {
 		return nil, err
 	}
+	st.TxBadLines += s.BadLines + s.BadTimes
 	team := teamOf(s.Cwd)
 	var out []Candidate
 	add := func(id, source, why, text string, t time.Time) {
 		if t.Before(since) || cur.Seen[id] != "" {
 			return
 		}
-		cur.Seen[id] = t.Local().Format("2006-01-02")
+		cur.Seen[id] = now.Format("2006-01-02")
 		out = append(out, Candidate{ID: id, Source: source, Team: team, Time: t, Ref: path + "#" + strings.TrimPrefix(id, "tx:"),
 			Text: excerpt(text), Why: why})
 	}
@@ -295,7 +324,7 @@ func readTranscript(path string, since time.Time, cur *Cursor, st *ReadStats) ([
 		sort.SliceStable(rs, func(i, j int) bool { return rs[i].score > rs[j].score })
 		for i, r := range rs {
 			if i >= perSessionDay {
-				cur.Seen["tx:"+r.m.UUID] = d // ranked out: not offered again next night
+				cur.Seen["tx:"+r.m.UUID] = now.Format("2006-01-02") // ranked out: not offered again next night
 				st.TxCapped++
 				continue
 			}
@@ -335,31 +364,43 @@ func teamOf(cwd string) string {
 	return parts[0]
 }
 
-// Cursor is where the last run stopped: a byte offset per bus log, the mtime per
-// transcript, and the candidate ids already picked (kept 60 days).
+// Cursor is where the last run stopped: a byte offset and line-dating state per
+// bus log, open FAILs waiting for their fix, the mtime per transcript, and the
+// candidate ids already picked (dated by the day they were seen, kept seenDays).
 type Cursor struct {
-	Bus     map[string]int64     `json:"bus"`
-	Tx      map[string]time.Time `json:"tx"`
-	Seen    map[string]string    `json:"seen"`
-	Pending []Candidate          `json:"pending,omitempty"` // got no model answer; offered again next run
+	Bus      map[string]int64       `json:"bus"`
+	BusState map[string]store.State `json:"bus_state,omitempty"`
+	Fails    map[string][]OpenFail  `json:"fails,omitempty"`
+	Tx       map[string]time.Time   `json:"tx"`
+	Seen     map[string]string      `json:"seen"`
+	Pending  []Candidate            `json:"pending,omitempty"` // got no model answer; offered again next run
+	LastRun  time.Time              `json:"last_run,omitempty"`
 }
 
-const cursorFile = "cursor.json"
+const (
+	cursorFile = "cursor.json"
+	seenDays   = 60
+)
 
 func loadCursor(dir string) (*Cursor, error) {
-	c := &Cursor{Bus: map[string]int64{}, Tx: map[string]time.Time{}, Seen: map[string]string{}}
+	c := &Cursor{}
 	data, err := os.ReadFile(filepath.Join(dir, cursorFile))
-	if errors.Is(err, fs.ErrNotExist) {
-		return c, nil
-	}
-	if err != nil {
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}
-	if err := json.Unmarshal(data, c); err != nil {
-		return nil, fmt.Errorf("%s: %w", filepath.Join(dir, cursorFile), err)
+	if err == nil {
+		if err := json.Unmarshal(data, c); err != nil {
+			return nil, fmt.Errorf("%s: %w", filepath.Join(dir, cursorFile), err)
+		}
 	}
 	if c.Bus == nil {
 		c.Bus = map[string]int64{}
+	}
+	if c.BusState == nil {
+		c.BusState = map[string]store.State{}
+	}
+	if c.Fails == nil {
+		c.Fails = map[string][]OpenFail{}
 	}
 	if c.Tx == nil {
 		c.Tx = map[string]time.Time{}
@@ -370,8 +411,8 @@ func loadCursor(dir string) (*Cursor, error) {
 	return c, nil
 }
 
-func (c *Cursor) save(dir string) error {
-	cut := time.Now().AddDate(0, 0, -60).Format("2006-01-02")
+func (c *Cursor) save(dir string, now time.Time) error {
+	cut := now.AddDate(0, 0, -seenDays).Format("2006-01-02")
 	for id, d := range c.Seen {
 		if d < cut {
 			delete(c.Seen, id)
@@ -389,7 +430,7 @@ func (c *Cursor) save(dir string) error {
 
 // readDoc makes one candidate per paragraph of a lesson file (a heading goes
 // with the paragraph after it). Tables and short lines are left out.
-func readDoc(path string, cur *Cursor) ([]Candidate, error) {
+func readDoc(path string, cur *Cursor, now time.Time) ([]Candidate, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -412,11 +453,12 @@ func readDoc(path string, cur *Cursor) ([]Candidate, error) {
 		if heading != "" {
 			text = heading + "\n" + text
 		}
-		id := fmt.Sprintf("doc:%s:%d", name, start)
+		sum := sha256.Sum256([]byte(text))
+		id := fmt.Sprintf("doc:%s:%x", name, sum[:6]) // by content, so editing the file elsewhere does not re-seed it
 		if cur.Seen[id] != "" {
 			return
 		}
-		cur.Seen[id] = info.ModTime().Format("2006-01-02")
+		cur.Seen[id] = now.Format("2006-01-02")
 		out = append(out, Candidate{ID: id, Source: "doc", Team: team, Time: info.ModTime(),
 			Ref: fmt.Sprintf("%s:%d", path, start), Text: excerpt(text), Why: "seed"})
 	}

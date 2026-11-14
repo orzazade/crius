@@ -78,6 +78,9 @@ func run(args []string) error {
 		cfg.TxRoots = split(*tx)
 	} else {
 		roots, _ := filepath.Glob(filepath.Join(home, ".claude*", "projects"))
+		if len(roots) == 0 {
+			return alert(home, *post, fmt.Errorf("no transcript roots: nothing matches %s", filepath.Join(home, ".claude*", "projects")))
+		}
 		cfg.TxRoots = roots
 	}
 	if *since != "" {
@@ -87,40 +90,73 @@ func run(args []string) error {
 		}
 		cfg.Since = t
 	} else if _, err := os.Stat(filepath.Join(*state, "cursor.json")); errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("no cursor in %s yet: the first run needs -since", *state)
+		return alert(home, *post, fmt.Errorf("no cursor in %s yet: the first run needs -since", *state))
 	}
 	return finish(cfg, home, *state, *candOut, *post, *dry)
 }
 
-// finish runs, prints the report, and writes or posts its line.
+// finish runs, prints the report, and writes or posts its line. A run that
+// failed or is not healthy (read errors, failed batches, lost candidates)
+// posts an ALERT and exits non-zero, so it never looks like a quiet night.
 func finish(cfg playbook.Config, home, state, candOut, post string, dry bool) error {
 	start := time.Now()
 	res, err := playbook.Run(context.Background(), cfg, playbook.ClaudeCLI{})
-	if res != nil {
-		line := report(res, time.Since(start), err)
-		if !dry {
-			if werr := os.WriteFile(filepath.Join(state, "last-report.txt"), []byte(line+"\n"), 0o644); werr != nil && err == nil {
-				err = werr
-			}
-			if post != "" {
-				typ := "INFO"
-				if err != nil {
-					typ = "ALERT"
-				}
-				out, perr := exec.Command(filepath.Join(home, ".crius", "bin", "bus-post"), post, typ, "playbook:watch", "crius:lead", cut(line, 300)).CombinedOutput()
-				if perr != nil && err == nil {
-					err = fmt.Errorf("bus-post: %v: %s", perr, out)
-				}
-			}
+	if res == nil {
+		res = &playbook.Result{}
+	}
+	line := report(res, time.Since(start), err)
+	if err == nil && !dry && !res.Healthy() {
+		err = errors.New("unhealthy run: " + health(res))
+	}
+	if !dry {
+		if werr := os.MkdirAll(state, 0o755); werr != nil && err == nil {
+			err = werr
 		}
-		if candOut != "" {
-			data, _ := json.MarshalIndent(res.Candidates, "", " ")
-			if werr := os.WriteFile(candOut, data, 0o644); werr != nil && err == nil {
-				err = werr
+		if werr := os.WriteFile(filepath.Join(state, "last-report.txt"), []byte(line+"\n"), 0o644); werr != nil && err == nil {
+			err = werr
+		}
+		if post != "" {
+			typ := "INFO"
+			if err != nil {
+				typ = "ALERT"
+			}
+			out, perr := exec.Command(filepath.Join(home, ".crius", "bin", "bus-post"), post, typ, "playbook:watch", "crius:lead", cut(line, 300)).CombinedOutput()
+			if perr != nil && err == nil {
+				err = fmt.Errorf("bus-post: %v: %s", perr, out)
 			}
 		}
 	}
+	if candOut != "" {
+		data, _ := json.MarshalIndent(res.Candidates, "", " ")
+		if werr := os.WriteFile(candOut, data, 0o644); werr != nil && err == nil {
+			err = werr
+		}
+	}
 	return err
+}
+
+// health names what made a run unhealthy, or "ok".
+func health(res *playbook.Result) string {
+	var p []string
+	if n := len(res.Read.Errors); n > 0 {
+		p = append(p, fmt.Sprintf("%d read errors", n))
+	}
+	if n := len(res.Failed); n > 0 {
+		p = append(p, fmt.Sprintf("%d failed model batches (parked)", n))
+	}
+	if n := len(res.Dropped); n > 0 {
+		p = append(p, fmt.Sprintf("%d answers dropped", n))
+	}
+	if res.Lost > 0 {
+		p = append(p, fmt.Sprintf("%d candidates lost to dropped.jsonl", res.Lost))
+	}
+	if res.Read.ShownBad > 0 {
+		p = append(p, fmt.Sprintf("%d bad shown.log lines", res.Read.ShownBad))
+	}
+	if len(p) == 0 {
+		return "ok"
+	}
+	return strings.Join(p, ", ")
 }
 
 // report prints the run and returns its one line for Crius's 09:00/18:00 report.
@@ -134,8 +170,11 @@ func report(res *playbook.Result, took time.Duration, runErr error) string {
 		fmt.Printf("  read error: %s\n", e)
 	}
 	fmt.Printf("candidates: %d %v\n", len(res.Candidates), why)
-	fmt.Printf("kept: %d; new entries: %d; evidence added: %d; dropped answers: %d\n",
-		res.Kept, res.New, res.Evidence, len(res.Dropped))
+	fmt.Printf("kept: %d; new entries: %d; evidence added: %d; same line again: %d; left out by the writer: %d\n",
+		res.Kept, res.New, res.Evidence, res.Duplicates, res.Unwritten)
+	for _, f := range res.Failed {
+		fmt.Printf("  failed: %s\n", f)
+	}
 	for _, d := range res.Dropped {
 		fmt.Printf("  dropped: %s\n", d)
 	}
@@ -146,15 +185,15 @@ func report(res *playbook.Result, took time.Duration, runErr error) string {
 			fmt.Printf("  use %s: shown %d, followed %d %v, repeats %d\n", u.ID, u.Shown, u.Followed, u.Teams, u.Repeats)
 		}
 	}
-	line := fmt.Sprintf("playbook %s: +%d entries, +%d evidence, %d live; promote %s; needs a check %s; archived %d; calls haiku %d sonnet %d",
-		time.Now().Format("2006-01-02"), res.New, res.Evidence, len(r.Uses), list(r.Promote), list(r.NeedsCheck), len(r.Archived), res.Calls.Pick, res.Calls.Write)
+	line := fmt.Sprintf("playbook %s: +%d entries, +%d evidence, %d live; promote %s; needs a check %s; archived %d; calls haiku %d sonnet %d; health %s",
+		time.Now().Format("2006-01-02"), res.New, res.Evidence, len(r.Uses), list(r.Promote), list(r.NeedsCheck), len(r.Archived),
+		res.Calls.Pick, res.Calls.Write, health(res))
 	if runErr != nil {
 		line += "; FAILED: " + runErr.Error()
 	}
 	fmt.Println(line)
 	return line
 }
-
 func list(ids []string) string {
 	if len(ids) == 0 {
 		return "none"
@@ -218,4 +257,16 @@ func show(args []string) {
 	if err := playbook.LogShown(*state, in.SessionID, *cwd, es, time.Now()); err != nil {
 		fmt.Fprintln(os.Stderr, "playbook show:", err)
 	}
+}
+
+// alert posts a run that could not start as an ALERT, then returns its error.
+func alert(home, post string, err error) error {
+	if post == "" {
+		return err
+	}
+	line := cut("playbook "+time.Now().Format("2006-01-02")+": FAILED before reading: "+err.Error(), 300)
+	if out, perr := exec.Command(filepath.Join(home, ".crius", "bin", "bus-post"), post, "ALERT", "playbook:watch", "crius:lead", line).CombinedOutput(); perr != nil {
+		return fmt.Errorf("%w; and bus-post failed: %v: %s", err, perr, out)
+	}
+	return err
 }

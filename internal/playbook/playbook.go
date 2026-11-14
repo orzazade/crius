@@ -6,9 +6,15 @@ package playbook
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // Candidate is one piece of the record a rule picked as a possible finding.
@@ -39,6 +45,7 @@ type Op struct {
 	SameAs    string `json:"same_as,omitempty"`
 	Replace   bool   `json:"replace,omitempty"`
 	Note      string `json:"note,omitempty"`
+	Outcome   string `json:"outcome,omitempty"` // hit, applied or same
 	Entry     Entry  `json:"entry"`
 }
 
@@ -68,11 +75,21 @@ type Result struct {
 	Kept       int
 	New        int
 	Evidence   int
+	Duplicates int      // answers that named a source line the entry already had
+	Unwritten  int      // kept candidates the writing model left out (no lasting lesson)
 	Dropped    []string // model answers that could not be applied, with the reason
 	Failed     []string // model batches that failed; their candidates wait in the cursor for the next run
+	Lost       int      // candidates given up after maxTries; kept in dropped.jsonl
 	Calls      Calls
 	Read       ReadStats
 	Review     Review
+}
+
+// Healthy says the run read and answered everything: no read error, no failed
+// batch, no answer that could not be applied. A night that is not healthy is
+// reported as an ALERT, never as a quiet night.
+func (r *Result) Healthy() bool {
+	return len(r.Read.Errors) == 0 && len(r.Failed) == 0 && len(r.Dropped) == 0 && r.Lost == 0 && r.Read.ShownBad == 0
 }
 
 const (
@@ -83,15 +100,29 @@ const (
 // Run reads everything new since the cursor (and not before cfg.Since), picks
 // candidates, asks the model, and saves the book, its topic files and the cursor.
 // The cursor moves only after the book is saved, so a failed run is read again.
+// One run at a time: a second one waits for the lock in cfg.StateDir.
 func Run(ctx context.Context, cfg Config, m Model) (*Result, error) {
+	unlock, err := lock(cfg.StateDir)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	now := time.Now()
+	today := now.Format("2006-01-02")
 	cur, err := loadCursor(cfg.StateDir)
 	if err != nil {
 		return nil, err
 	}
-	cands, stats, err := Gather(cfg, cur)
+	// Read before any model call: a problem here must not cost the night's calls.
+	shown, shownBad, err := LoadShown(cfg.StateDir)
 	if err != nil {
 		return nil, err
 	}
+	cands, stats, err := Gather(cfg, cur, now)
+	if err != nil {
+		return nil, err
+	}
+	stats.ShownBad = shownBad
 	// Candidates a past run could not get an answer for come first.
 	cands = append(cur.Pending, cands...)
 	cur.Pending = nil
@@ -107,12 +138,13 @@ func Run(ctx context.Context, cfg Config, m Model) (*Result, error) {
 	for _, c := range cands {
 		byID[c.ID] = c
 	}
-	// retry parks a batch for the next run; after maxTries it is dropped, loudly.
+	var lost []Candidate
+	// retry parks a batch for the next run; after maxTries it goes to dropped.jsonl.
 	retry := func(batch []Candidate, why error) {
 		res.Failed = append(res.Failed, why.Error())
 		for _, c := range batch {
 			if c.Tries++; c.Tries >= maxTries {
-				res.Dropped = append(res.Dropped, fmt.Sprintf("%s: no answer after %d tries: %v", c.ID, c.Tries, why))
+				lost = append(lost, c)
 				continue
 			}
 			cur.Pending = append(cur.Pending, c)
@@ -160,31 +192,85 @@ func Run(ctx context.Context, cfg Config, m Model) (*Result, error) {
 			retry(batch, fmt.Errorf("write: %w", err))
 			continue
 		}
+		inBatch := map[string]bool{}
+		for _, c := range batch {
+			inBatch[c.ID] = true
+		}
+		// New entries first, so an answer that points at another candidate of
+		// the batch ("same_as": "<candidate id>") finds the entry made from it.
+		sort.SliceStable(ops, func(i, j int) bool { return ops[i].SameAs == "" && ops[j].SameAs != "" })
+		made := map[string]string{} // candidate id -> entry id made from it
+		answered := map[string]bool{}
 		for _, op := range ops {
 			c, ok := byID[op.Candidate]
-			if !ok {
+			if !ok || !inBatch[op.Candidate] {
 				res.Dropped = append(res.Dropped, fmt.Sprintf("%s: not a candidate of this batch", op.Candidate))
 				continue
 			}
-			switch added, err := book.Apply(op, c); {
+			answered[op.Candidate] = true
+			if id, ok := made[op.SameAs]; ok {
+				op.SameAs = id
+			}
+			switch got, err := book.Apply(op, c, today); {
 			case err != nil:
 				res.Dropped = append(res.Dropped, fmt.Sprintf("%s: %v", op.Candidate, err))
-			case added:
+			case got == AddedEntry:
 				res.New++
-			default:
+				made[op.Candidate] = op.Entry.ID
+			case got == AddedEvidence:
 				res.Evidence++
+			default:
+				res.Duplicates++
 			}
 		}
+		res.Unwritten += len(batch) - len(answered)
 	}
-	shown, err := LoadShown(cfg.StateDir)
-	if err != nil {
-		return res, err
-	}
-	res.Review = ReviewBook(book, shown, time.Now())
+	res.Review = ReviewBook(book, shown, now)
 	if err := book.Save(cfg.BookDir); err != nil {
 		return res, err
 	}
-	return res, cur.save(cfg.StateDir)
+	if err := saveLost(cfg.StateDir, lost); err != nil {
+		return res, err
+	}
+	res.Lost = len(lost)
+	cur.LastRun = now
+	return res, cur.save(cfg.StateDir, now)
+}
+
+// saveLost appends candidates that got no answer after maxTries to
+// dropped.jsonl, so they can be read or fed back by hand.
+func saveLost(dir string, cs []Candidate) error {
+	if len(cs) == 0 {
+		return nil
+	}
+	f, err := os.OpenFile(filepath.Join(dir, "dropped.jsonl"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	enc := json.NewEncoder(f)
+	for _, c := range cs {
+		if err := enc.Encode(c); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// lock holds dir/run.lock (an OS lock, so a crashed run leaves none behind).
+func lock(dir string) (func(), error) {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(filepath.Join(dir, "run.lock"), os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("lock %s: %w", f.Name(), err)
+	}
+	return func() { _ = unix.Flock(int(f.Fd()), unix.LOCK_UN); f.Close() }, nil
 }
 
 // maxTries is how many runs a candidate may go unanswered before it is dropped.
