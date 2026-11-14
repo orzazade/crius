@@ -117,3 +117,42 @@ func TestProjectMapLongestPrefix(t *testing.T) {
 		}
 	}
 }
+
+// Review 5: rsync --delete into a book folder like "/" or "~" wipes the host.
+func TestLoadHostsRefusesAWideBookFolder(t *testing.T) {
+	for _, book := range []string{"/", ".", "~", "/home", "/home/crius", "relative/playbook", "/playbook"} {
+		p := filepath.Join(t.TempDir(), "hosts.json")
+		_ = os.WriteFile(p, []byte(`[{"name":"h","target":"u@h","ssh":["ssh"],"book":"`+book+`"}]`), 0o644)
+		if _, err := LoadHosts(p); err == nil || !strings.Contains(err.Error(), "folder named playbook") {
+			t.Errorf("book %q: err %v, want a refusal", book, err)
+		}
+	}
+	p := filepath.Join(t.TempDir(), "hosts.json")
+	_ = os.WriteFile(p, []byte(`[{"name":"h","target":"u@h","ssh":["ssh"],"book":"/home/crius/.crius/playbook"}]`), 0o644)
+	if _, err := LoadHosts(p); err != nil {
+		t.Fatalf("a good book folder was refused: %v", err)
+	}
+}
+
+// Review 5: a cached copy whose head no longer matches the host is sent again.
+func TestHostPullRepairsAReplacedFile(t *testing.T) {
+	remote := t.TempDir()
+	root := filepath.Join(remote, "projects")
+	sess := remoteSession(t, root, "Root cause: aaaa.")
+	cache := t.TempDir()
+	h := Host{Name: "h", Target: "x", SSH: []string{fakeSSH(t, false)}, Roots: []string{root}, Rsync: rsyncBin(t)}
+	if _, _, err := pull(context.Background(), h, cache); err != nil {
+		t.Fatal(err)
+	}
+	writeSession(t, sess, []string{"Root cause: bbbb, and a longer line than before."})
+	later := time.Now().Add(time.Minute)
+	_ = os.Chtimes(sess, later, later)
+	if _, _, err := pull(context.Background(), h, cache); err != nil {
+		t.Fatal(err)
+	}
+	want, _ := os.ReadFile(sess)
+	got, _ := os.ReadFile(filepath.Join(cache, "h", "0", "-Users-x-Projects-scifi-shop", "r1.jsonl"))
+	if string(got) != string(want) {
+		t.Fatalf("cache not repaired:\n%s\nwant\n%s", got, want)
+	}
+}

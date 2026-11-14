@@ -265,10 +265,11 @@ func Run(ctx context.Context, cfg Config, m Model) (*Result, error) {
 	if err := cur.save(cfg.StateDir, now); err != nil {
 		return res, err
 	}
-	// The book goes to each host after it is saved here, so a failed copy
-	// leaves the host on last night's book, not a half one.
+	// The book goes to each host after it is saved here. A host that could not
+	// be read is not written either: it is down, and a push would wait out
+	// another timeout.
 	for i, h := range cfg.Hosts {
-		if h.Book == "" {
+		if h.Book == "" || res.Hosts[i].Err != "" {
 			continue
 		}
 		if err := push(ctx, h, cfg.BookDir); err != nil {

@@ -55,11 +55,28 @@ func LoadHosts(path string) ([]Host, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	for _, h := range hs {
-		if h.Name == "" || h.Target == "" || len(h.SSH) == 0 {
+		if h.Name == "" || h.Target == "" || len(h.SSH) == 0 || strings.HasPrefix(h.Target, "-") {
 			return nil, fmt.Errorf("%s: host %q needs name, target and ssh", path, h.Name)
+		}
+		if err := bookPathOK(h.Book); err != nil {
+			return nil, fmt.Errorf("%s: host %q: %w", path, h.Name, err)
 		}
 	}
 	return hs, nil
+}
+
+// bookPathOK refuses a book folder that rsync --delete could wipe more than
+// the book in: it must be absolute, at least two parts deep, and end in
+// "playbook".
+func bookPathOK(p string) error {
+	if p == "" {
+		return nil
+	}
+	c := filepath.Clean(p)
+	if !filepath.IsAbs(c) || strings.Count(c, "/") < 2 || filepath.Base(c) != "playbook" {
+		return fmt.Errorf("book %q must be an absolute folder named playbook, two or more levels deep", p)
+	}
+	return nil
 }
 
 func shq(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
@@ -85,6 +102,7 @@ func run(ctx context.Context, stdin []byte, name string, args ...string) ([]byte
 	ctx, cancel := context.WithTimeout(ctx, hostTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.WaitDelay = 10 * time.Second // an ssh child holding the pipe must not outlive the kill
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
 	}
@@ -107,7 +125,8 @@ func runOut(name string, args ...string) (string, error) {
 
 // pull copies the host's transcripts changed in the last pullDays into
 // cache/<name>/<root index>/. Transcripts only grow, so rsync appends to the
-// cached copy (--append) and never sends a file again in full. It returns the
+// cached copy; --append-verify sends a file again in full when the cached head
+// no longer matches (a file replaced on the host). It returns the
 // cache folder of the host and how many files came.
 func pull(ctx context.Context, h Host, cache string) (string, int, error) {
 	dst := filepath.Join(cache, h.Name)
@@ -125,7 +144,7 @@ func pull(ctx context.Context, h Host, cache string) (string, int, error) {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return dst, files, err
 		}
-		out, err := run(ctx, list, h.rsync(), "-rtL", "--append", "--files-from=-", "--out-format=%n",
+		out, err := run(ctx, list, h.rsync(), "-rtL", "--append-verify", "--files-from=-", "--out-format=%n",
 			"-e", h.remoteShell(), h.Target+":"+strings.TrimRight(root, "/")+"/", d+"/")
 		if err != nil {
 			return dst, files, fmt.Errorf("pull %s: %w", root, err)

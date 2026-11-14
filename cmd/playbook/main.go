@@ -214,6 +214,9 @@ func report(res *playbook.Result, took time.Duration, runErr error) string {
 	line := fmt.Sprintf("playbook %s: +%d entries, +%d evidence, %d live; promote %s; needs a check %s; archived %d; calls haiku %d sonnet %d; health %s",
 		time.Now().Format("2006-01-02"), res.New, res.Evidence, len(r.Uses), list(r.Promote), list(r.NeedsCheck), len(r.Archived),
 		res.Calls.Pick, res.Calls.Write, health(res))
+	if n := len(res.Read.Unmapped); n > 0 {
+		line += fmt.Sprintf("; unmapped folders %d", n)
+	}
 	if hl := playbook.HostLine(res.Hosts); hl != "" {
 		line += "; " + hl
 	}

@@ -27,13 +27,32 @@ type ReadStats struct {
 	TxCapped            int // replies past the per-session-day cap
 	TxBadLines          int // transcript lines that were not valid JSON or had no time
 	DocFiles            int
-	ShownBad            int // shown.log lines that could not be read (skipped)
+	ShownBad            int            // shown.log lines that could not be read (skipped)
+	Unmapped            map[string]int // session folders no projects.toml project claims -> sessions
 	Errors              []string
 }
 
 func (s ReadStats) String() string {
-	return fmt.Sprintf("bus %d files %d new lines; transcripts %d read %d unchanged %d bad lines, %d assistant texts (%d past the cap) %d owner turns; docs %d; %d bad shown.log lines; %d read errors",
+	line := fmt.Sprintf("bus %d files %d new lines; transcripts %d read %d unchanged %d bad lines, %d assistant texts (%d past the cap) %d owner turns; docs %d; %d bad shown.log lines; %d read errors",
 		s.BusFiles, s.BusLines, s.TxFiles, s.TxSkipped, s.TxBadLines, s.TxTexts, s.TxCapped, s.OwnerTurns, s.DocFiles, s.ShownBad, len(s.Errors))
+	if len(s.Unmapped) > 0 {
+		dirs := make([]string, 0, len(s.Unmapped))
+		for d := range s.Unmapped {
+			dirs = append(dirs, d)
+		}
+		sort.Slice(dirs, func(i, j int) bool {
+			if s.Unmapped[dirs[i]] != s.Unmapped[dirs[j]] {
+				return s.Unmapped[dirs[i]] > s.Unmapped[dirs[j]]
+			}
+			return dirs[i] < dirs[j]
+		})
+		more := ""
+		if len(dirs) > 3 {
+			dirs, more = dirs[:3], ", …"
+		}
+		line += fmt.Sprintf("; unmapped folders: %d (%s%s)", len(s.Unmapped), strings.Join(dirs, ", "), more)
+	}
+	return line
 }
 
 // The rules. A strong phrase is enough; a weaker cause word needs a measurement
@@ -292,7 +311,14 @@ func readTranscript(path string, since time.Time, cur *Cursor, st *ReadStats, no
 	st.TxBadLines += s.BadLines + s.BadTimes
 	team := teamOf(s.Cwd)
 	if projectOf != nil {
-		if p := projectOf(s.Cwd); p != "" {
+		p := projectOf(s.Cwd)
+		if p == "" && s.Cwd != "" {
+			if st.Unmapped == nil {
+				st.Unmapped = map[string]int{}
+			}
+			st.Unmapped[s.Cwd]++
+		}
+		if p != "" {
 			team = p // the projects.toml slug, as on the bus (the bus name, not the repo folder)
 		}
 	}
