@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 // Topics are the files of the playbook. A model answer with another topic is
@@ -128,7 +129,7 @@ func (b *Book) Apply(op Op, c Candidate, today string) (Applied, error) {
 			}
 		}
 		if op.Replace {
-			fix := op.Entry
+			fix := tidy(op.Entry)
 			fix.ID = e.ID // the corrected entry keeps its id, whatever the model wrote there
 			if err := check(fix); err != nil {
 				return 0, err
@@ -142,7 +143,7 @@ func (b *Book) Apply(op Op, c Candidate, today string) (Applied, error) {
 		e.Evidence = append(e.Evidence, ev)
 		return AddedEvidence, nil
 	}
-	e := op.Entry
+	e := tidy(op.Entry)
 	if err := check(e); err != nil {
 		return 0, err
 	}
@@ -154,6 +155,39 @@ func (b *Book) Apply(op Op, c Candidate, today string) (Applied, error) {
 	e.Created, e.Added = ev.Date, today
 	b.Entries = append(b.Entries, e)
 	return AddedEntry, nil
+}
+
+// maxField caps each text field of an entry. Entry text is printed into every
+// matching session start and comes from records that may quote outside text,
+// so it is kept to one short line with no tags.
+const maxField = 300
+
+var keyRe = regexp.MustCompile(`^[a-z0-9][a-z0-9.+-]+$`)
+
+// clean makes s one line of at most maxField bytes with no < or >.
+func clean(s string) string {
+	s = strings.Join(strings.Fields(strings.NewReplacer("<", "", ">", "").Replace(s)), " ")
+	if len(s) <= maxField {
+		return s
+	}
+	cut := maxField - len("…")
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…"
+}
+
+// tidy cleans an entry's text and keeps only keys that can be words of a folder.
+func tidy(e Entry) Entry {
+	e.When, e.Do, e.Because = clean(e.When), clean(e.Do), clean(e.Because)
+	var keys []string
+	for _, k := range e.Keys {
+		if k = strings.ToLower(strings.TrimSpace(k)); keyRe.MatchString(k) {
+			keys = append(keys, k)
+		}
+	}
+	e.Keys = keys
+	return e
 }
 
 func check(e Entry) error {

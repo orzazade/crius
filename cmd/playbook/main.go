@@ -11,7 +11,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -89,8 +88,8 @@ func run(args []string) error {
 			return fmt.Errorf("-since: %w", err)
 		}
 		cfg.Since = t
-	} else if _, err := os.Stat(filepath.Join(*state, "cursor.json")); errors.Is(err, fs.ErrNotExist) {
-		return alert(home, *post, fmt.Errorf("no cursor in %s yet: the first run needs -since", *state))
+	} else if ok, err := playbook.Started(*state); err != nil || !ok {
+		return alert(home, *post, fmt.Errorf("no read position in %s yet (%v): the first run needs -since", *state, err))
 	}
 	return finish(cfg, home, *state, *candOut, *post, *dry)
 }

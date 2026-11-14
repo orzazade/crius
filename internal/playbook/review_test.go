@@ -52,7 +52,7 @@ func TestShownLogRoundTrip(t *testing.T) {
 	if err := LogShown(dir, "s1", "/x", []Entry{{ID: "a"}, {ID: "b"}}, now); err != nil {
 		t.Fatal(err)
 	}
-	got, bad, err := LoadShown(dir)
+	got, bad, _, err := LoadShown(dir, 0)
 	if err != nil || bad != 0 || len(got) != 2 || got[1].ID != "b" || got[0].Session != "s1" {
 		t.Fatalf("LoadShown = %+v, %v", got, err)
 	}
@@ -60,7 +60,7 @@ func TestShownLogRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A torn line is skipped and counted, never a reason to stop the night.
-	if got, bad, err := LoadShown(dir); err != nil || bad != 1 || len(got) != 0 {
+	if got, bad, _, err := LoadShown(dir, 0); err != nil || bad != 1 || len(got) != 0 {
 		t.Fatalf("LoadShown on a torn line = %v, %d bad, %v; want no lines, 1 bad, no error", got, bad, err)
 	}
 }

@@ -332,6 +332,9 @@ func readTranscript(path string, since time.Time, cur *Cursor, st *ReadStats, no
 		}
 	}
 	for _, t := range s.Turns {
+		if s.Headless {
+			break // a scripted `claude -p` prompt is a brief, not the owner correcting the agent
+		}
 		st.OwnerTurns++
 		if correctionRe.MatchString(t.Text) {
 			text := t.Text
@@ -368,13 +371,14 @@ func teamOf(cwd string) string {
 // bus log, open FAILs waiting for their fix, the mtime per transcript, and the
 // candidate ids already picked (dated by the day they were seen, kept seenDays).
 type Cursor struct {
-	Bus      map[string]int64       `json:"bus"`
-	BusState map[string]store.State `json:"bus_state,omitempty"`
-	Fails    map[string][]OpenFail  `json:"fails,omitempty"`
-	Tx       map[string]time.Time   `json:"tx"`
-	Seen     map[string]string      `json:"seen"`
-	Pending  []Candidate            `json:"pending,omitempty"` // got no model answer; offered again next run
-	LastRun  time.Time              `json:"last_run,omitempty"`
+	Bus          map[string]int64       `json:"bus"`
+	BusState     map[string]store.State `json:"bus_state,omitempty"`
+	Fails        map[string][]OpenFail  `json:"fails,omitempty"`
+	Tx           map[string]time.Time   `json:"tx"`
+	Seen         map[string]string      `json:"seen"`
+	Pending      []Candidate            `json:"pending,omitempty"` // got no model answer; offered again next run
+	LastRun      time.Time              `json:"last_run,omitempty"`
+	ShownChecked int64                  `json:"shown_checked,omitempty"` // shown.log bytes whose bad lines were already reported
 }
 
 const (
@@ -478,4 +482,18 @@ func readDoc(path string, cur *Cursor, now time.Time) ([]Candidate, error) {
 	}
 	flush()
 	return out, nil
+}
+
+// Started reports whether the nightly cursor holds a read position in the bus
+// or the transcripts. A seed run writes a cursor too, but reads neither, so the
+// first nightly run after a seed still needs its -since day.
+func Started(dir string) (bool, error) {
+	if _, err := os.Stat(filepath.Join(dir, cursorFile)); errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	c, err := loadCursor(dir)
+	if err != nil {
+		return false, err
+	}
+	return len(c.Bus) > 0 || len(c.Tx) > 0, nil
 }

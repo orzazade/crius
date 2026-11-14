@@ -3,6 +3,7 @@ package playbook
 import (
 	"bufio"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -19,34 +20,41 @@ type Shown struct {
 }
 
 // LoadShown reads dir/shown.log; no file is no lines. A line that cannot be
-// read (a torn append) is skipped and counted, so one bad line never stops the
-// nightly run; the count goes into the report.
-func LoadShown(dir string) ([]Shown, int, error) {
+// read (a torn append) is skipped, so one bad line never stops the nightly run.
+// Bad lines are counted only from byte from on (where the last run stopped), so
+// each one is reported on one night, not every night after. end is the byte
+// after the last whole line; a last line with no newline yet may still be being
+// written, so it is neither read nor counted.
+func LoadShown(dir string, from int64) (out []Shown, bad int, end int64, err error) {
 	f, err := os.Open(filepath.Join(dir, "shown.log"))
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil, 0, nil
+		return nil, 0, 0, nil
 	}
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, 0, err
 	}
 	defer f.Close()
-	var out []Shown
-	bad := 0
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		p := strings.Split(sc.Text(), "\t")
-		if len(p) < 3 || p[2] == "" {
-			bad++
-			continue
+	r := bufio.NewReader(f)
+	for {
+		line, rerr := r.ReadString('\n')
+		if rerr != nil {
+			if errors.Is(rerr, io.EOF) {
+				return out, bad, end, nil
+			}
+			return out, bad, end, rerr
 		}
-		t, err := time.Parse(time.RFC3339, p[0])
-		if err != nil {
-			bad++
+		at := end
+		end += int64(len(line))
+		p := strings.Split(strings.TrimSuffix(line, "\n"), "\t")
+		t, terr := time.Parse(time.RFC3339, p[0])
+		if len(p) < 3 || p[2] == "" || terr != nil {
+			if at >= from {
+				bad++
+			}
 			continue
 		}
 		out = append(out, Shown{Time: t, Session: p[1], ID: p[2]})
 	}
-	return out, bad, sc.Err()
 }
 
 // Use is what the record says about one entry.
@@ -98,6 +106,9 @@ func ReviewBook(b *Book, shown []Shown, now time.Time) Review {
 		}
 		if d > last[s.ID] {
 			last[s.ID] = d
+		}
+		if s.Session == "" {
+			continue // a showing with no session (show -cwd) ties no sighting to it
 		}
 		if inSession[s.ID] == nil {
 			inSession[s.ID] = map[string]string{}

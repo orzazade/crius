@@ -114,7 +114,7 @@ func Run(ctx context.Context, cfg Config, m Model) (*Result, error) {
 		return nil, err
 	}
 	// Read before any model call: a problem here must not cost the night's calls.
-	shown, shownBad, err := LoadShown(cfg.StateDir)
+	shown, shownBad, shownEnd, err := LoadShown(cfg.StateDir, cur.ShownChecked)
 	if err != nil {
 		return nil, err
 	}
@@ -214,6 +214,7 @@ func Run(ctx context.Context, cfg Config, m Model) (*Result, error) {
 			switch got, err := book.Apply(op, c, today); {
 			case err != nil:
 				res.Dropped = append(res.Dropped, fmt.Sprintf("%s: %v", op.Candidate, err))
+				lost = append(lost, c) // kept in dropped.jsonl, never only in the log
 			case got == AddedEntry:
 				res.New++
 				made[op.Candidate] = op.Entry.ID
@@ -234,6 +235,7 @@ func Run(ctx context.Context, cfg Config, m Model) (*Result, error) {
 	}
 	res.Lost = len(lost)
 	cur.LastRun = now
+	cur.ShownChecked = shownEnd
 	return res, cur.save(cfg.StateDir, now)
 }
 

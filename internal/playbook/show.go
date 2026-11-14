@@ -19,8 +19,14 @@ var wordRe = regexp.MustCompile(`[a-z0-9]+`)
 // the stacks its files name (go.mod, package.json deps, *.csproj, charts).
 func Words(cwd string) map[string]bool {
 	w := map[string]bool{}
+	skip := map[string]bool{"users": true, "projects": true}
+	if home, err := os.UserHomeDir(); err == nil {
+		for _, p := range wordRe.FindAllString(strings.ToLower(home), -1) {
+			skip[p] = true // in every path, so it would match every session
+		}
+	}
 	for _, p := range wordRe.FindAllString(strings.ToLower(cwd), -1) {
-		if len(p) > 2 && p != "users" && p != "projects" {
+		if len(p) > 2 && !skip[p] {
 			w[p] = true
 		}
 	}
@@ -96,7 +102,7 @@ func ShowText(es []Entry, bookDir string) string {
 	var s strings.Builder
 	fmt.Fprintf(&s, "Playbook (what the teams learned; full list in %s/SKILL.md):\n", bookDir)
 	for _, e := range es {
-		fmt.Fprintf(&s, "- [%s] when %s: %s (because %s)\n", e.ID, e.When, e.Do, e.Because)
+		fmt.Fprintf(&s, "- [%s] when %s: %s (because %s)\n", clean(e.ID), clean(e.When), clean(e.Do), clean(e.Because))
 	}
 	return s.String()
 }
