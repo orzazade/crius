@@ -113,6 +113,9 @@ var (
 	partRe = regexp.MustCompile(`\bPARTIAL\b`) // capitals only: "partial refunds" is product text
 )
 
+// TextTokens are the words dispatch reads from a DONE text; bus-post carries them past the cut of a text over the limit.
+var TextTokens = []*regexp.Regexp{prRe, partRe}
+
 type post struct{ typ, to, text string }
 
 type spawn struct{ id, role, prompt string }

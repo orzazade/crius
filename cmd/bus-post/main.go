@@ -14,6 +14,9 @@
 // walked on the running app, no test run) has `walk: N` instead of `pass:`, and N `shot: <path>` lines, each an existing,
 // non-empty screenshot.
 //
+// A text over the bus limit (300 runes) is posted cut, with the whole text in a note next to the bus log; a VERIFIED,
+// NEED-OWNER or LEARNED is refused instead (overflow.go has the rules).
+//
 // A recipient name with a project part is lower case: a line to quotes:P5 went unread for 2 h (quotes:lead 04:58).
 //
 // A project's table in ~/.crius/bus.toml adds the guards in guards.go: hex words must be commits, and one live run at a
@@ -48,6 +51,7 @@ import (
 	"syscall"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/orzazade/crius/internal/ownerqueue"
 	"github.com/orzazade/crius/internal/redact"
@@ -147,7 +151,36 @@ func postLine(args []string, now time.Time, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "bus-post: refused: %v\n", err)
 		return rcOffClock
 	}
-	line, err := store.FormatLine(typ, project, role, text, to, stamp)
+	// A text over the limit is posted cut, with the whole text in a note (overflow.go); every check below reads the
+	// whole text.
+	posted, note, n := text, "", utf8.RuneCountInString(text)
+	if n > store.MaxLen {
+		if why, strict := strictTypes[typ]; strict {
+			return refuse(stderr, "text is %d chars; the limit is %d. A %s is never cut (%s): shorten it",
+				n, store.MaxLen, typ, why)
+		}
+		if strings.ContainsAny(text, "\n\r") {
+			return refuse(stderr, "one line only")
+		}
+		if _, err := os.Stat(log); errors.Is(err, os.ErrNotExist) { // before the notes folder: a typo makes none
+			return refuse(stderr, "no bus log at %s", log)
+		}
+		var err error
+		if note, err = newNote(filepath.Join(filepath.Dir(log), "notes"), logProject(log), text, stamp); err != nil {
+			fmt.Fprintln(stderr, "bus-post: write failed: the note for a text over the limit:", err)
+			return 1
+		}
+		defer func() {
+			if note != "" { // not posted: no note without its line
+				os.Remove(note)
+			}
+		}()
+		if posted, err = cutText(text, shown(note)); err != nil {
+			return refuse(stderr, "text is %d chars; the limit is %d, and the note pointer %s leaves no room for a "+
+				"cut line", n, store.MaxLen, shown(note))
+		}
+	}
+	line, err := store.FormatLine(typ, project, role, posted, to, stamp)
 	if err != nil {
 		return refuse(stderr, "%v", err)
 	}
@@ -239,6 +272,11 @@ func postLine(args []string, now time.Time, stderr io.Writer) int {
 			}
 		}
 		_, err = f.WriteString(line + "\n")
+		if err == nil && note != "" {
+			fmt.Fprintf(stderr, "bus-post: overflow: text is %d chars, the limit is %d; posted it cut, the whole text is "+
+				"in %s\n", n, store.MaxLen, shown(note))
+			note = "" // the line is written: keep its note
+		}
 		if cerr := f.Close(); err == nil {
 			err = cerr
 		}
