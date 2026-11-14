@@ -92,6 +92,17 @@ func TestMadeUpDayLive(t *testing.T) {
 // runDay runs the made-up day and checks the outcome every model must give.
 func runDay(t *testing.T, m Model) (Config, *Result) {
 	t.Helper()
+	cfg, bookDir := dayConfig(t)
+	res, err := Run(context.Background(), cfg, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return checkDay(t, cfg, bookDir, res)
+}
+
+// dayConfig lays out the made-up day in a temp folder.
+func dayConfig(t *testing.T) (Config, string) {
+	t.Helper()
 	dir := t.TempDir()
 	bookDir := filepath.Join(dir, "playbook")
 	if err := os.MkdirAll(bookDir, 0o755); err != nil {
@@ -123,10 +134,11 @@ func runDay(t *testing.T, m Model) (Config, *Result) {
 		StateDir: filepath.Join(dir, "state"),
 		Since:    time.Date(2026, 11, 20, 0, 0, 0, 0, time.Local),
 	}
-	res, err := Run(context.Background(), cfg, m)
-	if err != nil {
-		t.Fatal(err)
-	}
+	return cfg, bookDir
+}
+
+func checkDay(t *testing.T, cfg Config, bookDir string, res *Result) (Config, *Result) {
+	t.Helper()
 	var picked []string
 	for _, c := range res.Candidates {
 		picked = append(picked, c.Ref)

@@ -6,6 +6,7 @@ package playbook
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -20,6 +21,7 @@ type Candidate struct {
 	Text   string    `json:"text"`
 	Why    string    `json:"why"`             // the rule that picked it
 	Topic  string    `json:"topic,omitempty"` // set by Pick
+	Tries  int       `json:"tries,omitempty"` // runs that got no answer for it
 }
 
 // Verdict is the cheap model's answer for one candidate.
@@ -50,6 +52,7 @@ type Model interface {
 type Config struct {
 	BusDirs  []string // folders of *.log bus files
 	TxRoots  []string // transcript roots (~/.claude*/projects)
+	DocFiles []string // old lesson files to seed from, one candidate per paragraph
 	BookDir  string   // the skill folder
 	StateDir string   // cursor
 	Since    time.Time
@@ -66,8 +69,10 @@ type Result struct {
 	New        int
 	Evidence   int
 	Dropped    []string // model answers that could not be applied, with the reason
+	Failed     []string // model batches that failed; their candidates wait in the cursor for the next run
 	Calls      Calls
 	Read       ReadStats
+	Review     Review
 }
 
 const (
@@ -87,11 +92,11 @@ func Run(ctx context.Context, cfg Config, m Model) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Candidates a past run could not get an answer for come first.
+	cands = append(cur.Pending, cands...)
+	cur.Pending = nil
 	res := &Result{Candidates: cands, Read: stats}
-	if cfg.DryRun || len(cands) == 0 {
-		if !cfg.DryRun {
-			return res, cur.save(cfg.StateDir)
-		}
+	if cfg.DryRun {
 		return res, nil
 	}
 	book, err := LoadBook(cfg.BookDir)
@@ -102,19 +107,45 @@ func Run(ctx context.Context, cfg Config, m Model) (*Result, error) {
 	for _, c := range cands {
 		byID[c.ID] = c
 	}
+	// retry parks a batch for the next run; after maxTries it is dropped, loudly.
+	retry := func(batch []Candidate, why error) {
+		res.Failed = append(res.Failed, why.Error())
+		for _, c := range batch {
+			if c.Tries++; c.Tries >= maxTries {
+				res.Dropped = append(res.Dropped, fmt.Sprintf("%s: no answer after %d tries: %v", c.ID, c.Tries, why))
+				continue
+			}
+			cur.Pending = append(cur.Pending, c)
+		}
+	}
 	var kept []Candidate
 	for i := 0; i < len(cands); i += pickBatch {
 		batch := cands[i:min(i+pickBatch, len(cands))]
 		vs, err := m.Pick(ctx, batch)
 		res.Calls.Pick++
-		if err != nil {
+		if stop(ctx, err) {
 			return res, fmt.Errorf("pick: %w", err)
 		}
+		if err != nil {
+			retry(batch, fmt.Errorf("pick: %w", err))
+			continue
+		}
+		answered := map[string]bool{}
 		for _, v := range vs {
+			answered[v.ID] = true
 			if c, ok := byID[v.ID]; ok && v.Keep {
 				c.Topic = v.Topic
 				kept = append(kept, c)
 			}
+		}
+		var missed []Candidate
+		for _, c := range batch {
+			if !answered[c.ID] {
+				missed = append(missed, c)
+			}
+		}
+		if len(missed) > 0 {
+			retry(missed, fmt.Errorf("pick skipped %d of %d", len(missed), len(batch)))
 		}
 	}
 	res.Kept = len(kept)
@@ -122,8 +153,12 @@ func Run(ctx context.Context, cfg Config, m Model) (*Result, error) {
 		batch := kept[i:min(i+writeBatch, len(kept))]
 		ops, err := m.Write(ctx, batch, book.Live())
 		res.Calls.Write++
-		if err != nil {
+		if stop(ctx, err) {
 			return res, fmt.Errorf("write: %w", err)
+		}
+		if err != nil {
+			retry(batch, fmt.Errorf("write: %w", err))
+			continue
 		}
 		for _, op := range ops {
 			c, ok := byID[op.Candidate]
@@ -141,8 +176,22 @@ func Run(ctx context.Context, cfg Config, m Model) (*Result, error) {
 			}
 		}
 	}
+	shown, err := LoadShown(cfg.StateDir)
+	if err != nil {
+		return res, err
+	}
+	res.Review = ReviewBook(book, shown, time.Now())
 	if err := book.Save(cfg.BookDir); err != nil {
 		return res, err
 	}
 	return res, cur.save(cfg.StateDir)
+}
+
+// maxTries is how many runs a candidate may go unanswered before it is dropped.
+const maxTries = 3
+
+// stop says a model error ends the run with nothing saved: an API-key login
+// (the call may be billed) or a cancelled run. Other errors park the batch.
+func stop(ctx context.Context, err error) bool {
+	return err != nil && (errors.Is(err, ErrAPIKey) || ctx.Err() != nil)
 }

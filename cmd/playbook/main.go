@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -28,6 +29,9 @@ func main() {
 	switch os.Args[1] {
 	case "run":
 		err = run(os.Args[2:])
+	case "seed":
+		// Old lesson files go through the same pick and write as a night's record.
+		err = run(append([]string{"-seed"}, os.Args[2:]...))
 	case "show":
 		show(os.Args[2:])
 		return
@@ -58,9 +62,18 @@ func run(args []string) error {
 	state := fl.String("state", filepath.Join(home, ".crius", "state", "playbook", "run"), "cursor folder")
 	bus := fl.String("bus", filepath.Join(home, ".crius", "bus"), "bus log folders, comma separated")
 	tx := fl.String("tx", "", "transcript roots, comma separated (default ~/.claude*/projects)")
+	post := fl.String("post", "", "after a real run, post the report line to this bus log as playbook:watch -> crius:lead")
+	seed := fl.Bool("seed", false, "seed from the lesson files named after the flags, not from the bus and transcripts")
 	_ = fl.Parse(args)
 
 	cfg := playbook.Config{BusDirs: split(*bus), BookDir: *book, StateDir: *state, DryRun: *dry}
+	if *seed {
+		if fl.NArg() == 0 {
+			return errors.New("seed: name the lesson files")
+		}
+		cfg = playbook.Config{DocFiles: fl.Args(), BookDir: *book, StateDir: *state, DryRun: *dry}
+		return finish(cfg, home, *state, *candOut, "", *dry)
+	}
 	if *tx != "" {
 		cfg.TxRoots = split(*tx)
 	} else {
@@ -76,13 +89,33 @@ func run(args []string) error {
 	} else if _, err := os.Stat(filepath.Join(*state, "cursor.json")); errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("no cursor in %s yet: the first run needs -since", *state)
 	}
+	return finish(cfg, home, *state, *candOut, *post, *dry)
+}
+
+// finish runs, prints the report, and writes or posts its line.
+func finish(cfg playbook.Config, home, state, candOut, post string, dry bool) error {
 	start := time.Now()
 	res, err := playbook.Run(context.Background(), cfg, playbook.ClaudeCLI{})
 	if res != nil {
-		report(res, time.Since(start))
-		if *candOut != "" {
+		line := report(res, time.Since(start), err)
+		if !dry {
+			if werr := os.WriteFile(filepath.Join(state, "last-report.txt"), []byte(line+"\n"), 0o644); werr != nil && err == nil {
+				err = werr
+			}
+			if post != "" {
+				typ := "INFO"
+				if err != nil {
+					typ = "ALERT"
+				}
+				out, perr := exec.Command(filepath.Join(home, ".crius", "bin", "bus-post"), post, typ, "playbook:watch", "crius:lead", cut(line, 300)).CombinedOutput()
+				if perr != nil && err == nil {
+					err = fmt.Errorf("bus-post: %v: %s", perr, out)
+				}
+			}
+		}
+		if candOut != "" {
 			data, _ := json.MarshalIndent(res.Candidates, "", " ")
-			if werr := os.WriteFile(*candOut, data, 0o644); werr != nil && err == nil {
+			if werr := os.WriteFile(candOut, data, 0o644); werr != nil && err == nil {
 				err = werr
 			}
 		}
@@ -90,7 +123,8 @@ func run(args []string) error {
 	return err
 }
 
-func report(res *playbook.Result, took time.Duration) {
+// report prints the run and returns its one line for Crius's 09:00/18:00 report.
+func report(res *playbook.Result, took time.Duration, runErr error) string {
 	why := map[string]int{}
 	for _, c := range res.Candidates {
 		why[c.Source+"/"+c.Why]++
@@ -106,6 +140,33 @@ func report(res *playbook.Result, took time.Duration) {
 		fmt.Printf("  dropped: %s\n", d)
 	}
 	fmt.Printf("model calls: pick (haiku) %d, write (sonnet) %d; took %s\n", res.Calls.Pick, res.Calls.Write, took.Round(time.Second))
+	r := res.Review
+	for _, u := range r.Uses {
+		if u.Shown > 0 {
+			fmt.Printf("  use %s: shown %d, followed %d %v, repeats %d\n", u.ID, u.Shown, u.Followed, u.Teams, u.Repeats)
+		}
+	}
+	line := fmt.Sprintf("playbook %s: +%d entries, +%d evidence, %d live; promote %s; needs a check %s; archived %d; calls haiku %d sonnet %d",
+		time.Now().Format("2006-01-02"), res.New, res.Evidence, len(r.Uses), list(r.Promote), list(r.NeedsCheck), len(r.Archived), res.Calls.Pick, res.Calls.Write)
+	if runErr != nil {
+		line += "; FAILED: " + runErr.Error()
+	}
+	fmt.Println(line)
+	return line
+}
+
+func list(ids []string) string {
+	if len(ids) == 0 {
+		return "none"
+	}
+	return strings.Join(ids, ", ")
+}
+
+func cut(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n-1]) + "…"
+	}
+	return s
 }
 
 func split(s string) []string {

@@ -24,6 +24,7 @@ type ReadStats struct {
 	TxFiles, TxSkipped  int // transcripts parsed, and ones unchanged since the cursor
 	TxTexts, OwnerTurns int
 	TxCapped            int // replies past the per-session-day cap
+	DocFiles            int
 	Errors              []string
 }
 
@@ -146,8 +147,17 @@ func Gather(cfg Config, cur *Cursor) ([]Candidate, ReadStats, error) {
 			out = append(out, cs...)
 		}
 	}
+	for _, p := range cfg.DocFiles {
+		cs, err := readDoc(p, cur)
+		if err != nil {
+			st.Errors = append(st.Errors, err.Error())
+			continue
+		}
+		st.DocFiles++
+		out = append(out, cs...)
+	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Time.Before(out[j].Time) })
-	if len(st.Errors) > 0 && st.BusLines == 0 && st.TxFiles == 0 {
+	if len(st.Errors) > 0 && st.BusLines == 0 && st.TxFiles == 0 && st.DocFiles == 0 {
 		return out, st, fmt.Errorf("read nothing: %s", strings.Join(st.Errors, "; "))
 	}
 	return out, st, nil
@@ -328,9 +338,10 @@ func teamOf(cwd string) string {
 // Cursor is where the last run stopped: a byte offset per bus log, the mtime per
 // transcript, and the candidate ids already picked (kept 60 days).
 type Cursor struct {
-	Bus  map[string]int64     `json:"bus"`
-	Tx   map[string]time.Time `json:"tx"`
-	Seen map[string]string    `json:"seen"`
+	Bus     map[string]int64     `json:"bus"`
+	Tx      map[string]time.Time `json:"tx"`
+	Seen    map[string]string    `json:"seen"`
+	Pending []Candidate          `json:"pending,omitempty"` // got no model answer; offered again next run
 }
 
 const cursorFile = "cursor.json"
@@ -374,4 +385,55 @@ func (c *Cursor) save(dir string) error {
 		return err
 	}
 	return writeAtomic(filepath.Join(dir, cursorFile), data)
+}
+
+// readDoc makes one candidate per paragraph of a lesson file (a heading goes
+// with the paragraph after it). Tables and short lines are left out.
+func readDoc(path string, cur *Cursor) ([]Candidate, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	name := filepath.Base(path)
+	team := strings.ToLower(strings.TrimSuffix(name, filepath.Ext(name)))
+	var out []Candidate
+	var block []string
+	start, heading := 0, ""
+	flush := func() {
+		text := strings.TrimSpace(strings.Join(block, "\n"))
+		block = nil
+		if len(text) < 60 || strings.HasPrefix(text, "|") {
+			return
+		}
+		if heading != "" {
+			text = heading + "\n" + text
+		}
+		id := fmt.Sprintf("doc:%s:%d", name, start)
+		if cur.Seen[id] != "" {
+			return
+		}
+		cur.Seen[id] = info.ModTime().Format("2006-01-02")
+		out = append(out, Candidate{ID: id, Source: "doc", Team: team, Time: info.ModTime(),
+			Ref: fmt.Sprintf("%s:%d", path, start), Text: excerpt(text), Why: "seed"})
+	}
+	for i, line := range strings.Split(string(data), "\n") {
+		switch {
+		case strings.HasPrefix(line, "#"):
+			flush()
+			heading = strings.TrimSpace(strings.TrimLeft(line, "#"))
+		case strings.TrimSpace(line) == "":
+			flush()
+		default:
+			if len(block) == 0 {
+				start = i + 1
+			}
+			block = append(block, line)
+		}
+	}
+	flush()
+	return out, nil
 }
