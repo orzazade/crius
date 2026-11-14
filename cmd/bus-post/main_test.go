@@ -581,3 +581,22 @@ func TestABareNameLinkedOutOfRunsIsRefused(t *testing.T) {
 		t.Fatalf("want refused, got rc %d: %s", rc, errs)
 	}
 }
+
+// 11-14: Crius's DECISIONs to landed:lead (06:37 and 18:57) and AXI's threads went only on the bus; a T3 thread has no
+// tab and no waiter, so nothing woke it and it sat idle. A line to such a role is posted and the sender told to send it
+// to the thread too.
+func TestALineToAThreadRoleSaysSendItToTheThread(t *testing.T) {
+	home, log := setup(t)
+	testutil.Write(t, filepath.Join(home, "roles", "crius.lead.json"), `{"session_id":"c","project":"crius","role":"lead"}`)
+	testutil.Write(t, filepath.Join(home, "roles", "crius.build.json"), `{"session_id":"b","project":"crius","role":"build","workspace":"ws","surface":"sf"}`)
+	testutil.Write(t, filepath.Join(home, "roles", "crius.qa.json"), `{"session_id":"q","project":"crius","role":"qa"}`)
+	rc, errs := post(t, at("2026-11-14T18:57"), log, "DECISION", "crius:lead", "crius:qa, crius:build", "yes: fresh repo")
+	if rc != 0 || !strings.Contains(errs, "crius:qa is a thread") || strings.Contains(errs, "crius:build") ||
+		!strings.Contains(busText(t, log), "DECISION crius:lead -> crius:qa") {
+		t.Fatal(rc, errs, busText(t, log))
+	}
+	// Crius has its own waiter; a role with a tab is woken by its waiter: both quiet.
+	if rc, errs := post(t, at("2026-11-14T18:58"), log, "INFO", "crius:qa", "crius:lead, crius:build", "x"); rc != 0 || errs != "" {
+		t.Fatal(rc, errs)
+	}
+}

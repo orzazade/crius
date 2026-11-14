@@ -51,6 +51,7 @@ import (
 
 	"github.com/orzazade/crius/internal/ownerqueue"
 	"github.com/orzazade/crius/internal/redact"
+	"github.com/orzazade/crius/internal/sessionstate"
 	"github.com/orzazade/crius/internal/store"
 	"github.com/orzazade/crius/internal/wakewatch"
 )
@@ -246,6 +247,10 @@ func postLine(args []string, now time.Time, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "bus-post: write failed:", err)
 		return 1
 	}
+	if th := threadRecipients(to, logProject(log), filepath.Dir(filepath.Dir(log))); len(th) > 0 {
+		fmt.Fprintf(stderr, "bus-post: posted, but %s is a thread (no tab, no waiter): a bus line does not wake it; "+
+			"send it to the thread too (t3_thread_send, mode auto)\n", strings.Join(th, ", "))
+	}
 	if typ == "ORDER" || typ == "ASK" {
 		if dead, err := deadRecipients(to, logProject(log)); err != nil {
 			fmt.Fprintf(stderr, "bus-post: posted, but could not check who has a live session: %v\n", err)
@@ -290,6 +295,40 @@ func deadRecipients(to, project string) ([]string, error) {
 		}
 	}
 	return dead, nil
+}
+
+// busRole gives a recipient name as project:role: a bare name is a role on the bus's own project, "crius" is
+// crius:lead, and "" means a whole team or "cc" (no one).
+func busRole(n, project string) string {
+	n = strings.ToLower(n)
+	switch {
+	case n == "cc" || n == "all" || strings.HasSuffix(n, ":all"):
+		return ""
+	case n == "crius":
+		return "crius:lead"
+	case !strings.Contains(n, ":"):
+		return project + ":" + n
+	}
+	return n
+}
+
+// threadRecipients gives each recipient whose current session crius-hook filed with no tab (no workspace, no surface):
+// a T3 thread, which only a thread message wakes. crius:lead is left out: its own waiter reads the bus. A role with no
+// file is not known to be a thread and is left out too.
+func threadRecipients(to, project, home string) []string {
+	var th []string
+	for _, n := range (&store.Line{To: to}).Recipients() {
+		n = busRole(n, project)
+		if n == "" || n == "crius:lead" || slices.Contains(th, n) {
+			continue
+		}
+		p, r, _ := strings.Cut(n, ":")
+		s, err := sessionstate.ReadRole(filepath.Join(home, "roles"), p, r)
+		if err == nil && s.Workspace == "" && s.Surface == "" {
+			th = append(th, n)
+		}
+	}
+	return th
 }
 
 var openTag = regexp.MustCompile(`^\[queue (q\d+)\]`)
