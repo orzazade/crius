@@ -22,7 +22,7 @@ func TestMatchShowsWhatFitsTheFolder(t *testing.T) {
 		t.Fatal(err)
 	}
 	b := &Book{Entries: []Entry{
-		{ID: "typeorm-one-tx", Keys: []string{"typeorm"}, Evidence: []Evidence{{Team: "staffy"}}},
+		{ID: "typeorm-one-tx", Keys: []string{"typeorm"}, Evidence: []Evidence{{Team: "billing"}}},
 		{ID: "shop-split", Keys: []string{"dotnet"}, Evidence: []Evidence{{Team: "svc_shop"}}},
 		{ID: "helm-thing", Keys: []string{"helm"}, Evidence: []Evidence{{Team: "falcon"}}},
 		{ID: "old", Keys: []string{"typeorm"}, Archived: true, Evidence: []Evidence{{Team: "svc_shop"}}},
