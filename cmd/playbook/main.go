@@ -17,7 +17,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/orzazade/crius/internal/ingest"
 	"github.com/orzazade/crius/internal/playbook"
+	"github.com/orzazade/crius/internal/store"
 )
 
 func main() {
@@ -91,6 +93,11 @@ func run(args []string) error {
 	} else if ok, err := playbook.Started(*state); err != nil || !ok {
 		return alert(home, *post, fmt.Errorf("no read position in %s yet (%v): the first run needs -since", *state, err))
 	}
+	po, err := projectOf()
+	if err != nil {
+		return alert(home, *post, err)
+	}
+	cfg.ProjectOf = po
 	return finish(cfg, home, *state, *candOut, *post, *dry)
 }
 
@@ -251,7 +258,13 @@ func show(args []string) {
 		fmt.Fprintln(os.Stderr, "playbook show:", err)
 		return
 	}
-	es := b.Match(*cwd)
+	project := ""
+	if po, err := projectOf(); err != nil {
+		fmt.Fprintln(os.Stderr, "playbook show:", err) // still show the key matches
+	} else {
+		project = po(*cwd)
+	}
+	es := b.Match(*cwd, project)
 	fmt.Print(playbook.ShowText(es, *book))
 	if err := playbook.LogShown(*state, in.SessionID, *cwd, es, time.Now()); err != nil {
 		fmt.Fprintln(os.Stderr, "playbook show:", err)
@@ -268,4 +281,22 @@ func alert(home, post string, err error) error {
 		return fmt.Errorf("%w; and bus-post failed: %v: %s", err, perr, out)
 	}
 	return err
+}
+
+// projectOf maps a session folder to its projects.toml project, the name its
+// bus log has. It reads projects.toml once and fails loudly when it cannot.
+func projectOf() (func(cwd string) string, error) {
+	h := store.Home()
+	if _, _, err := ingest.Filing(h, "", ""); err != nil {
+		return nil, fmt.Errorf("projects.toml: %w", err)
+	}
+	seen := map[string]string{}
+	return func(cwd string) string {
+		if p, ok := seen[cwd]; ok {
+			return p
+		}
+		p, _, _ := ingest.Filing(h, cwd, "") // the file read fine above
+		seen[cwd] = p
+		return p
+	}, nil
 }

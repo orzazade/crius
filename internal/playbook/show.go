@@ -54,35 +54,47 @@ func Words(cwd string) map[string]bool {
 	return w
 }
 
-// Match returns the live entries that fit the folder, best first: an entry's
-// team counts most, then each of its keys found in the words. Entries with no
-// hit are left out, so a folder nothing fits gets nothing.
-func (b *Book) Match(cwd string) []Entry {
+// Match returns the live entries that fit the session, best first. Entries of
+// the session's own project come first: seen in that project (its bus or its
+// sessions) or keyed with its name. project is the projects.toml slug of the
+// folder ("" when none); the folder's own name counts too. Then come entries
+// whose keys are words of the folder (path parts, stack). Within a tier more
+// key hits rank higher, then more sightings. Entries with no hit are left out,
+// so a folder nothing fits gets nothing.
+func (b *Book) Match(cwd, project string) []Entry {
 	words := Words(cwd)
-	team := strings.ToLower(teamOf(cwd))
+	own := map[string]bool{strings.ToLower(teamOf(cwd)): true}
+	delete(own, "unknown") // a session with no folder has no project
+	if project != "" {
+		own[strings.ToLower(project)] = true
+		words[strings.ToLower(project)] = true
+	}
 	type scored struct {
 		e     Entry
+		mine  bool
 		score int
 	}
 	var hits []scored
 	for _, e := range b.Live() {
-		s := 0
+		h := scored{e: e}
 		for _, k := range e.Keys {
-			if words[strings.ToLower(k)] {
-				s++
+			k = strings.ToLower(k)
+			if words[k] {
+				h.score++
 			}
+			h.mine = h.mine || own[k]
 		}
 		for _, ev := range e.Evidence {
-			if strings.ToLower(ev.Team) == team {
-				s += 2
-				break
-			}
+			h.mine = h.mine || own[strings.ToLower(ev.Team)]
 		}
-		if s > 0 {
-			hits = append(hits, scored{e, s})
+		if h.mine || h.score > 0 {
+			hits = append(hits, h)
 		}
 	}
 	sort.SliceStable(hits, func(i, j int) bool {
+		if hits[i].mine != hits[j].mine {
+			return hits[i].mine
+		}
 		if hits[i].score != hits[j].score {
 			return hits[i].score > hits[j].score
 		}

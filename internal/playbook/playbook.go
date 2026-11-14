@@ -64,6 +64,9 @@ type Config struct {
 	StateDir string   // cursor
 	Since    time.Time
 	DryRun   bool // pick and print; no model call, no write
+	// ProjectOf names the projects.toml project of a session folder ("" for
+	// none), so transcript findings file under the same name as the bus.
+	ProjectOf func(cwd string) string
 }
 
 // Calls counts model calls in one run.

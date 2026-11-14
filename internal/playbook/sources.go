@@ -148,7 +148,7 @@ func Gather(cfg Config, cur *Cursor, now time.Time) ([]Candidate, ReadStats, err
 				st.TxSkipped++
 				continue
 			}
-			cs, err := readTranscript(p, txSince, cur, &st, now)
+			cs, err := readTranscript(p, txSince, cur, &st, now, cfg.ProjectOf)
 			st.TxFiles++
 			if err != nil {
 				st.Errors = append(st.Errors, err.Error())
@@ -284,13 +284,18 @@ func readBus(path string, since time.Time, cur *Cursor, now time.Time) ([]Candid
 
 // readTranscript picks findings from the assistant's text and corrections from
 // the owner's turns, skipping ones a past run already picked.
-func readTranscript(path string, since time.Time, cur *Cursor, st *ReadStats, now time.Time) ([]Candidate, error) {
+func readTranscript(path string, since time.Time, cur *Cursor, st *ReadStats, now time.Time, projectOf func(string) string) ([]Candidate, error) {
 	s, err := transcript.ParseFile(path)
 	if err != nil {
 		return nil, err
 	}
 	st.TxBadLines += s.BadLines + s.BadTimes
 	team := teamOf(s.Cwd)
+	if projectOf != nil {
+		if p := projectOf(s.Cwd); p != "" {
+			team = p // the projects.toml slug, as on the bus (quotes, not svc_quote)
+		}
+	}
 	var out []Candidate
 	add := func(id, source, why, text string, t time.Time) {
 		if t.Before(since) || cur.Seen[id] != "" {
