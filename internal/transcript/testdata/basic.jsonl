@@ -1,0 +1,30 @@
+{"type":"custom-title","title":"made up"}
+{"type":"user","uuid":"u-cmd","sessionId":"s-basic","cwd":"/home/dev/Projects/kettle","entrypoint":"cli","timestamp":"2026-11-01T09:00:00.000Z","message":{"role":"user","content":"<command-name>/clear</command-name>"}}
+{"type":"user","uuid":"u1","sessionId":"s-basic","cwd":"/home/dev/Projects/kettle","entrypoint":"cli","timestamp":"2026-11-01T09:01:00.000Z","origin":{"kind":"human"},"message":{"role":"user","content":"Add a boil timer to the kettle app"}}
+{"type":"assistant","uuid":"a1","sessionId":"s-basic","timestamp":"2026-11-01T09:02:00.000Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"hmm"},{"type":"text","text":"Done the timer."},{"type":"tool_use","id":"t1","name":"Edit","input":{"file_path":"/home/dev/Projects/kettle/STATUS.md","old_string":"a","new_string":"b"}},{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"git commit -m 'timer'","description":"commit"}}]}}
+{"type":"user","uuid":"u-tool","sessionId":"s-basic","timestamp":"2026-11-01T09:02:30.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}
+{"type":"assistant","uuid":"a2","sessionId":"s-basic","timestamp":"2026-11-01T09:03:00.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Should the timer beep when the water boils, or stay silent?"}]}}
+{"type":"user","uuid":"u-notif","sessionId":"s-basic","timestamp":"2026-11-01T09:03:10.000Z","origin":{"kind":"task-notification","producer":"session-task"},"message":{"role":"user","content":"<task-notification>build done</task-notification>"}}
+{"type":"user","uuid":"u-meta","sessionId":"s-basic","timestamp":"2026-11-01T09:03:20.000Z","isMeta":true,"message":{"role":"user","content":"Caveat: injected"}}
+{"type":"user","uuid":"u-peer","sessionId":"s-basic","timestamp":"2026-11-01T09:03:40.000Z","origin":{"kind":"peer","name":"Explore"},"message":{"role":"user","content":"report from a peer"}}
+{"type":"user","uuid":"u2","sessionId":"s-basic","timestamp":"2026-11-01T09:04:00.000Z","origin":{"kind":"human"},"message":{"role":"user","content":"beep, and from now on always log boil events"}}
+{"type":"user","uuid":"u-q","sessionId":"s-basic","timestamp":"2026-11-01T09:05:00.000Z","origin":{"kind":"plugin","name":"owner-queue","asUser":true},"message":{"role":"user","content":"[queue q7] go with the blue lid"}}
+{"type":"user","uuid":"u-bubble","sessionId":"s-basic","timestamp":"2026-11-01T09:05:30.000Z","origin":{"kind":"plugin","name":"chat-bubbles"},"message":{"role":"user","content":"bubble text"}}
+{"type":"user","uuid":"u-old","sessionId":"s-basic","timestamp":"2026-11-01T09:06:00.000Z","message":{"role":"user","content":"never ship without the lid sensor"}}
+{"type":"user","uuid":"u-img","sessionId":"s-basic","timestamp":"2026-11-01T09:06:30.000Z","origin":{"kind":"human"},"message":{"role":"user","content":"[Image: source: /tmp/x.png]"}}
+{"type":"user","uuid":"u-rerun","sessionId":"s-basic","timestamp":"2026-11-01T09:06:40.000Z","message":{"role":"user","content":"(Re-run of /deploy — the skill loaded again)"}}
+{"type":"user","uuid":"u-local","sessionId":"s-basic","timestamp":"2026-11-01T09:06:50.000Z","message":{"role":"user","content":"<local-command-stdout>ok</local-command-stdout>"}}
+this line is broken json
+{"type":"user","uuid":"u-side","sessionId":"s-basic","isSidechain":true,"timestamp":"2026-11-01T09:07:00.000Z","message":{"role":"user","content":"sidechain prompt"}}
+{"type":"user","uuid":"i1","sessionId":"s-basic","timestamp":"2026-11-01T09:08:00.000Z","origin":{"kind":"human"},"promptSource":"typed","message":{"role":"user","content":"WAKEWATCH: kettle.log: 2026-11-01T09:07 DONE kettle:lead -> crius:lead"}}
+{"type":"user","uuid":"i2","sessionId":"s-basic","timestamp":"2026-11-01T09:08:01.000Z","origin":{"kind":"human"},"message":{"role":"user","content":"[crius account=max project=kettle] You are the lead for kettle"}}
+{"type":"user","uuid":"i3","sessionId":"s-basic","timestamp":"2026-11-01T09:08:02.000Z","origin":{"kind":"human"},"message":{"role":"user","content":"Crius: I declined the lid question"}}
+{"type":"user","uuid":"i4","sessionId":"s-basic","timestamp":"2026-11-01T09:08:03.000Z","origin":{"kind":"human"},"message":{"role":"user","content":"From crius:lead: the owner wants blue"}}
+{"type":"user","uuid":"i5","sessionId":"s-basic","timestamp":"2026-11-01T09:08:04.000Z","origin":{"kind":"human"},"message":{"role":"user","content":"LEADER (Crius DECISION 4): pause"}}
+{"type":"user","uuid":"i6","sessionId":"s-basic","timestamp":"2026-11-01T09:08:05.000Z","origin":{"kind":"human"},"message":{"role":"user","content":"<teammate-message teammate_id=\"qa\">hi</teammate-message>"}}
+{"type":"user","uuid":"i7","sessionId":"s-basic","timestamp":"2026-11-01T09:08:06.000Z","origin":{"kind":"human"},"message":{"role":"user","content":"Another Claude session sent you a message: hello"}}
+{"type":"user","uuid":"i8","sessionId":"s-basic","timestamp":"2026-11-01T09:08:07.000Z","origin":{"kind":"human"},"message":{"role":"user","content":"You were resumed after a restart."}}
+{"type":"user","uuid":"i9","sessionId":"s-basic","timestamp":"2026-11-01T09:08:08.000Z","origin":{"kind":"human"},"message":{"role":"user","content":"STOP (owner order, 09:08): no pushes"}}
+{"type":"user","uuid":"u-last","sessionId":"s-basic","timestamp":"2026-11-01T09:09:00.000Z","origin":{"kind":"human"},"message":{"role":"user","content":"ok ship it"}}
+{"type":"user","uuid":"u-caps","sessionId":"s-basic","timestamp":"2026-11-01T09:10:00.000Z","origin":{"kind":"human"},"message":{"role":"user","content":"NEVER push to main without review"}}
+{"type":"user","uuid":"u-sum","sessionId":"s-basic","timestamp":"2026-11-01T09:03:30.000Z","isCompactSummary":true,"message":{"role":"user","content":"This session is being continued from a previous conversation that ran out of context."}}

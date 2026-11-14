@@ -1,0 +1,6 @@
+2026-11-20T08:01 START shop:lead -> crius:lead — day started, 4 builders
+2026-11-20T09:10 INFO shop:builder-2 -> shop:lead — PR 9001 open, build queued
+2026-11-20T10:12 INFO shop:builder-2 -> crius:lead — Tooling: full Shop.Api.Tests runs past the heavy cap 1200 s (no hung test; Orders alone 1128 tests 13m18s). Split into 3 filtered parts: 3490/0, each part under 9 min.
+2026-11-20T10:40 ACK shop:lead -> crius:lead — ok
+2026-11-20T11:02 INFO shop:lead -> crius:lead — Root cause of the idle lead: a bus line does not wake a T3 thread; it sat 40 min until the thread got a message too.
+2026-11-20T12:00 DONE shop:builder-1 -> shop:lead — AC12 merged 1a2b3c4d, Api 3490/0
