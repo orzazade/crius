@@ -149,7 +149,7 @@ func TestRefusedAnswerKeepsItsCandidate(t *testing.T) {
 		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(filepath.Join(cfg.StateDir, "dropped.jsonl"))
-	if len(res.Dropped) != 1 || res.Lost != 1 || !strings.Contains(string(data), "split the suite") {
+	if len(res.Dropped) != 1 || res.Lost != 1 || !strings.Contains(string(data), "split the suite") || !strings.Contains(string(data), `"testing"`) {
 		t.Fatalf("dropped %v, lost %d, dropped.jsonl %q; want the candidate kept there", res.Dropped, res.Lost, data)
 	}
 }

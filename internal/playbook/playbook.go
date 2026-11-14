@@ -196,9 +196,9 @@ func Run(ctx context.Context, cfg Config, m Model) (*Result, error) {
 			retry(batch, fmt.Errorf("write: %w", err))
 			continue
 		}
-		inBatch := map[string]bool{}
+		inBatch := map[string]Candidate{} // the picked copies, with their topic
 		for _, c := range batch {
-			inBatch[c.ID] = true
+			inBatch[c.ID] = c
 		}
 		// New entries first, so an answer that points at another candidate of
 		// the batch ("same_as": "<candidate id>") finds the entry made from it.
@@ -206,8 +206,8 @@ func Run(ctx context.Context, cfg Config, m Model) (*Result, error) {
 		made := map[string]string{} // candidate id -> entry id made from it
 		answered := map[string]bool{}
 		for _, op := range ops {
-			c, ok := byID[op.Candidate]
-			if !ok || !inBatch[op.Candidate] {
+			c, ok := inBatch[op.Candidate]
+			if !ok {
 				res.Dropped = append(res.Dropped, fmt.Sprintf("%s: not a candidate of this batch", op.Candidate))
 				continue
 			}

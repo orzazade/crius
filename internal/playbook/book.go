@@ -168,7 +168,7 @@ var keyRe = regexp.MustCompile(`^[a-z0-9][a-z0-9.+-]+$`)
 // clean makes s one line of at most maxField bytes with no < or >.
 func clean(s string) string {
 	s = strings.Map(func(r rune) rune {
-		if r == '<' || r == '>' || (unicode.IsControl(r) && !unicode.IsSpace(r)) {
+		if r == '<' || r == '>' || (unicode.IsControl(r) && !unicode.IsSpace(r)) || unicode.Is(unicode.Cf, r) {
 			return -1
 		}
 		return r
