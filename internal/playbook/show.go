@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // MaxShown is how many entries a session start shows at most.
@@ -102,7 +103,7 @@ func ShowText(es []Entry, bookDir string) string {
 	var s strings.Builder
 	fmt.Fprintf(&s, "Playbook (what the teams learned; full list in %s/SKILL.md):\n", bookDir)
 	for _, e := range es {
-		fmt.Fprintf(&s, "- [%s] when %s: %s (because %s)\n", clean(e.ID), clean(e.When), clean(e.Do), clean(e.Because))
+		fmt.Fprintf(&s, "- [%s] when %s: %s (because %s)\n", clean(e.ID), clause(e.When), clean(e.Do), clause(e.Because))
 	}
 	return s.String()
 }
@@ -127,4 +128,15 @@ func LogShown(dir, session, cwd string, es []Entry, now time.Time) error {
 	}
 	_, err = f.WriteString(s.String())
 	return err
+}
+
+// clause makes a sentence read after "when" or "because": no closing stop, and
+// a capital first letter lowered unless the word is a name like "SSH" or "T3".
+func clause(s string) string {
+	s = strings.TrimRight(clean(s), ". ")
+	r := []rune(s)
+	if len(r) > 1 && unicode.IsUpper(r[0]) && unicode.IsLower(r[1]) {
+		r[0] = unicode.ToLower(r[0])
+	}
+	return string(r)
 }
