@@ -54,14 +54,21 @@ func Send(run Runner, target, text string) error {
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrRefused, err)
 	}
-	// Clear what the box holds: C-e C-u empties a line, a second C-u at its start joins it to the line above.
-	if typed != "" {
-		n := 2 * (strings.Count(typed, "\n") + 1)
-		if err := keys(strings.TrimSpace(strings.Repeat("C-e C-u ", n))); err != nil {
+	// Clear what the box holds, a line per round: C-e C-u empties the line (Claude Code's C-u stops at a line start),
+	// BSpace takes out the line break above it. The box is read after each round, until it holds no typed text.
+	for round := 1; typed != ""; round++ {
+		if round > ClearRounds {
+			return fmt.Errorf("%w: the box still holds %q after clearing for %d rounds: text not typed", ErrNotSent, shown(typed), ClearRounds)
+		}
+		if err := keys("C-e C-u C-u"); err != nil {
 			return fmt.Errorf("%w: clearing the box: %v", ErrNotSent, err)
 		}
-		if typed, _, err = waitBox(run, t, text, func(d string, _ int) bool { return d == "" }); err != nil || typed != "" {
-			return fmt.Errorf("%w: the box still holds %q after clearing (%v): text not typed", ErrNotSent, shown(typed), err)
+		if err := keys("BSpace"); err != nil {
+			return fmt.Errorf("%w: clearing the box: %v", ErrNotSent, err)
+		}
+		time.Sleep(Wait)
+		if typed, _, err = read(run, t, text); err != nil {
+			return fmt.Errorf("%w: clearing the box: %v: text not typed", ErrNotSent, err)
 		}
 	}
 	// Literally, as one key stream; tmux takes a word that ends in an unescaped ";" as the end of its command.
@@ -180,6 +187,9 @@ func refuse(target, text string) string {
 	}
 	return ""
 }
+
+// ClearRounds is how many rounds Send spends clearing a box (one line each) before it gives up.
+const ClearRounds = 20
 
 // Wait is the pause between two reads of the pane. Tests set it to 0.
 var Wait = 300 * time.Millisecond

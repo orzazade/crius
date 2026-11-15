@@ -36,12 +36,8 @@ func (m *Model) Feed(chunk []byte) {
 			} else {
 				m.submit()
 			}
-		case r == 0x15: // C-u: delete to line start; at a line start, join with the line above
-			if m.Lines[last] != "" {
-				m.Lines[last] = ""
-			} else if last > 0 {
-				m.Lines = m.Lines[:last]
-			}
+		case r == 0x15: // C-u: delete to line start; at a line start it does nothing (Claude Code, seen 11-15 04:27)
+			m.Lines[last] = ""
 		case r == 0x05: // C-e: the cursor is always at the end
 		case r == 0x7f || r == 0x08:
 			if l := []rune(m.Lines[last]); len(l) > 0 {

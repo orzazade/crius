@@ -60,6 +60,7 @@ type fakeTmux struct {
 	m      *fakeprompt.Model
 	calls  []string
 	enter  func() bool // nil: Enter works; false: this Enter is lost
+	stuck  bool        // the box ignores C-u and BSpace, so it never clears
 }
 
 func (f *fakeTmux) run(line string) ([]byte, error) {
@@ -123,8 +124,11 @@ func (f *fakeTmux) run(line string) ([]byte, error) {
 					continue
 				}
 				chunk.WriteString("\r")
-			case "C-u":
-				chunk.WriteByte(0x15)
+			case "C-u", "BSpace":
+				if f.stuck {
+					continue
+				}
+				chunk.WriteString(map[string]string{"C-u": "\x15", "BSpace": "\x7f"}[a])
 			case "C-e":
 				chunk.WriteByte(0x05)
 			default:
@@ -159,6 +163,46 @@ func TestSendClearsAMultiLineLeftoverFirst(t *testing.T) {
 	}
 	if len(f.m.Sent) != 1 || f.m.Sent[0] != "new text" {
 		t.Fatalf("the box sent %q, want only %q", f.m.Sent, "new text")
+	}
+}
+
+// The 04:27 state in quotes:dev: a seven-line paste left in the box. Claude Code's C-u stops at a line start, so
+// the clear must take the line breaks out one by one and read the box after each round.
+func TestSendClearsASevenLineLeftoverInRounds(t *testing.T) {
+	f := newFake()
+	f.m.Busy = true
+	f.m.Feed([]byte("Answer the ASK just posted on the bus.\rRow AC16 is yours.\rRed first.\rThen the page.\r" +
+		"Tag the board.\rPost DONE with the sha.\rThen park."))
+	if len(f.m.Lines) != 7 {
+		t.Fatalf("set-up: the box has %d lines, want 7", len(f.m.Lines))
+	}
+	if err := Send(f.run, "team:qa", wake); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if len(f.m.Sent) != 1 || f.m.Sent[0] != wake {
+		t.Fatalf("the box sent %q, want only %q", f.m.Sent, wake)
+	}
+}
+
+func TestSendGivesUpClearingAfter20Rounds(t *testing.T) {
+	f := newFake()
+	f.stuck = true
+	f.m.Feed([]byte("old draft\rsecond line"))
+	err := Send(f.run, "team:qa", wake)
+	if !errors.Is(err, ErrNotSent) || !strings.Contains(err.Error(), "after clearing") {
+		t.Fatalf("Send = %v, want ErrNotSent: the box still holds it after clearing", err)
+	}
+	rounds := 0
+	for _, c := range f.calls {
+		if strings.HasSuffix(c, " BSpace") {
+			rounds++
+		}
+		if strings.Contains(c, " -l ") {
+			t.Fatalf("typed the text into a box that never cleared: %q", c)
+		}
+	}
+	if rounds != 20 {
+		t.Fatalf("%d clearing rounds, want 20", rounds)
 	}
 }
 
