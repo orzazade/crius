@@ -1,0 +1,5 @@
+[1mBash command[0m
+  rm -rf build/
+[1mDo you want to proceed?[0m
+[36m❯ 1. Yes[39m
+  2. No, and tell Claude what to do differently (esc)

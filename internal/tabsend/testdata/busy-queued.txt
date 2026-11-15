@@ -1,0 +1,8 @@
+[38;5;246m❯ [39mWake up: QA posted a green build for the renewal page.
+
+[38;5;174m✻[39m [38;5;174mPondering… [38;5;246m(12s · esc to interrupt)[39m
+[38;5;244m────────────────────────────────────────────────────────────
+[38;5;246m❯  [2mPress up to edit queued messages[0m
+[38;5;244m────────────────────────────────────────────────────────────
+[39m  [38;5;246mOpus 5.5 MAX │ main │ ctx 17%[39m
+  [38;5;211m⏵⏵ bypass permissions on[38;5;246m · [38;5;44m2 shells[39m
