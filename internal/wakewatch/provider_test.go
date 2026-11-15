@@ -1,0 +1,235 @@
+package wakewatch_test
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/orzazade/crius/internal/tabsend"
+	"github.com/orzazade/crius/internal/testutil"
+	"github.com/orzazade/crius/internal/wakewatch"
+)
+
+// Recorded panes (testdata/provider): Legion quotes:dev captured with `tmux capture-pane -p -e` on 11-15 23:57, its reply
+// text replaced (public repo) and the error line Legion's transcript holds from 11-13 09:49 ("Please run /login · API
+// Error: 403 Attention Required! | Cloudflare") put above its "✻ … done" line; tab-sleep.txt is a cortex · lead pane
+// Crius read on 10-30 07:34, reply text replaced.
+func pane(t *testing.T, name string) string {
+	b, err := os.ReadFile(filepath.Join("testdata", "provider", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tabsend.Visible(string(b))
+}
+
+func TestProviderStopReadsRecordedPanes(t *testing.T) {
+	for _, c := range []struct {
+		file, line string
+		ok         bool
+	}{
+		{"legion-403.txt", "Please run /login · API Error: 403 Attention Required! | Cloudflare", true},
+		{"tab-sleep.txt", "API Error: Your computer went to sleep mid-response. The response above may be incomplete.", true},
+		{"legion-idle.txt", "", false},      // an ordinary ⏳ reply, a grey suggestion in the box
+		{"legion-403-busy.txt", "", false},  // working again: the error is not where it stopped
+		{"legion-403-typed.txt", "", false}, // someone typed into the box: not idle, not ours to clear
+	} {
+		line, _, ok := wakewatch.ProviderStop(pane(t, c.file))
+		if ok != c.ok || line != c.line {
+			t.Errorf("%s: ProviderStop = %q, %v; want %q, %v", c.file, line, ok, c.line, c.ok)
+		}
+	}
+}
+
+// The same stop read again keeps its key while the shell count beside it changes; a later stop gets a new one.
+func TestProviderStopKeyIsTheStop(t *testing.T) {
+	s := pane(t, "legion-403.txt")
+	_, k1, _ := wakewatch.ProviderStop(s)
+	_, k2, _ := wakewatch.ProviderStop(strings.Replace(s, "2 shells still running", "1 shell still running", 1))
+	_, k3, ok := wakewatch.ProviderStop(strings.Replace(s, "done 11:57 PM", "done 12:09 AM", 1))
+	if k1 == "" || k1 != k2 || !ok || k3 == k1 {
+		t.Errorf("keys %q %q %q", k1, k2, k3)
+	}
+}
+
+type fakeSweep struct {
+	threads    []wakewatch.FailedThread
+	threadsErr error
+	screens    map[string]string
+	sendErr    error
+	sentThread []string
+	sentTab    []string
+	posts      []string
+	crius      []string
+}
+
+func (f *fakeSweep) deps(home string, now time.Time) wakewatch.ProviderDeps {
+	return wakewatch.ProviderDeps{Home: home, Now: now,
+		Threads: func() ([]wakewatch.FailedThread, error) { return f.threads, f.threadsErr },
+		Tabs:    func() ([]wakewatch.RemoteTab, error) { return wakewatch.ReadProviderTabs(home) },
+		Capture: func(t wakewatch.RemoteTab) (string, error) {
+			s, ok := f.screens[t.String()]
+			if !ok {
+				return "", errors.New("ssh: connect to host 100.109.19.101 port 22: Operation timed out")
+			}
+			return s, nil
+		},
+		SendThread: func(id, text string) error {
+			f.sentThread = append(f.sentThread, id+" | "+text)
+			return f.sendErr
+		},
+		SendTab: func(t wakewatch.RemoteTab, text string) error {
+			f.sentTab = append(f.sentTab, t.String()+" | "+text)
+			return f.sendErr
+		},
+		Post:      func(typ, text string) error { f.posts = append(f.posts, typ+" "+text); return nil },
+		SendCrius: func(text string) error { f.crius = append(f.crius, text); return nil },
+	}
+}
+
+// The 403 Cloudflare stop of AXI · ms-flow on 11-13 09:46 (its error item, as T3's store holds it).
+func cloudflare(run string, ended time.Time) wakewatch.FailedThread {
+	return wakewatch.FailedThread{ID: "mcp:launch:5a5f", Title: "AXI · ms-flow", Project: "AXI", Run: run, Status: "failed",
+		Ended: ended, Class: "provider_error", Message: "Failed to authenticate. API Error: 403 Attention Required! | Cloudflare"}
+}
+
+func TestProviderErrorsRestartsAThreadOncePerStop(t *testing.T) {
+	home := t.TempDir()
+	t0 := time.Date(2026, 11, 13, 9, 50, 0, 0, time.UTC)
+	f := &fakeSweep{threads: []wakewatch.FailedThread{cloudflare("run:9", t0.Add(-3*time.Minute))}}
+	rep, err := wakewatch.ProviderErrors(f.deps(home, t0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "mcp:launch:5a5f | Crius: your last turn failed on a provider error (Failed to authenticate. API Error: 403 Attention Required! | Cloudflare), not your work. Carry on where you were; re-arm your bus waiter first."
+	if len(f.sentThread) != 1 || f.sentThread[0] != want {
+		t.Fatalf("sent %q", f.sentThread)
+	}
+	if len(f.posts) != 1 || !strings.HasPrefix(f.posts[0], `INFO watchdog restarted T3 thread "AXI · ms-flow"`) || len(f.crius) != 1 || rep.Stopped != 1 {
+		t.Fatalf("posts %q crius %q report %+v", f.posts, f.crius, rep)
+	}
+	// the same stop five minutes later: nothing again (no loop)
+	if _, err := wakewatch.ProviderErrors(f.deps(home, t0.Add(5*time.Minute))); err != nil || len(f.sentThread) != 1 || len(f.posts) != 1 {
+		t.Fatalf("second look: err %v sent %q posts %q", err, f.sentThread, f.posts)
+	}
+	// it stops again 8 min after the restart: Crius hears, nothing is sent
+	f.threads = []wakewatch.FailedThread{cloudflare("run:10", t0.Add(8*time.Minute))}
+	if _, err := wakewatch.ProviderErrors(f.deps(home, t0.Add(10*time.Minute))); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.sentThread) != 1 || len(f.posts) != 2 || !strings.HasPrefix(f.posts[1], `ALERT T3 thread "AXI · ms-flow"`) ||
+		!strings.Contains(f.posts[1], "stopped again on a provider error") || !strings.Contains(f.posts[1], "8 min after the watchdog restarted it") || len(f.crius) != 2 {
+		t.Fatalf("second stop: sent %q posts %q crius %d", f.sentThread, f.posts, len(f.crius))
+	}
+	if _, err := wakewatch.ProviderErrors(f.deps(home, t0.Add(15*time.Minute))); err != nil || len(f.posts) != 2 || len(f.crius) != 2 {
+		t.Fatalf("the alerted stop said again: posts %q", f.posts)
+	}
+	// a stop over 15 min after the last restart is a new stop: one restart
+	f.threads = []wakewatch.FailedThread{cloudflare("run:11", t0.Add(40*time.Minute))}
+	if _, err := wakewatch.ProviderErrors(f.deps(home, t0.Add(45*time.Minute))); err != nil || len(f.sentThread) != 2 {
+		t.Fatalf("a later stop: err %v sent %q", err, f.sentThread)
+	}
+}
+
+// Real T3 failures that "carry on" does not cure: a usage limit (11-15 19:41), a sign-in the owner must renew (11-14
+// 00:27), and an interrupted run with no error item.
+func TestProviderErrorsLeavesOtherFailures(t *testing.T) {
+	f := &fakeSweep{threads: []wakewatch.FailedThread{
+		{ID: "a", Title: "Cortex", Run: "r1", Status: "failed", Class: "usage_limit", Message: "Claude API rate limit reached. Try again later."},
+		{ID: "b", Title: "AXI · ms-flow", Run: "r2", Status: "failed", Class: "provider_error",
+			Message: "Claude could not authenticate. For subscription login, run `claude auth login` on this environment's machine"},
+		{ID: "c", Title: "AXI · api-split", Run: "r3", Status: "interrupted"},
+	}}
+	rep, err := wakewatch.ProviderErrors(f.deps(t.TempDir(), time.Now()))
+	if err != nil || len(f.sentThread)+len(f.posts)+len(f.crius) != 0 || rep.Threads != 3 || rep.Stopped != 0 {
+		t.Fatalf("err %v sent %q posts %q report %+v", err, f.sentThread, f.posts, rep)
+	}
+}
+
+func TestProviderErrorsRestartsARemoteTabOnce(t *testing.T) {
+	home := t.TempDir()
+	testutil.Write(t, wakewatch.ProviderTabsFile(home), "# the Legion Quotes team\nlegion quotes:dev\nlegion quotes:qa\n")
+	stopped := pane(t, "legion-403.txt")
+	f := &fakeSweep{screens: map[string]string{"legion quotes:dev": stopped, "legion quotes:qa": pane(t, "legion-idle.txt")}}
+	now := time.Date(2026, 11, 16, 0, 5, 0, 0, time.UTC)
+	rep, err := wakewatch.ProviderErrors(f.deps(home, now))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.sentTab) != 1 || f.sentTab[0] != "legion quotes:dev | "+wakewatch.TabText || rep.Tabs != 2 || len(f.posts) != 1 ||
+		f.posts[0] != "INFO watchdog restarted tab legion quotes:dev after a provider error (Please run /login · API Error: 403 Attention Required! | Cloudflare)" {
+		t.Fatalf("sent %q posts %q report %+v", f.sentTab, f.posts, rep)
+	}
+	// read again with a shell finished beside the same stop: nothing again
+	f.screens["legion quotes:dev"] = strings.Replace(stopped, "2 shells still running", "1 shell still running", 1)
+	if _, err := wakewatch.ProviderErrors(f.deps(home, now.Add(5*time.Minute))); err != nil || len(f.sentTab) != 1 {
+		t.Fatalf("again: %v %q", err, f.sentTab)
+	}
+	// a new stop 10 min after the restart: Crius hears, nothing typed
+	f.screens["legion quotes:dev"] = strings.Replace(stopped, "done 11:57 PM", "done 12:14 AM", 1)
+	if _, err := wakewatch.ProviderErrors(f.deps(home, now.Add(10*time.Minute))); err != nil || len(f.sentTab) != 1 ||
+		len(f.posts) != 2 || !strings.HasPrefix(f.posts[1], "ALERT tab legion quotes:dev stopped again") {
+		t.Fatalf("second stop: %v %q %q", err, f.sentTab, f.posts)
+	}
+}
+
+// "Could not look" is loud: an error every run, and Crius hears it when it starts and once an hour while it lasts.
+func TestProviderErrorsCouldNotLookIsLoud(t *testing.T) {
+	home := t.TempDir()
+	testutil.Write(t, wakewatch.ProviderTabsFile(home), "legion quotes:dev\n")
+	f := &fakeSweep{threadsErr: errors.New("sqlite3: unable to open database file"), screens: map[string]string{}}
+	now := time.Date(2026, 11, 16, 1, 0, 0, 0, time.UTC)
+	_, err := wakewatch.ProviderErrors(f.deps(home, now))
+	if err == nil || !strings.Contains(err.Error(), "could not look at the T3 Code threads") || !strings.Contains(err.Error(), "could not look at tab legion quotes:dev") {
+		t.Fatalf("err %v", err)
+	}
+	if len(f.posts) != 2 || len(f.crius) != 2 || !strings.Contains(f.posts[0], "could not look at the T3 Code threads, so a session stopped there is not seen") {
+		t.Fatalf("posts %q", f.posts)
+	}
+	if _, err := wakewatch.ProviderErrors(f.deps(home, now.Add(5*time.Minute))); err == nil || len(f.posts) != 2 {
+		t.Fatalf("5 min on: err %v posts %d", err, len(f.posts))
+	}
+	if _, err := wakewatch.ProviderErrors(f.deps(home, now.Add(61*time.Minute))); err == nil || len(f.posts) != 4 {
+		t.Fatalf("an hour on: err %v posts %d", err, len(f.posts))
+	}
+	// it can look again, then fails again: said at once
+	f.threadsErr = nil
+	if _, err := wakewatch.ProviderErrors(f.deps(home, now.Add(65*time.Minute))); err == nil || len(f.posts) != 4 {
+		t.Fatalf("threads back: err %v posts %d", err, len(f.posts))
+	}
+	f.threadsErr = errors.New("t3 down")
+	if _, err := wakewatch.ProviderErrors(f.deps(home, now.Add(70*time.Minute))); err == nil || len(f.posts) != 5 {
+		t.Fatalf("threads gone again: err %v posts %q", err, f.posts)
+	}
+}
+
+// A restart that could not be sent is said to Crius and not tried again: crius-tsend's NOT SENT may leave text in the box.
+func TestProviderErrorsSendFailureAlertsOnce(t *testing.T) {
+	home := t.TempDir()
+	f := &fakeSweep{threads: []wakewatch.FailedThread{cloudflare("run:9", time.Now())}, sendErr: fmt.Errorf("t3 thread send: exit status 1")}
+	_, err := wakewatch.ProviderErrors(f.deps(home, time.Now()))
+	if err == nil || len(f.posts) != 1 || !strings.Contains(f.posts[0], "could not restart it: t3 thread send: exit status 1") {
+		t.Fatalf("err %v posts %q", err, f.posts)
+	}
+	if _, err := wakewatch.ProviderErrors(f.deps(home, time.Now())); err != nil || len(f.sentThread) != 1 || len(f.posts) != 1 {
+		t.Fatalf("again: err %v sent %q posts %q", err, f.sentThread, f.posts)
+	}
+}
+
+func TestProviderErrorsDryDoesNothing(t *testing.T) {
+	home := t.TempDir()
+	f := &fakeSweep{threads: []wakewatch.FailedThread{cloudflare("run:9", time.Now())}}
+	d := f.deps(home, time.Now())
+	d.Dry = true
+	rep, err := wakewatch.ProviderErrors(d)
+	if err != nil || len(f.sentThread)+len(f.posts)+len(f.crius) != 0 || len(rep.Actions) != 1 ||
+		!strings.HasPrefix(rep.Actions[0], `would restart T3 thread "AXI · ms-flow"`) {
+		t.Fatalf("err %v sent %q report %+v", err, f.sentThread, rep)
+	}
+	if _, err := os.Stat(wakewatch.ProviderStateFile(home)); !os.IsNotExist(err) {
+		t.Fatalf("dry run saved its state: %v", err)
+	}
+}

@@ -40,7 +40,10 @@ Risks · Updated**. Max ~40 lines. Leads update it at every milestone and before
 4. **Act** through leads (SendMessage when waiting, else inbox), never by editing project code itself.
 5. **Escalate** only what needs the owner: one item in `decisions.md` + AskUserQuestion / assign_task, which
    Remote Control pushes to the phone. Ops alerts (wakewatch: missed wake, idle lead, waiting prompt, disk, swap, paid usage)
-   wake Crius by a `WAKEWATCH:` line typed into its tab, and Crius pushes to the owner; no Telegram.
+   wake Crius by a `WAKEWATCH:` line typed into its tab, and Crius pushes to the owner; no Telegram. Wakewatch also
+   restarts, once per stop, a session whose turn died on a provider error (403 Cloudflare, 5xx, overloaded): T3 Code
+   threads from T3's store, remote tmux tabs listed in `~/.crius/provider-tabs.txt` (through crius-tsend); a second
+   stop within 15 min of a restart goes to Crius instead (`crius-wakewatch provider-errors -dry` shows a sweep).
 6. **Log** every decision it took alone in `state/decision-log.md` (what, why, evidence), one line each.
 
 ## 4. Decision rights (the safety core)

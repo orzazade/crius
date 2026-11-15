@@ -4,7 +4,8 @@
 // "crius-wakewatch clicks" posts each tab that waits on a prompt only the owner may answer (wakewatch.Clicks) and times
 // every open prompt (wakewatch.Prompts: crius:ops at 2 min, Crius at 3 or 10 min); launchd
 // starts it every minute. "crius-wakewatch signin" prints each Max account's sign-in end and state (wakewatch.Signins), which
-// every 5 min run also watches.
+// every 5 min run also watches. Every 5 min run also restarts a session stopped by a provider error (wakewatch.ProviderErrors);
+// "crius-wakewatch provider-errors [-dry] [-fixtures DIR]" runs that sweep on its own and prints what it saw.
 package main
 
 import (
@@ -85,8 +86,11 @@ func main() {
 		fmt.Print(wakewatch.SigninTable(wakewatch.Signins(signinStatus, time.Now()), time.Local))
 		return
 	}
+	if len(os.Args) >= 2 && os.Args[1] == "provider-errors" {
+		os.Exit(providerCmd(os.Args[2:], os.Stdout)) // the provider-error sweep on its own (wakewatch.ProviderErrors)
+	}
 	if len(os.Args) > 1 {
-		fmt.Fprintln(os.Stderr, "usage: crius-wakewatch [after-boot | clicks | flagged <surface> | gone <surface> | signin]")
+		fmt.Fprintln(os.Stderr, "usage: crius-wakewatch [after-boot | clicks | flagged <surface> | gone <surface> | signin | provider-errors [-dry] [-fixtures DIR]]")
 		os.Exit(2)
 	}
 	// Messages held on an earlier run go first, so a new alert never jumps ahead of an older one.
@@ -105,6 +109,10 @@ func main() {
 		}, Restore: restore, Waiters: waiters, Typed: outbox.Typed, Procs: procs,
 		SendTab: func(title, text string) error { return outbox.Send(store.Home(), title, text) }, Boot: bootTime, Claudes: claudes,
 		Thread: thread, Signin: signinStatus})
+	// the provider-error sweep runs every 5 min with the rest (night 11-16: it was a Crius model turn on a cron)
+	if _, perr := wakewatch.ProviderErrors(providerDeps(time.Now())); perr != nil {
+		err = errors.Join(err, fmt.Errorf("provider-error sweep: %w", perr))
+	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, time.Now().Format(time.RFC3339), "crius-wakewatch:", err)
 		os.Exit(1)

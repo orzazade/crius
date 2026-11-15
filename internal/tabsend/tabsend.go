@@ -287,3 +287,7 @@ func squash(s string) string { return strings.Join(strings.Fields(s), "") }
 
 // quote makes s one word for a POSIX shell.
 func quote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
+
+// Visible gives a `tmux capture-pane -p -e` screen as plain text without the text drawn dim, so an empty box that shows
+// Claude Code's grey suggestion reads as empty.
+func Visible(screen string) string { return undimmed(screen) }

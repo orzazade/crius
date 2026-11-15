@@ -1,0 +1,13 @@
+[38;5;231m⏺[39m I finished the row and posted DONE on the bus.
+
+  ⏳ Waiting for the lead's next row; bus watcher armed.
+
+[38;5;203m⏺[39m [38;5;203mPlease run /login · API Error: 403 Attention Required! | Cloudflare[39m
+
+[38;5;246m✻[39m [38;5;246mCogitated for 4m 4s · done 11:57 PM · 2 shells still running[39m
+
+[38;5;244m───────────────────────────────────────────────────────────────── quotes · dev ─
+[39m❯ half a message the owner is typing
+[38;5;244m────────────────────────────────────────────────────────────────────────────────
+[39m  [38;5;246mOpus 5.5 MAX │ main │ $12.34 │ ██░░░░░░░░ ctx 24% │ quota login 0000000000…[39m
+  [38;5;211m⏵⏵ bypass permissions on[38;5;246m · [38;5;44m2 shells[39m
