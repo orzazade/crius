@@ -57,7 +57,10 @@ type State struct {
 	Role      string    `json:"role,omitempty"`
 	Workspace string    `json:"workspace,omitempty"` // cmux workspace and surface the session runs in
 	Surface   string    `json:"surface,omitempty"`
-	Config    string    `json:"config,omitempty"` // the Claude Code config folder it runs under, where its status file is
+	// Thread is the T3 Code thread the session runs in (its T3CODE_THREAD_ID), "" outside T3 Code: bus-post hands a line
+	// for the role to it, as no tab or waiter wakes a thread.
+	Thread string `json:"t3_thread,omitempty"`
+	Config string `json:"config,omitempty"` // the Claude Code config folder it runs under, where its status file is
 	// Filed, in a role's file only: the config folder the role's session was started in, so its account. A restart of
 	// that session or a /clear in it keeps it (Crius 10-29 00:28: cmux restored sessions on another account's folder).
 	Filed string `json:"filed,omitempty"`

@@ -66,12 +66,13 @@ func main() {
 }
 
 // record queues one hook event and applies the session's queue (drain). What only this process can see (its config
-// folder, the session's live status file, its cmux env) goes into the event. A missing projects.toml or Claude Code
+// folder, the session's live status file, its cmux and T3 Code env) goes into the event. A missing projects.toml or Claude Code
 // status file loses the project, role or name, not the state: it is logged and the state is written.
 func record(in sessionstate.Input, at time.Time) error {
 	home := store.Home()
 	dir := filepath.Join(home, "sessions")
-	ev := sessionstate.Event{In: in, Time: at, Workspace: os.Getenv("CMUX_WORKSPACE_ID"), Surface: os.Getenv("CMUX_SURFACE_ID")}
+	ev := sessionstate.Event{In: in, Time: at, Workspace: os.Getenv("CMUX_WORKSPACE_ID"), Surface: os.Getenv("CMUX_SURFACE_ID"),
+		Thread: os.Getenv("T3CODE_THREAD_ID")}
 	cfg, err := claudeConfig()
 	if err == nil {
 		ev.PID, ev.Name, err = sessionstate.Process(cfg, in.SessionID)
@@ -180,8 +181,9 @@ func apply(home, dir string, ev sessionstate.Event) error {
 	} else {
 		s.Project, s.Role = p, r
 	}
-	// the session's own env on every event: one resumed outside cmux no longer names its old surface
-	s.Workspace, s.Surface = ev.Workspace, ev.Surface
+	// the session's own env on every event: one resumed outside cmux no longer names its old surface, one resumed
+	// outside T3 Code no longer names its old thread
+	s.Workspace, s.Surface, s.Thread = ev.Workspace, ev.Surface, ev.Thread
 	if err := sessionstate.Write(dir, s); err != nil {
 		return err
 	}

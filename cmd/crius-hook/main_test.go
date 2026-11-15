@@ -233,6 +233,31 @@ func TestASurfaceIsNotKeptWhenTheEnvHasNone(t *testing.T) {
 	}
 }
 
+// A session T3 Code runs has T3CODE_THREAD_ID in its env: the hook files it in the session's and the role's file, so
+// bus-post can hand a line for the role to its thread (11-15: 22 hand relays in 10 days). The env is read on every
+// event, like the cmux surface: a session resumed outside T3 Code names no thread.
+func TestAT3ThreadIsFiledFromTheEnv(t *testing.T) {
+	w := newWorld(t)
+	env := append(w.env()[:3], "T3CODE_THREAD_ID=mcp:launch:abc")
+	run(t, env, `{"session_id":"s-1","hook_event_name":"SessionStart","source":"startup","cwd":"/w/crius"}`)
+	s, _ := sessionstate.Read(filepath.Join(w.crius, "sessions"), "s-1")
+	r, err := sessionstate.ReadRole(filepath.Join(w.crius, "roles"), "quotes", "p1")
+	if s.Thread != "mcp:launch:abc" || err != nil || r.Thread != "mcp:launch:abc" || r.Surface != "" {
+		t.Fatalf("session %+v; role %+v, %v", s, r, err)
+	}
+	run(t, w.env(), `{"session_id":"s-1","hook_event_name":"SessionStart","source":"resume","cwd":"/w/crius"}`)
+	r, _ = sessionstate.ReadRole(filepath.Join(w.crius, "roles"), "quotes", "p1")
+	if r.Thread != "" || r.Surface != "sf-3" {
+		t.Errorf("resumed in cmux, role %+v", r)
+	}
+	// Any event refreshes the session's file (the role's file only changes with its session): bus-post reads the thread
+	// there, so a session that runs on is found as soon as it runs one hook.
+	run(t, env, `{"session_id":"s-1","hook_event_name":"Stop","cwd":"/w/crius"}`)
+	if s, _ := sessionstate.Read(filepath.Join(w.crius, "sessions"), "s-1"); s.Thread != "mcp:launch:abc" {
+		t.Errorf("after a Stop in T3 Code, session %+v", s)
+	}
+}
+
 // Claude Code leaves the status file of a crashed process behind: its old name must not win over the live one.
 func TestADeadProcessesStatusFileGivesNoName(t *testing.T) {
 	w := newWorld(t)

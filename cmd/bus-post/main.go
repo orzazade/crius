@@ -29,15 +29,21 @@
 // An ORDER or ASK to someone with no live Claude Code session is posted and said, exit 5: crius:lead's ORDERs of 10-25
 // 13:18 to crius:build went nowhere for hours. Posted, so a caller must not send it again.
 //
+// A line that asks a T3 Code thread role to act (DONE, NEED, ASK, FAIL, PASS, DECISION, CORRECTION, CORRECTED, ANSWER,
+// ORDER, OWNER, READY, GO, PAUSE) is also handed to its thread with `t3 thread send` (threads.go): a bus line does not
+// wake a thread.
+//
 // Exit codes: 0 posted, 2 refused (nothing written), 3 refused: a hex word is no commit, 4 refused: a START while a live
 // run is open, 5 posted, but a recipient has no live session (or the check failed), 6 refused: a time typed at the start
-// of the text is off the clock, 7 refused: a READY with no pre-ready PASS record, 1 the write failed. 3, 4 and 6 are the
-// codes the Quotes say.sh wrappers gave; 7 was agreed with quotes:lead.
+// of the text is off the clock, 7 refused: a READY with no pre-ready PASS record, 8 posted, but a thread it names did
+// not get it (it wins over 5; stderr says both), 1 the write failed. 3, 4 and 6 are the codes the Quotes say.sh wrappers gave; 7 was agreed with
+// quotes:lead.
 package main
 
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"errors"
 	"fmt"
 	"io"
@@ -55,7 +61,6 @@ import (
 
 	"github.com/orzazade/crius/internal/ownerqueue"
 	"github.com/orzazade/crius/internal/redact"
-	"github.com/orzazade/crius/internal/sessionstate"
 	"github.com/orzazade/crius/internal/store"
 	"github.com/orzazade/crius/internal/wakewatch"
 )
@@ -285,26 +290,29 @@ func postLine(args []string, now time.Time, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "bus-post: write failed:", err)
 		return 1
 	}
-	if th := threadRecipients(to, logProject(log), filepath.Dir(filepath.Dir(log))); len(th) > 0 {
-		fmt.Fprintf(stderr, "bus-post: posted, but %s is a thread (no tab, no waiter): a bus line does not wake it; "+
-			"send it to the thread too (t3_thread_send, mode auto)\n", strings.Join(th, ", "))
+	// A thread role is woken by its thread, not by the bus (threads.go); a thread that got the line is read.
+	got, failed := deliver(filepath.Dir(filepath.Dir(log)), log, typ, from, to, line, stderr)
+	rc := 0
+	if failed {
+		rc = rcNotDelivered
 	}
 	if typ == "ORDER" || typ == "ASK" {
-		if dead, err := deadRecipients(to, logProject(log)); err != nil {
+		if dead, err := deadRecipients(to, logProject(log), got); err != nil {
 			fmt.Fprintf(stderr, "bus-post: posted, but could not check who has a live session: %v\n", err)
-			return rcNoSession
+			return cmp.Or(rc, rcNoSession)
 		} else if len(dead) > 0 {
 			fmt.Fprintf(stderr, "bus-post: posted, but %s has no live session: nobody reads it until one starts "+
 				"(start it, or send it to someone running)\n", strings.Join(dead, ", "))
-			return rcNoSession
+			return cmp.Or(rc, rcNoSession)
 		}
 	}
-	return 0
+	return rc
 }
 
-// deadRecipients gives each recipient of to with no live Claude Code session. A bare name is a role on the bus's own
-// project ("lead"), "crius" is crius:lead, and a whole team ("quotes:all") or "cc" is no one.
-func deadRecipients(to, project string) ([]string, error) {
+// deadRecipients gives each recipient of to with no live Claude Code session, leaving out the threads in got, which
+// took the line. A bare name is a role on the bus's own project ("lead"), "crius" is crius:lead, and a whole team
+// ("quotes:all") or "cc" is no one.
+func deadRecipients(to, project string, got []string) ([]string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, err
@@ -328,7 +336,7 @@ func deadRecipients(to, project string) ([]string, error) {
 		case !strings.Contains(n, ":"):
 			n = project + ":" + n
 		}
-		if !live[n] && !slices.Contains(dead, n) {
+		if !live[n] && !slices.Contains(dead, n) && !slices.Contains(got, n) {
 			dead = append(dead, n)
 		}
 	}
@@ -348,25 +356,6 @@ func busRole(n, project string) string {
 		return project + ":" + n
 	}
 	return n
-}
-
-// threadRecipients gives each recipient whose current session crius-hook filed with no tab (no workspace, no surface):
-// a T3 thread, which only a thread message wakes. crius:lead is left out: its own waiter reads the bus. A role with no
-// file is not known to be a thread and is left out too.
-func threadRecipients(to, project, home string) []string {
-	var th []string
-	for _, n := range (&store.Line{To: to}).Recipients() {
-		n = busRole(n, project)
-		if n == "" || n == "crius:lead" || slices.Contains(th, n) {
-			continue
-		}
-		p, r, _ := strings.Cut(n, ":")
-		s, err := sessionstate.ReadRole(filepath.Join(home, "roles"), p, r)
-		if err == nil && s.Workspace == "" && s.Surface == "" {
-			th = append(th, n)
-		}
-	}
-	return th
 }
 
 var openTag = regexp.MustCompile(`^\[queue (q\d+)\]`)

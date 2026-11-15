@@ -25,6 +25,7 @@ type Event struct {
 	Name      string    `json:"name,omitempty"`
 	Workspace string    `json:"workspace,omitempty"`
 	Surface   string    `json:"surface,omitempty"`
+	Thread    string    `json:"t3_thread,omitempty"` // T3CODE_THREAD_ID
 }
 
 // queueDir holds the queued events of every session, <id>.<unix nanoseconds>-<pid>.json. List and Prune's session
