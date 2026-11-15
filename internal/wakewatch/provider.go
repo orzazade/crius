@@ -105,9 +105,9 @@ func providerError(text string) bool {
 
 // ProviderStop gives the error line a tab's last turn died on, when the tab sits at an idle, empty input box after a
 // provider error: no working line, no dialog, nothing typed in the box, and no ❓ ✅ ⏳ after the error (a later reply
-// that only mentions it). key names the stop: the error line with the lines above it and the "✻ … done <time>" line
-// under it, so the same stop read again keeps its key while the shell count beside it changes, and a stop after a
-// restart differs from the one before, even with the same error and no "✻" line (the restart's text is above it).
+// that only mentions it). key names the stop: the error line and the "✻ … done <time>" line under it, so the same stop
+// read again keeps its key while the shell count beside it changes. With no "✻" line, the text above the error stands
+// in for it: a stop after a restart then differs from the one before (the restart's text is above it).
 func ProviderStop(text string) (line, key string, ok bool) {
 	body, _, boxed := split(text)
 	if !boxed || spinning(text) || strings.Contains(text, "esc to interrupt") || LivePrompt(text) {
@@ -126,20 +126,26 @@ func ProviderStop(text string) (line, key string, ok bool) {
 		if !providerError(t) || strings.ContainsAny(strings.Join(lines[i:], "\n"), "❓✅⏳") {
 			return "", "", false
 		}
-		var above []string // the error line and up to 5 lines above it, blank and "✻" lines left out
-		for j := i; j >= 0 && len(above) < 6; j-- {
-			if l := strings.TrimSpace(lines[j]); l != "" && !strings.HasPrefix(l, "✻") {
-				above = append(above, l)
-			}
-		}
-		k := strings.Join(above, "\n")
+		k := ""
 		for _, l := range lines[i+1:] {
 			if l = strings.TrimSpace(l); strings.HasPrefix(l, "✻") {
 				parts := strings.SplitN(l, " · ", 3)
-				k += "\n" + strings.Join(parts[:min(2, len(parts))], " · ")
+				k = strings.Join(parts[:min(2, len(parts))], " · ")
 				break
 			}
 		}
+		if k == "" { // no "✻ … done" line: the last 200 characters above the error, white space taken out, so a
+			// resize that rewraps them keeps the key
+			var above []string
+			for j := i - 1; j >= 0; j-- {
+				if l := strings.TrimSpace(lines[j]); !strings.HasPrefix(l, "✻") {
+					above = append([]string{strings.Join(strings.Fields(l), "")}, above...)
+				}
+			}
+			r := []rune(strings.Join(above, ""))
+			k = string(r[max(0, len(r)-200):])
+		}
+		k = strings.Join(strings.Fields(t), "") + "\n" + k
 		h := sha256.Sum256([]byte(k))
 		return t, hex.EncodeToString(h[:6]), true
 	}
@@ -214,6 +220,7 @@ func ProviderErrors(d ProviderDeps) (ProviderReport, error) {
 				delete(st.Restarted, session)
 			}
 			errs = append(errs, fmt.Errorf("not restarting %s: its state could not be saved: %v", who, err))
+			say("ALERT", fmt.Sprintf("%s stopped on a provider error (%s); not restarted, as the watchdog cannot save its state: %v. Look at it", who, errText, err))
 			return
 		}
 		if err := send(); err != nil {
@@ -236,12 +243,21 @@ func ProviderErrors(d ProviderDeps) (ProviderReport, error) {
 		if at.IsZero() {
 			at = d.Now
 		}
-		if th.Class == "usage_limit" || !providerError(text) || d.Now.Sub(at) > providerOld {
+		if th.Class == "usage_limit" || !providerError(text) {
 			continue
 		}
 		short := []rune(strings.Join(strings.Fields(text), " "))
 		text = string(short[:min(len(short), 120)])
 		who := fmt.Sprintf("T3 thread %q (%s, %s)", th.Title, th.Project, th.ID)
+		if old := d.Now.Sub(at); old > providerOld { // said once, not restarted: it may have been left so on purpose
+			key := "t3 " + th.ID + " " + th.Run
+			if _, seen := st.Stops[key]; !seen {
+				rep.Stopped++
+				st.Stops[key] = providerStop{d.Now, "alerted"}
+				say("ALERT", fmt.Sprintf("%s stopped on a provider error (%s) %d h ago; not restarted, being that old: look at it", who, text, int(old.Hours())))
+			}
+			continue
+		}
 		stop("t3 "+th.ID, "t3 "+th.ID+" "+th.Run, who, text, at, func() error {
 			return d.SendThread(th.ID, fmt.Sprintf(ThreadText, text))
 		})

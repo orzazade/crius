@@ -309,8 +309,9 @@ func TestProviderErrorsUnsavedRestartIsNotSent(t *testing.T) {
 	t.Cleanup(func() { os.Chmod(dir, 0o700) })
 	f := &fakeSweep{threads: []wakewatch.FailedThread{cloudflare("run:9", time.Now())}}
 	_, err := wakewatch.ProviderErrors(f.deps(home, time.Now()))
-	if err == nil || !strings.Contains(err.Error(), "its state could not be saved") || len(f.sentThread) != 0 {
-		t.Fatalf("err %v sent %q", err, f.sentThread)
+	if err == nil || !strings.Contains(err.Error(), "its state could not be saved") || len(f.sentThread) != 0 ||
+		len(f.posts) != 1 || !strings.Contains(f.posts[0], "not restarted, as the watchdog cannot save its state") {
+		t.Fatalf("err %v sent %q posts %q", err, f.sentThread, f.posts)
 	}
 }
 
@@ -334,11 +335,31 @@ func TestProviderErrorsTabStopTimedFromTheLastLook(t *testing.T) {
 	}
 }
 
-// Review P2-6: a thread stopped long ago was left so; the first run after an install does not wake it.
-func TestProviderErrorsLeavesOldStops(t *testing.T) {
-	now := time.Now()
+// Review P2-6, round 2 P2-1: a thread stopped long ago may have been left so: it is not restarted, and Crius hears of it
+// once.
+func TestProviderErrorsOldStopIsSaidNotRestarted(t *testing.T) {
+	home, now := t.TempDir(), time.Now()
 	f := &fakeSweep{threads: []wakewatch.FailedThread{cloudflare("run:9", now.Add(-13*time.Hour))}}
-	if _, err := wakewatch.ProviderErrors(f.deps(t.TempDir(), now)); err != nil || len(f.sentThread) != 0 {
-		t.Fatalf("err %v sent %q", err, f.sentThread)
+	for i := 0; i < 2; i++ {
+		if _, err := wakewatch.ProviderErrors(f.deps(home, now.Add(time.Duration(i)*5*time.Minute))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(f.sentThread) != 0 || len(f.posts) != 1 || !strings.Contains(f.posts[0], "13 h ago; not restarted") {
+		t.Fatalf("sent %q posts %q", f.sentThread, f.posts)
+	}
+}
+
+// Round 2 P2-2: with no "✻" line, a resize that rewraps the text above the error keeps the stop's key.
+func TestProviderStopKeySurvivesARewrap(t *testing.T) {
+	s := strings.Replace(pane(t, "legion-403.txt"), "✻ Cogitated for 4m 4s · done 11:57 PM · 2 shells still running", "", 1)
+	wide := "⏺ I finished the row and posted DONE on the bus."
+	if !strings.Contains(s, wide) {
+		t.Fatal("fixture changed")
+	}
+	_, k1, ok1 := wakewatch.ProviderStop(s)
+	_, k2, ok2 := wakewatch.ProviderStop(strings.Replace(s, wide, "⏺ I finished the row and posted\n  DONE on the bus.", 1))
+	if !ok1 || !ok2 || k1 != k2 {
+		t.Fatalf("keys %q %q", k1, k2)
 	}
 }
