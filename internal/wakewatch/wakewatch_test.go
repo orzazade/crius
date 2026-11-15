@@ -55,7 +55,8 @@ type fake struct {
 	tabErr    error
 	threads   map[string]T3Thread // T3 Code thread id -> what t3 thread show says of it
 	threadErr error
-	read      []string // every thread id read
+	read      []string                      // every thread id read
+	signin    func(Account) ([]byte, error) // claude auth status of each account; nil: each signed in until 2099
 }
 
 func (f *fake) deps(home string, now time.Time) Deps {
@@ -105,7 +106,13 @@ func (f *fake) deps(home string, now time.Time) Deps {
 			f.tabs = append(f.tabs, [2]string{title, text})
 			return nil
 		},
-		Load:  func() (float64, error) { return f.load, f.loadErr },
+		Load: func() (float64, error) { return f.load, f.loadErr },
+		Signin: func(a Account) ([]byte, error) {
+			if f.signin == nil {
+				return []byte(`{"loggedIn": true, "loginExpiresAt": "2099-01-01T00:00:00.000Z"}`), nil
+			}
+			return f.signin(a)
+		},
 		Typed: func(surface string) (bool, error) { return f.typed[surface], f.typedErr },
 		Resources: func() (float64, float64, error) {
 			if f.freeGB == 0 {

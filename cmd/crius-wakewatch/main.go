@@ -3,7 +3,8 @@
 // ~/.crius/helpers.toml instead and names the dead ones to Crius (wakewatch.AfterBoot); launchd starts it once per login.
 // "crius-wakewatch clicks" posts each tab that waits on a prompt only the owner may answer (wakewatch.Clicks) and times
 // every open prompt (wakewatch.Prompts: crius:ops at 2 min, Crius at 3 or 10 min); launchd
-// starts it every minute.
+// starts it every minute. "crius-wakewatch signin" prints each Max account's sign-in end and state (wakewatch.Signins), which
+// every 5 min run also watches.
 package main
 
 import (
@@ -79,8 +80,13 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) == 2 && os.Args[1] == "signin" {
+		// the sign-in watch on its own: each Max account, its end and state, read now (wakewatch.Signins)
+		fmt.Print(wakewatch.SigninTable(wakewatch.Signins(signinStatus, time.Now()), time.Local))
+		return
+	}
 	if len(os.Args) > 1 {
-		fmt.Fprintln(os.Stderr, "usage: crius-wakewatch [after-boot | clicks | flagged <surface> | gone <surface>]")
+		fmt.Fprintln(os.Stderr, "usage: crius-wakewatch [after-boot | clicks | flagged <surface> | gone <surface> | signin]")
 		os.Exit(2)
 	}
 	// Messages held on an earlier run go first, so a new alert never jumps ahead of an older one.
@@ -98,7 +104,7 @@ func main() {
 			return sessionstate.List(filepath.Join(store.Home(), "sessions"))
 		}, Restore: restore, Waiters: waiters, Typed: outbox.Typed, Procs: procs,
 		SendTab: func(title, text string) error { return outbox.Send(store.Home(), title, text) }, Boot: bootTime, Claudes: claudes,
-		Thread: thread})
+		Thread: thread, Signin: signinStatus})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, time.Now().Format(time.RFC3339), "crius-wakewatch:", err)
 		os.Exit(1)
@@ -545,4 +551,38 @@ func ask(checks map[string][]string) map[string]error {
 func toolPath() string {
 	home, _ := os.UserHomeDir()
 	return os.Getenv("PATH") + ":/opt/homebrew/bin:/usr/local/bin:" + filepath.Join(home, ".bun", "bin")
+}
+
+// signinWait: a `claude auth status` (on the Legion over ssh) that gives no answer in this long could not be read.
+const signinWait = 20 * time.Second
+
+// signinStatus runs `claude auth status` of one account on its machine and gives its stdout (JSON). Only the CLI's status
+// output is read: never a credentials file or keychain value.
+func signinStatus(a wakewatch.Account) ([]byte, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+	abs := func(p string) string { return filepath.Join(home, strings.TrimPrefix(p, "~/")) }
+	ctx, cancel := context.WithTimeout(context.Background(), signinWait)
+	defer cancel()
+	var cmd *exec.Cmd
+	if a.Host == "" {
+		cmd = exec.CommandContext(ctx, abs(wakewatch.MacClaude), "auth", "status")
+		cmd.Env = append(os.Environ(), "CLAUDE_CONFIG_DIR="+abs(a.Dir))
+	} else {
+		cmd = exec.CommandContext(ctx, abs(wakewatch.LegionSSH), "-o", "BatchMode=yes", wakewatch.LegionHost, a.Remote("status"))
+	}
+	cmd.WaitDelay = time.Second
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if ctx.Err() != nil {
+		return nil, fmt.Errorf("no answer in %v", signinWait)
+	}
+	if err != nil {
+		lines := strings.Split(strings.TrimSpace(stderr.String()), "\n")
+		return nil, fmt.Errorf("%v: %s", err, strings.TrimSpace(lines[len(lines)-1]))
+	}
+	return out, nil
 }

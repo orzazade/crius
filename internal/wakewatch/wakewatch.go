@@ -3,7 +3,8 @@
 // tab of a team idle for 10 min (noting when its last reply says CLEAR-READY), a lead tab idle an hour whatever runs in
 // its background and watched or not, the
 // Mac short of disk or deep in swap, and a tool the team needs (cmux, gh, az, bun, docker) that fails or does not answer, and a lead still in the same session
-// 20 min after its DONE, and a bus log no waiter of Crius's covers for 10 min. When ~/.crius/wakewatch-projects exists, only the projects it names are watched.
+// 20 min after its DONE, a bus log no waiter of Crius's covers for 10 min, and a Max account whose sign-in ends in
+// under 4 days, has ended, or cannot be read (signin.go, once per account and day). When ~/.crius/wakewatch-projects exists, only the projects it names are watched.
 // It runs as its own launchd job, outside
 // any chat, and wakes Crius by typing one line into Crius's own tab (when it cannot, the line goes on crius.log as an
 // ALERT, which Crius's waiter wakes on): Crius then acts, and sends the owner a push
@@ -118,6 +119,8 @@ type Deps struct {
 	Claudes func() ([]Claude, error)
 	// Thread reads one T3 Code thread (t3Idle).
 	Thread func(id string) (T3Thread, error)
+	// Signin gives `claude auth status` (JSON) of one Max account, read on its own machine (signin.go).
+	Signin func(a Account) ([]byte, error)
 }
 
 // ErrTabGone marks a Restore of a surface id cmux has no tab for (it answers not_found): the tab was closed, so it keeps
@@ -167,6 +170,7 @@ type state struct {
 	Rig         map[string]string    // project -> the down rig services last said to its leads (rigDown)
 	RigBoot     map[string]time.Time // project -> the boot rigDown last looked at for it: a newer one is a boot since
 	TabsGone    map[string]bool      // surface ids cmux has no tab for, said once in wakewatch-state.log while they stay gone (wrongFolder)
+	Signin      map[string]string    // sign-in alert key (account and state) -> the day it was raised (signin.go)
 }
 
 // waitGap is when a bus log was first seen with no waiter, and whether that gap was said to Crius. From is the log's size
@@ -258,6 +262,7 @@ func Run(d Deps) error {
 	alerts = append(alerts, resources(d, &st)...)
 	alerts = append(alerts, load(d)...)
 	alerts = append(alerts, tools(d)...)
+	alerts = append(alerts, signins(d, &st)...)
 	alerts = append(alerts, unwaited(d, &st, watch)...)
 	alerts = append(alerts, unnamed(d, screens)...)
 	alerts = append(alerts, hookLog(d.Home, &st)...)
