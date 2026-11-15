@@ -22,7 +22,7 @@ import (
 )
 
 // providerCall bounds one sqlite3, t3, ssh or crius-tsend call of the provider-error sweep.
-const providerCall = 45 * time.Second
+const providerCall = 30 * time.Second
 
 // t3State is T3 Code's own store. `t3 thread show` prints messages only, not a run's error item, so the sweep reads the
 // store, read-only.
@@ -40,7 +40,8 @@ FROM orchestration_v2_projection_threads t
 JOIN orchestration_v2_projection_runs r ON r.thread_id = t.thread_id
  AND r.ordinal = (SELECT max(ordinal) FROM orchestration_v2_projection_runs WHERE thread_id = t.thread_id)
 LEFT JOIN projection_projects p ON p.project_id = t.project_id
-WHERE t.deleted_at IS NULL AND t.archived_at IS NULL AND r.status IN ('failed', 'interrupted')`
+WHERE t.deleted_at IS NULL AND t.archived_at IS NULL AND p.deleted_at IS NULL AND p.archived_at IS NULL
+ AND r.status IN ('failed', 'interrupted')`
 
 // failedThreads reads T3 Code's store with sqlite3 (mode=ro: the T3 server keeps it open in WAL mode).
 func failedThreads() ([]wakewatch.FailedThread, error) {
@@ -55,7 +56,8 @@ func failedThreads() ([]wakewatch.FailedThread, error) {
 	return parseFailedThreads(out)
 }
 
-// parseFailedThreads reads `sqlite3 -json` rows of failedQuery; no output is no rows.
+// parseFailedThreads reads `sqlite3 -json` rows of failedQuery; no output is no rows. A row it cannot read is named in
+// the error and the others are still given.
 func parseFailedThreads(b []byte) ([]wakewatch.FailedThread, error) {
 	if len(bytes.TrimSpace(b)) == 0 {
 		return nil, nil
@@ -65,12 +67,14 @@ func parseFailedThreads(b []byte) ([]wakewatch.FailedThread, error) {
 		return nil, fmt.Errorf("T3 failed threads: %v", err)
 	}
 	var out []wakewatch.FailedThread
+	var errs []error
 	for _, r := range rows {
 		th := wakewatch.FailedThread{ID: r.ID, Title: r.Title, Project: r.Project, Run: r.Run, Status: r.Status}
 		if r.Ended != "" {
 			t, err := time.Parse(time.RFC3339Nano, r.Ended)
 			if err != nil {
-				return nil, fmt.Errorf("T3 thread %s: run end %q: %v", r.ID, r.Ended, err)
+				errs = append(errs, fmt.Errorf("T3 thread %s: run end %q: %v", r.ID, r.Ended, err))
+				continue
 			}
 			th.Ended = t
 		}
@@ -79,13 +83,14 @@ func parseFailedThreads(b []byte) ([]wakewatch.FailedThread, error) {
 				Failure struct{ Class, Message string }
 			}
 			if err := json.Unmarshal([]byte(r.Error), &e); err != nil {
-				return nil, fmt.Errorf("T3 thread %s: its error item: %v", r.ID, err)
+				errs = append(errs, fmt.Errorf("T3 thread %s: its error item: %v", r.ID, err))
+				continue
 			}
 			th.Class, th.Message = e.Failure.Class, e.Failure.Message
 		}
 		out = append(out, th)
 	}
-	return out, nil
+	return out, errors.Join(errs...)
 }
 
 // sendThread sends a thread one message with `t3 thread send` (a turn of its own when it is idle), the text on stdin.
@@ -163,8 +168,14 @@ func providerDeps(now time.Time) wakewatch.ProviderDeps {
 }
 
 // fixtureDeps reads a folder of recorded data instead: threads.json (sqlite3 -json rows of failedQuery),
-// provider-tabs.txt, and one <box>-<session>-<window>.txt screen per tab (`tmux capture-pane -p -e`). It sends nothing.
+// provider-tabs.txt, one <box>-<session>-<window>.txt screen per tab (`tmux capture-pane -p -e`), and now.txt, the
+// sweep's clock for the recording (RFC 3339; the real clock without it). It sends nothing.
 func fixtureDeps(dir string, now time.Time) (wakewatch.ProviderDeps, error) {
+	if b, err := os.ReadFile(filepath.Join(dir, "now.txt")); err == nil {
+		if now, err = time.Parse(time.RFC3339, strings.TrimSpace(string(b))); err != nil {
+			return wakewatch.ProviderDeps{}, fmt.Errorf("now.txt: %v", err)
+		}
+	}
 	home, err := os.MkdirTemp("", "provider-demo-")
 	if err != nil {
 		return wakewatch.ProviderDeps{}, err
@@ -195,22 +206,18 @@ func fixtureDeps(dir string, now time.Time) (wakewatch.ProviderDeps, error) {
 	}, nil
 }
 
-// providerCmd is `crius-wakewatch provider-errors [-dry] [-fixtures DIR]`: one sweep, and what it saw and did. -dry looks
-// at the live sessions and sends nothing; -fixtures reads recorded data (and sends nothing). Exit 1 when it could not
-// look at something or could not do what it meant to.
+// providerCmd is `crius-wakewatch provider-errors [-fixtures DIR]`: one dry sweep of the live sessions (or of recorded
+// data), and what it saw and would do. It sends, posts and saves nothing: only the 5-min run restarts, so two runs never
+// race on the state. Exit 1 when it could not look at something.
 func providerCmd(args []string, w io.Writer) int {
-	dry, dir := false, ""
-	for i := 0; i < len(args); i++ {
-		switch {
-		case args[i] == "-dry":
-			dry = true
-		case args[i] == "-fixtures" && i+1 < len(args):
-			i++
-			dir = args[i]
-		default:
-			fmt.Fprintln(w, "usage: crius-wakewatch provider-errors [-dry] [-fixtures DIR]")
-			return 2
-		}
+	dir := ""
+	switch {
+	case len(args) == 0:
+	case len(args) == 2 && args[0] == "-fixtures":
+		dir = args[1]
+	default:
+		fmt.Fprintln(w, "usage: crius-wakewatch provider-errors [-fixtures DIR]")
+		return 2
 	}
 	now := time.Now()
 	d := providerDeps(now)
@@ -222,15 +229,16 @@ func providerCmd(args []string, w io.Writer) int {
 		}
 		defer os.RemoveAll(d.Home)
 	}
-	d.Dry = d.Dry || dry
+	d.Dry = true
 	if dir == "" {
 		if last, err := wakewatch.ProviderLastRun(d.Home); err == nil && !last.IsZero() {
 			fmt.Fprintf(w, "last sweep by the 5-min watchdog run: %s\n", last.Local().Format("2006-01-02 15:04:05"))
 		}
 	}
 	rep, err := wakewatch.ProviderErrors(d)
+	now = d.Now
 	fmt.Fprintf(w, "provider-error sweep %s: %d failed or interrupted T3 thread(s) read, %d remote tab(s) read, %d stopped by a provider error\n",
-		now.Format("15:04:05"), rep.Threads, rep.Tabs, rep.Stopped)
+		now.Local().Format("2006-01-02 15:04:05"), rep.Threads, rep.Tabs, rep.Stopped)
 	for _, a := range rep.Actions {
 		fmt.Fprintln(w, "  "+a)
 	}

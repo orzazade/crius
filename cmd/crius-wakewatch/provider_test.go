@@ -36,12 +36,10 @@ func TestParseFailedThreadsReadsT3sStore(t *testing.T) {
 	if th, _ := parseFailedThreads(nil); th != nil {
 		t.Errorf("no rows: %v", th)
 	}
-	if _, err := parseFailedThreads([]byte(`[{"id":"x","ended":"yesterday"}]`)); err == nil {
-		t.Error("a bad end time read as fine")
-	}
 }
 
-// The morning demo: a fixture run prints the restarts it would send, and only for the provider errors.
+// The morning demo: a fixture run (its clock from now.txt: 11-13 09:51, 5 min after the 403) prints the restarts it
+// would send, and only for the provider errors.
 func TestProviderCmdFixtureRun(t *testing.T) {
 	var out strings.Builder
 	code := providerCmd([]string{"-fixtures", filepath.Join("testdata", "provider-demo")}, &out)
@@ -63,5 +61,13 @@ func TestProviderCmdFixtureRunSaysWhatItCouldNotRead(t *testing.T) {
 	if code := providerCmd([]string{"-fixtures", dir}, &out); code != 1 || !strings.Contains(out.String(), "could not look at the T3 Code threads") ||
 		!strings.Contains(out.String(), "could not look at tab legion quotes:dev") {
 		t.Fatalf("exit %d:\n%s", code, out.String())
+	}
+}
+
+// Review P2-8: one row it cannot read is named, and the others are still read.
+func TestParseFailedThreadsKeepsGoodRows(t *testing.T) {
+	ths, err := parseFailedThreads([]byte(`[{"id":"x","ended":"yesterday"},{"id":"y","status":"failed","ended":"2026-11-13T09:46:58.871Z"}]`))
+	if err == nil || !strings.Contains(err.Error(), "T3 thread x") || len(ths) != 1 || ths[0].ID != "y" {
+		t.Fatalf("%v %v", ths, err)
 	}
 }

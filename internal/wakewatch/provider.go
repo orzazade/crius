@@ -24,6 +24,7 @@ const (
 	providerAgain = 15 * time.Minute // a stop this soon after a restart is said to Crius, not restarted again
 	providerLoud  = time.Hour        // a "could not look" is said to Crius when it starts, then once an hour while it lasts
 	providerKeep  = 7 * 24 * time.Hour
+	providerOld   = 12 * time.Hour // a thread stopped longer ago was left so on purpose (Crius swept every 5 min since 11-13)
 )
 
 // ThreadText is what a T3 thread stopped by a provider error is sent; %s is the error.
@@ -89,21 +90,24 @@ func ProviderStateFile(home string) string {
 func ProviderTabsFile(home string) string { return filepath.Join(home, "provider-tabs.txt") }
 
 var (
-	// providerRe: a provider or API failure, not the session's own work (403 Cloudflare 11-13, a 5xx, overloaded).
-	providerRe = regexp.MustCompile(`(?i)API Error|Cloudflare|overloaded|\b(?:500|502|503|504|529)\b`)
-	// quotaRe: a usage limit is not cured by "carry on": it waits for its reset, which the quota checks handle.
-	quotaRe = regexp.MustCompile(`(?i)rate limit|usage limit|\b429\b`)
+	// providerRe: Claude Code's or T3's API failure line (403 Cloudflare 11-13, a 5xx, overloaded, the network), not the
+	// session's own words: a bare "503" in a reply is not one.
+	providerRe = regexp.MustCompile(`(?i)API Error|Cloudflare|overloaded_error`)
+	// notCuredRe: what "carry on" does not cure. A usage limit waits for its reset (the quota checks); a 401 or a
+	// sign-in the owner must renew waits for him (the 403 Cloudflare line says "Please run /login" too, and is cured).
+	notCuredRe = regexp.MustCompile(`(?i)rate limit|usage limit|\b429\b|\b401\b|authentication_error|could not authenticate|invalid api key|OAuth token`)
 )
 
 // providerError says whether an error text is a provider error worth one carry-on.
 func providerError(text string) bool {
-	return providerRe.MatchString(text) && !quotaRe.MatchString(text) && !strings.Contains(text, "Retrying in")
+	return providerRe.MatchString(text) && !notCuredRe.MatchString(text) && !strings.Contains(text, "Retrying in")
 }
 
 // ProviderStop gives the error line a tab's last turn died on, when the tab sits at an idle, empty input box after a
 // provider error: no working line, no dialog, nothing typed in the box, and no ❓ ✅ ⏳ after the error (a later reply
-// that only mentions it). key names the stop: the error line and the "✻ … done <time>" line under it, so the same
-// stop read again keeps its key while the shell count beside it changes.
+// that only mentions it). key names the stop: the error line with the lines above it and the "✻ … done <time>" line
+// under it, so the same stop read again keeps its key while the shell count beside it changes, and a stop after a
+// restart differs from the one before, even with the same error and no "✻" line (the restart's text is above it).
 func ProviderStop(text string) (line, key string, ok bool) {
 	body, _, boxed := split(text)
 	if !boxed || spinning(text) || strings.Contains(text, "esc to interrupt") || LivePrompt(text) {
@@ -122,7 +126,13 @@ func ProviderStop(text string) (line, key string, ok bool) {
 		if !providerError(t) || strings.ContainsAny(strings.Join(lines[i:], "\n"), "❓✅⏳") {
 			return "", "", false
 		}
-		k := t
+		var above []string // the error line and up to 5 lines above it, blank and "✻" lines left out
+		for j := i; j >= 0 && len(above) < 6; j-- {
+			if l := strings.TrimSpace(lines[j]); l != "" && !strings.HasPrefix(l, "✻") {
+				above = append(above, l)
+			}
+		}
+		k := strings.Join(above, "\n")
 		for _, l := range lines[i+1:] {
 			if l = strings.TrimSpace(l); strings.HasPrefix(l, "✻") {
 				parts := strings.SplitN(l, " · ", 3)
@@ -140,11 +150,8 @@ func ProviderStop(text string) (line, key string, ok bool) {
 // is also said to Crius (a "could not look" once an hour while it lasts).
 func ProviderErrors(d ProviderDeps) (ProviderReport, error) {
 	var rep ProviderReport
-	st, err := loadProvider(d.Home)
-	if err != nil {
-		return rep, err
-	}
 	var errs []error
+	st, loadErr := loadProvider(d.Home)
 	say := func(typ, text string) {
 		rep.Actions = append(rep.Actions, typ+": "+text)
 		if d.Dry {
@@ -157,6 +164,17 @@ func ProviderErrors(d ProviderDeps) (ProviderReport, error) {
 			errs = append(errs, fmt.Errorf("telling Crius: %v", err))
 		}
 	}
+	if loadErr != nil { // set aside, so one bad file does not stop every later sweep; what it held may be done again
+		aside := ProviderStateFile(d.Home) + ".bad"
+		if !d.Dry {
+			if err := os.Rename(ProviderStateFile(d.Home), aside); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		errs = append(errs, loadErr)
+		say("ALERT", fmt.Sprintf("the provider-error sweep could not read its state (%v); set aside as %s and started afresh", loadErr, aside))
+	}
+	prev := st.LastRun // a tab stop seen now happened after the last look
 	looked := map[string]bool{}
 	cannot := func(what string, err error) {
 		errs = append(errs, fmt.Errorf("could not look at %s: %v", what, err))
@@ -184,14 +202,26 @@ func ProviderErrors(d ProviderDeps) (ProviderReport, error) {
 			rep.Actions = append(rep.Actions, fmt.Sprintf("would restart %s after a provider error (%s)", who, errText))
 			return
 		}
+		// saved before the send: a restart that cannot be recorded is not sent, or every run would send it again
+		lastRestart, restartedBefore := st.Restarted[session]
+		st.Stops[key] = providerStop{d.Now, "restarted"}
+		st.Restarted[session] = d.Now
+		if err := saveProvider(d.Home, st); err != nil {
+			delete(st.Stops, key)
+			if restartedBefore {
+				st.Restarted[session] = lastRestart
+			} else {
+				delete(st.Restarted, session)
+			}
+			errs = append(errs, fmt.Errorf("not restarting %s: its state could not be saved: %v", who, err))
+			return
+		}
 		if err := send(); err != nil {
 			st.Stops[key] = providerStop{d.Now, "send failed"}
 			errs = append(errs, fmt.Errorf("restarting %s: %v", who, err))
 			say("ALERT", fmt.Sprintf("%s stopped on a provider error (%s) and the watchdog could not restart it: %v. Look at it", who, errText, err))
 			return
 		}
-		st.Stops[key] = providerStop{d.Now, "restarted"}
-		st.Restarted[session] = d.Now
 		say("INFO", fmt.Sprintf("watchdog restarted %s after a provider error (%s)", who, errText))
 	}
 
@@ -202,12 +232,12 @@ func ProviderErrors(d ProviderDeps) (ProviderReport, error) {
 	rep.Threads = len(threads)
 	for _, th := range threads {
 		text := th.Message
-		if th.Class == "usage_limit" || !providerError(text) {
-			continue
-		}
 		at := th.Ended
 		if at.IsZero() {
 			at = d.Now
+		}
+		if th.Class == "usage_limit" || !providerError(text) || d.Now.Sub(at) > providerOld {
+			continue
 		}
 		short := []rune(strings.Join(strings.Fields(text), " "))
 		text = string(short[:min(len(short), 120)])
@@ -231,7 +261,11 @@ func ProviderErrors(d ProviderDeps) (ProviderReport, error) {
 		if !ok {
 			continue
 		}
-		stop("tab "+t.String(), "tab "+t.String()+" "+key, "tab "+t.String(), line, d.Now, func() error {
+		at := d.Now
+		if !prev.IsZero() && prev.Before(at) {
+			at = prev
+		}
+		stop("tab "+t.String(), "tab "+t.String()+" "+key, "tab "+t.String(), line, at, func() error {
 			return d.SendTab(t, TabText)
 		})
 	}
@@ -260,15 +294,14 @@ func ProviderErrors(d ProviderDeps) (ProviderReport, error) {
 	return rep, errors.Join(errs...)
 }
 
-func loadProvider(home string) (providerState, error) {
-	st := providerState{}
+// loadProvider reads the state; one it cannot read gives an empty state and the error.
+func loadProvider(home string) (st providerState, err error) {
 	b, err := os.ReadFile(ProviderStateFile(home))
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return st, err
-	}
-	if err == nil {
-		if err := json.Unmarshal(b, &st); err != nil {
-			return st, fmt.Errorf("%s: %v", ProviderStateFile(home), err)
+	if errors.Is(err, fs.ErrNotExist) {
+		err = nil
+	} else if err == nil {
+		if jerr := json.Unmarshal(b, &st); jerr != nil {
+			st, err = providerState{}, fmt.Errorf("%s: %v", ProviderStateFile(home), jerr)
 		}
 	}
 	if st.Stops == nil {
@@ -280,7 +313,7 @@ func loadProvider(home string) (providerState, error) {
 	if st.Failing == nil {
 		st.Failing = map[string]time.Time{}
 	}
-	return st, nil
+	return st, err
 }
 
 // saveProvider writes the state through a temp file and a rename, so a run cut short never leaves half a file.

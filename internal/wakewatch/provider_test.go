@@ -233,3 +233,112 @@ func TestProviderErrorsDryDoesNothing(t *testing.T) {
 		t.Fatalf("dry run saved its state: %v", err)
 	}
 }
+
+// Review of 315b98e, P1-1: a 401 or an expired sign-in is not cured by "carry on" (the owner must sign in), though its
+// line also says "API Error" and "Please run /login"; nor is a reply that only names a status code.
+func TestProviderErrorsLeavesSignInAndPlainReplies(t *testing.T) {
+	signin := "Please run /login · API Error: 401 {\"type\":\"error\",\"error\":{\"type\":\"authentication_error\",\"message\":\"OAuth token has expired.\"}}"
+	s := pane(t, "legion-403.txt")
+	for name, line := range map[string]string{
+		"401":   signin,
+		"reply": "The staging server returned 503 on the health check, so I stopped there.",
+	} {
+		if l, _, ok := wakewatch.ProviderStop(strings.Replace(s, "Please run /login · API Error: 403 Attention Required! | Cloudflare", line, 1)); ok {
+			t.Errorf("%s: read as a provider stop: %q", name, l)
+		}
+	}
+	f := &fakeSweep{threads: []wakewatch.FailedThread{{ID: "b", Title: "AXI · qa", Run: "r", Status: "failed", Class: "provider_error",
+		Ended: time.Now(), Message: "Failed to authenticate. " + strings.TrimPrefix(signin, "Please run /login · ")}}}
+	if _, err := wakewatch.ProviderErrors(f.deps(t.TempDir(), time.Now())); err != nil || len(f.sentThread) != 0 {
+		t.Fatalf("err %v sent %q", err, f.sentThread)
+	}
+}
+
+// Review P1-2: a state file it cannot read is said to Crius and set aside; the sweep still runs.
+func TestProviderErrorsBadStateIsSaidAndSetAside(t *testing.T) {
+	home := t.TempDir()
+	testutil.Write(t, wakewatch.ProviderStateFile(home), "{\"Stops\": {")
+	f := &fakeSweep{threads: []wakewatch.FailedThread{cloudflare("run:9", time.Now())}}
+	_, err := wakewatch.ProviderErrors(f.deps(home, time.Now()))
+	if err == nil || len(f.sentThread) != 1 || len(f.posts) != 2 || !strings.Contains(f.posts[0], "could not read its state") {
+		t.Fatalf("err %v sent %q posts %q", err, f.sentThread, f.posts)
+	}
+	if _, err := os.Stat(wakewatch.ProviderStateFile(home) + ".bad"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wakewatch.ProviderErrors(f.deps(home, time.Now())); err != nil || len(f.sentThread) != 1 {
+		t.Fatalf("next run: err %v sent %q", err, f.sentThread)
+	}
+}
+
+// Review P1-3: a tab that dies again with the same error and no "✻" line under it is a new stop (the restart's text is
+// above it): Crius hears, nothing is typed.
+func TestProviderErrorsSameErrorAgainWithoutDoneLine(t *testing.T) {
+	home := t.TempDir()
+	testutil.Write(t, wakewatch.ProviderTabsFile(home), "legion quotes:dev\n")
+	s := pane(t, "legion-403.txt")
+	done := "✻ Cogitated for 4m 4s · done 11:57 PM · 2 shells still running"
+	if !strings.Contains(s, done) {
+		t.Fatal("fixture changed")
+	}
+	first := strings.Replace(s, done, "", 1)
+	errLine := "⏺ Please run /login · API Error: 403 Attention Required! | Cloudflare"
+	again := strings.Replace(first, errLine, errLine+"\n\n> "+wakewatch.TabText+"\n\n"+errLine, 1)
+	f := &fakeSweep{screens: map[string]string{"legion quotes:dev": first}}
+	now := time.Date(2026, 11, 16, 2, 0, 0, 0, time.UTC)
+	if _, err := wakewatch.ProviderErrors(f.deps(home, now)); err != nil || len(f.sentTab) != 1 {
+		t.Fatalf("first: %v %q", err, f.sentTab)
+	}
+	f.screens["legion quotes:dev"] = again
+	if _, err := wakewatch.ProviderErrors(f.deps(home, now.Add(5*time.Minute))); err != nil || len(f.sentTab) != 1 ||
+		len(f.posts) != 2 || !strings.Contains(f.posts[1], "stopped again") {
+		t.Fatalf("again: %v %q %q", err, f.sentTab, f.posts)
+	}
+}
+
+// Review P2-4: a restart whose state cannot be saved is not sent (else every run sends it again).
+func TestProviderErrorsUnsavedRestartIsNotSent(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Dir(wakewatch.ProviderStateFile(home))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0o700) })
+	f := &fakeSweep{threads: []wakewatch.FailedThread{cloudflare("run:9", time.Now())}}
+	_, err := wakewatch.ProviderErrors(f.deps(home, time.Now()))
+	if err == nil || !strings.Contains(err.Error(), "its state could not be saved") || len(f.sentThread) != 0 {
+		t.Fatalf("err %v sent %q", err, f.sentThread)
+	}
+}
+
+// Review P2-5: a tab that dies 12 min after its restart, seen by the run 20 min after it, still counts as within 15
+// min: it died after the run at 15 min saw it working.
+func TestProviderErrorsTabStopTimedFromTheLastLook(t *testing.T) {
+	home := t.TempDir()
+	testutil.Write(t, wakewatch.ProviderTabsFile(home), "legion quotes:dev\n")
+	s := pane(t, "legion-403.txt")
+	f := &fakeSweep{screens: map[string]string{"legion quotes:dev": s}}
+	now := time.Date(2026, 11, 16, 3, 0, 0, 0, time.UTC)
+	for i, screen := range []string{s, pane(t, "legion-idle.txt"), pane(t, "legion-idle.txt"), pane(t, "legion-idle.txt"),
+		strings.Replace(s, "done 11:57 PM", "done 12:12 AM", 1)} {
+		f.screens["legion quotes:dev"] = screen
+		if _, err := wakewatch.ProviderErrors(f.deps(home, now.Add(time.Duration(i)*5*time.Minute))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(f.sentTab) != 1 || len(f.posts) != 2 || !strings.Contains(f.posts[1], "stopped again") {
+		t.Fatalf("sent %q posts %q", f.sentTab, f.posts)
+	}
+}
+
+// Review P2-6: a thread stopped long ago was left so; the first run after an install does not wake it.
+func TestProviderErrorsLeavesOldStops(t *testing.T) {
+	now := time.Now()
+	f := &fakeSweep{threads: []wakewatch.FailedThread{cloudflare("run:9", now.Add(-13*time.Hour))}}
+	if _, err := wakewatch.ProviderErrors(f.deps(t.TempDir(), now)); err != nil || len(f.sentThread) != 0 {
+		t.Fatalf("err %v sent %q", err, f.sentThread)
+	}
+}
