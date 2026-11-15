@@ -63,6 +63,12 @@ func deadRoles(d Deps, st *state, ss []Session, sesErr error, watch projects, pa
 			failed = append(failed, err.Error())
 			continue
 		}
+		// 11-15 06:0x, live: cortex · lead, a T3 Code thread, was called dead and told to crius-spawn -resume, which opens a
+		// cmux tab. A thread has no Claude between its turns: t3Idle watches it instead.
+		if roleThread(d.Home, r) != "" {
+			delete(st.Roles, k)
+			continue
+		}
 		if live[r.SessionID] {
 			st.Roles[k] = roleSeen{Live: d.Now}
 			continue

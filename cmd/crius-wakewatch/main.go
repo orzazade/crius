@@ -97,7 +97,8 @@ func main() {
 		}, States: func() ([]sessionstate.State, error) {
 			return sessionstate.List(filepath.Join(store.Home(), "sessions"))
 		}, Restore: restore, Waiters: waiters, Typed: outbox.Typed, Procs: procs,
-		SendTab: func(title, text string) error { return outbox.Send(store.Home(), title, text) }, Boot: bootTime, Claudes: claudes})
+		SendTab: func(title, text string) error { return outbox.Send(store.Home(), title, text) }, Boot: bootTime, Claudes: claudes,
+		Thread: thread})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, time.Now().Format(time.RFC3339), "crius-wakewatch:", err)
 		os.Exit(1)

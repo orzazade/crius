@@ -116,6 +116,8 @@ type Deps struct {
 	Boot func() (time.Time, error)
 	// Claudes lists every running claude process with the environment it was started with (paid).
 	Claudes func() ([]Claude, error)
+	// Thread reads one T3 Code thread (t3Idle).
+	Thread func(id string) (T3Thread, error)
 }
 
 // ErrTabGone marks a Restore of a surface id cmux has no tab for (it answers not_found): the tab was closed, so it keeps
@@ -241,6 +243,7 @@ func Run(d Deps) error {
 	tabsGone := st.TabsGone
 	alerts = append(alerts, wrongFolder(d, &st, hv)...)
 	alerts = append(alerts, deadRoles(d, &st, ss, sesErr, watch, park)...)
+	alerts = append(alerts, t3Idle(d, watch, park)...)
 	screens, scrErr := d.Screens()
 	alerts = append(alerts, rearm(d, &st, ss, sesErr, screens, scrErr, watch, park)...)
 	alerts = append(alerts, rigDown(d, &st, ss, sesErr, watch, park)...)
@@ -293,7 +296,7 @@ func Run(d Deps) error {
 		if err != nil {
 			sendErr = err
 		}
-		if (strings.HasPrefix(a[0], "bus:") || strings.HasPrefix(a[0], "folder:") || strings.HasPrefix(a[0], "restore:") || strings.HasPrefix(a[0], "handed:") || strings.HasPrefix(a[0], "dead:") || strings.HasPrefix(a[0], "waited:")) && (err == nil || d.HandedOver != nil && d.HandedOver(err)) {
+		if (strings.HasPrefix(a[0], "bus:") || strings.HasPrefix(a[0], "folder:") || strings.HasPrefix(a[0], "restore:") || strings.HasPrefix(a[0], "handed:") || strings.HasPrefix(a[0], "dead:") || strings.HasPrefix(a[0], "waited:") || strings.HasPrefix(a[0], "t3idle:")) && (err == nil || d.HandedOver != nil && d.HandedOver(err)) {
 			st.Typed[a[0]] = d.Now
 		}
 		// Crius's waiter wakes on a bus line: a wake that cannot be typed goes there, so none is lost (S2, 10-22).

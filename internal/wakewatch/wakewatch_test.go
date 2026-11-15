@@ -53,6 +53,9 @@ type fake struct {
 	claudeErr error
 	tabs      [][2]string // title, text typed into a tab other than Crius's
 	tabErr    error
+	threads   map[string]T3Thread // T3 Code thread id -> what t3 thread show says of it
+	threadErr error
+	read      []string // every thread id read
 }
 
 func (f *fake) deps(home string, now time.Time) Deps {
@@ -84,6 +87,17 @@ func (f *fake) deps(home string, now time.Time) Deps {
 		Procs:   func() ([]Proc, error) { return f.procs, f.procErr },
 		Claudes: func() ([]Claude, error) { return f.claudes, f.claudeErr },
 		Boot:    func() (time.Time, error) { return f.boot, f.bootErr },
+		Thread: func(id string) (T3Thread, error) {
+			f.read = append(f.read, id)
+			if f.threadErr != nil {
+				return T3Thread{}, f.threadErr
+			}
+			th, ok := f.threads[id]
+			if !ok {
+				return T3Thread{}, fmt.Errorf("Thread %s is no longer available.", id)
+			}
+			return th, nil
+		},
 		SendTab: func(title, text string) error {
 			if f.tabErr != nil {
 				return f.tabErr
