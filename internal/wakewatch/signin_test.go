@@ -100,7 +100,7 @@ func TestSigninRenewCommandIsExact(t *testing.T) {
 			}
 		case "legion-max1":
 			seen++
-			want := `~/.crius/state/quotes/build/legion/E -t crius@100.109.19.101 'CLAUDE_CONFIG_DIR=~/.claude-work-max1 "$(ls -d ~/.nvm/versions/node/*/bin/claude ~/.local/bin/claude 2>/dev/null | tail -1)" auth login'`
+			want := `~/.crius/state/quotes/build/legion/E -t crius@100.109.19.101 'CLAUDE_CONFIG_DIR=~/.claude-work-max1 "$(ls -dv ~/.nvm/versions/node/*/bin/claude ~/.local/bin/claude 2>/dev/null | tail -1)" auth login'`
 			if got := a.Renew(); got != want {
 				t.Fatalf("got  %s\nwant %s", got, want)
 			}
@@ -191,5 +191,13 @@ func TestSigninTableShowsEachAccount(t *testing.T) {
 	}
 	if n := strings.Count(strings.TrimSpace(out), "\n") + 1; n < len(Accounts)+1 {
 		t.Fatalf("%d lines for %d accounts:\n%s", n, len(Accounts), out)
+	}
+}
+
+func TestSigninNotJSONNeverQuotesTheOutput(t *testing.T) {
+	// plain text from a future CLI could carry the account's email: the alert names only its size
+	r := signin(Accounts[0], []byte("Logged in as someone@example.com\n"), nil, signinNow)
+	if r.State != SigninUnread || strings.Contains(r.Why, "example.com") || !strings.Contains(r.Why, "33 bytes") {
+		t.Fatal(r.State, r.Why)
 	}
 }

@@ -32,7 +32,7 @@ const (
 	LegionHost = "crius@100.109.19.101"
 	// LegionClaude finds the CLI on the Legion: it lives under nvm, which a non-interactive ssh shell has not on its PATH
 	// (11-15: a bare `claude` there was "command not found", so the status printed no end date).
-	LegionClaude = `"$(ls -d ~/.nvm/versions/node/*/bin/claude ~/.local/bin/claude 2>/dev/null | tail -1)"`
+	LegionClaude = `"$(ls -dv ~/.nvm/versions/node/*/bin/claude ~/.local/bin/claude 2>/dev/null | tail -1)"`
 )
 
 // Account is one Max config dir: Host "" is the Mac, "legion" the Legion; Dir is written as that machine's shell reads it.
@@ -113,7 +113,8 @@ func signin(a Account, b []byte, err error, now time.Time) SigninRow {
 		LoginExpiresAt *string `json:"loginExpiresAt"`
 	}
 	if err := json.Unmarshal(b, &s); err != nil {
-		r.Why = fmt.Sprintf("could not read claude auth status: not JSON (%v): %q", err, first(string(b), 80))
+		// the output itself is not quoted: plain text from a future CLI could carry the account's email
+		r.Why = fmt.Sprintf("could not read claude auth status: not JSON (%d bytes: %v)", len(b), err)
 		return r
 	}
 	if s.LoggedIn == nil {
@@ -148,14 +149,6 @@ func signin(a Account, b []byte, err error, now time.Time) SigninRow {
 func span(d time.Duration) string {
 	h := int(d / time.Hour)
 	return fmt.Sprintf("%dd %dh", h/24, h%24)
-}
-
-func first(s string, n int) string {
-	s = strings.TrimSpace(s)
-	if r := []rune(s); len(r) > n {
-		return string(r[:n]) + "…"
-	}
-	return s
 }
 
 // signins gives one alert per account that is not OK, raised only when due: once per account, state and day (the day as
