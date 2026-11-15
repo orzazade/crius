@@ -46,7 +46,8 @@ func TestThreadReadsStatusUpdateAndLastReply(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := time.Date(2026, 11, 15, 1, 47, 57, 723e6, time.UTC)
-	if th.Status != "completed" || th.Active || !th.Updated.Equal(want) || th.LastReply != "open the PR into envhub and post NEED-QA. ✅" {
+	if th.Status != "completed" || th.Active || th.Pending != 0 || !th.Updated.Equal(want) ||
+		th.LastReply != "open the PR into envhub and post NEED-QA. ✅" || !th.Unanswered {
 		t.Fatalf("got %+v", th)
 	}
 	b, _ := os.ReadFile(filepath.Join(dir, "calls"))
@@ -56,6 +57,12 @@ func TestThreadReadsStatusUpdateAndLastReply(t *testing.T) {
 	put(t, dir, "out", strings.Replace(showJSON, `"activeRunId":null`, `"activeRunId":"run:7"`, 1))
 	if th, err := thread("x"); err != nil || !th.Active {
 		t.Fatalf("an open run: %+v %v", th, err)
+	}
+	put(t, dir, "out", strings.Replace(strings.Replace(showJSON, `"pendingRequestCount":0`, `"pendingRequestCount":2`, 1),
+		`,
+{"role":"user","runId":"r197","text":"[queue q3] owner: go"}`, "", 1))
+	if th, err := thread("x"); err != nil || th.Pending != 2 || th.Unanswered {
+		t.Fatalf("two open requests, the reply last: %+v %v", th, err)
 	}
 }
 

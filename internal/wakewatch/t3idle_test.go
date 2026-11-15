@@ -2,6 +2,8 @@ package wakewatch
 
 import (
 	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -132,7 +134,7 @@ func TestAT3ReadFailureIsLoud(t *testing.T) {
 	runOnce(t, home, f, t0)
 	var hit []string
 	for _, s := range f.sent {
-		if strings.Contains(s, "T3 thread idle check failed to look") {
+		if strings.Contains(s, "T3 thread idle check failed to look at") {
 			hit = append(hit, s)
 		}
 	}
@@ -159,5 +161,93 @@ func TestAT3ThreadRoleIsNotADeadRole(t *testing.T) {
 	}
 	if l := leadLines(t, home); len(l) != 0 {
 		t.Fatalf("its lead was told: %q", l)
+	}
+}
+
+// Review of 595471e: a message to the thread after its last reply that got no answer is owed work whatever that reply's
+// emoji, and a request (an approval or a question) open over 10 min stops a thread that still shows a run.
+func TestAT3ThreadWithAnUnansweredMessageOrAnOpenRequestWakesCrius(t *testing.T) {
+	home := threadHome(t, "api", "ms")
+	f := &fake{threads: map[string]T3Thread{
+		"th-api": {Status: "completed", Updated: t0.Add(-20 * time.Minute), LastReply: "Which tenant? ❓", Unanswered: true},
+		"th-ms":  {Status: "running", Active: true, Pending: 1, Updated: t0.Add(-20 * time.Minute), LastReply: "running the suite"},
+	}}
+	runOnce(t, home, f, t0)
+	if w := t3Wakes(f, "th-api"); len(w) != 1 || !strings.Contains(w[0], "a message to it after its last reply has no answer") {
+		t.Errorf("unanswered: %q", w)
+	}
+	if w := t3Wakes(f, "th-ms"); len(w) != 1 || !strings.Contains(w[0], "waits on 1 open request(s)") {
+		t.Errorf("open request: %q", w)
+	}
+}
+
+// Review of 595471e: a bus line long ago does not keep a ⏳ thread quiet for ever; its 45 min count from that line.
+func TestAnOldBusLineDoesNotSilenceAnHourglassThread(t *testing.T) {
+	home := threadHome(t, "ms")
+	f := &fake{threads: map[string]T3Thread{
+		"th-ms": {Status: "completed", Updated: t0.Add(-4 * time.Hour), LastReply: "G150 runs as job bmjw2a8vk. ⏳"},
+	}}
+	testutil.Write(t, filepath.Join(home, "bus", "quotes.log"),
+		stamp(t0.Add(-230*time.Minute))+" INFO quotes:ms -> quotes:lead — G150 3 of 5 green\n")
+	runOnce(t, home, f, t0)
+	if w := t3Wakes(f, "th-ms"); len(w) != 1 || !strings.Contains(w[0], "idle 240 min") || !strings.Contains(w[0], "no bus line from it for 230 min") {
+		t.Fatalf("got %q", w)
+	}
+}
+
+// Review of 595471e: a role whose WAIT still runs stays quiet, as in the tab check; one with no reply in the messages read
+// says so.
+func TestAT3ThreadOnAWaitStaysQuietAndAnEmptyReplyIsNamed(t *testing.T) {
+	home := threadHome(t, "api", "ms")
+	f := &fake{threads: map[string]T3Thread{
+		"th-api": {Status: "completed", Updated: t0.Add(-30 * time.Minute), LastReply: "done ✅"},
+		"th-ms":  {Status: "completed", Updated: t0.Add(-30 * time.Minute)},
+	}}
+	testutil.Write(t, filepath.Join(home, "bus", "quotes.log"),
+		stamp(t0.Add(-31*time.Minute))+" WAIT quotes:api -> quotes:lead — waiting for the env004 deploy\n")
+	runOnce(t, home, f, t0)
+	if w := t3Wakes(f, "th-api"); len(w) != 0 {
+		t.Errorf("a running WAIT woke Crius: %q", w)
+	}
+	if w := t3Wakes(f, "th-ms"); len(w) != 1 || !strings.Contains(w[0], "No reply in its latest messages.") {
+		t.Errorf("empty reply: %q", w)
+	}
+}
+
+// Review of 595471e: each role's failure has its own key, so one does not hold back another's, and once t3 hangs the
+// other threads are not read on that run (each call would wait 10 s).
+func TestAHungT3StopsTheRunsOtherReadsAndEachRoleFailsOnItsOwn(t *testing.T) {
+	home := threadHome(t, "api", "ms")
+	f := &fake{threadErr: fmt.Errorf("t3 thread show: %w (10s)", ErrT3NoAnswer)}
+	runOnce(t, home, f, t0)
+	if len(f.read) != 1 {
+		t.Errorf("read %d threads after t3 hung: %q", len(f.read), f.read)
+	}
+	var hit []string
+	for _, s := range f.sent {
+		if strings.Contains(s, "T3 thread idle check failed to look at") {
+			hit = append(hit, s)
+		}
+	}
+	if len(hit) != 2 || !strings.Contains(strings.Join(hit, "\n"), "crius-spawn -close quotes") {
+		t.Fatalf("want one failure per role: %q", hit)
+	}
+}
+
+// Review of 595471e: a T3 lead whose GOAL says Done: 100% is finished, not idle, as in the tab check; one with work left
+// still wakes Crius.
+func TestAFinishedT3LeadStaysQuiet(t *testing.T) {
+	for done, want := range map[string]int{"100": 0, "80": 1} {
+		home := threadHome(t, "lead")
+		os.Remove(filepath.Join(home, "state", "crius", "t3-thread")) // Crius runs elsewhere: quotes:lead is a team thread
+		status := filepath.Join(home, "quotes-STATUS.md")
+		testutil.Write(t, filepath.Join(home, "projects.toml"), "[projects.quotes]\nleads = { lead = \""+status+"\" }\n")
+		testutil.Write(t, status, "# Quotes\n\n## GOAL (2026-10-21 09:00)\nGoal: quotes ship.\n- [x] B1 · 9c644de\n"+
+			"Done: "+done+"% (1 of 1 milestones)\nNext: nothing\nNeeds owner: nothing\n")
+		f := &fake{threads: map[string]T3Thread{"th-lead": {Status: "completed", Updated: t0.Add(-30 * time.Minute), LastReply: "done ✅"}}}
+		runOnce(t, home, f, t0)
+		if w := t3Wakes(f, "th-lead"); len(w) != want {
+			t.Errorf("Done: %s%%: want %d wakes, got %q", done, want, w)
+		}
 	}
 }

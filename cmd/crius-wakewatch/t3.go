@@ -39,7 +39,7 @@ func thread(id string) (wakewatch.T3Thread, error) {
 	if err := cmd.Run(); err != nil && !(errors.Is(err, exec.ErrWaitDelay) && ctx.Err() == nil) {
 		said, _, _ := strings.Cut(strings.TrimSpace(errOut.String()+"\n"+out.String()), "\n") // a stack trace after it says no more
 		if ctx.Err() != nil {
-			err = fmt.Errorf("no answer in %s", t3Timeout)
+			err = fmt.Errorf("%w (%s)", wakewatch.ErrT3NoAnswer, t3Timeout)
 		}
 		return wakewatch.T3Thread{}, fmt.Errorf("t3 thread show: %v: %s", err, said)
 	}
@@ -53,6 +53,7 @@ func parseThread(b []byte) (wakewatch.T3Thread, error) {
 		Thread *struct {
 			Status      string  `json:"status"`
 			ActiveRunID *string `json:"activeRunId"`
+			Pending     int     `json:"pendingRequestCount"`
 			UpdatedAt   string  `json:"updatedAt"`
 		} `json:"thread"`
 		Messages []struct {
@@ -70,12 +71,14 @@ func parseThread(b []byte) (wakewatch.T3Thread, error) {
 	if err != nil {
 		return wakewatch.T3Thread{}, fmt.Errorf("t3 thread show: thread updatedAt %q: %v", v.Thread.UpdatedAt, err)
 	}
-	th := wakewatch.T3Thread{Status: v.Thread.Status, Active: v.Thread.ActiveRunID != nil && *v.Thread.ActiveRunID != "", Updated: at}
+	th := wakewatch.T3Thread{Status: v.Thread.Status, Active: v.Thread.ActiveRunID != nil && *v.Thread.ActiveRunID != "",
+		Pending: v.Thread.Pending, Updated: at}
 	for i := len(v.Messages) - 1; i >= 0; i-- {
 		if v.Messages[i].Role == "assistant" {
 			th.LastReply = v.Messages[i].Text
 			break
 		}
+		th.Unanswered = th.Unanswered || v.Messages[i].Role == "user"
 	}
 	return th, nil
 }
