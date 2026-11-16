@@ -42,20 +42,34 @@ func fakeClaude(t *testing.T, body string) string {
 func TestAPIKeyCallIsKilledAtInit(t *testing.T) {
 	bin := fakeClaude(t, `echo '{"type":"system","subtype":"init","apiKeySource":"ANTHROPIC_API_KEY"}'; sleep 30; echo '{"type":"result","result":"[]"}'`)
 	start := time.Now()
-	_, err := ClaudeCLI{Bin: bin}.run(context.Background(), "haiku", "p", nil, nil)
+	_, err := ClaudeCLI{Bin: bin, ConfigDir: t.TempDir()}.run(context.Background(), "haiku", "p", nil, nil)
 	if !errors.Is(err, ErrAPIKey) || time.Since(start) > 10*time.Second {
 		t.Fatalf("err = %v after %s, want ErrAPIKey at once", err, time.Since(start))
 	}
 }
 
-// The child never gets the work persona's config folder.
-func TestChildEnvHasNoConfigDir(t *testing.T) {
+// Seen 11-16: the child always ran on ~/.claude (max1) because CLAUDE_CONFIG_DIR
+// was stripped, so max1's weekly limit parked every batch. The child now runs in
+// the picked account's folder, never the caller's, and gets no API credentials.
+func TestChildRunsInThePickedAccountFolder(t *testing.T) {
 	t.Setenv("CLAUDE_CONFIG_DIR", "/Users/x/.claude-work")
 	t.Setenv("ANTHROPIC_API_KEY", "sk-test")
-	bin := fakeClaude(t, `echo '{"type":"system","subtype":"init","apiKeySource":"none"}'; printf '{"type":"result","result":"[\\"%s|%s\\"]"}\n' "$CLAUDE_CONFIG_DIR" "$ANTHROPIC_API_KEY"`)
-	out, err := ClaudeCLI{Bin: bin}.run(context.Background(), "haiku", "p", nil, nil)
-	if err != nil || out != `["|"]` {
-		t.Fatalf("child saw %q (err %v), want both variables empty", out, err)
+	t.Setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+	bin := fakeClaude(t, `echo '{"type":"system","subtype":"init","apiKeySource":"none"}'; printf '{"type":"result","result":"[\\"%s|%s|%s\\"]"}\n' "$CLAUDE_CONFIG_DIR" "$ANTHROPIC_API_KEY" "$CLAUDE_CODE_USE_BEDROCK"`)
+	out, err := ClaudeCLI{Bin: bin, ConfigDir: "/Users/x/.claude-max2"}.run(context.Background(), "haiku", "p", nil, nil)
+	if err != nil || out != `["/Users/x/.claude-max2||"]` {
+		t.Fatalf("child saw %q (err %v), want the picked folder and no API variables", out, err)
+	}
+}
+
+// A ClaudeCLI with no picked folder never starts claude (it would fall back to
+// ~/.claude), and the run stops instead of parking every batch.
+func TestNoPickedFolderStopsTheRun(t *testing.T) {
+	ran := filepath.Join(t.TempDir(), "ran")
+	bin := fakeClaude(t, `touch `+ran+`; echo '{"type":"system","subtype":"init","apiKeySource":"none"}'; echo '{"type":"result","result":"[]"}'`)
+	_, err := ClaudeCLI{Bin: bin}.run(context.Background(), "haiku", "p", nil, nil)
+	if _, serr := os.Stat(ran); !errors.Is(err, ErrNoAccount) || serr == nil || !stop(context.Background(), err) {
+		t.Fatalf("err = %v, claude started: %v; want ErrNoAccount, no start, and a stop", err, serr == nil)
 	}
 }
 
@@ -67,7 +81,7 @@ func TestCallsPassASchemaWithTheBatchIDs(t *testing.T) {
 	bin := fakeClaude(t, `printf '%s\n' "$@" > `+args+`
 echo '{"type":"system","subtype":"init","apiKeySource":"none"}'
 echo '{"type":"result","result":"{\"items\":[]}"}'`)
-	c := ClaudeCLI{Bin: bin}
+	c := ClaudeCLI{Bin: bin, ConfigDir: t.TempDir()}
 	cs := []Candidate{{ID: "bus:a.log:12", Text: "x"}, {ID: "tx:u1", Text: "y"}}
 	check := func(step string) map[string]any {
 		data, _ := os.ReadFile(args)

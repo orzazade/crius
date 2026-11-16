@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/orzazade/crius/internal/ingest"
 	"github.com/orzazade/crius/internal/launch"
 	"github.com/orzazade/crius/internal/sessionstate"
 	"github.com/orzazade/crius/internal/testutil"
@@ -143,7 +144,7 @@ func TestPickReadsTheAccountsTheStoreAndTheProject(t *testing.T) {
 	testutil.Write(t, filepath.Join(home, "projects.toml"), "[transcripts]\nwork = \""+transcripts+
 		"\"\n[projects.quotes]\npersona = \"work\"\naccounts = [\"max\"]\npause_at = 90\n")
 	testutil.Write(t, filepath.Join(home, "accounts.toml"), "[[account]]\nname = \"max2\"\nplan = \"max\"\ndirs = [\""+m2+"\"]\n")
-	if name, dir, why, err := pick(home, "quotes", "max"); err != nil || name != "max2" || dir != m2 || !strings.Contains(why, "max2: quota not measured") {
+	if name, dir, why, err := ingest.PickAccount(home, "quotes", "max"); err != nil || name != "max2" || dir != m2 || !strings.Contains(why, "max2: quota not measured") {
 		t.Errorf("max: %q %q %q %v, want max2 in %s, not measured", name, dir, why, err, m2)
 	}
 	// owner 11-07: the enterprise account is never picked, even with a signed-in enterprise row
@@ -152,15 +153,15 @@ func TestPickReadsTheAccountsTheStoreAndTheProject(t *testing.T) {
 	testutil.Write(t, filepath.Join(home, "accounts.toml"), "[[account]]\nname = \"max2\"\nplan = \"max\"\ndirs = [\""+m2+
 		"\"]\n[[account]]\nname = \"work\"\nplan = \"enterprise\"\ndirs = [\""+ent+"\"]\n")
 	for _, want := range []string{"enterprise", "work"} {
-		if name, dir, _, err := pick(home, "quotes", want); err == nil || !strings.Contains(err.Error(), "no Max account "+want) {
+		if name, dir, _, err := ingest.PickAccount(home, "quotes", want); err == nil || !strings.Contains(err.Error(), "no Max account "+want) {
 			t.Errorf("%s: %q %q %v, want a refusal", want, name, dir, err)
 		}
 	}
 	testutil.Write(t, filepath.Join(home, "accounts.toml"), "[[account]]\nname = \"max2\"\nplan = \"max\"\ndirs = [\""+m2+"\"]\n")
-	if _, _, _, err := pick(home, "quotes", "max9"); err == nil || !strings.Contains(err.Error(), "no Max account max9") {
+	if _, _, _, err := ingest.PickAccount(home, "quotes", "max9"); err == nil || !strings.Contains(err.Error(), "no Max account max9") {
 		t.Errorf("max9: %v, want no such account", err)
 	}
-	if _, _, _, err := pick(home, "gone", "max"); err == nil || !strings.Contains(err.Error(), "no project gone") {
+	if _, _, _, err := ingest.PickAccount(home, "gone", "max"); err == nil || !strings.Contains(err.Error(), "no project gone") {
 		t.Errorf("gone: %v, want no such project", err)
 	}
 }

@@ -15,18 +15,25 @@ import (
 	"time"
 )
 
-// ClaudeCLI runs `claude -p` on the owner's Max login: haiku picks, sonnet writes.
-// Every ANTHROPIC_* and CLAUDE_CODE_USE_* variable is removed from the child's
+// ClaudeCLI runs `claude -p` on a Max login: haiku picks, sonnet writes. The
+// child runs in ConfigDir, the Max account folder the caller picked (quota.Pick,
+// through ingest.PickAccount); with none it is not started (ErrNoAccount). Every
+// ANTHROPIC_* and CLAUDE_CODE_USE_* variable is removed from the child's
 // environment, and an answer whose init message reports an apiKeySource other
 // than "none" is refused (ErrAPIKey), which stops the run. Same as landed's.
 type ClaudeCLI struct {
 	Bin        string // default "claude"
 	PickModel  string // default "haiku"
 	WriteModel string // default "sonnet"
+	ConfigDir  string // the picked Max account's config folder; required
 }
 
 // ErrAPIKey: the CLI ran on an API key, or its login could not be checked.
 var ErrAPIKey = errors.New("claude -p ran on an API key or a login it could not check; playbook runs only on a Max subscription login")
+
+// ErrNoAccount: no Max account folder was picked, so claude -p would run on the
+// default ~/.claude login whatever its quota (seen 11-16: max1 at its weekly limit).
+var ErrNoAccount = errors.New("claude -p has no Max account folder picked (ConfigDir is empty)")
 
 const pickPrompt = `You read candidate snippets from the records of AI coding teams: bus log lines, session transcript replies, and the owner's own turns.
 Keep a candidate only when it states a finding another session could reuse on a later, different task: a tactic that worked (with evidence), a trap to avoid, a tool or version fact, a team or harness fact, or a lasting owner preference or correction.
@@ -242,10 +249,9 @@ func decodeArray(s string, v any) error {
 	return json.NewDecoder(strings.NewReader(s[i:])).Decode(v)
 }
 
-// cliEnv is the child's environment: no API credentials, and no
-// CLAUDE_CONFIG_DIR, so claude -p always uses the personal Max login in
-// ~/.claude, never the work persona's enterprise login.
-func cliEnv() []string {
+// cliEnv is the child's environment: no API credentials, and CLAUDE_CONFIG_DIR
+// set to dir, the picked Max account's folder, never the caller's own.
+func cliEnv(dir string) []string {
 	var env []string
 	for _, kv := range os.Environ() {
 		if strings.HasPrefix(kv, "ANTHROPIC_") || strings.HasPrefix(kv, "CLAUDE_CODE_USE_") ||
@@ -254,13 +260,16 @@ func cliEnv() []string {
 		}
 		env = append(env, kv)
 	}
-	return env
+	return append(env, "CLAUDE_CONFIG_DIR="+dir)
 }
 
 // CallTimeout ends one claude -p call that hangs.
 const CallTimeout = 10 * time.Minute
 
 func (c ClaudeCLI) run(ctx context.Context, model, prompt string, schema, in []byte) (string, error) {
+	if c.ConfigDir == "" {
+		return "", ErrNoAccount
+	}
 	ctx, cancel := context.WithTimeout(ctx, CallTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, or(c.Bin, "claude"), "-p", "--model", model,
@@ -270,7 +279,7 @@ func (c ClaudeCLI) run(ctx context.Context, model, prompt string, schema, in []b
 	if schema != nil {
 		cmd.Args = append(cmd.Args, "--json-schema", string(schema))
 	}
-	cmd.Env = cliEnv()
+	cmd.Env = cliEnv(c.ConfigDir)
 	cmd.Dir = os.TempDir()
 	// Its own process group, so a kill (bad key, timeout) also ends what it
 	// started; WaitDelay stops a leftover child from holding the pipes open.
@@ -313,7 +322,7 @@ func (c ClaudeCLI) run(ctx context.Context, model, prompt string, schema, in []b
 		if ctx.Err() == context.DeadlineExceeded {
 			return "", fmt.Errorf("claude -p: no answer in %s", CallTimeout)
 		}
-		why := strings.TrimSpace(tailStr(errb.String(), 300))
+		why := FirstLine(errb.String(), 300)
 		if r := streamError(out.Bytes()); r != "" {
 			why = r
 		}
@@ -347,7 +356,7 @@ func streamError(out []byte) string {
 			IsError bool   `json:"is_error"`
 		}
 		if json.Unmarshal(line, &m) == nil && m.Type == "result" && m.IsError {
-			why = tailStr(m.Result, 300)
+			why = FirstLine(m.Result, 300)
 		}
 	}
 	return why
@@ -389,14 +398,21 @@ func readStream(out []byte) (string, error) {
 		return "", errors.New("claude -p: no result message")
 	}
 	if isError {
-		return "", fmt.Errorf("claude -p error: %s", tailStr(*result, 300))
+		return "", fmt.Errorf("claude -p error: %s", FirstLine(*result, 300))
 	}
 	return *result, nil
 }
 
-func tailStr(s string, n int) string {
-	if len(s) <= n {
-		return s
+// FirstLine is the first non-blank line of s, cut to n bytes: the cause of a
+// failed call ("You've hit your weekly limit · resets ..."), not what follows it.
+func FirstLine(s string, n int) string {
+	for _, l := range strings.Split(s, "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			if len(l) > n {
+				l = strings.ToValidUTF8(l[:n], "")
+			}
+			return l
+		}
 	}
-	return s[len(s)-n:]
+	return ""
 }

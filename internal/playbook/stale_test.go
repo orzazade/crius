@@ -106,7 +106,7 @@ func TestStaleCheckIsCapped(t *testing.T) {
 // The stale check through the real model (one sonnet call). PLAYBOOK_LIVE=1.
 func TestStaleCheckLive(t *testing.T) {
 	if os.Getenv("PLAYBOOK_LIVE") != "1" {
-		t.Skip("PLAYBOOK_LIVE=1 runs claude -p")
+		t.Skip("PLAYBOOK_LIVE=1 PLAYBOOK_CONFIG_DIR=<a Max account folder> runs claude -p")
 	}
 	rules := "== AGENTS.md\n- Few guards; trust the AI (owner, 2026-11-08: \"remove most of these guards\"). Only these stay: the secret check, " +
 		"the no-AI-credit check, crius-hook (records events), and asks for production, force-push and delete commands. Azure DevOps posts, " +
@@ -117,7 +117,7 @@ func TestStaleCheckLive(t *testing.T) {
 		{ID: "commit-only-paths-shared-index", When: "several sessions commit in one checkout", Do: "Commit with git commit --only -- <paths> in one step.", Because: "staffy 2026-09-26: another session's commit took staged files"},
 		{ID: "typeorm-migrations-transaction-each", When: "a TypeORM 0.2 suite hangs on pending migrations", Do: "Set transaction: \"each\" in the data source.", Because: "svc_shop 2026-11-20: 600 s hang to 41 s"},
 	}
-	ss, err := ClaudeCLI{}.Check(context.Background(), rules, es)
+	ss, err := ClaudeCLI{ConfigDir: os.Getenv("PLAYBOOK_CONFIG_DIR")}.Check(context.Background(), rules, es)
 	if err != nil {
 		t.Fatal(err)
 	}

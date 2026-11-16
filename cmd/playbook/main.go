@@ -17,7 +17,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/orzazade/crius/internal/ingest"
 	"github.com/orzazade/crius/internal/playbook"
+	"github.com/orzazade/crius/internal/store"
 )
 
 func main() {
@@ -72,13 +74,19 @@ func run(args []string) error {
 	seed := fl.Bool("seed", false, "seed from the lesson files named after the flags, not from the bus and transcripts")
 	_ = fl.Parse(args)
 
+	if *seed && fl.NArg() == 0 {
+		return errors.New("seed: name the lesson files")
+	}
+	var cli playbook.ClaudeCLI // a dry run makes no model call
+	if !*dry {
+		if cli, err = claudeFor(store.Home()); err != nil {
+			return alert(home, *post, err)
+		}
+	}
 	cfg := playbook.Config{BusDirs: split(*bus), BookDir: *book, StateDir: *state, DryRun: *dry, RuleFiles: split(*rules)}
 	if *seed {
-		if fl.NArg() == 0 {
-			return errors.New("seed: name the lesson files")
-		}
 		cfg = playbook.Config{DocFiles: fl.Args(), BookDir: *book, StateDir: *state, DryRun: *dry}
-		return finish(cfg, home, *state, *candOut, "", *dry)
+		return finish(cfg, cli, home, *state, *candOut, "", *dry)
 	}
 	if *tx != "" {
 		cfg.TxRoots = split(*tx)
@@ -113,15 +121,15 @@ func run(args []string) error {
 			return alert(home, *post, err)
 		}
 	}
-	return finish(cfg, home, *state, *candOut, *post, *dry)
+	return finish(cfg, cli, home, *state, *candOut, *post, *dry)
 }
 
 // finish runs, prints the report, and writes or posts its line. A run that
 // failed or is not healthy (read errors, failed batches, lost candidates)
 // posts an ALERT and exits non-zero, so it never looks like a quiet night.
-func finish(cfg playbook.Config, home, state, candOut, post string, dry bool) error {
+func finish(cfg playbook.Config, cli playbook.ClaudeCLI, home, state, candOut, post string, dry bool) error {
 	start := time.Now()
-	res, err := playbook.Run(context.Background(), cfg, playbook.ClaudeCLI{})
+	res, err := playbook.Run(context.Background(), cfg, cli)
 	if res == nil {
 		res = &playbook.Result{}
 	}
@@ -156,6 +164,22 @@ func finish(cfg playbook.Config, home, state, candOut, post string, dry bool) er
 	return err
 }
 
+// claudeFor is the claude -p the run calls, in the folder of the Max account a
+// crius session would start on now (ingest.PickAccount: the week that resets
+// soonest, under 95%; never the enterprise login). criusHome is ~/.crius. With
+// no such account the run must not start: it would park every batch.
+func claudeFor(criusHome string) (playbook.ClaudeCLI, error) {
+	name, dir, why, err := ingest.PickAccount(criusHome, "crius", "max")
+	if err != nil {
+		return playbook.ClaudeCLI{}, fmt.Errorf("no Max account to run claude -p on: %w", err)
+	}
+	if name == "" {
+		return playbook.ClaudeCLI{}, fmt.Errorf("no Max account to run claude -p on: %s lists no Max row signed in under crius's transcript folder", filepath.Join(criusHome, "accounts.toml"))
+	}
+	fmt.Println("model login:", why)
+	return playbook.ClaudeCLI{ConfigDir: dir}, nil
+}
+
 // health names what made a run unhealthy, or "ok".
 func health(res *playbook.Result) string {
 	var p []string
@@ -163,7 +187,7 @@ func health(res *playbook.Result) string {
 		p = append(p, fmt.Sprintf("%d read errors", n))
 	}
 	if n := len(res.Failed); n > 0 {
-		p = append(p, fmt.Sprintf("%d failed model batches (parked)", n))
+		p = append(p, fmt.Sprintf("%d failed model batches (parked; first: %s)", n, playbook.FirstLine(firstCause(res.Failed), 160)))
 	}
 	if n := len(res.Dropped); n > 0 {
 		p = append(p, fmt.Sprintf("%d answers dropped", n))
@@ -183,6 +207,18 @@ func health(res *playbook.Result) string {
 		return "ok"
 	}
 	return strings.Join(p, ", ")
+}
+
+// firstCause is the first failure from a claude -p call (the cause, such as a
+// weekly limit), else the first failure: an entry like a skipped part of a
+// batch says less about why.
+func firstCause(failed []string) string {
+	for _, f := range failed {
+		if strings.Contains(f, "claude -p") {
+			return f
+		}
+	}
+	return failed[0]
 }
 
 // report prints the run and returns its one line for Crius's 09:00/18:00 report.
@@ -217,19 +253,25 @@ func report(res *playbook.Result, took time.Duration, runErr error) string {
 			fmt.Printf("  use %s: shown %d, followed %d %v, repeats %d\n", u.ID, u.Shown, u.Followed, u.Teams, u.Repeats)
 		}
 	}
-	line := fmt.Sprintf("playbook %s: +%d entries, +%d evidence, %d live; promote %s; needs a check %s; archived %d; retired %d; calls haiku %d sonnet %d check %d; health %s",
-		time.Now().Format("2006-01-02"), res.New, res.Evidence, len(r.Uses), list(r.Promote), list(r.NeedsCheck), len(r.Archived), len(res.Retired),
-		res.Calls.Pick, res.Calls.Write, res.Calls.Check, health(res))
+	// Health comes first, so what went wrong stays inside the 300 characters
+	// posted to the bus (seen 11-16: the cause of 7 failed batches was nowhere).
+	failed := ""
+	if runErr != nil {
+		failed = "; FAILED: " + playbook.FirstLine(runErr.Error(), 200)
+	}
+	line := fmt.Sprintf("playbook %s: health %s%s; +%d entries, +%d evidence, %d live; promote %s; needs a check %s; archived %d; retired %d; calls haiku %d sonnet %d check %d",
+		time.Now().Format("2006-01-02"), health(res), failed, res.New, res.Evidence, len(r.Uses), list(r.Promote), list(r.NeedsCheck), len(r.Archived), len(res.Retired),
+		res.Calls.Pick, res.Calls.Write, res.Calls.Check)
 	if n := len(res.Read.Unmapped); n > 0 {
 		line += fmt.Sprintf("; unmapped folders %d", n)
 	}
 	if hl := playbook.HostLine(res.Hosts); hl != "" {
 		line += "; " + hl
 	}
-	if runErr != nil {
-		line += "; FAILED: " + runErr.Error()
-	}
 	fmt.Println(line)
+	if runErr != nil {
+		fmt.Println("FAILED:", runErr)
+	}
 	return line
 }
 func list(ids []string) string {

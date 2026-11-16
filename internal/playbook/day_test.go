@@ -79,9 +79,9 @@ func TestMadeUpDayAddsTwoEntriesAndEvidenceToTheRepeat(t *testing.T) {
 // Max login). Run with PLAYBOOK_LIVE=1.
 func TestMadeUpDayLive(t *testing.T) {
 	if os.Getenv("PLAYBOOK_LIVE") != "1" {
-		t.Skip("PLAYBOOK_LIVE=1 runs claude -p")
+		t.Skip("PLAYBOOK_LIVE=1 PLAYBOOK_CONFIG_DIR=<a Max account folder> runs claude -p")
 	}
-	cfg, res := runDay(t, ClaudeCLI{})
+	cfg, res := runDay(t, ClaudeCLI{ConfigDir: os.Getenv("PLAYBOOK_CONFIG_DIR")})
 	b, _ := LoadBook(cfg.BookDir)
 	for _, e := range b.Entries {
 		t.Logf("%s [%s/%s] when %s; do %s; because %s; evidence %d", e.ID, e.Topic, e.Kind, e.When, e.Do, e.Because, len(e.Evidence))

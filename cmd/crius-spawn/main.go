@@ -64,7 +64,7 @@ func main() {
 		Place:   func(project string) (string, string, string, error) { return ingest.Place(store.Home(), project) },
 		Persona: func(project string) (string, error) { return ingest.Persona(store.Home(), project) },
 		Pick: func(project, want string) (string, string, error) {
-			name, dir, why, err := pick(store.Home(), project, want)
+			name, dir, why, err := ingest.PickAccount(store.Home(), project, want)
 			if why != "" {
 				fmt.Println(why) // the pick and why (owner 10-28): its tab shows only the quota line
 			}
@@ -252,30 +252,6 @@ func runCmux(args ...string) (string, error) {
 		return string(out) + stderr.String(), err
 	}
 	return string(out), nil
-}
-
-// pick is the account a session of project starts on, its folder and why: want is "max" for the Max one whose week
-// resets soonest, or a Max row's name (quota.Pick); never the enterprise account (owner 11-07). The figures are the record
-// store's, as crius-rec quota reads them.
-func pick(home, project, want string) (name, dir, why string, err error) {
-	root, pauseAt, err := ingest.ForSpawn(home, project)
-	if err != nil {
-		return "", "", "", err
-	}
-	projects, err := ingest.QuotaProjects(home)
-	if err != nil {
-		return "", "", "", err
-	}
-	db, err := store.Open(home)
-	if err != nil {
-		return "", "", "", err
-	}
-	defer db.Close()
-	r, err := quota.Build(db, projects, time.Now())
-	if err != nil {
-		return "", "", "", err
-	}
-	return quota.Pick(r, projects.Accounts, root, want, pauseAt)
 }
 
 // sessionAccount is the row of accounts.toml that lists config, the folder a session ran in, and that folder; ""

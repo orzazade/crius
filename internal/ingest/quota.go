@@ -15,7 +15,32 @@ import (
 	"time"
 
 	"github.com/orzazade/crius/internal/quota"
+	"github.com/orzazade/crius/internal/store"
 )
+
+// PickAccount is the account a session of project starts on, its folder and why: want is "max" for the Max one whose
+// week resets soonest, or a Max row's name (quota.Pick); never the enterprise account (owner 11-07). The figures are the
+// record store's, as crius-rec quota reads them. crius-spawn and the playbook's claude -p calls use it.
+func PickAccount(home, project, want string) (name, dir, why string, err error) {
+	root, pauseAt, err := ForSpawn(home, project)
+	if err != nil {
+		return "", "", "", err
+	}
+	projects, err := QuotaProjects(home)
+	if err != nil {
+		return "", "", "", err
+	}
+	db, err := store.Open(home)
+	if err != nil {
+		return "", "", "", err
+	}
+	defer db.Close()
+	r, err := quota.Build(db, projects, time.Now())
+	if err != nil {
+		return "", "", "", err
+	}
+	return quota.Pick(r, projects.Accounts, root, want, pauseAt)
+}
 
 // clock is the time the quota and bus clock checks run at; tests set it.
 var clock = time.Now

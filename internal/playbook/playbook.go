@@ -351,9 +351,10 @@ func lock(dir string) (func(), error) {
 const maxTries = 3
 
 // stop says a model error ends the run with nothing saved: an API-key login
-// (the call may be billed) or a cancelled run. Other errors park the batch.
+// (the call may be billed), no picked Max account, or a cancelled run. Other
+// errors park the batch.
 func stop(ctx context.Context, err error) bool {
-	return err != nil && (errors.Is(err, ErrAPIKey) || ctx.Err() != nil)
+	return err != nil && (errors.Is(err, ErrAPIKey) || errors.Is(err, ErrNoAccount) || ctx.Err() != nil)
 }
 
 // maxRetires caps the entries one run may retire.
