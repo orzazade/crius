@@ -167,6 +167,23 @@ func TestAVerifiedWithItsRunLogIsPosted(t *testing.T) {
 	}
 }
 
+// 11-16: Crius's VERIFIED for Cortex deploy run 43924669607 (b021f9d) was refused: no run log. The run log
+// `ci-proof gh` writes for a green CI run (its golden file, which ci-proof's own test checks byte for byte) is taken
+// by its bare name; the CI run id after the ref is free.
+func TestACIRunLogFromCIProofIsAccepted(t *testing.T) {
+	home, log := setup(t)
+	golden, err := os.ReadFile(filepath.Join("..", "ci-proof", "testdata", "runlog-gh.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	testutil.Write(t, filepath.Join(home, "runs", "ci-gh-appxite-cortex-43924669607.log"), string(golden))
+	text := "b021f9d Cortex deploy green on main · CI run 43924669607 success, ci-gh-appxite-cortex-43924669607.log"
+	rc, errs := post(t, at("2026-11-17T06:40"), log, "VERIFIED", "crius:lead", "cortex:lead", text)
+	if rc != 0 || !strings.HasSuffix(busText(t, log), "— "+text+"\n") {
+		t.Fatal(rc, errs, busText(t, log))
+	}
+}
+
 // Crius 10-24 00:11, twice: 'log <path>. Next' was refused as naming no run log. The path kept the sentence's '.' and
 // was dropped without a word. Punctuation that ends a sentence is not part of the path, and a named path that does not
 // exist is said.

@@ -30,6 +30,8 @@
 //
 // Exit 0 only on PASS, 1 on FAIL, STALE or NONE, 2 when it cannot look (a LOUD line). Every az call reads only; the
 // organization comes from az devops configure, the project from the PR.
+//
+// `ci-proof gh …` and `ci-proof ado …` turn a green CI run into a run log bus-post takes for a VERIFIED line (runlog.go).
 package main
 
 import (
@@ -44,7 +46,10 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 )
+
+var now = time.Now // the read time a run log records; tests fix it
 
 func main() {
 	os.Exit(run(os.Args[1:], az, os.Stdout))
@@ -111,6 +116,9 @@ type verdict struct {
 var rank = map[string]int{"PASS": 0, "NONE": 1, "STALE": 2, "FAIL": 3}
 
 func run(args []string, az func(...string) ([]byte, error), out io.Writer) int {
+	if len(args) > 0 && (args[0] == "gh" || args[0] == "ado") { // a CI run as a run log (runlog.go)
+		return ciRunLog(args[0], args[1:], out)
+	}
 	fs := flag.NewFlagSet("ci-proof", flag.ContinueOnError)
 	fs.SetOutput(out)
 	pipeline := fs.Int("pipeline", 0, "the pipeline whose run on refs/pull/<pr>/merge proves a PR with no blocking Build policy")

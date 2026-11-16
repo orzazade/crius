@@ -1,0 +1,13 @@
+sha: 5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f
+pass: 1
+source: CI, not a local run: Azure DevOps build read with az pipelines build show
+org: https://dev.azure.com/Appxite
+project: Example Project
+run: 9120 build 20261116.3
+workflow: cortex-ci definition 42
+branch: refs/heads/main
+status: completed
+conclusion: succeeded
+url: https://dev.azure.com/Appxite/Example%20Project/_build/results?buildId=9120
+other builds on this sha (newest 100 on its branch): 0, none failed
+read: 2026-11-17T06:30:00Z by ci-proof ado
