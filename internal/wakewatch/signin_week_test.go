@@ -1,0 +1,296 @@
+package wakewatch
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+// fixtureLogins are the logins each config dir holds as of 11-16: ThinkPad ~/.claude is max1's login (d94b…) and
+// ThinkPad ~/.claude-max2 is max3's (c07a…), whatever its folder name says.
+var fixtureLogins = map[string]string{
+	"personal": "d94b4cce88d8", "work-max": "d94b4cce88d8", "max2": "0f3b07b4c7f2", "work-max3": "c07a2a080f26",
+	"legion-max1": "d94b4cce88d8", "legion-max2": "0f3b07b4c7f2", "legion-max3": "c07a2a080f26",
+	"thinkpad-claude": "d94b4cce88d8", "thinkpad-claude-max2": "c07a2a080f26",
+}
+
+func logins(by map[string]string) func(Account) (string, error) {
+	return func(a Account) (string, error) {
+		if v, ok := by[a.Name]; ok {
+			if strings.HasPrefix(v, "err:") {
+				return "", errors.New(strings.TrimPrefix(v, "err:"))
+			}
+			return v, nil
+		}
+		return fixtureLogins[a.Name], nil
+	}
+}
+
+// spools gives the Mac spool-mac.jsonl and the ThinkPad spool-thinkpad.jsonl (the 11-15 limit of max1, read on the
+// ThinkPad); the Legion keeps none. by names a host's other fixture, or "err:…" to fail its read.
+func spools(t *testing.T, by map[string]string) func(string) ([]byte, error) {
+	return func(host string) ([]byte, error) {
+		name, ok := by[host]
+		if !ok {
+			name = map[string]string{"": "spool-mac.jsonl", "thinkpad": "spool-thinkpad.jsonl"}[host]
+		}
+		switch {
+		case strings.HasPrefix(name, "err:"):
+			return nil, errors.New(strings.TrimPrefix(name, "err:"))
+		case name == "":
+			return nil, nil
+		}
+		return fixture(t, name), nil
+	}
+}
+
+func weekWatch(t *testing.T, home string, lg, sp map[string]string) SigninWatch {
+	return Signins(SigninReads{Status: reads(t, nil), Login: logins(lg), Spool: spools(t, sp)}, home, signinNow)
+}
+
+func rowOf(t *testing.T, w SigninWatch, name string) SigninRow {
+	t.Helper()
+	for _, r := range w.Rows {
+		if r.Name == name {
+			return r
+		}
+	}
+	t.Fatalf("no row %s", name)
+	return SigninRow{}
+}
+
+func TestWeekOfEachLoginIsReadFromEveryMachinesSpool(t *testing.T) {
+	w := weekWatch(t, t.TempDir(), nil, nil)
+	reset := time.Date(2026, 11, 18, 22, 0, 0, 0, time.UTC)
+	for _, name := range []string{"personal", "work-max", "legion-max1", "thinkpad-claude"} {
+		// max1's 100% was seen only on the ThinkPad; the Mac's later 12% heartbeat repeats an old reading
+		if r := rowOf(t, w, name); r.Week != WeekLimit || r.WeekPct != 100 || !r.WeekReset.Equal(reset) {
+			t.Fatalf("%s: week %s %v%% reset %v (%s)", name, r.Week, r.WeekPct, r.WeekReset, r.WeekWhy)
+		}
+	}
+	if r := rowOf(t, w, "thinkpad-claude-max2"); r.Week != WeekOK || r.WeekPct != 34 {
+		t.Fatalf("thinkpad-claude-max2: %s %v%% (%s)", r.Week, r.WeekPct, r.WeekWhy)
+	}
+	// max2 was last measured 12 h ago at 40%; its heartbeats since repeat that reading: not known, never OK
+	if r := rowOf(t, w, "max2"); r.Week != WeekUnknown || !strings.Contains(r.WeekWhy, "last measured 12h ago at 40%") {
+		t.Fatalf("max2: %s (%s)", r.Week, r.WeekWhy)
+	}
+}
+
+func runWeek(t *testing.T, home string, now time.Time, f *fake) []string {
+	t.Helper()
+	if err := Run(f.deps(home, now)); err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, s := range f.sent {
+		if strings.Contains(s, "week ") {
+			out = append(out, s)
+		}
+	}
+	f.sent = nil
+	return out
+}
+
+func TestWeekLimitWakesCriusOncePerLoginStateAndDayWithTheReset(t *testing.T) {
+	home := setup(t, nil)
+	f := &fake{login: logins(nil), spool: spools(t, nil)}
+	got := runWeek(t, home, signinNow, f)
+	all := strings.Join(got, "\n")
+	if len(got) != 2 || strings.Count(all, "week LIMIT") != 1 || strings.Count(all, "week UNKNOWN") != 1 {
+		t.Fatalf("want one LIMIT (max1) and one UNKNOWN (max2): %q", got)
+	}
+	for _, w := range []string{"login d94b4cce88d8", "100%", "until 2026-11-18 22:00", "Mac ~/.claude", "thinkpad ~/.claude", "legion ~/.claude-work-max1"} {
+		if !strings.Contains(all, w) {
+			t.Fatalf("no %q in %q", w, all)
+		}
+	}
+	for _, m := range []int{5, 25, 60, 5 * 60} {
+		if got := runWeek(t, home, signinNow.Add(time.Duration(m)*time.Minute), f); len(got) != 0 {
+			t.Fatalf("after %d min: %q", m, got)
+		}
+	}
+	// max3's 34% was measured at 23:40 the day before; 6 h on it may have risen: a new state, said once
+	got = runWeek(t, home, signinNow.Add(6*time.Hour), f)
+	if len(got) != 1 || !strings.Contains(got[0], "week UNKNOWN login c07a2a080f26") || !strings.Contains(got[0], "at 34%") {
+		t.Fatalf("max3 stale: %q", got)
+	}
+	if got := runWeek(t, home, signinNow.Add(23*time.Hour+55*time.Minute), f); len(got) != 0 {
+		t.Fatalf("same day: %q", got)
+	}
+	if got := runWeek(t, home, signinNow.Add(24*time.Hour), f); len(got) != 3 {
+		t.Fatalf("next day: %q", got)
+	}
+}
+
+func oneLine(login string, pct float64, at, reset time.Time) []byte {
+	return []byte(fmt.Sprintf(`{"ts":%q,"kind":"change","login":%q,"rl":true,"seven_pct":%v,"seven_reset":%d,"responded":true}`+"\n",
+		at.UTC().Format(time.RFC3339), login, pct, reset.Unix()))
+}
+
+func TestWeekAt95IsNear(t *testing.T) {
+	home := setup(t, nil)
+	f := &fake{spool: func(host string) ([]byte, error) {
+		if host != "" {
+			return nil, nil
+		}
+		return oneLine("aaaaaaaaaaaa", 95, signinNow.Add(-time.Minute), signinNow.Add(30*time.Hour)), nil
+	}}
+	got := runWeek(t, home, signinNow, f)
+	if len(got) != 1 || !strings.Contains(got[0], "week NEAR") || !strings.Contains(got[0], "95%") || !strings.Contains(got[0], "2026-11-17 06:00") {
+		t.Fatalf("%q", got)
+	}
+}
+
+func TestWeekWithNoSampleAnywhereIsUnknownNeverOK(t *testing.T) {
+	home := setup(t, nil)
+	f := &fake{spool: func(string) ([]byte, error) { return nil, nil }}
+	got := runWeek(t, home, signinNow, f)
+	if len(got) != 1 || !strings.Contains(got[0], "week UNKNOWN") || !strings.Contains(got[0], "no statusline sample") {
+		t.Fatalf("%q", got)
+	}
+}
+
+func TestWeekEndedWindowWithNoSampleSinceIsUnknown(t *testing.T) {
+	w := Signins(SigninReads{Status: reads(t, nil), Login: logins(nil), Spool: func(host string) ([]byte, error) {
+		if host != "" {
+			return nil, nil
+		}
+		return oneLine("d94b4cce88d8", 50, signinNow.Add(-30*time.Hour), signinNow.Add(-2*time.Hour)), nil
+	}}, t.TempDir(), signinNow)
+	if r := rowOf(t, w, "personal"); r.Week != WeekUnknown || !strings.Contains(r.WeekWhy, "reset") {
+		t.Fatalf("%s (%s)", r.Week, r.WeekWhy)
+	}
+}
+
+func TestWeekSpoolThatCannotBeReadIsLoud(t *testing.T) {
+	home := setup(t, nil)
+	f := &fake{login: logins(nil), spool: spools(t, map[string]string{"thinkpad": "err:ssh: connect to host 100.117.3.61 port 22: Operation timed out"})}
+	all := strings.Join(runWeek(t, home, signinNow, f), "\n")
+	if !strings.Contains(all, "week samples UNREAD thinkpad") || !strings.Contains(all, "timed out") {
+		t.Fatalf("%q", all)
+	}
+	// without the ThinkPad's spool max1's 100% is not seen: its rows say what was read, never OK on a guess
+	w := weekWatch(t, t.TempDir(), nil, map[string]string{"thinkpad": "err:no route"})
+	if r := rowOf(t, w, "thinkpad-claude"); r.Week != WeekUnknown || !strings.Contains(r.WeekWhy, "spool unread on thinkpad") {
+		t.Fatalf("%s (%s)", r.Week, r.WeekWhy)
+	}
+	if out := SigninTable(w, time.UTC); !strings.Contains(out, "thinkpad") || !strings.Contains(out, "no route") {
+		t.Fatal(out)
+	}
+}
+
+func TestWeekLoginThatCannotBeReadIsUnknown(t *testing.T) {
+	w := weekWatch(t, t.TempDir(), map[string]string{"legion-max1": "err:no answer in 20s", "legion-max2": "not-a-hash"}, nil)
+	if r := rowOf(t, w, "legion-max1"); r.Week != WeekUnknown || !strings.Contains(r.WeekWhy, "no answer in 20s") {
+		t.Fatalf("%s (%s)", r.Week, r.WeekWhy)
+	}
+	if r := rowOf(t, w, "legion-max2"); r.Week != WeekUnknown || !strings.Contains(r.WeekWhy, "not a login") {
+		t.Fatalf("%s (%s)", r.Week, r.WeekWhy)
+	}
+	if r := rowOf(t, w, "legion-max3"); r.Week != WeekOK {
+		t.Fatalf("%s (%s)", r.Week, r.WeekWhy)
+	}
+}
+
+func TestSigninCoversTheThinkPad(t *testing.T) {
+	seen := 0
+	for _, a := range Accounts {
+		if a.Host != "thinkpad" {
+			continue
+		}
+		seen++
+		if a.Name == "thinkpad-claude" {
+			want := `~/.crius/state/staffy/thinkpad/T -t 'CLAUDE_CONFIG_DIR=~/.claude "$(ls -dv ~/.nvm/versions/node/*/bin/claude ~/.local/bin/claude 2>/dev/null | tail -1)" auth login'`
+			if got := a.Renew(); got != want {
+				t.Fatalf("got  %s\nwant %s", got, want)
+			}
+		}
+	}
+	if seen != 2 {
+		t.Fatalf("%d ThinkPad accounts, want 2", seen)
+	}
+	// a ThinkPad that cannot be reached is a loud row
+	w := Signins(SigninReads{Status: reads(t, map[string]string{"thinkpad-claude": "err:ssh: connect timed out"}), Login: logins(nil), Spool: spools(t, nil)}, t.TempDir(), signinNow)
+	if r := rowOf(t, w, "thinkpad-claude"); r.State != SigninUnread || !strings.Contains(r.Why, "connect timed out") {
+		t.Fatalf("%s (%s)", r.State, r.Why)
+	}
+}
+
+func TestSigninTableShowsTheWeekAndTheThinkPad(t *testing.T) {
+	out := SigninTable(weekWatch(t, t.TempDir(), nil, nil), time.UTC)
+	for _, w := range []string{"LOGIN", "WEEK", "RESETS", "100% LIMIT", "2026-11-18 22:00", "34% OK", "UNKNOWN", "thinkpad-claude-max2", "thinkpad ~/.claude-max2", "login c07a2a080f26"} {
+		if !strings.Contains(out, w) {
+			t.Fatalf("no %q in\n%s", w, out)
+		}
+	}
+}
+
+func TestSpoolLinesSkipAndCountABadLineAndLeaveTheOneBeingWritten(t *testing.T) {
+	good := `{"ts":"2026-11-15T23:40:00Z","kind":"change","login":"c07a2a080f26","rl":true,"seven_pct":34,"seven_reset":1795255200,"responded":true}`
+	long := `{"ts":"2026-11-15T23:41:00Z","kind":"change","login":"c07a2a080f26","rl":true,"seven_pct":35,"seven_reset":1795255200,"responded":true,"pad":"` + strings.Repeat("x", 2<<20) + `"}`
+	in := good + "\n" + `{"ts":"2026-11-15T2{"ts":"cut and joined"}` + "\n\n" + long + "\n" + `{"ts":"2026-11-15T23:5`
+	ls, bad := spoolLines([]byte(in))
+	if len(ls) != 2 || bad != 1 || *ls[1].SevenPct != 35 {
+		t.Fatalf("%d lines, %d bad", len(ls), bad)
+	}
+	// a machine with a bad line is still read: its other lines count
+	w := weekWatch(t, t.TempDir(), nil, map[string]string{"thinkpad": "spool-thinkpad-bad.jsonl"})
+	if r := rowOf(t, w, "thinkpad-claude"); r.Week != WeekLimit {
+		t.Fatalf("%s (%s)", r.Week, r.WeekWhy)
+	}
+	if w.Bad["thinkpad"] != 1 || len(w.Unread) != 0 || !strings.Contains(SigninTable(w, time.UTC), "spool thinkpad: 1 lines not JSON, skipped") {
+		t.Fatalf("bad %v unread %v", w.Bad, w.Unread)
+	}
+}
+
+// The remote commands run as the remote shell runs them (bash, a home of fixtures): a quoting slip would make every
+// remote row UNKNOWN live and nowhere else.
+func TestRemoteLoginAndSpoolCommandsRunInAShell(t *testing.T) {
+	home := t.TempDir()
+	write := func(rel, body string) {
+		p := filepath.Join(home, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(".claude-max2/.claude.json", `{"oauthAccount":{"accountUuid":"abc","emailAddress":"x@example.com"}}`)
+	write(".claude.json", `{"oauthAccount":{"accountUuid":"abc"}}`) // ~/.claude keeps it beside itself
+	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".claude-empty"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run := func(cmd string) string {
+		t.Helper()
+		c := exec.Command("bash", "-c", cmd)
+		c.Env = []string{"HOME=" + home, "PATH=" + os.Getenv("PATH")}
+		out, err := c.CombinedOutput()
+		if err != nil {
+			t.Fatalf("%s: %v: %s", cmd, err, out)
+		}
+		return string(out)
+	}
+	// sha256("abc") starts ba7816bf8f01; never the id or the email
+	for dir, want := range map[string]string{"~/.claude-max2": "ba7816bf8f01\n", "~/.claude": "ba7816bf8f01\n", "~/.claude-empty": "\n"} {
+		if got := run(LoginRemote(dir)); got != want {
+			t.Fatalf("%s: %q, want %q", dir, got, want)
+		}
+	}
+	if got := run(SpoolRemote); got != "" {
+		t.Fatalf("no spool: %q", got)
+	}
+	write(".crius/spool/quota.jsonl", "a\nb\n")
+	if got := run(SpoolRemote); got != "a\nb\n" {
+		t.Fatalf("spool: %q", got)
+	}
+}

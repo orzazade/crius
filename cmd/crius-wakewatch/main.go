@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/orzazade/crius/internal/outbox"
+	"github.com/orzazade/crius/internal/quota"
 	"github.com/orzazade/crius/internal/redact"
 	"github.com/orzazade/crius/internal/sessionstate"
 	"github.com/orzazade/crius/internal/store"
@@ -82,8 +83,9 @@ func main() {
 		return
 	}
 	if len(os.Args) == 2 && os.Args[1] == "signin" {
-		// the sign-in watch on its own: each Max account, its end and state, read now (wakewatch.Signins)
-		fmt.Print(wakewatch.SigninTable(wakewatch.Signins(signinStatus, time.Now()), time.Local))
+		// the sign-in watch on its own: each Max account, its end and state, and its login's week, read now (wakewatch.Signins)
+		fmt.Print(wakewatch.SigninTable(wakewatch.Signins(wakewatch.SigninReads{Status: signinStatus, Login: loginOf, Spool: spool},
+			store.Home(), time.Now()), time.Local))
 		return
 	}
 	if len(os.Args) >= 2 && os.Args[1] == "provider-errors" {
@@ -108,7 +110,7 @@ func main() {
 			return sessionstate.List(filepath.Join(store.Home(), "sessions"))
 		}, Restore: restore, Waiters: waiters, Typed: outbox.Typed, Procs: procs,
 		SendTab: func(title, text string) error { return outbox.Send(store.Home(), title, text) }, Boot: bootTime, Claudes: claudes,
-		Thread: thread, Signin: signinStatus})
+		Thread: thread, Signin: signinStatus, Login: loginOf, Spool: spool})
 	// the provider-error sweep runs every 5 min with the rest (night 11-16: it was a Crius model turn on a cron)
 	if _, perr := wakewatch.ProviderErrors(providerDeps(time.Now())); perr != nil {
 		err = errors.Join(err, fmt.Errorf("provider-error sweep: %w", perr))
@@ -561,7 +563,8 @@ func toolPath() string {
 	return os.Getenv("PATH") + ":/opt/homebrew/bin:/usr/local/bin:" + filepath.Join(home, ".bun", "bin")
 }
 
-// signinWait: a `claude auth status` (on the Legion over ssh) that gives no answer in this long could not be read.
+// signinWait: a read of the sign-in watch (a `claude auth status`, a login or a spool, on a remote machine over ssh) that
+// gives no answer in this long could not be read.
 const signinWait = 20 * time.Second
 
 // signinStatus runs `claude auth status` of one account on its machine and gives its stdout (JSON). Only the CLI's status
@@ -571,16 +574,39 @@ func signinStatus(a wakewatch.Account) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if a.Host != "" {
+		return onHost(a.Host, a.Remote("status"))
+	}
 	abs := func(p string) string { return filepath.Join(home, strings.TrimPrefix(p, "~/")) }
 	ctx, cancel := context.WithTimeout(context.Background(), signinWait)
 	defer cancel()
-	var cmd *exec.Cmd
-	if a.Host == "" {
-		cmd = exec.CommandContext(ctx, abs(wakewatch.MacClaude), "auth", "status")
-		cmd.Env = append(os.Environ(), "CLAUDE_CONFIG_DIR="+abs(a.Dir))
-	} else {
-		cmd = exec.CommandContext(ctx, abs(wakewatch.LegionSSH), "-o", "BatchMode=yes", wakewatch.LegionHost, a.Remote("status"))
+	cmd := exec.CommandContext(ctx, abs(wakewatch.MacClaude), "auth", "status")
+	cmd.Env = append(os.Environ(), "CLAUDE_CONFIG_DIR="+abs(a.Dir))
+	return output(ctx, cmd)
+}
+
+// onHost runs a shell command on a remote machine through its ssh wrapper (wakewatch.Remotes) and gives its stdout.
+func onHost(host, command string) ([]byte, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
 	}
+	r, ok := wakewatch.Remotes[host]
+	if !ok {
+		return nil, fmt.Errorf("no ssh wrapper for machine %q", host)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), signinWait)
+	defer cancel()
+	args := []string{"-o", "BatchMode=yes"}
+	if r.Target != "" {
+		args = append(args, r.Target)
+	}
+	cmd := exec.CommandContext(ctx, filepath.Join(home, strings.TrimPrefix(r.SSH, "~/")), append(args, command)...)
+	return output(ctx, cmd)
+}
+
+// output runs cmd and gives its stdout; a failure names the last line of its stderr.
+func output(ctx context.Context, cmd *exec.Cmd) ([]byte, error) {
 	cmd.WaitDelay = time.Second
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
@@ -593,4 +619,26 @@ func signinStatus(a wakewatch.Account) ([]byte, error) {
 		return nil, fmt.Errorf("%v: %s", err, strings.TrimSpace(lines[len(lines)-1]))
 	}
 	return out, nil
+}
+
+// loginOf gives the login of one account's config dir: quota.LoginOf on the Mac, wakewatch.LoginRemote elsewhere. Only
+// the hash of the account id is read back: never the id, a token or an email.
+func loginOf(a wakewatch.Account) (string, error) {
+	if a.Host == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		return quota.LoginOf(filepath.Join(home, strings.TrimPrefix(a.Dir, "~/")))
+	}
+	b, err := onHost(a.Host, wakewatch.LoginRemote(a.Dir))
+	return strings.TrimSpace(string(b)), err
+}
+
+// spool gives a machine's statusline quota spool: the Mac's file, or the remote one's newest lines (none when it keeps none).
+func spool(host string) ([]byte, error) {
+	if host == "" {
+		return os.ReadFile(filepath.Join(store.Home(), "spool", "quota.jsonl"))
+	}
+	return onHost(host, wakewatch.SpoolRemote)
 }

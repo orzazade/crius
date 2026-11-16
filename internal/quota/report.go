@@ -486,6 +486,12 @@ type sample struct {
 
 func parseTS(s string) (time.Time, error) { return time.Parse(time.RFC3339, s) }
 
+// measured: the line came with a response, so its figures are new; a line from before the field counts unless it is a
+// heartbeat (Crius 23:11).
+func (s sample) measured() bool {
+	return s.responded.Valid && s.responded.Bool || !s.responded.Valid && s.kind != "heartbeat"
+}
+
 // AcctUse is one login's window as its own lines show it (the fields mean what Report's fields of the same name mean).
 type AcctUse struct {
 	Login, Name             string // Name: its accounts.toml row, or "login <hash>" when unlisted
@@ -501,9 +507,19 @@ type AcctUse struct {
 // samples: an idle session's old-epoch heartbeat measures nothing now.
 func reduce(samples []sample, now time.Time) ([]sample, AcctUse) {
 	var u AcctUse
-	var reset int64
+	// The epoch is the latest reset a measurement shows. A line that is not one repeats its session's last reading, which
+	// can be another login's: a session started before its folder was signed into another login keeps the old login's
+	// window, under the new login's name (ThinkPad 11-16: max2's later reset in a max3 heartbeat hid max3's 34%). Only
+	// with no measurement at all does any line set it.
+	var reset, measuredReset int64
 	for _, s := range samples {
 		reset = max(reset, s.reset.Int64)
+		if s.measured() {
+			measuredReset = max(measuredReset, s.reset.Int64)
+		}
+	}
+	if measuredReset > 0 {
+		reset = measuredReset
 	}
 	var cur []sample
 	for _, s := range samples {
@@ -529,7 +545,7 @@ func reduce(samples []sample, now time.Time) ([]sample, AcctUse) {
 	for _, s := range cur {
 		// A measurement is a line that came with a response; a line from before the field, one that is not a
 		// heartbeat (Crius 23:11).
-		if s.responded.Valid && !s.responded.Bool || !s.responded.Valid && s.kind == "heartbeat" {
+		if !s.measured() {
 			continue
 		}
 		if s.seven.Float64 == u.SevenPct {

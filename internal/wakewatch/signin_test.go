@@ -47,7 +47,7 @@ func TestSigninStateOfEachStatus(t *testing.T) {
 		{"not-json.txt", SigninUnread, "not JSON"},
 		{"err:ssh: connect to host 100.109.19.101 port 22: Operation timed out", SigninUnread, "timed out"},
 	} {
-		rows := Signins(reads(t, map[string]string{"max2": c.file}), signinNow)
+		rows := Signins(SigninReads{Status: reads(t, map[string]string{"max2": c.file}), Login: logins(nil), Spool: spools(t, nil)}, t.TempDir(), signinNow).Rows
 		var got *SigninRow
 		for i := range rows {
 			if rows[i].Name == "max2" {
@@ -69,6 +69,7 @@ func TestSigninAccountsAreTheMaxDirsNeverTheEnterpriseOne(t *testing.T) {
 	want := map[string]bool{
 		":~/.claude": true, ":~/.claude-max2-personal": true, ":~/.claude-work-max": true, ":~/.claude-work-max3": true,
 		"legion:~/.claude-work-max1": true, "legion:~/.claude-work-max2": true, "legion:~/.claude-work-max3": true,
+		"thinkpad:~/.claude": true, "thinkpad:~/.claude-max2": true,
 	}
 	names := map[string]bool{}
 	for _, a := range Accounts {
@@ -183,7 +184,7 @@ func TestSigninAllFineSaysNothing(t *testing.T) {
 }
 
 func TestSigninTableShowsEachAccount(t *testing.T) {
-	out := SigninTable(Signins(reads(t, map[string]string{"max2": "ends-soon.json", "legion-max3": "err:no route"}), signinNow), time.UTC)
+	out := SigninTable(Signins(SigninReads{Status: reads(t, map[string]string{"max2": "ends-soon.json", "legion-max3": "err:no route"}), Login: logins(nil), Spool: spools(t, nil)}, t.TempDir(), signinNow), time.UTC)
 	for _, w := range []string{"max2", "2026-11-19 23:00", "WARN", "personal", "2026-12-11 11:03", "OK", "legion-max3", "UNREAD", "no route", "25d 11h left; WARN from 2026-12-07 11:03"} {
 		if !strings.Contains(out, w) {
 			t.Fatalf("no %q in\n%s", w, out)

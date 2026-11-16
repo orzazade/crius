@@ -121,6 +121,10 @@ type Deps struct {
 	Thread func(id string) (T3Thread, error)
 	// Signin gives `claude auth status` (JSON) of one Max account, read on its own machine (signin.go).
 	Signin func(a Account) ([]byte, error)
+	// Login gives the login of one Max account's config dir (quota.LoginOf; LoginRemote on another machine).
+	Login func(a Account) (string, error)
+	// Spool gives one machine's statusline quota spool (quota.jsonl lines), nil when it keeps none (signin.go).
+	Spool func(host string) ([]byte, error)
 }
 
 // ErrTabGone marks a Restore of a surface id cmux has no tab for (it answers not_found): the tab was closed, so it keeps

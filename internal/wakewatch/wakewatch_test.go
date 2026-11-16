@@ -55,8 +55,10 @@ type fake struct {
 	tabErr    error
 	threads   map[string]T3Thread // T3 Code thread id -> what t3 thread show says of it
 	threadErr error
-	read      []string                      // every thread id read
-	signin    func(Account) ([]byte, error) // claude auth status of each account; nil: each signed in until 2099
+	read      []string                          // every thread id read
+	signin    func(Account) ([]byte, error)     // claude auth status of each account; nil: each signed in until 2099
+	login     func(Account) (string, error)     // the login of each account; nil: each on login aaaaaaaaaaaa
+	spool     func(host string) ([]byte, error) // quota spool of each machine; nil: the Mac's shows that login at 10%, measured now
 }
 
 func (f *fake) deps(home string, now time.Time) Deps {
@@ -112,6 +114,22 @@ func (f *fake) deps(home string, now time.Time) Deps {
 				return []byte(`{"loggedIn": true, "loginExpiresAt": "2099-01-01T00:00:00.000Z"}`), nil
 			}
 			return f.signin(a)
+		},
+		Login: func(a Account) (string, error) {
+			if f.login == nil {
+				return "aaaaaaaaaaaa", nil
+			}
+			return f.login(a)
+		},
+		Spool: func(host string) ([]byte, error) {
+			if f.spool != nil {
+				return f.spool(host)
+			}
+			if host != "" {
+				return nil, nil
+			}
+			return []byte(fmt.Sprintf(`{"ts":%q,"kind":"change","login":"aaaaaaaaaaaa","rl":true,"seven_pct":10,"seven_reset":%d,"responded":true}`+"\n",
+				now.Add(-time.Minute).UTC().Format(time.RFC3339), now.Add(72*time.Hour).Unix())), nil
 		},
 		Typed: func(surface string) (bool, error) { return f.typed[surface], f.typedErr },
 		Resources: func() (float64, float64, error) {
