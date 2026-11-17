@@ -305,7 +305,10 @@ func ProviderErrors(d ProviderDeps) (ProviderReport, error) {
 		rep.Tabs++
 		if prompt, open := openDialog(screen); open {
 			rep.Prompts++
-			p := st.Prompts[t.String()]
+			p, ok := prompts[t.String()] // a tab listed twice: its first look this sweep stands, so it wakes once
+			if !ok {
+				p = st.Prompts[t.String()]
+			}
 			if h := hash(promptKey(prompt)); p.Hash != h {
 				p = remotePrompt{Hash: h, Since: d.Now}
 			}
@@ -319,10 +322,15 @@ func ProviderErrors(d ProviderDeps) (ProviderReport, error) {
 					kind, int(age.Minutes()), t.String(), p.Since.Format("15:04"), command(screen, prompt)))
 				p.Said = true
 			} else if d.Dry {
-				rep.Actions = append(rep.Actions, fmt.Sprintf("%s open %d min in tab %s (Crius hears at %d min): %s",
-					kind, int(age.Minutes()), t.String(), int(promptAfter.Minutes()), command(screen, prompt)))
+				heard := fmt.Sprintf("Crius hears at %d min", int(promptAfter.Minutes()))
+				if p.Said {
+					heard = "Crius was told"
+				}
+				rep.Actions = append(rep.Actions, fmt.Sprintf("%s open %d min in tab %s (%s): %s",
+					kind, int(age.Minutes()), t.String(), heard, command(screen, prompt)))
 			}
 			prompts[t.String()] = p
+			continue // a tab on a dialog is never restarted: the dialog waits on an answer, not a carry-on
 		}
 		line, key, ok := ProviderStop(screen)
 		if !ok {

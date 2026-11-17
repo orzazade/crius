@@ -507,3 +507,25 @@ func TestProviderErrorsFailedLookIsNotNoPrompt(t *testing.T) {
 		t.Fatalf("the failed looks reset the prompt's timer or lost it: crius %q", f.crius)
 	}
 }
+
+// A tab list that cannot be read looks at no tab: every prompt's timer goes on. A tab listed twice wakes Crius once.
+func TestProviderErrorsUnreadTabListKeepsPromptTimers(t *testing.T) {
+	home := t.TempDir()
+	testutil.Write(t, wakewatch.ProviderTabsFile(home), "legion quotes:qa\nlegion quotes:qa\n")
+	f := &fakeSweep{screens: map[string]string{"legion quotes:qa": pane(t, "legion-git-clean-prompt.txt")}}
+	t0 := time.Date(2026, 11, 17, 5, 30, 0, 0, time.UTC)
+	if _, err := wakewatch.ProviderErrors(f.deps(home, t0)); err != nil {
+		t.Fatal(err)
+	}
+	d := f.deps(home, t0.Add(5*time.Minute))
+	d.Tabs = func() ([]wakewatch.RemoteTab, error) { return nil, errors.New("permission denied") }
+	if _, err := wakewatch.ProviderErrors(d); err == nil || !strings.Contains(err.Error(), "could not look at the remote tab list") {
+		t.Fatalf("an unread tab list must fail the run, got %v", err)
+	}
+	if _, err := wakewatch.ProviderErrors(f.deps(home, t0.Add(10*time.Minute))); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.crius) != 1 || !strings.HasPrefix(f.crius[0], "permission prompt unanswered for 10 min in tab legion quotes:qa: first seen at 05:30,") {
+		t.Fatalf("the unread tab list reset the prompt's timer, or a tab listed twice woke Crius twice: %q", f.crius)
+	}
+}
