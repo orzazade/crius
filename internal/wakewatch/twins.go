@@ -46,6 +46,15 @@ func byRole(ss []Session, states []sessionstate.State) map[string][]Session {
 	return out
 }
 
+// RoleSessions is byRole for bus-post, which asks before it hands a line to a role's T3 thread whether the role already
+// has a live claude (11-17: a delivery made T3 resume a stored session beside the live one).
+func RoleSessions(ss []Session, states []sessionstate.State) map[string][]Session {
+	return byRole(ss, states)
+}
+
+// Describe is describe for bus-post.
+func Describe(list []Session, states []sessionstate.State) string { return describe(list, states) }
+
 // describe names each session: "claude pid 73035 (session 05473ed1, T3 thread mcp:…)".
 func describe(list []Session, states []sessionstate.State) string {
 	thread := map[string]string{}

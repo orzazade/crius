@@ -11,7 +11,7 @@ import (
 )
 
 // LiveSessions lists the live Claude Code sessions of every config folder (~/.claude*) under the user home: name and
-// id. A linked folder lists a process again; it counts once.
+// id, pid and status. A linked folder lists a process again; it counts once.
 func LiveSessions(home string) ([]Session, error) {
 	files, err := filepath.Glob(filepath.Join(home, ".claude*", "sessions", "*.json"))
 	if err != nil {
@@ -32,6 +32,7 @@ func LiveSessions(home string) ([]Session, error) {
 			SessionID string `json:"sessionId"`
 			Name      string `json:"name"`
 			ProcStart string `json:"procStart"`
+			Status    string `json:"status"`
 		}
 		if err := json.Unmarshal(b, &s); err != nil {
 			return nil, fmt.Errorf("%s: %v", f, err)
@@ -46,7 +47,7 @@ func LiveSessions(home string) ([]Session, error) {
 			continue
 		}
 		seen[s.PID] = true
-		out = append(out, Session{Name: s.Name, ID: s.SessionID, PID: s.PID})
+		out = append(out, Session{Name: s.Name, ID: s.SessionID, PID: s.PID, Status: s.Status})
 	}
 	return out, nil
 }

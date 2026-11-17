@@ -15,7 +15,16 @@ import (
 func TestMain(m *testing.M) {
 	t3CLI = filepath.Join(os.TempDir(), "bus-post-test-no-real-t3")
 	os.Unsetenv("T3CODE_THREAD_ID")
-	os.Exit(m.Run())
+	// No test lists this Mac's live claudes or reads its T3 store: the user home of the look is an empty folder.
+	empty, err := os.MkdirTemp("", "bus-post-test-home")
+	if err != nil {
+		panic(err)
+	}
+	userHome = func() (string, error) { return empty, nil }
+	procList = func() (string, error) { return "", errors.New("a test gives its own process list") }
+	code := m.Run()
+	os.RemoveAll(empty)
+	os.Exit(code)
 }
 
 // fakeT3 puts a t3 in <home>/bin, where bus-post looks first, that keeps each call's arguments in dir/calls and its

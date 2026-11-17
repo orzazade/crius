@@ -151,6 +151,7 @@ type Workspace struct {
 type Session struct {
 	Name, ID string
 	PID      int
+	Status   string // as Claude Code writes it: "busy" in a turn, "idle", "waiting" on a prompt; "" when not written
 }
 
 type seenScreen struct {

@@ -290,7 +290,8 @@ func postLine(args []string, now time.Time, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "bus-post: write failed:", err)
 		return 1
 	}
-	// A thread role is woken by its thread, not by the bus (threads.go); a thread that got the line is read.
+	// A thread role is woken by its thread, not by the bus (threads.go); a thread that got the line is read, and so is a
+	// role whose live claude reads the bus through its own waiter.
 	got, failed := deliver(filepath.Dir(filepath.Dir(log)), log, typ, from, to, line, stderr)
 	rc := 0
 	if failed {
