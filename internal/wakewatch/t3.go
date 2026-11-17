@@ -111,13 +111,14 @@ func newestThread(home, project, role string, r sessionstate.State, states []ses
 //   - a request (an approval or a question) has waited on someone for over t3IdleAfter;
 //   - a message to it after its last reply has no answer, after t3IdleAfter;
 //   - its last reply's newest status emoji (RULES §3.5) is ⏳, its own named job, and neither the thread nor a bus line
-//     from the role has moved for over t3WaitAfter;
+//     from the role has moved for over t3WaitAfter, unless it is waiting (waitingOn: a bus waiter runs under its claude
+//     and an item it named is in flight), which wakes Crius once past t3WaitingFor, naming the item;
 //   - it is anything but ❓ (which waits on the owner), after t3IdleAfter.
 //
 // The key holds the idle spell's start, and Run says it once (Typed): one wake per idle spell. A role that cannot be
 // read, or a thread t3 cannot show, is a loud "failed to look" alert of its own, said every 20 min while it lasts.
 // A thread in prompted waits on a permission prompt stuckPrompts watches: its open requests are left to that check.
-func t3Idle(d Deps, watch projects, park parked, prompted map[string]bool) [][2]string {
+func t3Idle(d Deps, ss []Session, sesErr error, watch projects, park parked, prompted map[string]bool) [][2]string {
 	if d.Thread == nil {
 		return nil
 	}
@@ -132,6 +133,20 @@ func t3Idle(d Deps, watch projects, park parked, prompted map[string]bool) [][2]
 		out = append(out, [2]string{"t3-failed", "the T3 thread idle check failed to look: " + err.Error()})
 	}
 	var done map[string]bool // read once a thread is idle
+	var procs []Proc         // read once a role on ⏳ is quiet too long (waitingOn)
+	var procErr error
+	procsRead := false
+	readProcs := func() ([]Proc, error) {
+		if !procsRead {
+			procsRead = true
+			if d.Procs == nil {
+				procErr = errors.New("no process list to read")
+			} else {
+				procs, procErr = d.Procs()
+			}
+		}
+		return procs, procErr
+	}
 	var states []sessionstate.State
 	statesRead := false
 	hung := false
@@ -234,9 +249,20 @@ func t3Idle(d Deps, watch projects, park parked, prompted map[string]bool) [][2]
 			if last.After(moved) {
 				moved = last
 			}
-			if quiet := d.Now.Sub(moved); quiet > t3WaitAfter {
-				out = append(out, [2]string{key, fmt.Sprintf("%s is idle %d min after a ⏳ reply, with no bus line from it for %d min: its job may be gone. %s",
-					name, idle, int(quiet.Minutes()), tail)})
+			quiet := d.Now.Sub(moved)
+			if quiet <= t3WaitAfter {
+				continue
+			}
+			h, why := waitingOn(d, readProcs, ss, sesErr, states, who, r.SessionID, th.LastReply, from)
+			switch {
+			case why == "" && quiet <= t3WaitingFor: // waiting on an item in flight, its waiter armed: not idle yet
+			case why == "":
+				out = append(out, [2]string{key, fmt.Sprintf("%s is idle %d min after a ⏳ reply, WAITING ON %s (%s) with its bus waiter %s live, "+
+					"and no bus line from it for %d min: over %d h, so check that %s still moves. %s",
+					name, idle, h.item, h.by, h.waiter, int(quiet.Minutes()), int(t3WaitingFor.Hours()), h.item, tail)})
+			default:
+				out = append(out, [2]string{key, fmt.Sprintf("%s is idle %d min after a ⏳ reply, with no bus line from it for %d min: its job may be gone. Not held as waiting: %s. %s",
+					name, idle, int(quiet.Minutes()), why, tail)})
 			}
 		default:
 			out = append(out, [2]string{key, fmt.Sprintf("%s is idle %d min: not running, and its last reply ends on neither ⏳ nor ❓. %s", name, idle, tail)})

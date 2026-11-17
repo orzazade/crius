@@ -120,8 +120,20 @@ func main() {
 		}
 		os.Exit(wakewatch.Restart(d, os.Args[2], strings.Join(os.Args[3:], " ")))
 	}
+	if len(os.Args) >= 2 && os.Args[1] == "waiting" {
+		// read only: each role on ⏳ in a T3 thread, WAITING ON the item it waits on, or why its idle alert is not held
+		os.Exit(wakewatch.Waiting(wakewatch.Deps{Home: store.Home(), Now: time.Now(), Sessions: func() ([]wakewatch.Session, error) {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return nil, err
+			}
+			return wakewatch.LiveSessions(home)
+		}, States: func() ([]sessionstate.State, error) {
+			return sessionstate.List(filepath.Join(store.Home(), "sessions"))
+		}, Procs: procs, Thread: thread}, os.Stdout, os.Args[2:]))
+	}
 	if len(os.Args) > 1 {
-		fmt.Fprintln(os.Stderr, "usage: crius-wakewatch [after-boot | clicks | flagged <surface> | gone <surface> | signin | provider-errors [-fixtures DIR] | restart <project:role> [brief… | --from-ready [--dry-run]]]")
+		fmt.Fprintln(os.Stderr, "usage: crius-wakewatch [after-boot | clicks | flagged <surface> | gone <surface> | signin | provider-errors [-fixtures DIR] | restart <project:role> [brief… | --from-ready [--dry-run]] | waiting [project:role…]]")
 		os.Exit(2)
 	}
 	// Messages held on an earlier run go first, so a new alert never jumps ahead of an older one.

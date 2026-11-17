@@ -262,7 +262,7 @@ func Run(d Deps) error {
 	alerts = append(alerts, deadRoles(d, &st, ss, sesErr, watch, park)...)
 	sp, prompted := stuckPrompts(d)
 	alerts = append(alerts, sp...)
-	alerts = append(alerts, t3Idle(d, watch, park, prompted)...)
+	alerts = append(alerts, t3Idle(d, ss, sesErr, watch, park, prompted)...)
 	screens, scrErr := d.Screens()
 	alerts = append(alerts, rearm(d, &st, ss, sesErr, screens, scrErr, watch, park)...)
 	alerts = append(alerts, rigDown(d, &st, ss, sesErr, watch, park)...)
