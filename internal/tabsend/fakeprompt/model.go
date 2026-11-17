@@ -15,7 +15,14 @@ type Model struct {
 	Lines []string // the draft, one entry per line in the box; never empty
 	Sent  []string // drafts sent by an Enter
 	Busy  bool     // a turn is running: a sent draft is queued, not answered
+	// Bubble draws each sent draft in a box, a │ on each side of each line, as Claude Code's other output style does.
+	Bubble bool
+	// Rows, when above 0, is how many lines above the box fit the pane: older ones scroll off.
+	Rows int
 }
+
+// The marks a terminal puts around a bracketed paste.
+const pasteStart, pasteEnd = "\x1b[200~", "\x1b[201~"
 
 // New gives an empty box.
 func New() *Model { return &Model{Lines: []string{""}} }
@@ -27,6 +34,10 @@ func (m *Model) Feed(chunk []byte) {
 		return
 	}
 	paste := len(chunk) > 1
+	// a bracketed paste (tmux paste-buffer -p): its line breaks are new lines, never Enter
+	if s := string(chunk); strings.HasPrefix(s, pasteStart) && strings.HasSuffix(s, pasteEnd) {
+		chunk, paste = []byte(s[len(pasteStart):len(s)-len(pasteEnd)]), true
+	}
 	for _, r := range string(chunk) {
 		last := len(m.Lines) - 1
 		switch {
@@ -64,18 +75,31 @@ func (m *Model) submit() {
 // status line under it.
 func (m *Model) Screen() string {
 	rule := "\x1b[38;5;244m" + strings.Repeat("─", 60) + "\x1b[39m"
-	var b strings.Builder
+	var above []string
 	for _, s := range m.Sent {
-		b.WriteString("❯ " + strings.ReplaceAll(s, "\n", "\n  ") + "\n")
-		if m.Busy {
-			b.WriteString("  (queued)\n")
+		if m.Bubble {
+			for _, l := range strings.Split(s, "\n") {
+				above = append(above, "        │ "+l+" │")
+			}
 		} else {
-			b.WriteString("⏺ got it\n")
+			above = append(above, strings.Split("❯ "+strings.ReplaceAll(s, "\n", "\n  "), "\n")...)
 		}
-		b.WriteString("\n")
+		if m.Busy {
+			above = append(above, "  (queued)")
+		} else {
+			above = append(above, "⏺ got it")
+		}
+		above = append(above, "")
 	}
 	if m.Busy {
-		b.WriteString("\x1b[38;5;174m✻\x1b[39m Thinking… (esc to interrupt)\n")
+		above = append(above, "\x1b[38;5;174m✻\x1b[39m Thinking… (esc to interrupt)")
+	}
+	if m.Rows > 0 && len(above) > m.Rows {
+		above = above[len(above)-m.Rows:]
+	}
+	var b strings.Builder
+	for _, l := range above {
+		b.WriteString(l + "\n")
 	}
 	b.WriteString(rule + "\n")
 	if len(m.Lines) == 1 && m.Lines[0] == "" {

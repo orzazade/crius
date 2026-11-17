@@ -1265,6 +1265,29 @@ func Prompt(screen string) (string, bool) {
 	return draft, true
 }
 
+// transcriptMarks start a turn's lines at the left edge of a Claude Code screen: a prompt sent, or a reply (⏺, drawn
+// as ● on the Linux boxes, ✦ in another output style). Notices drawn there (● high · /effort) are indented.
+var transcriptMarks = []string{"❯", "⏺", "●", "✦"}
+
+// Cleared says whether a Claude Code screen shows a session /clear just emptied: it has an input box, and the one line
+// above the box that starts a turn is the "❯ /clear" the box sent. /clear wipes the screen, so its text shows there
+// once, however often the command menu showed it before; an old turn left on screen means it did not land.
+func Cleared(screen string) bool {
+	body, _, boxed := split(screen)
+	if !boxed {
+		return false
+	}
+	var turns []string
+	for _, line := range strings.Split(body, "\n") {
+		for _, mark := range transcriptMarks {
+			if strings.HasPrefix(line, mark) {
+				turns = append(turns, strings.TrimSpace(strings.TrimPrefix(line, mark)))
+			}
+		}
+	}
+	return len(turns) == 1 && turns[0] == "/clear"
+}
+
 // split cuts a Claude Code screen at its input box: what is above it, what is below it, and whether it has one.
 func split(text string) (body, foot string, boxed bool) {
 	lines := strings.Split(text, "\n")

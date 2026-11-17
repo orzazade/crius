@@ -1,4 +1,5 @@
-// Package tabsend types one line into a Claude Code session in a tmux pane on another machine and proves it was sent.
+// Package tabsend types a message into a Claude Code session in a tmux pane on another machine and proves it was sent.
+// A message with line breaks goes in as one bracketed paste.
 //
 // Claude Code takes keys that arrive in one read as a paste, where Enter is a new line: `tmux send-keys "<text>" Enter`
 // in one call leaves the text sitting in the input box, with no error (11-15 04:06: quotes:qa, quotes:builder-2 and
@@ -34,7 +35,8 @@ var (
 var targetRe = regexp.MustCompile(`^([A-Za-z0-9_][A-Za-z0-9_@+-]*):([A-Za-z0-9_][A-Za-z0-9_@+-]*)(?:\.(\d+))?$`)
 
 // Send types text into the Claude Code box of the tmux pane target, then Enter, and checks that it went: the box no
-// longer holds typed text and the text shows once more above it than before.
+// longer holds typed text and the text shows once more above it than before (for /clear: the screen shows a cleared
+// session).
 func Send(run Runner, target, text string) error {
 	if why := refuse(target, text); why != "" {
 		return fmt.Errorf("%w: %s", ErrRefused, why)
@@ -50,7 +52,7 @@ func Send(run Runner, target, text string) error {
 		}
 		return nil
 	}
-	typed, _, err := read(run, t, text)
+	typed, _, _, err := read(run, t, text)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrRefused, err)
 	}
@@ -67,7 +69,7 @@ func Send(run Runner, target, text string) error {
 			return fmt.Errorf("%w: clearing the box: %v", ErrNotSent, err)
 		}
 		time.Sleep(Wait)
-		if typed, _, err = read(run, t, text); err != nil {
+		if typed, _, _, err = read(run, t, text); err != nil {
 			return fmt.Errorf("%w: clearing the box: %v: text not typed", ErrNotSent, err)
 		}
 	}
@@ -76,26 +78,40 @@ func Send(run Runner, target, text string) error {
 	if strings.HasSuffix(lit, ";") {
 		lit = strings.TrimSuffix(lit, ";") + `\;`
 	}
-	if err := keys("-l -- " + quote(lit)); err != nil {
-		return fmt.Errorf("%w: typing: %v", ErrNotSent, err)
+	if !strings.Contains(text, "\n") {
+		if err := keys("-l -- " + quote(lit)); err != nil {
+			return fmt.Errorf("%w: typing: %v", ErrNotSent, err)
+		}
+	} else if err := paste(run, pane, lit); err != nil { // keys would press Enter at each line break
+		return fmt.Errorf("%w: pasting: %v", ErrNotSent, err)
 	}
 	isText := func(d string) bool { return squash(d) == squash(text) || strings.Contains(d, "[Pasted text") }
-	typed, seen, err := waitBox(run, t, text, func(d string, _ int) bool { return isText(d) })
+	typed, seen, _, err := waitBox(run, t, text, func(d string, _ int, _ string) bool { return isText(d) })
 	if err != nil || !isText(typed) {
 		return fmt.Errorf("%w: the box holds %q after typing, not the text (%v): Enter not pressed", ErrNotSent, shown(typed), err)
 	}
-	before := seen - strings.Count(squash(typed), start(text)) // where the text shows outside the box
+	before := seen - onScreen(typed, text) // where the text shows outside the box
+	// went says the text left the box for Claude: it shows once more above the box. /clear wipes the screen instead, so
+	// its text shows there once however often the command menu showed it before (11-17, twice): the screen it leaves
+	// proves it.
+	went := func(seen int, screen string) bool { return seen > before }
+	if strings.TrimSpace(text) == "/clear" {
+		went = func(_ int, screen string) bool { return wakewatch.Cleared(screen) }
+	}
 	// Enter in a call of its own, so it reaches Claude in a read of its own and is not taken as part of a paste.
 	for try := 1; ; try++ {
 		if err := keys("Enter"); err != nil {
 			return fmt.Errorf("%w: %v", ErrMaybeSent, err)
 		}
-		typed, seen, err = waitBox(run, t, text, func(d string, n int) bool { return d == "" && n > before })
+		var screen string
+		typed, seen, screen, err = waitBox(run, t, text, func(d string, n int, s string) bool { return d == "" && went(n, s) })
 		switch {
 		case err != nil:
 			return fmt.Errorf("%w: Enter pressed, then %v", ErrMaybeSent, err)
-		case typed == "" && seen > before:
+		case typed == "" && went(seen, screen):
 			return nil
+		case typed == "" && strings.TrimSpace(text) == "/clear":
+			return fmt.Errorf("%w: the box is empty after Enter, but the screen still shows the old session, not a cleared one", ErrMaybeSent)
 		case typed == "":
 			return fmt.Errorf("%w: the box is empty after Enter, but the text does not show above it", ErrMaybeSent)
 		case !isText(typed): // an autocomplete or someone else changed it: Enter again would send something else
@@ -131,34 +147,48 @@ func resolve(run Runner, target string) (string, error) {
 
 var paneIDRe = regexp.MustCompile(`^%\d+$`)
 
-// read captures the pane and gives the typed text in its box and how often the start of text shows on screen; a pane
-// without a box is an error, since Enter would run or pick something there.
-func read(run Runner, target, text string) (typed string, seen int, err error) {
+// read captures the pane and gives the typed text in its box, how often the start of text shows on screen, and the
+// screen as plain text; a pane without a box is an error, since Enter would run or pick something there.
+func read(run Runner, target, text string) (typed string, seen int, screen string, err error) {
 	out, err := run("tmux capture-pane -t " + target + " -p -e")
 	if err != nil {
 		said, _ := redact.Redact(strings.TrimSpace(string(out)))
-		return "", 0, fmt.Errorf("tmux capture-pane: %v: %s", err, said)
+		return "", 0, "", fmt.Errorf("tmux capture-pane: %v: %s", err, said)
 	}
 	typed, boxed := Box(string(out))
 	if !boxed {
-		return "", 0, fmt.Errorf("pane %s shows no Claude input box", target)
+		return "", 0, "", fmt.Errorf("pane %s shows no Claude input box", target)
 	}
 	// Dim text counts here: a message queued in a busy tab may be drawn dim.
-	return typed, strings.Count(squash(plain(string(out))), start(text)), nil
+	screen = plain(string(out))
+	return typed, onScreen(screen, text), screen, nil
+}
+
+// paste puts text with line breaks into the box as one bracketed paste (tmux paste-buffer -p), where a line break is a
+// new line and never Enter; Claude Code shows a long one as "[Pasted text #1 +N lines]" (2.1.326, 11-17). lit is
+// text with a trailing ";" escaped, which tmux would take as the end of set-buffer.
+func paste(run Runner, pane, lit string) error {
+	buf := "crius-tsend-" + strings.TrimPrefix(pane, "%") // one per pane, so a send to another pane never takes it
+	for _, cmd := range []string{"tmux set-buffer -b " + buf + " -- " + quote(lit), "tmux paste-buffer -p -d -b " + buf + " -t " + quote(pane)} {
+		if out, err := run(cmd); err != nil {
+			return fmt.Errorf("%s: %v: %s", strings.Fields(cmd)[1], err, strings.TrimSpace(string(out)))
+		}
+	}
+	return nil
 }
 
 // waitBox reads the pane until it is as wanted, for up to 10 reads (Claude draws a key a moment after it arrives),
 // and gives the last read.
-func waitBox(run Runner, target, text string, wanted func(typed string, seen int) bool) (typed string, seen int, err error) {
+func waitBox(run Runner, target, text string, wanted func(typed string, seen int, screen string) bool) (typed string, seen int, screen string, err error) {
 	for i := 0; i < 10; i++ {
 		if i > 0 {
 			time.Sleep(Wait)
 		}
-		if typed, seen, err = read(run, target, text); err == nil && wanted(typed, seen) {
-			return typed, seen, nil
+		if typed, seen, screen, err = read(run, target, text); err == nil && wanted(typed, seen, screen) {
+			return typed, seen, screen, nil
 		}
 	}
-	return typed, seen, err
+	return typed, seen, screen, err
 }
 
 // shown is what an error may say about a box: redacted, on one line, cut to 60 runes.
@@ -176,9 +206,9 @@ func refuse(target, text string) string {
 	switch {
 	case !targetRe.MatchString(target):
 		return fmt.Sprintf("tmux target %q: give session:window or session:window.pane, by name or index", target)
-	case strings.ContainsAny(text, "\r\n"):
-		return "a line break would press Enter early: send one line"
-	case strings.IndexFunc(text, unicode.IsControl) >= 0:
+	case strings.ContainsRune(text, '\r'):
+		return "a carriage return would press Enter early: break lines with \\n"
+	case strings.IndexFunc(text, func(r rune) bool { return r != '\n' && unicode.IsControl(r) }) >= 0:
 		return "a control character (Esc, Tab, C-c …) would act as a key in the box: send plain text"
 	case lead == "":
 		return "the text is empty"
@@ -273,13 +303,21 @@ func sgrDim(params string, dim bool) bool {
 	return dim
 }
 
-// start is the first 40 runes of text without white space: enough to know it, short enough to fit a wrapped box.
-func start(text string) string {
+// end is what shows text on screen: its last 40 runes without white space, enough to know it. The end, since a long
+// text's first lines scroll off once it is sent, and it sits just above the reply (11-17 review: a short last line
+// alone, such as "Go.", can show on screen more often before Enter than after).
+func end(text string) string {
 	r := []rune(squash(text))
 	if len(r) > 40 {
-		r = r[:40]
+		r = r[len(r)-40:]
 	}
 	return string(r)
+}
+
+// onScreen is how often text shows on a plain screen: white space and the │ some screens draw at each end of each sent
+// line are dropped, so a line the screen wrapped or framed reads as typed.
+func onScreen(screen, text string) int {
+	return strings.Count(strings.ReplaceAll(squash(screen), "│", ""), end(text))
 }
 
 // squash drops all white space, so a line the box wrapped equals the line as typed.

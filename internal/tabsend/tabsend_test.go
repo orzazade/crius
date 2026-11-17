@@ -11,6 +11,7 @@ import (
 	"mvdan.cc/sh/v3/shell"
 
 	"github.com/orzazade/crius/internal/tabsend/fakeprompt"
+	"github.com/orzazade/crius/internal/wakewatch"
 )
 
 func init() { Wait = 0 }
@@ -61,6 +62,7 @@ type fakeTmux struct {
 	calls  []string
 	enter  func() bool // nil: Enter works; false: this Enter is lost
 	stuck  bool        // the box ignores C-u and BSpace, so it never clears
+	bufs   map[string]string
 }
 
 func (f *fakeTmux) run(line string) ([]byte, error) {
@@ -68,6 +70,9 @@ func (f *fakeTmux) run(line string) ([]byte, error) {
 	argv, err := shell.Fields(line, nil)
 	if err != nil {
 		return nil, err
+	}
+	if len(argv) > 1 && argv[0] == "tmux" && (argv[1] == "set-buffer" || argv[1] == "paste-buffer") {
+		return nil, f.buffer(argv[1:])
 	}
 	if len(argv) < 4 || argv[0] != "tmux" || argv[2] != "-t" {
 		return nil, fmt.Errorf("fake tmux: unexpected %q", line)
@@ -141,6 +146,34 @@ func (f *fakeTmux) run(line string) ([]byte, error) {
 		return nil, nil
 	}
 	return nil, fmt.Errorf("fake tmux: unexpected %q", line)
+}
+
+// buffer runs set-buffer -b <name> -- <data> and paste-buffer -p -d -b <name> -t %1 as tmux does: a bare ";" ending the
+// data ends the command, and a paste with -p reaches the pane in one read, bracketed, its line breaks as CR.
+func (f *fakeTmux) buffer(argv []string) error {
+	if f.bufs == nil {
+		f.bufs = map[string]string{}
+	}
+	if len(argv) == 5 && argv[0] == "set-buffer" && argv[1] == "-b" && argv[3] == "--" {
+		data := argv[4]
+		if strings.HasSuffix(data, `\;`) {
+			data = strings.TrimSuffix(data, `\;`) + ";"
+		} else {
+			data = strings.TrimSuffix(data, ";")
+		}
+		f.bufs[argv[2]] = data
+		return nil
+	}
+	if strings.Join(argv, " ") == "paste-buffer -p -d -b crius-tsend-1 -t %1" {
+		data, ok := f.bufs["crius-tsend-1"]
+		if !ok {
+			return errors.New("fake tmux: no buffer crius-tsend-1")
+		}
+		delete(f.bufs, "crius-tsend-1")
+		f.m.Feed([]byte("\x1b[200~" + strings.ReplaceAll(data, "\n", "\r") + "\x1b[201~"))
+		return nil
+	}
+	return fmt.Errorf("fake tmux: unexpected %q", argv)
 }
 
 func newFake() *fakeTmux { return &fakeTmux{target: "team:qa", m: fakeprompt.New()} }
@@ -290,7 +323,7 @@ func TestSendSaysMaybeSentWhenThePaneCannotBeReadAfterEnter(t *testing.T) {
 
 func TestSendRefusesBadInput(t *testing.T) {
 	for _, c := range [][2]string{
-		{"team:qa", "two\nlines"},
+		{"team:qa", "two\rlines"},
 		{"team:qa", "  "},
 		{"-t", "x"},
 		{"team:qa; rm", "x"},
@@ -382,5 +415,174 @@ func TestBoxSkipsACharacterSetSwitch(t *testing.T) {
 	screen := "\x1b(B" + strings.Repeat("─", 20) + "\x1b(B\n❯\u00a0hi\n" + strings.Repeat("─", 20) + "\n"
 	if typed, boxed := Box(screen); !boxed || typed != "hi" {
 		t.Fatalf("Box = %q, %v", typed, boxed)
+	}
+}
+
+// clearTab answers a /clear with real captures of Claude Code 2.1.326 (11-17): the old session with an empty box, the
+// box holding /clear under its command menu, then after Enter the screen /clear leaves (after) or, for a /clear that
+// did not land, the old session again. Once the /clear is through, keys and reads go to the fake box f.
+type clearTab struct {
+	*fakeTmux
+	t     *testing.T
+	after string // the fixture shown after the /clear's Enter
+	phase int    // 0 the old session, 1 /clear typed, 2 after its Enter, 3 the fake box
+}
+
+func newClearTab(t *testing.T, after string) *clearTab {
+	return &clearTab{fakeTmux: newFake(), t: t, after: after}
+}
+
+func (c *clearTab) run(line string) ([]byte, error) {
+	switch {
+	case c.phase == 3 || strings.Contains(line, "display-message"):
+	case strings.Contains(line, "capture-pane"):
+		c.calls = append(c.calls, line)
+		return []byte(fixture(c.t, []string{"clear-before.txt", "clear-typed.txt", c.after}[c.phase])), nil
+	case c.phase == 0 && strings.HasSuffix(line, "-l -- '/clear'"):
+		c.calls = append(c.calls, line)
+		c.phase = 1
+		return nil, nil
+	case c.phase == 1 && strings.HasSuffix(line, " Enter"):
+		c.calls = append(c.calls, line)
+		c.phase = 2
+		return nil, nil
+	case c.phase == 2:
+		c.phase = 3
+	default:
+		return nil, fmt.Errorf("clearTab: unexpected %q in phase %d", line, c.phase)
+	}
+	return c.fakeTmux.run(line)
+}
+
+// (a) 11-17 20:4x quotes:qa and 21:43 staffy:qa: the /clear went, but crius-tsend said MAYBE SENT, since /clear wipes
+// the screen and leaves its text there once, as often as the command menu showed it before Enter. The screen /clear
+// leaves is the proof instead.
+func TestSendProvesAClearByTheScreenItLeaves(t *testing.T) {
+	c := newClearTab(t, "clear-after.txt")
+	if err := Send(c.run, "team:qa", "/clear"); err != nil {
+		t.Fatalf("Send(/clear) = %v, want SENT: the screen shows a cleared session", err)
+	}
+	if n := strings.Count(strings.Join(c.calls, "\n"), " Enter"); n != 1 {
+		t.Fatalf("Enter pressed %d times, want 1", n)
+	}
+}
+
+// (b) A /clear that did not land: the box emptied, but the old session is still on the screen. It stops loudly.
+func TestSendSaysMaybeSentWhenAClearLeavesTheOldSession(t *testing.T) {
+	c := newClearTab(t, "clear-before.txt")
+	err := Send(c.run, "team:qa", "/clear")
+	if !errors.Is(err, ErrMaybeSent) || !strings.Contains(err.Error(), "still shows the old session") {
+		t.Fatalf("Send(/clear) = %v, want ErrMaybeSent saying the old session still shows", err)
+	}
+}
+
+// Cleared reads real screens: what /clear leaves (here and on the ThinkPad) is cleared; a session with a transcript is
+// not, nor one whose /clear shows under or above other turns.
+func TestClearedReadsRealScreens(t *testing.T) {
+	rule := strings.Repeat("─", 50)
+	box := rule + "\n❯ \n" + rule + "\n  ⏵⏵ bypass permissions on\n"
+	for _, c := range []struct {
+		name, screen string
+		want         bool
+	}{
+		{"after /clear, Claude Code 2.1.326 on the Mac", fixture(t, "clear-after.txt"), true},
+		{"after /clear, staffy:qa on the ThinkPad 21:43", fixture(t, "clear-after-thinkpad.txt"), true},
+		{"the old session, box empty", fixture(t, "clear-before.txt"), false},
+		{"the old session, /clear in the box", fixture(t, "clear-typed.txt"), false},
+		{"/clear under the old session", "● Waiting for the unit run.\n\n❯ /clear\n" + box, false},
+		{"the last restart's /clear, then its brief", "❯ /clear\n\n❯ Read BRIEF.md and go\n\n● On it.\n" + box, false},
+		{"no box", "❯ /clear\n", false},
+	} {
+		if got := wakewatch.Cleared(plain(c.screen)); got != c.want {
+			t.Errorf("%s: Cleared = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+const brief = "Fresh start for staffy:qa.\nRead ~/.crius/state/staffy/BRIEF.md first.\nThen post READY on the bus;"
+
+// (c) A brief with line breaks goes in as one message: one bracketed paste, then Enter in a call of its own. Typed
+// key by key, each line break would press Enter early.
+func TestSendTypesAMultiLineTextAsOnePaste(t *testing.T) {
+	f := newFake()
+	if err := Send(f.run, "team:qa", brief); err != nil {
+		t.Fatalf("Send = %v, want SENT", err)
+	}
+	if len(f.m.Sent) != 1 || f.m.Sent[0] != brief {
+		t.Fatalf("the box sent %q, want the brief once, whole: %q", f.m.Sent, brief)
+	}
+}
+
+// The whole restart of a real tab: /clear, proved by the screen it leaves, then a multi-line brief as one message;
+// and a /clear that did not land stops it before the brief.
+func TestRestartOfARealTabClearsThenSendsAMultiLineBrief(t *testing.T) {
+	for _, c := range []struct {
+		after string
+		code  int
+		said  string
+		sent  []string
+	}{
+		{"clear-after.txt", wakewatch.RestartReady, "SENT team:qa", []string{brief}},
+		{"clear-before.txt", wakewatch.RestartMaybe, "the brief was not sent", nil},
+	} {
+		tab := newClearTab(t, c.after)
+		var out strings.Builder
+		d := wakewatch.RestartDeps{Out: &out,
+			Tabs: func() ([]wakewatch.RemoteTab, error) {
+				return []wakewatch.RemoteTab{{Box: "thinkpad", Target: "team:qa"}}, nil
+			},
+			Capture: func(wakewatch.RemoteTab) (string, error) {
+				b, err := tab.run("tmux capture-pane -t '%1' -p -e")
+				return Visible(string(b)), err
+			},
+			Procs: func(wakewatch.RemoteTab) (string, error) {
+				return "100\n 100 99 -bash\n 200 100 claude --resume 58128bf4\n--- cmdline\n", nil
+			},
+			SendTab: func(t wakewatch.RemoteTab, text string) error { return Send(tab.run, t.Target, text) },
+		}
+		if code := wakewatch.Restart(d, "team:qa", brief); code != c.code || !strings.Contains(out.String(), c.said) {
+			t.Errorf("%s: exit %d, said %q; want exit %d saying %q", c.after, code, out.String(), c.code, c.said)
+		}
+		if strings.Join(tab.m.Sent, "|") != strings.Join(c.sent, "|") {
+			t.Errorf("%s: the box sent %q, want %q", c.after, tab.m.Sent, c.sent)
+		}
+	}
+}
+
+// Review P2s: a multi-line text is seen above the box by its last line. A screen that draws each sent line between │
+// marks splits the text's start at its first line break; a long text's first lines scroll off once it is sent.
+func TestSendSeesAMultiLineTextByItsLastLine(t *testing.T) {
+	long := "Long brief, first line."
+	for i := 2; i <= 40; i++ {
+		long += fmt.Sprintf("\nfiller line %d of the brief.", i)
+	}
+	for name, c := range map[string]struct {
+		bubble bool
+		rows   int
+		text   string
+	}{"drawn in a bubble": {true, 0, brief}, "first lines scrolled off": {false, 12, long}} {
+		f := newFake()
+		f.m.Bubble, f.m.Rows = c.bubble, c.rows
+		if err := Send(f.run, "team:qa", c.text); err != nil {
+			t.Errorf("%s: Send = %v, want SENT", name, err)
+		}
+		if len(f.m.Sent) != 1 || f.m.Sent[0] != c.text {
+			t.Errorf("%s: the box sent %q, want the text once", name, f.m.Sent)
+		}
+	}
+}
+
+// Re-review P2: a brief that ends in a short, common line ("Go.") is still seen when its long echo scrolls the old
+// copies of that line off the screen.
+func TestSendSeesALongTextThatEndsInACommonLine(t *testing.T) {
+	text := "Long brief, first line."
+	for i := 2; i <= 20; i++ {
+		text += fmt.Sprintf("\nfiller line %d of the brief.", i)
+	}
+	text += "\nGo."
+	f := newFake()
+	f.m.Sent, f.m.Rows = []string{"Go.", "Go."}, 12
+	if err := Send(f.run, "team:qa", text); err != nil {
+		t.Fatalf("Send = %v, want SENT", err)
 	}
 }

@@ -1,0 +1,7 @@
+❯ /clear
+                                         ✔ Update installed · Restart to apply
+──────────────────────────────────────────────────
+❯ 
+──────────────────────────────────────────────────
+  quota login 000000000000: 7d 58% (resets Sat 14:00)
+  ⏵⏵ bypass permissions on · 1 monitor

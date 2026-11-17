@@ -1,5 +1,5 @@
-// Command crius-tsend types one line into a Claude Code session in a tmux pane on another machine, then Enter, and
-// proves it went:
+// Command crius-tsend types a message into a Claude Code session in a tmux pane on another machine, then Enter, and
+// proves it went (a message with line breaks goes in as one bracketed paste; /clear is proved by the cleared screen):
 //
 //	crius-tsend <box> <session:window> <text…>
 //
