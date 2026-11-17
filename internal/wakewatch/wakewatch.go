@@ -569,7 +569,10 @@ func missed(home string, now time.Time, watch projects, park parked) ([][2]strin
 					return asker != "crius:lead" && addressed(to, asker, team)
 				})
 			}
-			if !wakeTypes[typ] && store.RestartWord(line) == "" || !toCrius(to) || answered(typ, from, line, park) || i < delivered {
+			// An ALERT (only Crius's own tools write one) quotes other lines and asks for no restart: wakewatch's own
+			// fallback alert quotes the missed line (review of 32b68c3). Like CLEAR-READY before, only a line to Crius counts.
+			restart := typ != "ALERT" && store.RestartWord(line) != ""
+			if !wakeTypes[typ] && !restart || !toCrius(to) || answered(typ, from, line, park) || i < delivered {
 				continue
 			}
 			// A team's line on another team's bus ("aitch:build" on crius.log) goes by the sender's team.

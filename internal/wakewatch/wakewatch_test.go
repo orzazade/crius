@@ -424,6 +424,20 @@ func TestAReadyRestartLineOfAnyTypeToCriusWakes(t *testing.T) {
 	}
 }
 
+// Review of 32b68c3 (P2): an alert that could not be typed goes to crius.log as an ALERT quoting the missed line. A
+// quoted READY-RESTART is no request: else wakewatch wakes on its own alert, nested deeper each round.
+func TestAnAlertQuotingAReadyRestartLineDoesNotWake(t *testing.T) {
+	home := setup(t, map[string]string{"crius.log": stamp(t0) + " ALERT crius:watchdog -> crius — WAKEWATCH: quotes.log: " +
+		stamp(t0) + " INFO quotes:qa -> crius:lead — READY-RESTART notes=n.md next=RQ1\n"})
+	f := &fake{}
+	if err := Run(f.deps(home, t0.Add(25*time.Minute))); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.sent) != 0 {
+		t.Fatalf("woke on its own ALERT quoting a READY-RESTART line: %q", f.sent)
+	}
+}
+
 func TestAMissedLineAlertsOnce(t *testing.T) {
 	home := setup(t, map[string]string{"quotes.log": done(t0)})
 	f := &fake{}
