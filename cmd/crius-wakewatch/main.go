@@ -100,16 +100,28 @@ func main() {
 			fmt.Fprintln(os.Stderr, "crius-wakewatch restart:", err)
 			os.Exit(wakewatch.RestartFailed)
 		}
-		os.Exit(wakewatch.Restart(wakewatch.RestartDeps{Home: store.Home(), Out: os.Stdout,
+		d := wakewatch.RestartDeps{Home: store.Home(), Out: os.Stdout,
 			Sessions: func() ([]wakewatch.Session, error) { return wakewatch.LiveSessions(home) },
 			States: func() ([]sessionstate.State, error) {
 				return sessionstate.List(filepath.Join(store.Home(), "sessions"))
 			},
 			Thread: thread, Tabs: func() ([]wakewatch.RemoteTab, error) { return wakewatch.ReadProviderTabs(store.Home()) },
-			Capture: captureTab, Procs: tabProcs, SendTab: sendTab}, os.Args[2], strings.Join(os.Args[3:], " ")))
+			Capture: captureTab, Procs: tabProcs, SendTab: sendTab}
+		// --from-ready builds the brief from the role's newest READY-RESTART bus line and its template (wakewatch.RestartFromReady)
+		// either flag anywhere means that form, so "--dry-run" is never sent as a brief
+		if rest := os.Args[3:]; slices.Contains(rest, "--from-ready") || slices.Contains(rest, "--dry-run") {
+			dry, ok := fromReadyArgs(rest)
+			if !ok {
+				fmt.Fprintln(os.Stderr, "usage: crius-wakewatch restart <project:role> --from-ready [--dry-run]")
+				os.Exit(2)
+			}
+			os.Exit(wakewatch.RestartFromReady(wakewatch.FromReadyDeps{RestartDeps: d, Now: time.Now(),
+				Read: briefRead, Save: briefSave}, os.Args[2], dry))
+		}
+		os.Exit(wakewatch.Restart(d, os.Args[2], strings.Join(os.Args[3:], " ")))
 	}
 	if len(os.Args) > 1 {
-		fmt.Fprintln(os.Stderr, "usage: crius-wakewatch [after-boot | clicks | flagged <surface> | gone <surface> | signin | provider-errors [-fixtures DIR] | restart <project:role> [brief…]]")
+		fmt.Fprintln(os.Stderr, "usage: crius-wakewatch [after-boot | clicks | flagged <surface> | gone <surface> | signin | provider-errors [-fixtures DIR] | restart <project:role> [brief… | --from-ready [--dry-run]]]")
 		os.Exit(2)
 	}
 	// Messages held on an earlier run go first, so a new alert never jumps ahead of an older one.
