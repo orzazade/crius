@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/fs"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -133,7 +134,7 @@ func restartTab(d RestartDeps, say func(int, string, ...any) int, role string, t
 		if err != nil {
 			return "", err
 		}
-		return screenView(text), nil
+		return restartView(text), nil
 	}
 	v, err := idle()
 	if err != nil {
@@ -176,6 +177,23 @@ func sendCode(err error) int {
 		return RestartNotSent
 	}
 	return RestartMaybe
+}
+
+// restartJobsRe is jobsRe with one monitor allowed: every idle session keeps exactly one, its bus waiter, and /clear
+// does not wait for it (11-17 18:57 and 20:08, staffy:qa). Two or more monitors (a waiter plus one watching a run),
+// shells, background tasks and agents still refuse: a run /clear would orphan, which the fresh session could start again.
+var restartJobsRe = regexp.MustCompile(`\b\d+ (?:shells?|background tasks?|agents?)\b|\b(?:[2-9]|\d{2,}) monitors\b|(?m)^\s*◯ `)
+
+// restartView is screenView for a restart: the same "asks" and turn checks, but a monitor alone leaves the tab idle.
+func restartView(text string) string {
+	_, foot, boxed := split(text)
+	switch {
+	case asks(text):
+		return "asks"
+	case !boxed || strings.Contains(text, "esc to interrupt") || restartJobsRe.MatchString(foot):
+		return "busy"
+	}
+	return "idle"
 }
 
 // busyWhy says what a screen view other than idle means for a restart.

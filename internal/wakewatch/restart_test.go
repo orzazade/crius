@@ -62,6 +62,10 @@ var (
 	readyTab = tab("staffy · builder", "Done. ✅", "", t0)
 	busyTab  = tab("staffy · builder", "Bash(make test)\n\n✻ Running… (12s · esc to interrupt)", "  ⏵⏵ bypass permissions on\n", t0)
 	jobsTab  = tab("staffy · builder", "Started the red run. ⏳", "  ⏵⏵ bypass permissions on · 1 shell\n", t0)
+	// the bus waiter every idle session keeps: a monitor, which /clear does not wait for (11-17 18:57 and 20:08, staffy:qa)
+	waiterTab = tab("staffy · builder", "READY-RESTART posted. ⏳", "  ⏵⏵ bypass permissions on · 1 monitor\n", t0)
+	// a monitor watching a run beside the waiter: two monitors, so still busy
+	watchTab = tab("staffy · builder", "Watching the red run. ⏳", "  ⏵⏵ bypass permissions on · 2 monitors\n", t0)
 )
 
 func wantOut(t *testing.T, r *restartFake, code, want int, has ...string) {
@@ -143,7 +147,7 @@ func TestRestartThatCannotLookSaysSo(t *testing.T) {
 // A tmux tab mid-turn, or with background jobs still running, is refused and nothing is typed (11-17 18:3x: /clear and
 // the brief sent to a busy quotes:builder-2 were queued behind its turn, so the brief ran in the old context).
 func TestRestartOfABusyTmuxTabTypesNothing(t *testing.T) {
-	for name, screen := range map[string]string{"turn": busyTab, "jobs": jobsTab} {
+	for name, screen := range map[string]string{"turn": busyTab, "jobs": jobsTab, "two monitors": watchTab} {
 		r, home := newRestartFake(t)
 		r.screen["staffy:builder"] = screen
 		wantOut(t, r, Restart(r.deps(home), "staffy:builder", "Read BRIEF.md and go"), RestartBusy, "BUSY staffy:builder")
@@ -167,6 +171,17 @@ func TestRestartOfAnIdleTmuxTabClearsThenSendsTheBrief(t *testing.T) {
 	wantOut(t, r, Restart(r.deps(home), "staffy:builder", ""), RestartReady, "READY staffy:builder")
 	if len(r.typed) != 0 {
 		t.Errorf("typed %q with no brief", r.typed)
+	}
+}
+
+// A tab whose only background job is its bus waiter (a monitor) is idle for a restart: the restart clears it and sends
+// the brief (11-17 20:08: exit 3 on staffy:qa, idle at its prompt with "1 monitor", which every idle session shows).
+func TestRestartOfATabWithOnlyItsBusWaiterSendsTheBrief(t *testing.T) {
+	r, home := newRestartFake(t)
+	r.screen["staffy:builder"] = waiterTab
+	wantOut(t, r, Restart(r.deps(home), "staffy:builder", "Read BRIEF.md and go"), RestartReady, "SENT staffy:builder")
+	if want := []string{"staffy:builder /clear", "staffy:builder Read BRIEF.md and go"}; strings.Join(r.typed, "|") != strings.Join(want, "|") {
+		t.Errorf("typed %q, want %q", r.typed, want)
 	}
 }
 
