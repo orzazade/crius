@@ -4,7 +4,8 @@ package wakewatch
 // every session on that account stops, at night too, and nothing says so. Each run reads `claude auth status` of each Max
 // config dir on the Mac and on the Legion (no model call) and wakes Crius once per account, state and day when the end
 // is under 4 days away, has passed or the account is signed out, naming the exact command that renews it. A status that
-// could not be read, or that names no end, is its own loud state, never OK. The enterprise dir (~/.claude-work) is never
+// could not be read, or that names no end, is its own loud state, never OK; a read that failed wakes Crius only on the
+// second failed run in a row (a CLI update swaps the binary for a moment). The enterprise dir (~/.claude-work) is never
 // read. No secret file or keychain value is read here: only the CLI's own status output.
 //
 // The same run reads each login's weekly limit (11-16: max1 hit its week; Staffy's ThinkPad tabs sat idle for hours and
@@ -60,9 +61,19 @@ const (
 	LegionHost = "crius@100.109.19.101"
 	// ThinkPadSSH runs a command on the ThinkPad (Staffy's tmux team); the wrapper names the host itself.
 	ThinkPadSSH = "~/.crius/state/staffy/thinkpad/T"
-	// RemoteClaude finds the CLI on the Legion and the ThinkPad: it lives under nvm, which a non-interactive ssh shell has
-	// not on its PATH (11-15: a bare `claude` there was "command not found", so the status printed no end date).
-	RemoteClaude = `"$(ls -dv ~/.nvm/versions/node/*/bin/claude ~/.local/bin/claude 2>/dev/null | tail -1)"`
+	// RemoteClaude finds the CLI on the Legion and the ThinkPad and puts it in $c: it lives under nvm, which a
+	// non-interactive ssh shell has not on its PATH (11-15: a bare `claude` there was "command not found", so the status
+	// printed no end date). With none found it says where it looked and exits ClaudeMissing (11-17: during a CLI update
+	// the lookup came back empty, bash ran an empty command and the alert read "bash: line 1: : command not found").
+	RemoteClaude = `c=$(ls -dv ~/.nvm/versions/node/*/bin/claude ~/.local/bin/claude 2>/dev/null | while read -r f; do [ -f "$f" ] && [ -x "$f" ] && echo "$f"; done | tail -1); ` +
+		`[ -n "$c" ] || { echo "claude not found at ~/.nvm/versions/node/*/bin/claude ~/.local/bin/claude" >&2; exit 69; }; `
+	// ClaudeMissing is the exit code of RemoteClaude when no CLI is there; [ -f ] leaves out a link whose target is gone
+	// (an update swapping the binary), so that reads as not found too.
+	ClaudeMissing = 69
+	// signinMisses: a read (an account's status or login, a machine's spool) must fail this many runs in a row before it
+	// wakes Crius (11-17: five false wakes in 70 minutes, each read fine by hand a minute later; an ssh blip fails all
+	// three). A real, lasting failure still wakes on the second run.
+	signinMisses = 2
 	// SpoolRemote prints a remote machine's quota spool: nothing when it keeps none (the Legion runs no statusline).
 	SpoolRemote = `f=~/.crius/spool/quota.jsonl; [ -e "$f" ] || exit 0; tail -n 20000 "$f"`
 )
@@ -124,7 +135,7 @@ func (a Account) Shell(sub string, tty bool) string {
 
 // Remote is the command a remote machine's shell runs for `claude auth <sub>`.
 func (a Account) Remote(sub string) string {
-	return "CLAUDE_CONFIG_DIR=" + a.Dir + " " + RemoteClaude + " auth " + sub
+	return RemoteClaude + "CLAUDE_CONFIG_DIR=" + a.Dir + ` "$c" auth ` + sub
 }
 
 // Renew is the exact command that signs the account in again.
@@ -151,6 +162,7 @@ type SigninRow struct {
 	WeekPct          float64
 	WeekReset        time.Time
 	WeekWhy          string
+	loginFailed      bool // the dir's login could not be read
 }
 
 // SigninReads are what the watch reads on each machine; none runs a model.
@@ -253,7 +265,7 @@ func (r *SigninRow) week(login string, err error, weeks map[string]quota.Week, a
 	r.Week = WeekUnknown
 	switch {
 	case err != nil:
-		r.WeekWhy = "could not read the dir's login: " + err.Error()
+		r.WeekWhy, r.loginFailed = "could not read the dir's login: "+err.Error(), true
 		return
 	case login == "":
 		r.WeekWhy = "the dir names no login (.claude.json has no account)"
@@ -355,7 +367,9 @@ func span(d time.Duration) string {
 // signins gives one alert per account whose sign-in is not OK, one per login whose week is not OK (its rows share it),
 // one per row whose login is not known, and one per machine whose spool could not be read: each raised only when due,
 // once per key (account or login, and state) and day (the day as d.Now's clock reads it), so the 5 min runs and the 20
-// min resend say it once. A new state the same day says it again.
+// min resend say it once. A new state the same day says it again. An alert that comes from a failed read (UNREAD, a spool
+// that could not be read) is raised only once the read failed signinMisses runs in a row (st.SigninMiss); one good read
+// starts the count again. A week UNKNOWN waits while any read failed this run for the first time (it may be only that).
 func signins(d Deps, st *state) [][2]string {
 	day := d.Now.Format("2006-01-02")
 	if st.Signin == nil {
@@ -376,16 +390,46 @@ func signins(d Deps, st *state) [][2]string {
 	}
 	w := Signins(SigninReads{Status: d.Signin, Login: d.Login, Spool: d.Spool}, d.Home, d.Now)
 	loc := d.Now.Location()
+	// failed counts a read that failed this run; it gives "" while the read has failed fewer than signinMisses runs in a
+	// row (its alert waits a run), else the count to name. A read not failed this run drops out, so its count starts again.
+	miss := map[string]int{}
+	fresh := false // a read failed this run for the first time(s): a week UNKNOWN may be only that
+	failed := func(key string) string {
+		miss[key] = st.SigninMiss[key] + 1
+		if miss[key] < signinMisses {
+			fresh = true
+			return ""
+		}
+		return fmt.Sprintf(" (%d reads in a row)", miss[key])
+	}
 	for _, r := range w.Rows {
+		if r.State == SigninUnread {
+			n := failed("status:" + r.Name)
+			if n == "" {
+				continue
+			}
+			r.Why += n
+		}
 		if r.State != SigninOK {
 			raise("signin:"+r.Name+":"+r.State, r.alert(loc))
 		}
 	}
 	for _, h := range slices.Sorted(maps.Keys(w.Unread)) {
-		raise("week-unread:"+h, fmt.Sprintf("week samples UNREAD %s: %s; the weekly limit of a login used there may not be seen. Check by hand: %s",
-			h, w.Unread[h], spoolShell(h)))
+		if n := failed("spool:" + h); n != "" {
+			raise("week-unread:"+h, fmt.Sprintf("week samples UNREAD %s%s: %s; the weekly limit of a login used there may not be seen. Check by hand: %s",
+				h, n, w.Unread[h], spoolShell(h)))
+		}
 	}
+	for _, r := range w.Rows {
+		if r.loginFailed {
+			failed("login:" + r.Name)
+		}
+	}
+	st.SigninMiss = miss
 	for _, g := range weekGroups(w.Rows) {
+		if g[0].Week == WeekUnknown && fresh {
+			continue
+		}
 		if g[0].Week != WeekOK {
 			id := g[0].Login
 			if id == "" {

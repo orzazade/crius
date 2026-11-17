@@ -175,6 +175,7 @@ type state struct {
 	RigBoot     map[string]time.Time // project -> the boot rigDown last looked at for it: a newer one is a boot since
 	TabsGone    map[string]bool      // surface ids cmux has no tab for, said once in wakewatch-state.log while they stay gone (wrongFolder)
 	Signin      map[string]string    // sign-in alert key (account and state) -> the day it was raised (signin.go)
+	SigninMiss  map[string]int       // read (status:<account>, login:<account>, spool:<host>) -> runs in a row it failed (signin.go)
 }
 
 // waitGap is when a bus log was first seen with no waiter, and whether that gap was said to Crius. From is the log's size

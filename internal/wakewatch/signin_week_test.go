@@ -171,8 +171,11 @@ func TestWeekEndedWindowWithNoSampleSinceIsUnknown(t *testing.T) {
 func TestWeekSpoolThatCannotBeReadIsLoud(t *testing.T) {
 	home := setup(t, nil)
 	f := &fake{login: logins(nil), spool: spools(t, map[string]string{"thinkpad": "err:ssh: connect to host 100.117.3.61 port 22: Operation timed out"})}
-	all := strings.Join(runWeek(t, home, signinNow, f), "\n")
-	if !strings.Contains(all, "week samples UNREAD thinkpad") || !strings.Contains(all, "timed out") {
+	if got := runWeek(t, home, signinNow, f); len(got) != 0 {
+		t.Fatalf("first failed read woke Crius: %q", got)
+	}
+	all := strings.Join(runWeek(t, home, signinNow.Add(5*time.Minute), f), "\n")
+	if !strings.Contains(all, "week samples UNREAD thinkpad (2 reads in a row)") || !strings.Contains(all, "timed out") {
 		t.Fatalf("%q", all)
 	}
 	// without the ThinkPad's spool max1's 100% is not seen: its rows say what was read, never OK on a guess
@@ -206,7 +209,7 @@ func TestSigninCoversTheThinkPad(t *testing.T) {
 		}
 		seen++
 		if a.Name == "thinkpad-claude" {
-			want := `~/.crius/state/staffy/thinkpad/T -t 'CLAUDE_CONFIG_DIR=~/.claude "$(ls -dv ~/.nvm/versions/node/*/bin/claude ~/.local/bin/claude 2>/dev/null | tail -1)" auth login'`
+			want := `~/.crius/state/staffy/thinkpad/T -t '` + RemoteClaude + `CLAUDE_CONFIG_DIR=~/.claude "$c" auth login'`
 			if got := a.Renew(); got != want {
 				t.Fatalf("got  %s\nwant %s", got, want)
 			}
@@ -292,5 +295,50 @@ func TestRemoteLoginAndSpoolCommandsRunInAShell(t *testing.T) {
 	write(".crius/spool/quota.jsonl", "a\nb\n")
 	if got := run(SpoolRemote); got != "a\nb\n" {
 		t.Fatalf("spool: %q", got)
+	}
+}
+
+// thinkpadDown fails every read on the ThinkPad the way an ssh blip does: each account's status and login, and its spool.
+func thinkpadDown(t *testing.T, down bool) *fake {
+	if !down {
+		return &fake{login: logins(nil), spool: spools(t, nil)}
+	}
+	const blip = "err:ssh: connect to host 100.117.3.61 port 22: Operation timed out"
+	by := map[string]string{"thinkpad-claude": blip, "thinkpad-claude-max2": blip}
+	return &fake{signin: reads(t, by), login: logins(by), spool: spools(t, map[string]string{"thinkpad": blip})}
+}
+
+func runAll(t *testing.T, home string, now time.Time, f *fake) []string {
+	t.Helper()
+	if err := Run(f.deps(home, now)); err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, s := range f.sent {
+		if strings.Contains(s, "sign-in") || strings.Contains(s, "week ") {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// review 11-17: one ssh blip to a machine fails its spool and login reads too; it must wake nobody, like a failed status
+// read. Two failed runs in a row wake for each.
+func TestSigninReadBlipOnAMachineWakesNobodyTwoInARowWake(t *testing.T) {
+	home := setup(t, nil)
+	if got := runAll(t, home, signinNow, thinkpadDown(t, false)); len(got) != 2 {
+		t.Fatalf("baseline, want max1's LIMIT and max2's UNKNOWN: %q", got)
+	}
+	for i, down := range []bool{true, false, true} {
+		if got := runAll(t, home, signinNow.Add(time.Duration(i+1)*5*time.Minute), thinkpadDown(t, down)); len(got) != 0 {
+			t.Fatalf("run %d (ThinkPad down %v): a one-run blip woke Crius: %q", i+1, down, got)
+		}
+	}
+	all := strings.Join(runAll(t, home, signinNow.Add(20*time.Minute), thinkpadDown(t, true)), "\n")
+	for _, w := range []string{"sign-in UNREAD thinkpad-claude ", "sign-in UNREAD thinkpad-claude-max2", "week samples UNREAD thinkpad",
+		"week UNKNOWN thinkpad-claude ", "week UNKNOWN thinkpad-claude-max2", "(2 reads in a row)"} {
+		if !strings.Contains(all, w) {
+			t.Fatalf("second failed run in a row, no %q in %q", w, all)
+		}
 	}
 }

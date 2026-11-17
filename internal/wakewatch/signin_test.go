@@ -3,6 +3,7 @@ package wakewatch
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -101,7 +102,9 @@ func TestSigninRenewCommandIsExact(t *testing.T) {
 			}
 		case "legion-max1":
 			seen++
-			want := `~/.crius/state/quotes/build/legion/E -t crius@100.109.19.101 'CLAUDE_CONFIG_DIR=~/.claude-work-max1 "$(ls -dv ~/.nvm/versions/node/*/bin/claude ~/.local/bin/claude 2>/dev/null | tail -1)" auth login'`
+			want := `~/.crius/state/quotes/build/legion/E -t crius@100.109.19.101 'c=$(ls -dv ~/.nvm/versions/node/*/bin/claude ~/.local/bin/claude 2>/dev/null | while read -r f; do [ -f "$f" ] && [ -x "$f" ] && echo "$f"; done | tail -1); ` +
+				`[ -n "$c" ] || { echo "claude not found at ~/.nvm/versions/node/*/bin/claude ~/.local/bin/claude" >&2; exit 69; }; ` +
+				`CLAUDE_CONFIG_DIR=~/.claude-work-max1 "$c" auth login'`
 			if got := a.Renew(); got != want {
 				t.Fatalf("got  %s\nwant %s", got, want)
 			}
@@ -161,12 +164,17 @@ func TestSigninEndedSameDayAsAWarnAlertsAgain(t *testing.T) {
 func TestSigninCouldNotReadIsLoudAndOncePerDay(t *testing.T) {
 	home := setup(t, nil)
 	down := map[string]string{"legion-max1": "err:ssh: connect timed out", "legion-max2": "not-json.txt", "legion-max3": "no-end.json"}
-	got := runSignin(t, home, signinNow, down)
+	// UNKNOWN wakes at once; a failed read wakes on the second run in a row
+	first := runSignin(t, home, signinNow, down)
+	if len(first) != 1 || !strings.Contains(first[0], "UNKNOWN legion-max3") {
+		t.Fatalf("first run, want only the UNKNOWN: %q", first)
+	}
+	got := append(first, runSignin(t, home, signinNow.Add(5*time.Minute), down)...)
 	if len(got) != 3 {
 		t.Fatalf("want 3 alerts: %q", got)
 	}
 	all := strings.Join(got, "\n")
-	for _, w := range []string{"UNREAD legion-max1", "could not read", "connect timed out", "UNREAD legion-max2", "UNKNOWN legion-max3", "no loginExpiresAt"} {
+	for _, w := range []string{"UNREAD legion-max1", "could not read", "connect timed out", "(2 reads in a row)", "UNREAD legion-max2", "UNKNOWN legion-max3", "no loginExpiresAt"} {
 		if !strings.Contains(all, w) {
 			t.Fatalf("no %q in %q", w, all)
 		}
@@ -200,5 +208,107 @@ func TestSigninNotJSONNeverQuotesTheOutput(t *testing.T) {
 	r := signin(Accounts[0], []byte("Logged in as someone@example.com\n"), nil, signinNow)
 	if r.State != SigninUnread || strings.Contains(r.Why, "example.com") || !strings.Contains(r.Why, "33 bytes") {
 		t.Fatal(r.State, r.Why)
+	}
+}
+
+// runRemote runs a remote account's command as its machine's bash would, with home as HOME: no real claude is touched.
+func runRemote(t *testing.T, a Account, home string) (stdout, stderr string, code int) {
+	t.Helper()
+	cmd := exec.Command("bash", "-c", a.Remote("status"))
+	cmd.Env = []string{"HOME=" + home, "PATH=/usr/bin:/bin"}
+	var o, e strings.Builder
+	cmd.Stdout, cmd.Stderr = &o, &e
+	err := cmd.Run()
+	var ee *exec.ExitError
+	if err != nil && !errors.As(err, &ee) {
+		t.Fatal(err)
+	}
+	return o.String(), e.String(), cmd.ProcessState.ExitCode()
+}
+
+func remoteAccount(t *testing.T) Account {
+	t.Helper()
+	for _, a := range Accounts {
+		if a.Name == "thinkpad-claude" {
+			return a
+		}
+	}
+	t.Fatal("no thinkpad-claude account")
+	return Account{}
+}
+
+// 11-17: during a CLI update the remote lookup found no binary for a moment, bash ran an empty command and the alert read
+// "bash: line 1: : command not found". With no binary the command says where it looked and exits with its own code.
+func TestRemoteClaudeMissingSaysWhereItLooked(t *testing.T) {
+	_, stderr, code := runRemote(t, remoteAccount(t), t.TempDir())
+	if code != ClaudeMissing {
+		t.Fatalf("exit code %d, want 69 (claude not found); stderr %q", code, stderr)
+	}
+	if want := "claude not found at ~/.nvm/versions/node/*/bin/claude ~/.local/bin/claude"; !strings.Contains(stderr, want) {
+		t.Fatalf("stderr %q does not say %q", stderr, want)
+	}
+}
+
+// Positive control: with a claude there, the same command runs it with the account's dir.
+func TestRemoteClaudeFoundRunsIt(t *testing.T) {
+	home := t.TempDir()
+	bin := filepath.Join(home, ".nvm", "versions", "node", "v22.1.0", "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte("#!/bin/sh\necho \"$CLAUDE_CONFIG_DIR $*\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out, stderr, code := runRemote(t, remoteAccount(t), home)
+	if want := home + "/.claude auth status\n"; code != 0 || out != want {
+		t.Fatalf("exit %d, stdout %q (want %q), stderr %q", code, out, want, stderr)
+	}
+}
+
+// A read that fails once and then works (11-17: five false wakes in 70 minutes, each read fine a minute later) wakes
+// nobody; a later single failure starts the count again.
+func TestSigninOneFailedReadThenAGoodOneWakesNobody(t *testing.T) {
+	home := setup(t, nil)
+	down := map[string]string{"thinkpad-claude": "err:exit status 69: claude not found at ~/.local/bin/claude"}
+	for i, c := range []struct {
+		by map[string]string
+		at time.Duration
+	}{{down, 0}, {nil, 5 * time.Minute}, {down, 10 * time.Minute}, {nil, 15 * time.Minute}} {
+		if got := runSignin(t, home, signinNow.Add(c.at), c.by); len(got) != 0 {
+			t.Fatalf("run %d: a single failed read woke Crius: %q", i+1, got)
+		}
+	}
+}
+
+// A failure that lasts wakes Crius on the second failed read in a row, once that day.
+func TestSigninTwoFailedReadsInARowWakeOnce(t *testing.T) {
+	home := setup(t, nil)
+	down := map[string]string{"thinkpad-claude": "err:exit status 69: claude not found at ~/.local/bin/claude"}
+	if got := runSignin(t, home, signinNow, down); len(got) != 0 {
+		t.Fatalf("first failed read woke Crius: %q", got)
+	}
+	got := runSignin(t, home, signinNow.Add(5*time.Minute), down)
+	if len(got) != 1 || !strings.Contains(got[0], "UNREAD thinkpad-claude") || !strings.Contains(got[0], "claude not found") {
+		t.Fatalf("second failed read in a row: %q", got)
+	}
+	for _, m := range []int{10, 30, 60} {
+		if got := runSignin(t, home, signinNow.Add(time.Duration(m)*time.Minute), down); len(got) != 0 {
+			t.Fatalf("after %d min: %q", m, got)
+		}
+	}
+}
+
+// review 11-17: an update can leave the bin link pointing at a binary that is gone; that is "not found" too.
+func TestRemoteClaudeDanglingLinkSaysWhereItLooked(t *testing.T) {
+	home := t.TempDir()
+	bin := filepath.Join(home, ".local", "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(home, "gone", "claude"), filepath.Join(bin, "claude")); err != nil {
+		t.Fatal(err)
+	}
+	if _, stderr, code := runRemote(t, remoteAccount(t), home); code != ClaudeMissing || !strings.Contains(stderr, "claude not found at") {
+		t.Fatalf("exit %d, stderr %q", code, stderr)
 	}
 }
