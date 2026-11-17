@@ -112,7 +112,9 @@ func newestThread(home, project, role string, r sessionstate.State, states []ses
 //   - a message to it after its last reply has no answer, after t3IdleAfter;
 //   - its last reply's newest status emoji (RULES §3.5) is ⏳, its own named job, and neither the thread nor a bus line
 //     from the role has moved for over t3WaitAfter, unless it is waiting (waitingOn: a bus waiter runs under its claude
-//     and an item it named is in flight), which wakes Crius once past t3WaitingFor, naming the item;
+//     and an item it named is in flight), which wakes Crius once past t3WaitingFor, naming the item; or it is idle on
+//     purpose (a bus waiter runs and it said it has no work or named what it waits for), said once as IDLE, never as a
+//     job that may be gone;
 //   - it is anything but ❓ (which waits on the owner), after t3IdleAfter.
 //
 // The key holds the idle spell's start, and Run says it once (Typed): one wake per idle spell. A role that cannot be
@@ -255,6 +257,10 @@ func t3Idle(d Deps, ss []Session, sesErr error, watch projects, park parked, pro
 			}
 			h, why, _ := waitingOn(d, readProcs, ss, sesErr, states, who, r.SessionID, th.LastReply, from)
 			switch {
+			case why == "" && h.purpose != "": // idle on purpose: said once per thread and purpose (Typed keeps it window+resend), not per spell
+				out = append(out, [2]string{"t3idle:" + who + ":" + id + ":on-purpose:" + h.purpose, fmt.Sprintf(
+					"%s is IDLE, waiting on purpose: %q, with its bus waiter %s live; idle %d min after a ⏳ reply, no bus line from it for %d min. %s",
+					name, h.purpose, h.waiter, idle, int(quiet.Minutes()), tail)})
 			case why == "" && quiet <= t3WaitingFor: // waiting on an item in flight, its waiter armed: not idle yet
 			case why == "":
 				out = append(out, [2]string{key, fmt.Sprintf("%s is idle %d min after a ⏳ reply, WAITING ON %s (%s) with its bus waiter %s live, "+

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,9 +18,85 @@ import (
 // another role's heavy run). Past it, one alert names what it waits on.
 const t3WaitingFor = 2 * time.Hour
 
+// purposeTurn is how long before the ⏳ reply a role's own bus line still speaks for it (the turn that ended on it): an
+// older "Idle" line says nothing of a later turn that took up work.
+const purposeTurn = 15 * time.Minute
+
 // waitHold is what a waiting role waits on: the item it named, who has it in flight, and the waiter that will wake it.
+// purpose is set instead of item when it is idle on purpose (purposeIn): the words that say it has no work or name
+// what it waits for.
 type waitHold struct {
-	item, by, waiter string
+	item, by, waiter, purpose string
+}
+
+var (
+	// clauseRe splits text into clauses: at a sentence end before a space, a semicolon or a line break.
+	clauseRe = regexp.MustCompile(`[.!?]\s+|;\s*|\n+`)
+	// noWorkRe is a clause that says the role has no work: "Idle:" or "Idle until …" at its start, "I am idle", "no work",
+	// "nothing to do" or "no <role> NEED/READY" (in capitals: the bus line types). A bare "idle" further on ("runner
+	// idle 358/358", "lane 2 is now idle") or "no work" in a longer phrase ("no work was lost") speaks of something else.
+	noWorkRe = regexp.MustCompile(`(?i)^idle(?:\s*[:,–—-]|\s+until\b|\s+for now\b|$)|\b(?:i am|i'm|stay(?:ing)?|sit(?:ting)?) idle\b|\bno (?:more |open |new |pending )?work(?:$|\s*[:,(–—-]| (?:left|queued|open|now|yet|for me|to do)\b)|\bnothing (?:to do|open|pending|queued)\b|\bno [\w:-]+ (?-i:NEED|READY)\b`)
+	// clockRe is a clock time (08:00); waitWordRe a word that makes a clock time in its clause one the role waits for.
+	clockRe    = regexp.MustCompile(`\b([01]?\d|2[0-3]):([0-5]\d)\b`)
+	waitWordRe = regexp.MustCompile(`(?i)\b(?:wait(?:s|ing)?|scheduled|due|check)\b`)
+	// replyWaitRe is a clause that says it waits for someone's reply, answer or decision.
+	replyWaitRe = regexp.MustCompile(`(?i)\bwait(?:s|ing)? (?:for|on) .*\b(?:reply|answer|decision)\b`)
+)
+
+// purposeIn gives the first clause of text that says the role has no work or names what it waits for (a clock time with
+// a wait or check word, someone's reply), without the status emoji; "" when none does. A clause that names an item
+// ("waiting for 5521's suite") is no purpose: that is the in-flight check's to judge. A clock time counts until
+// t3WaitAfter past it (read as the next such time from an hour before since): a check that should have run by now
+// and has not moved the role is what the alert is for.
+func purposeIn(text string, since, now time.Time) string {
+	for _, c := range clauseRe.Split(text, -1) {
+		c = strings.TrimSpace(strings.TrimRight(strings.Trim(strings.TrimSpace(c), "⏳❓✅"), " .!?"))
+		if c == "" || len(itemsIn(c)) > 0 {
+			continue
+		}
+		if noWorkRe.MatchString(c) || waitWordRe.MatchString(c) && dueAhead(c, since, now) || replyWaitRe.MatchString(c) {
+			if r := []rune(c); len(r) > 120 {
+				c = string(r[:120]) + "…"
+			}
+			return c
+		}
+	}
+	return ""
+}
+
+// dueAhead says whether a clock time in c is still ahead, or under t3WaitAfter past, at now. Each time is read in
+// since's local day, the next day when it falls over an hour before since.
+func dueAhead(c string, since, now time.Time) bool {
+	s := since.Local()
+	for _, m := range clockRe.FindAllStringSubmatch(c, -1) {
+		h, _ := strconv.Atoi(m[1]) // clockRe holds digits only; Atoi reads "08" as 8 (fmt.Sscan reads it as octal 0)
+		mi, _ := strconv.Atoi(m[2])
+		due := time.Date(s.Year(), s.Month(), s.Day(), h, mi, 0, 0, time.Local)
+		if due.Before(s.Add(-time.Hour)) {
+			due = due.AddDate(0, 0, 1)
+		}
+		if !now.After(due.Add(t3WaitAfter)) {
+			return true
+		}
+	}
+	return false
+}
+
+// statusPart gives the paragraph of a reply that holds its last ⏳ (its last paragraph when it has none), with the
+// paragraph before it when that one is the emoji alone ("… is scheduled.\n\n⏳"): where it says what it waits on.
+func statusPart(text string) string {
+	ps := strings.Split(strings.TrimSpace(text), "\n\n")
+	i := len(ps) - 1
+	for j := i; j >= 0; j-- {
+		if strings.Contains(ps[j], "⏳") {
+			i = j
+			break
+		}
+	}
+	if i > 0 && strings.TrimSpace(strings.Trim(strings.TrimSpace(ps[i]), "⏳❓✅")) == "" {
+		return ps[i-1] + "\n\n" + ps[i]
+	}
+	return ps[i]
 }
 
 // landedTypes are bus line types that say an item has finished: the role waiting on it should be at work.
@@ -181,7 +258,10 @@ func targetRe(project, role string) *regexp.Regexp {
 // lastReply or in its newest bus line is in a heavy run, or a line from another role names it since who's newest line
 // (since, the idle spell's start, when who has none; never more than t3WaitingFor before since), and that line does not
 // say it landed. A line to who since its newest line and its last reply ends the hold: its waiter should have woken it,
-// so a thread that has not moved is what the alert is for. why is "" when it holds; otherwise why not. unread is true when a check
+// so a thread that has not moved is what the alert is for. With (a) and no item in flight, it is idle on purpose
+// (h.purpose) when its last reply's status part (statusPart), or (when the reply names no item) its newest bus line from within
+// purposeTurn before since, says it has no work or names what it waits for (purposeIn; 11-18: five "job may be gone" alerts
+// for such roles). why is "" when it holds (h.item or h.purpose set); otherwise why not. unread is true when a check
 // could not be read: unreadable is never waiting.
 func waitingOn(d Deps, procs func() ([]Proc, error), ss []Session, sesErr error, states []sessionstate.State,
 	who, sessionID, lastReply string, since time.Time) (h waitHold, why string, unread bool) {
@@ -225,10 +305,6 @@ func waitingOn(d Deps, procs func() ([]Proc, error), ss []Session, sesErr error,
 			mine, mineText = at, m[5]
 		}
 	}
-	items := itemsIn(lastReply, mineText)
-	if len(items) == 0 {
-		return h, "its last reply and its newest bus line name no item (a PR number or a row id)", false
-	}
 	floor := mine // lines are stamped to the minute: one in the same minute as who's own counts as after it
 	if floor.IsZero() {
 		floor = since
@@ -236,6 +312,11 @@ func waitingOn(d Deps, procs func() ([]Proc, error), ss []Session, sesErr error,
 	if old := since.Add(-t3WaitingFor); floor.Before(old) {
 		floor = old // a line days old says nothing of now
 	}
+	purposeLine := mineText // its words count for the reply only when posted in the turn that ended on it, or after
+	if mine.Before(since.Add(-purposeTurn)) {
+		purposeLine = ""
+	}
+	items := itemsIn(lastReply, mineText)
 	// a line to who counts from its last reply: the turn that ended on ⏳ read what came before it. Not from who's own
 	// newest line: one after the reply comes from a script, not a turn. Lines are stamped to the minute, so one in the
 	// reply's minute counts (an alert too many, never one too few).
@@ -248,6 +329,22 @@ func waitingOn(d Deps, procs func() ([]Proc, error), ss []Session, sesErr error,
 		if wakes(project, who, m[2], m[3], m[4], m[5]) {
 			return h, fmt.Sprintf("%s's %s line to it at %s came after its newest line, and its waiter has not moved it", m[3], m[2], t.Local().Format("15:04")), false
 		}
+	}
+	// idle on purpose: an item in flight is named first; else words that say it has no work or name what it waits for,
+	// in its reply's status part, or in its newest bus line (posted within purposeTurn of the reply) when the reply names
+	// no item (a reply that took up an item says more of now than an "Idle" line)
+	idleOnPurpose := func() bool {
+		h.purpose = purposeIn(statusPart(lastReply), since, d.Now)
+		if h.purpose == "" && len(itemsIn(lastReply)) == 0 {
+			h.purpose = purposeIn(purposeLine, mine, d.Now) // a time in the line is read from when it was posted
+		}
+		return h.purpose != ""
+	}
+	if len(items) == 0 {
+		if idleOnPurpose() {
+			return h, "", false
+		}
+		return h, "its last reply and its newest bus line name no item (a PR number or a row id)", false
 	}
 	var landed []string
 	for _, item := range items {
@@ -273,6 +370,9 @@ func waitingOn(d Deps, procs func() ([]Proc, error), ss []Session, sesErr error,
 			h.item, h.by = item, fmt.Sprintf("%s's %s line at %s", newest[3], newest[2], at.Local().Format("15:04"))
 			return h, "", false
 		}
+	}
+	if landed == nil && idleOnPurpose() { // an item it waits on that landed should have put it to work
+		return h, "", false
 	}
 	why = fmt.Sprintf("none of %s is in flight (no heavy-run.sh names it, and no other role's line names it since %s's newest)",
 		strings.Join(items, ", "), who)
@@ -362,6 +462,9 @@ func Waiting(d Deps, out io.Writer, roles []string) int {
 			code = 2
 		}
 		switch {
+		case why == "" && h.purpose != "":
+			fmt.Fprintf(out, "%s IDLE on purpose: %q, bus waiter %s; idle %d min after ⏳, said once after %d min (T3 thread %s)\n",
+				who, h.purpose, h.waiter, idle, int(t3WaitAfter.Minutes()), id)
 		case why == "":
 			fmt.Fprintf(out, "%s WAITING ON %s (%s), bus waiter %s; idle %d min after ⏳, held until %d min (T3 thread %s)\n",
 				who, h.item, h.by, h.waiter, idle, int(t3WaitingFor.Minutes()), id)
