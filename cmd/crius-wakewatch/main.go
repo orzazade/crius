@@ -106,7 +106,7 @@ func main() {
 				return sessionstate.List(filepath.Join(store.Home(), "sessions"))
 			},
 			Thread: thread, Tabs: func() ([]wakewatch.RemoteTab, error) { return wakewatch.ReadProviderTabs(store.Home()) },
-			Capture: captureTab, SendTab: sendTab}, os.Args[2], strings.Join(os.Args[3:], " ")))
+			Capture: captureTab, Procs: tabProcs, SendTab: sendTab}, os.Args[2], strings.Join(os.Args[3:], " ")))
 	}
 	if len(os.Args) > 1 {
 		fmt.Fprintln(os.Stderr, "usage: crius-wakewatch [after-boot | clicks | flagged <surface> | gone <surface> | signin | provider-errors [-fixtures DIR] | restart <project:role> [brief…]]")

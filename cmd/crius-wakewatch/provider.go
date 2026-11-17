@@ -111,25 +111,40 @@ var tabTarget = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_@+-]*:[A-Za-z0-9_][A
 
 // captureTab reads a remote tab's screen over the box's ssh (the playbook's hosts.json), dim text taken out.
 func captureTab(t wakewatch.RemoteTab) (string, error) {
+	out, err := onBox(t, "tmux capture-pane -p -e -t '"+t.Target+"'")
+	if err != nil {
+		return "", err
+	}
+	return tabsend.Visible(string(out)), nil
+}
+
+// tabProcs gives a remote tab's pane pid, every process of its box, then the raw command line of each Claude Code tool
+// shell (wakewatch.RestartDeps.Procs). The boxes run Linux: /proc keeps a newline that ps shows as a space.
+func tabProcs(t wakewatch.RemoteTab) (string, error) {
+	out, err := onBox(t, "tmux display-message -p -t '"+t.Target+"' '#{pane_pid}' && ps -ww -A -o pid=,ppid=,args= && "+
+		"{ echo '--- cmdline'; for p in $(pgrep -f /shell-snapshots/snapshot-); do printf '%s ' \"$p\"; "+
+		"tr '\\000\\n' '\\001\\002' < /proc/$p/cmdline 2>/dev/null; echo; done; }")
+	return string(out), err
+}
+
+// onBox runs a shell command on a tab's box over its ssh (the playbook's hosts.json); the tab is checked to be a tmux
+// session:window first, so it is never shell code.
+func onBox(t wakewatch.RemoteTab, command string) ([]byte, error) {
 	if !tabTarget.MatchString(t.Target) {
-		return "", fmt.Errorf("%q is not a tmux session:window", t.Target)
+		return nil, fmt.Errorf("%q is not a tmux session:window", t.Target)
 	}
 	path := filepath.Join(store.Home(), "state", "playbook", "hosts.json")
 	hosts, err := playbook.LoadHosts(path)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	for _, h := range hosts {
 		if h.Name == t.Box && len(h.SSH) > 0 {
-			args := append(append([]string{}, h.SSH[1:]...), h.Target, "tmux capture-pane -p -e -t '"+t.Target+"'")
-			out, err := run(nil, h.SSH[0], args...)
-			if err != nil {
-				return "", err
-			}
-			return tabsend.Visible(string(out)), nil
+			args := append(append([]string{}, h.SSH[1:]...), h.Target, command)
+			return run(nil, h.SSH[0], args...)
 		}
 	}
-	return "", fmt.Errorf("no box %q in %s", t.Box, path)
+	return nil, fmt.Errorf("no box %q in %s", t.Box, path)
 }
 
 // sendTab types the text into a remote tab with crius-tsend, which proves it was sent (exit 0 SENT).
