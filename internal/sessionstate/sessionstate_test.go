@@ -160,6 +160,36 @@ func TestOneSubagentsDialogStaysWhileAnotherWorks(t *testing.T) {
 	}
 }
 
+// Each open dialog keeps the time it opened through other agents' events, so a watcher can tell how long the oldest has
+// been open and whether it is the one a notification logged (wakewatch stuckPrompts, 11-17). A dialog that closes takes
+// its time with it; the next one opens with its own.
+func TestEachDialogKeepsTheTimeItOpened(t *testing.T) {
+	m := func(n int) time.Time { return t0.Add(time.Duration(n) * time.Minute) }
+	s := Apply(State{}, Input{SessionID: "s1", Event: "PermissionRequest"}, m(0))
+	s = Apply(s, Input{SessionID: "s1", Event: "Notification", NotificationType: "permission_prompt"}, m(0))
+	s = Apply(s, Input{SessionID: "s1", Event: "PermissionRequest", AgentID: "a"}, m(5))
+	s = Apply(s, Input{SessionID: "s1", Event: "PostToolUse", AgentID: "b"}, m(7))
+	if at, ok := s.OldestOpen(); !ok || !at.Equal(m(0)) || !s.Opened["a"].Equal(m(5)) {
+		t.Fatalf("main open since 0 and a since 5: %+v", s)
+	}
+	s = Apply(s, Input{SessionID: "s1", Event: "PostToolUse"}, m(9)) // main's dialog answered
+	if at, ok := s.OldestOpen(); !ok || !at.Equal(m(5)) {
+		t.Fatalf("a's dialog alone, open since 5: %+v", s)
+	}
+	s = Apply(s, Input{SessionID: "s1", Event: "PostToolUse", AgentID: "a"}, m(10))
+	if _, ok := s.OldestOpen(); ok || s.Opened != nil {
+		t.Fatalf("no dialog open: %+v", s)
+	}
+	s = Apply(s, Input{SessionID: "s1", Event: "PermissionRequest"}, m(20))
+	if at, _ := s.OldestOpen(); !at.Equal(m(20)) {
+		t.Fatalf("a new dialog opens at 20: %+v", s)
+	}
+	// a file written before Opened was kept names no time: not known
+	if _, ok := (State{State: Waiting, Waits: []string{"main"}}).OldestOpen(); ok {
+		t.Error("an old file's dialog has a time")
+	}
+}
+
 // The end of the turn, an idle prompt, a new start and the end of the session close every open dialog.
 func TestTheTurnsEndClosesEveryDialog(t *testing.T) {
 	for _, in := range []Input{{Event: "Stop"}, {Event: "Notification", NotificationType: "idle_prompt"},

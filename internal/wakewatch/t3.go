@@ -81,7 +81,8 @@ func roleThread(home string, r sessionstate.State) string {
 //
 // The key holds the idle spell's start, and Run says it once (Typed): one wake per idle spell. A role that cannot be
 // read, or a thread t3 cannot show, is a loud "failed to look" alert of its own, said every 20 min while it lasts.
-func t3Idle(d Deps, watch projects, park parked) [][2]string {
+// A thread in prompted waits on a permission prompt stuckPrompts watches: its open requests are left to that check.
+func t3Idle(d Deps, watch projects, park parked, prompted map[string]bool) [][2]string {
 	if d.Thread == nil {
 		return nil
 	}
@@ -146,7 +147,7 @@ func t3Idle(d Deps, watch projects, park parked) [][2]string {
 			failed(fmt.Sprintf("thread %s: %v (if the role ended on purpose: crius-spawn -close %s %s)", id, err, project, role))
 			continue
 		}
-		if (th.Status == "running" || th.Active) && th.Pending == 0 {
+		if (th.Status == "running" || th.Active) && th.Pending == 0 || th.Pending > 0 && prompted[id] {
 			continue
 		}
 		from := th.Updated

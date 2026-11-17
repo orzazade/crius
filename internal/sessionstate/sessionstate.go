@@ -71,6 +71,25 @@ type State struct {
 	// Waits names who has a dialog open: "main" or a subagent id, sorted. Subagents share the session id, so one
 	// subagent's tool must not hide another's dialog.
 	Waits []string `json:"waits,omitempty"`
+	// Opened is when each dialog in Waits opened, by who: a later event keeps it, so a watcher can tell how long the
+	// oldest one has been open and whether it is the one a notification logged (wakewatch stuckPrompts).
+	Opened map[string]time.Time `json:"opened,omitempty"`
+}
+
+// OldestOpen gives when the longest-open dialog in Waits opened; false when none is open or a file written before
+// Opened was kept names no time for it.
+func (s State) OldestOpen() (time.Time, bool) {
+	var oldest time.Time
+	for _, w := range s.Waits {
+		t, ok := s.Opened[w]
+		if !ok {
+			return time.Time{}, false
+		}
+		if oldest.IsZero() || t.Before(oldest) {
+			oldest = t
+		}
+	}
+	return oldest, !oldest.IsZero()
 }
 
 // Apply gives the state after one hook event. The fields the hook fills from elsewhere (name, project, role, cmux
@@ -132,7 +151,24 @@ func Apply(prev State, in Input, now time.Time) State {
 	case "SessionEnd":
 		s.State, s.Detail, s.Waits = Ended, in.Reason, nil
 	}
+	s.Opened = opened(prev.Opened, s.Waits, now)
 	return s
+}
+
+// opened keeps the open time of each dialog still in waits and stamps a new one with now.
+func opened(prev map[string]time.Time, waits []string, now time.Time) map[string]time.Time {
+	if len(waits) == 0 {
+		return nil
+	}
+	m := make(map[string]time.Time, len(waits))
+	for _, w := range waits {
+		if t, ok := prev[w]; ok {
+			m[w] = t
+		} else {
+			m[w] = now
+		}
+	}
+	return m
 }
 
 // notify stands for a dialog only a notification told of: it names no agent.
