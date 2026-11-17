@@ -176,7 +176,8 @@ func TestProviderErrorsRestartsARemoteTabOnce(t *testing.T) {
 	}
 }
 
-// "Could not look" is loud: an error every run, and Crius hears it when it starts and once an hour while it lasts.
+// "Could not look" is loud: an error every run, and Crius hears it once it failed two sweeps in a row and once an hour
+// while it lasts.
 func TestProviderErrorsCouldNotLookIsLoud(t *testing.T) {
 	home := t.TempDir()
 	testutil.Write(t, wakewatch.ProviderTabsFile(home), "legion quotes:dev\n")
@@ -186,23 +187,85 @@ func TestProviderErrorsCouldNotLookIsLoud(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "could not look at the T3 Code threads") || !strings.Contains(err.Error(), "could not look at tab legion quotes:dev") {
 		t.Fatalf("err %v", err)
 	}
-	if len(f.posts) != 2 || len(f.crius) != 2 || !strings.Contains(f.posts[0], "could not look at the T3 Code threads, so a session stopped there is not seen") {
-		t.Fatalf("posts %q", f.posts)
+	if len(f.posts) != 0 {
+		t.Fatalf("first failed sweep: posts %q", f.posts)
 	}
-	if _, err := wakewatch.ProviderErrors(f.deps(home, now.Add(5*time.Minute))); err == nil || len(f.posts) != 2 {
-		t.Fatalf("5 min on: err %v posts %d", err, len(f.posts))
+	if _, err := wakewatch.ProviderErrors(f.deps(home, now.Add(5*time.Minute))); err == nil || len(f.posts) != 2 || len(f.crius) != 2 ||
+		!strings.Contains(f.posts[0], "could not look at the T3 Code threads, so a session stopped there is not seen") {
+		t.Fatalf("5 min on: err %v posts %q", err, f.posts)
 	}
-	if _, err := wakewatch.ProviderErrors(f.deps(home, now.Add(61*time.Minute))); err == nil || len(f.posts) != 4 {
+	if _, err := wakewatch.ProviderErrors(f.deps(home, now.Add(10*time.Minute))); err == nil || len(f.posts) != 2 {
+		t.Fatalf("10 min on: err %v posts %d", err, len(f.posts))
+	}
+	if _, err := wakewatch.ProviderErrors(f.deps(home, now.Add(66*time.Minute))); err == nil || len(f.posts) != 4 {
 		t.Fatalf("an hour on: err %v posts %d", err, len(f.posts))
 	}
-	// it can look again, then fails again: said at once
+	// it can look again, then fails twice again: said on the second
 	f.threadsErr = nil
-	if _, err := wakewatch.ProviderErrors(f.deps(home, now.Add(65*time.Minute))); err == nil || len(f.posts) != 4 {
+	if _, err := wakewatch.ProviderErrors(f.deps(home, now.Add(70*time.Minute))); err == nil || len(f.posts) != 4 {
 		t.Fatalf("threads back: err %v posts %d", err, len(f.posts))
 	}
 	f.threadsErr = errors.New("t3 down")
-	if _, err := wakewatch.ProviderErrors(f.deps(home, now.Add(70*time.Minute))); err == nil || len(f.posts) != 5 {
-		t.Fatalf("threads gone again: err %v posts %q", err, f.posts)
+	if _, err := wakewatch.ProviderErrors(f.deps(home, now.Add(75*time.Minute))); err == nil || len(f.posts) != 4 {
+		t.Fatalf("threads gone again once: err %v posts %q", err, f.posts)
+	}
+	if _, err := wakewatch.ProviderErrors(f.deps(home, now.Add(80*time.Minute))); err == nil || len(f.posts) != 5 {
+		t.Fatalf("threads gone again twice: err %v posts %q", err, f.posts)
+	}
+}
+
+// One failed look is not an outage (11-17 12:37: a 2-minute router restart failed one sweep's ssh to four tabs and woke
+// Crius four times; the next sweep looked fine). A "could not look" is said only when the sweep before failed on the
+// same thing too; a sweep that looks fine starts the count again. The error (exit 1) is there every failed sweep.
+func TestProviderErrorsOneFailedLookIsNotSaid(t *testing.T) {
+	home := t.TempDir()
+	testutil.Write(t, wakewatch.ProviderTabsFile(home), "legion quotes:dev\nthinkpad staffy:builder\n")
+	f := &fakeSweep{screens: map[string]string{"thinkpad staffy:builder": ""}}
+	now := time.Date(2026, 11, 17, 12, 37, 0, 0, time.UTC)
+	sweep := func(min int) {
+		t.Helper()
+		if _, err := wakewatch.ProviderErrors(f.deps(home, now.Add(time.Duration(min)*time.Minute))); err == nil ||
+			!strings.Contains(err.Error(), "could not look at tab legion quotes:dev") {
+			t.Fatalf("sweep at +%d min: err %v", min, err)
+		}
+	}
+	sweep(0)
+	if len(f.posts) != 0 || len(f.crius) != 0 {
+		t.Fatalf("one failed sweep: posts %q crius %q", f.posts, f.crius)
+	}
+	sweep(5)
+	if len(f.posts) != 1 || len(f.crius) != 1 ||
+		f.posts[0] != "ALERT the provider-error sweep could not look at tab legion quotes:dev, so a session stopped there is not seen: ssh: connect to host 100.109.19.101 port 22: Operation timed out" {
+		t.Fatalf("two failed sweeps in a row: posts %q crius %q", f.posts, f.crius)
+	}
+
+	// fail, ok, fail: nothing said
+	home = t.TempDir()
+	testutil.Write(t, wakewatch.ProviderTabsFile(home), "legion quotes:dev\n")
+	f = &fakeSweep{screens: map[string]string{}}
+	sweep(0)
+	f.screens["legion quotes:dev"] = ""
+	if _, err := wakewatch.ProviderErrors(f.deps(home, now.Add(5*time.Minute))); err != nil {
+		t.Fatalf("looked fine: %v", err)
+	}
+	delete(f.screens, "legion quotes:dev")
+	sweep(10)
+	if len(f.posts) != 0 || len(f.crius) != 0 {
+		t.Fatalf("fail, ok, fail: posts %q crius %q", f.posts, f.crius)
+	}
+
+	// the count is per thing: one tab failing, then another, is two first failures
+	home = t.TempDir()
+	testutil.Write(t, wakewatch.ProviderTabsFile(home), "legion quotes:dev\nthinkpad staffy:builder\n")
+	f = &fakeSweep{screens: map[string]string{"thinkpad staffy:builder": ""}}
+	sweep(0)
+	f.screens = map[string]string{"legion quotes:dev": ""}
+	if _, err := wakewatch.ProviderErrors(f.deps(home, now.Add(5*time.Minute))); err == nil ||
+		!strings.Contains(err.Error(), "could not look at tab thinkpad staffy:builder") {
+		t.Fatalf("other tab failing: err %v", err)
+	}
+	if len(f.posts) != 0 || len(f.crius) != 0 {
+		t.Fatalf("one tab, then another: posts %q crius %q", f.posts, f.crius)
 	}
 }
 

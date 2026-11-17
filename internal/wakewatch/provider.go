@@ -23,8 +23,11 @@ import (
 const (
 	providerAgain = 15 * time.Minute // a stop this soon after a restart is said to Crius, not restarted again
 	providerLoud  = time.Hour        // a "could not look" is said to Crius when it starts, then once an hour while it lasts
-	providerKeep  = 7 * 24 * time.Hour
-	providerOld   = 12 * time.Hour // a thread stopped longer ago was left so on purpose (Crius swept every 5 min since 11-13)
+	// providerMisses: a look must fail this many sweeps in a row before Crius hears of it (11-17 12:37: a 2-minute router
+	// restart failed one sweep's ssh to four tabs and woke Crius four times; the next sweep looked fine)
+	providerMisses = 2
+	providerKeep   = 7 * 24 * time.Hour
+	providerOld    = 12 * time.Hour // a thread stopped longer ago was left so on purpose (Crius swept every 5 min since 11-13)
 )
 
 // ThreadText is what a T3 thread stopped by a provider error is sent; %s is the error.
@@ -79,6 +82,7 @@ type providerState struct {
 	Stops     map[string]providerStop // a stop seen: "t3 <thread> <run>" or "tab <box> <target> <hash>"
 	Restarted map[string]time.Time    // a session's last restart: "t3 <thread>" or "tab <box> <target>"
 	Failing   map[string]time.Time    // a "could not look" said to Crius, by what could not be looked at
+	Missed    map[string]int          // what could not be looked at -> sweeps in a row it failed
 }
 
 // ProviderStateFile is where the sweep keeps what it did.
@@ -153,7 +157,8 @@ func ProviderStop(text string) (line, key string, ok bool) {
 }
 
 // ProviderErrors runs one sweep. The error names each thing it could not look at, read, send or save; each of those
-// is also said to Crius (a "could not look" once an hour while it lasts).
+// is also said to Crius (a "could not look" once it failed providerMisses sweeps in a row, then once an hour while it
+// lasts).
 func ProviderErrors(d ProviderDeps) (ProviderReport, error) {
 	var rep ProviderReport
 	var errs []error
@@ -182,9 +187,14 @@ func ProviderErrors(d ProviderDeps) (ProviderReport, error) {
 	}
 	prev := st.LastRun // a tab stop seen now happened after the last look
 	looked := map[string]bool{}
+	missed := map[string]int{} // replaces st.Missed: what looked fine this sweep starts its count again
 	cannot := func(what string, err error) {
 		errs = append(errs, fmt.Errorf("could not look at %s: %v", what, err))
 		looked[what] = true
+		missed[what] = st.Missed[what] + 1
+		if missed[what] < providerMisses {
+			return
+		}
 		if last, ok := st.Failing[what]; ok && d.Now.Sub(last) < providerLoud {
 			return
 		}
@@ -286,11 +296,12 @@ func ProviderErrors(d ProviderDeps) (ProviderReport, error) {
 		})
 	}
 
-	for what := range st.Failing { // looked at fine this time: a new failure is said at once
+	for what := range st.Failing { // looked at fine this time: a new failure is said once it fails twice in a row again
 		if !looked[what] {
 			delete(st.Failing, what)
 		}
 	}
+	st.Missed = missed
 	for k, s := range st.Stops {
 		if d.Now.Sub(s.At) > providerKeep {
 			delete(st.Stops, k)
