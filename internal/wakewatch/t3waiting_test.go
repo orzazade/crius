@@ -272,6 +272,12 @@ func TestOnlyALineThatWakesTheWaiterEndsTheHold(t *testing.T) {
 		{"INFO quotes:build -> quotes:qa — can you re-run R3.C4 now?", false},
 		{"INFO quotes:lead -> quotes:all — qa: pick up R3.C4", false},
 		{"NEED quotes:build -> quotes:qa — 5521 needs your fixture", false},
+		// review r2 P2-1: lines team-wait.sh wakes qa for, which the first copy of its rule missed
+		{"INFO crius:lead -> quotes:qa — re-run R3.C4 on 0a1b2c3", false},
+		{"VERIFIED quotes:lead -> quotes:qa — row R3.C4", false},
+		{"READY quotes:build -> quotes:lead — 5521 ready (cc qa)", false},
+		{"NEED-QA quotes:build -> quotes:lead — 5521 ready", false},
+		{"INFO quotes:build -> quotes:lead — 5521 record run is at suite 4 of 6", true},
 	} {
 		home := threadHome(t, "qa")
 		f := waitingFake(50 * time.Minute)
@@ -286,10 +292,16 @@ func TestOnlyALineThatWakesTheWaiterEndsTheHold(t *testing.T) {
 }
 
 func TestWakesFollowsTeamWaitForALead(t *testing.T) {
-	if !wakes("quotes", "quotes:lead", "INFO", "quotes:lead", "suite 3 green") {
+	if !wakes("quotes", "quotes:lead", "INFO", "quotes:build", "quotes:lead", "suite 3 green") {
 		t.Error("an INFO to a lead wakes it")
 	}
-	if wakes("quotes", "quotes:qa", "INFO", "quotes:lead", "qa: done?") {
-		t.Error("a line to another role does not wake qa")
+	if !wakes("quotes", "quotes:lead", "BLOCKED", "quotes:build", "quotes:qa", "stuck on 5521") {
+		t.Error("a lead wakes on a BLOCKED to anyone")
+	}
+	if wakes("quotes", "quotes:qa", "INFO", "quotes:build", "quotes:lead", "qa: done?") {
+		t.Error("an INFO to another role that does not name qa as a target does not wake qa")
+	}
+	if wakes("quotes", "quotes:qa", "READY", "quotes:build", "quotes:lead", "5521 ready (cc qa-2)") {
+		t.Error("a line naming qa-2 does not wake qa")
 	}
 }

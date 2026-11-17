@@ -143,33 +143,37 @@ func waiterOf(procs []Proc, pids map[int]bool) (string, bool) {
 	return "", false
 }
 
-// quietTypes are the line types team-wait.sh (member mode) does not wake a role for: a line of one only wakes it when
-// it asks it something ("?" or "<role>:") or carries OWNER. INFO wakes a lead: members answer the lead in INFO.
-var quietTypes = map[string]bool{"ACK": true, "INFO": true, "WAIT": true, "VERIFIED": true, "STATUS": true, "HEAVY": true}
+// quietTypes are the line types team-wait.sh (member mode) does not wake a role for on their own.
+var quietTypes = map[string]bool{"ACK": true, "INFO": true, "WAIT": true, "VERIFIED": true, "STATUS": true}
 
-// wakes says whether a bus line (type typ, to, text) wakes who's waiter, as team-wait.sh decides it: a line to who, or
-// to the whole team (<project>:all, all), of a type that is not quiet; a quiet one only when it asks who something or
-// carries OWNER (to the whole team: OWNER or "<role>:" only).
-func wakes(project, who, typ, to, text string) bool {
-	direct, team := false, false
-	for _, r := range recipients(to) {
-		switch {
-		case busName(project, r) == who:
-			direct = true
-		case strings.EqualFold(r, project+":all") || strings.EqualFold(r, "all"):
-			team = true
-		}
-	}
-	if !direct && !team {
-		return false
-	}
+// wakes says whether a bus line from another role may wake who's waiter. It is a superset of team-wait.sh's member
+// rule, so a line it may wake on is never read as one it sleeps through (that would hold a stuck role for 2 h): a
+// NEED-<ROLE> line; for a lead, any line (a lead wakes on BLOCKED, BUG and lines with no arrow too); a line to who, in
+// cc, to the whole team, or naming who as a target in its text ("-> qa", "(cc qa)") that comes from a lead or Crius
+// (its boss), is of a type that is not quiet, or asks something ("?", "<role>:") or names the owner.
+func wakes(project, who, typ, from, to, text string) bool {
 	_, role, _ := strings.Cut(who, ":")
-	quiet := quietTypes[typ] && !(typ == "INFO" && role == "lead" && direct)
-	if !quiet {
+	if typ == "NEED-"+strings.ToUpper(role) || role == "lead" {
 		return true
 	}
-	named := strings.Contains(strings.ToLower(text), role+":")
-	return strings.Contains(text, "OWNER") || named || direct && strings.Contains(text, "?")
+	aimed := slices.ContainsFunc(recipients(to), func(r string) bool {
+		return busName(project, r) == who || strings.EqualFold(r, project+":all") || strings.EqualFold(r, "all")
+	})
+	if !aimed && !targetRe(project, role).MatchString(text) {
+		return false
+	}
+	if f := busName(project, from); f == "crius:lead" || strings.HasSuffix(f, ":lead") || !quietTypes[typ] {
+		return true
+	}
+	low := strings.ToLower(text)
+	return strings.Contains(text, "?") || strings.Contains(low, role+":") || strings.Contains(low, "owner")
+}
+
+// targetRe matches text that names role as a target, as team-wait.sh's named() reads it: after "->", "→" or "cc", in
+// a list of names.
+func targetRe(project, role string) *regexp.Regexp {
+	r := regexp.QuoteMeta(role)
+	return regexp.MustCompile(`(?i)(?:->|→|(?:^|[^A-Za-z0-9-])\(?cc:?)\s+(?:[A-Za-z0-9:_-]+,\s*)*(?:` + regexp.QuoteMeta(project) + `:)?` + r + `(?:$|[^A-Za-z0-9_-])`)
 }
 
 // waitingOn says whether who, a role whose last reply ends on ⏳, waits on an item in flight: (a) a bus waiter runs
@@ -232,18 +236,16 @@ func waitingOn(d Deps, procs func() ([]Proc, error), ss []Session, sesErr error,
 	if old := since.Add(-t3WaitingFor); floor.Before(old) {
 		floor = old // a line days old says nothing of now
 	}
-	// a line to who counts from its last reply too: the turn that ended on ⏳ read what came before it. Lines are stamped
-	// to the minute, so one in the reply's minute counts (an alert too many, never one too few).
+	// a line to who counts from its last reply: the turn that ended on ⏳ read what came before it. Not from who's own
+	// newest line: one after the reply comes from a script, not a turn. Lines are stamped to the minute, so one in the
+	// reply's minute counts (an alert too many, never one too few).
 	toFloor := since.Truncate(time.Minute)
-	if mine.After(toFloor) {
-		toFloor = mine
-	}
 	for _, m := range lines {
 		t, err := lineTime(m[1], d.Now)
 		if err != nil || t.Before(toFloor) || m[3] == "crius:wakewatch" || busName(project, m[3]) == who {
 			continue
 		}
-		if wakes(project, who, m[2], m[4], m[5]) {
+		if wakes(project, who, m[2], m[3], m[4], m[5]) {
 			return h, fmt.Sprintf("%s's %s line to it at %s came after its newest line, and its waiter has not moved it", m[3], m[2], t.Local().Format("15:04")), false
 		}
 	}
@@ -300,8 +302,13 @@ func Waiting(d Deps, out io.Writer, roles []string) int {
 	}
 	ss, sesErr := d.Sessions()
 	var states []sessionstate.State
+	code := 0
 	if d.States != nil {
-		states, _ = d.States()
+		var err error
+		if states, err = d.States(); err != nil {
+			fmt.Fprintln(out, "FAILED: could not read crius-hook's session records (a role's newer session may be missed):", err)
+			code = 2
+		}
 	}
 	crius, _ := CriusThread(d.Home)
 	var procs []Proc
@@ -314,7 +321,6 @@ func Waiting(d Deps, out io.Writer, roles []string) int {
 		}
 		return procs, procErr
 	}
-	code := 0
 	for _, who := range roles {
 		who = strings.ToLower(strings.TrimSpace(who))
 		project, role, _ := strings.Cut(who, ":")
