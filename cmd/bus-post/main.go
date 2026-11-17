@@ -145,6 +145,11 @@ func postLine(args []string, now time.Time, stderr io.Writer) int {
 		return refuse(stderr, "usage: bus-post [--at YYYY-MM-DDTHH:MM] <log> <TYPE> <project:role> <to> <text>")
 	}
 	log, typ, from, to, text := args[0], args[1], args[2], args[3], args[4]
+	if use, ok, err := store.RemoteCopy(log); err != nil {
+		return refuse(stderr, "could not read the remote-copy marker: %v", err)
+	} else if ok {
+		return refuse(stderr, "%s is a copy of a bus on another machine, nothing posted: %s", log, use)
+	}
 	project, role, ok := strings.Cut(from, ":")
 	if !ok {
 		return refuse(stderr, "from %q is not project:role", from)

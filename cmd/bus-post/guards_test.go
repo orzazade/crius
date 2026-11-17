@@ -439,3 +439,33 @@ func TestAStartInTheRepeatedHourIsReadAsOfNow(t *testing.T) {
 		}
 	}
 }
+
+// 11-17/18: ~/.crius/bus/staffy.log on the Mac is a copy pulled from the ThinkPad. Crius posted there 6 times with plain
+// bus-post: exit 0, the ThinkPad team never saw the lines, and the next pull overwrote them. A <log>.remote marker makes
+// bus-post refuse, write nothing, and name the wrapper from the marker's first line.
+func TestALogMarkedRemoteIsRefusedWithTheWrapperToUse(t *testing.T) {
+	home, _ := setup(t)
+	log := filepath.Join(home, "bus", "staffy.log")
+	testutil.Write(t, log, "2026-11-17T20:00 INFO staffy:lead -> staffy:qa — pulled\n")
+	testutil.Write(t, log+".remote", "use ~/bin/bus-post-thinkpad (live log is on the ThinkPad)\nsecond line is not shown\n")
+	before := busText(t, log)
+	for _, text := range []string{"decision: go", strings.Repeat("long ", 200)} { // a long text makes no note either
+		rc, errs := post(t, at("2026-11-17T20:01"), log, "INFO", "crius:lead", "staffy:qa", text)
+		if rc == 0 || !strings.Contains(errs, "is a copy of a bus on another machine") ||
+			!strings.Contains(errs, "use ~/bin/bus-post-thinkpad (live log is on the ThinkPad)") ||
+			strings.Contains(errs, "second line") || strings.Count(errs, "\n") != 1 {
+			t.Errorf("want a one-line refusal naming the wrapper, got rc %d: %q", rc, errs)
+		}
+		if busText(t, log) != before {
+			t.Errorf("the copy changed: %q", busText(t, log))
+		}
+	}
+	if _, err := os.Stat(filepath.Join(home, "bus", "notes")); !os.IsNotExist(err) {
+		t.Errorf("a refused line left a notes folder: %v", err)
+	}
+	// The same post on a log with no marker goes through.
+	other := filepath.Join(home, "bus", "crius.log")
+	if rc, errs := post(t, at("2026-11-17T20:01"), other, "INFO", "crius:lead", "staffy:qa", "decision: go"); rc != 0 {
+		t.Errorf("unmarked log: want posted, got rc %d: %s", rc, errs)
+	}
+}
