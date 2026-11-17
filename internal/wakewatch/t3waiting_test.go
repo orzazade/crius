@@ -65,7 +65,7 @@ func TestAWaitingRoleMatchesARowIdInAHeavyRunJobId(t *testing.T) {
 	home := threadHome(t, "qa")
 	f := waitingFake(50 * time.Minute)
 	f.threads["th-qa"] = T3Thread{Status: "completed", Updated: t0.Add(-50 * time.Minute), LastReply: "R3.C4 needs build's record first. ⏳"}
-	f.procs = append(f.procs, Proc{PID: 201, PPID: 1, Command: "bash /work/docs/qa/heavy-run.sh qa-two q2-r3c4 n4 (lane 2) -- bash /work/jobs/q2-r3c4/s.sh"})
+	f.procs = append(f.procs, Proc{PID: 201, PPID: 1, Command: "bash /work/docs/qa/heavy-run.sh qa-b q2-r3c4 n4 (lane 2) -- bash /work/jobs/q2-r3c4/s.sh"})
 	runOnce(t, home, f, t0)
 	if w := t3Wakes(f); len(w) != 0 {
 		t.Fatalf("a role waiting on R3.C4 (heavy run q2-r3c4) woke Crius: %q", w)

@@ -29,7 +29,7 @@ var (
 	// prItemRe is a PR number written bare: 4 to 6 digits (shorter ones are counts, minutes and times).
 	prItemRe = regexp.MustCompile(`^\d{4,6}$`)
 	// rowItemRe is a row id: a capital, a dash and two or more digits (F-118); one or two capitals and two or more
-	// digits (B105); or a capital, digits and parts that start with a letter (O27.E, R3.C4). A capital and one digit
+	// digits (B105); or a capital, digits and parts that start with a letter (O12.E, R3.C4). A capital and one digit
 	// (S1, P1) is a severity; UTF-8, SHA-256, TS-1 and Go1.22 are no items.
 	rowItemRe = regexp.MustCompile(`^(?:[A-Z]-\d{2,}|[A-Z]{1,2}\d{2,}|[A-Z]\d+(?:\.[A-Za-z][A-Za-z0-9]*)+)$`)
 	// hashItemRe is the number after a "#": a PR number of 3 to 6 digits ("step #2" is a count).
