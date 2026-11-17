@@ -191,7 +191,7 @@ func TestProviderErrorsCouldNotLookIsLoud(t *testing.T) {
 		t.Fatalf("first failed sweep: posts %q", f.posts)
 	}
 	if _, err := wakewatch.ProviderErrors(f.deps(home, now.Add(5*time.Minute))); err == nil || len(f.posts) != 2 || len(f.crius) != 2 ||
-		!strings.Contains(f.posts[0], "could not look at the T3 Code threads, so a session stopped there is not seen") {
+		!strings.Contains(f.posts[0], "could not look at the T3 Code threads, so a session stopped there or waiting on a prompt is not seen") {
 		t.Fatalf("5 min on: err %v posts %q", err, f.posts)
 	}
 	if _, err := wakewatch.ProviderErrors(f.deps(home, now.Add(10*time.Minute))); err == nil || len(f.posts) != 2 {
@@ -235,7 +235,7 @@ func TestProviderErrorsOneFailedLookIsNotSaid(t *testing.T) {
 	}
 	sweep(5)
 	if len(f.posts) != 1 || len(f.crius) != 1 ||
-		f.posts[0] != "ALERT the provider-error sweep could not look at tab legion quotes:dev, so a session stopped there is not seen: ssh: connect to host 100.109.19.101 port 22: Operation timed out" {
+		f.posts[0] != "ALERT the provider-error sweep could not look at tab legion quotes:dev, so a session stopped there or waiting on a prompt is not seen: ssh: connect to host 100.109.19.101 port 22: Operation timed out" {
 		t.Fatalf("two failed sweeps in a row: posts %q crius %q", f.posts, f.crius)
 	}
 
@@ -424,5 +424,86 @@ func TestProviderStopKeySurvivesARewrap(t *testing.T) {
 	_, k2, ok2 := wakewatch.ProviderStop(strings.Replace(s, wide, "⏺ I finished the row and posted\n  DONE on the bus.", 1))
 	if !ok1 || !ok2 || k1 != k2 {
 		t.Fatalf("keys %q %q", k1, k2)
+	}
+}
+
+// testdata/provider/legion-git-clean-prompt.txt: Legion quotes:qa captured with `tmux capture-pane -p -e` on 11-17 14:40
+// (scratch paths replaced, public repo), on the `git clean -f` permission prompt it sat on unanswered from 05:30 to
+// 12:41 and again from 14:3x. Nobody was woken: the stuck-prompt check read only the Mac's own hook log and cmux tabs.
+func TestProviderErrorsWakesCriusForARemoteTabOnAPrompt(t *testing.T) {
+	home := t.TempDir()
+	testutil.Write(t, wakewatch.ProviderTabsFile(home), "legion quotes:qa\nlegion quotes:dev\n")
+	stuck := pane(t, "legion-git-clean-prompt.txt")
+	f := &fakeSweep{screens: map[string]string{"legion quotes:qa": stuck, "legion quotes:dev": pane(t, "legion-idle.txt")}}
+	t0 := time.Date(2026, 11, 17, 5, 30, 0, 0, time.UTC)
+	sweep := func(min int) wakewatch.ProviderReport {
+		t.Helper()
+		rep, err := wakewatch.ProviderErrors(f.deps(home, t0.Add(time.Duration(min)*time.Minute)))
+		if err != nil {
+			t.Fatalf("sweep at +%d min: %v", min, err)
+		}
+		return rep
+	}
+	if rep := sweep(0); len(f.crius) != 0 || rep.Tabs != 2 {
+		t.Fatalf("first seen: crius %q report %+v", f.crius, rep)
+	}
+	sweep(5)
+	if len(f.crius) != 0 {
+		t.Fatalf("open 5 min: crius %q", f.crius)
+	}
+	sweep(10)
+	want := `permission prompt unanswered for 10 min in tab legion quotes:qa: first seen at 05:30, "Reset b8352 to b1, apply API red subset SP=/tmp/claude-1000/-home-crius-work-app/0f3c1d2e-5a6b-4c7d-8e9f-a0b1c2d3e4f5/scratchpad; D=~/.crius/state/demo/notes/red-tests-on-old-code.diff; cd $SP/b8352 …"; the tab's screen still shows the dialog`
+	if len(f.crius) != 1 || f.crius[0] != want || len(f.posts) != 1 || f.posts[0] != "ALERT "+want {
+		t.Fatalf("no wake for the remote tab stuck on a prompt 10 min:\n crius %q\n posts %q\n want %q", f.crius, f.posts, want)
+	}
+	if len(f.sentTab) != 0 {
+		t.Fatalf("a prompt is never typed into: sent %q", f.sentTab)
+	}
+	sweep(15) // the same prompt: said once
+	if len(f.crius) != 1 {
+		t.Fatalf("said again: %q", f.crius)
+	}
+	// answered, then a prompt again: timed afresh, and said once it is 10 min old
+	f.screens["legion quotes:qa"] = pane(t, "legion-idle.txt")
+	sweep(20)
+	f.screens["legion quotes:qa"] = stuck
+	sweep(25)
+	sweep(30)
+	if len(f.crius) != 1 {
+		t.Fatalf("a new prompt open 5 min: %q", f.crius)
+	}
+	sweep(35)
+	if len(f.crius) != 2 || !strings.HasPrefix(f.crius[1], "permission prompt unanswered for 10 min in tab legion quotes:qa: first seen at 05:55,") {
+		t.Fatalf("the prompt asked again: %q", f.crius)
+	}
+}
+
+// A tab that cannot be read is not a tab with no prompt: the prompt's timer goes on through failed looks, two failed
+// looks in a row are said to Crius (the provider sweep's rule), and the wake comes once the tab can be read again.
+func TestProviderErrorsFailedLookIsNotNoPrompt(t *testing.T) {
+	home := t.TempDir()
+	testutil.Write(t, wakewatch.ProviderTabsFile(home), "legion quotes:qa\n")
+	f := &fakeSweep{screens: map[string]string{"legion quotes:qa": pane(t, "legion-git-clean-prompt.txt")}}
+	t0 := time.Date(2026, 11, 17, 5, 30, 0, 0, time.UTC)
+	if _, err := wakewatch.ProviderErrors(f.deps(home, t0)); err != nil {
+		t.Fatal(err)
+	}
+	delete(f.screens, "legion quotes:qa") // ssh times out
+	for _, min := range []int{5, 10} {
+		if _, err := wakewatch.ProviderErrors(f.deps(home, t0.Add(time.Duration(min)*time.Minute))); err == nil ||
+			!strings.Contains(err.Error(), "could not look at tab legion quotes:qa") {
+			t.Fatalf("+%d min: a failed look must fail the run, got %v", min, err)
+		}
+	}
+	want := "ALERT the provider-error sweep could not look at tab legion quotes:qa, so a session stopped there or waiting on a prompt is not seen: ssh: connect to host 100.109.19.101 port 22: Operation timed out"
+	if len(f.posts) != 1 || f.posts[0] != want {
+		t.Fatalf("two failed looks must say a prompt there is not seen:\n posts %q\n want %q", f.posts, want)
+	}
+	f.screens["legion quotes:qa"] = pane(t, "legion-git-clean-prompt.txt")
+	if _, err := wakewatch.ProviderErrors(f.deps(home, t0.Add(15*time.Minute))); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.crius) != 2 || !strings.HasPrefix(f.crius[1], "permission prompt unanswered for 15 min in tab legion quotes:qa: first seen at 05:30,") {
+		t.Fatalf("the failed looks reset the prompt's timer or lost it: crius %q", f.crius)
 	}
 }

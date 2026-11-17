@@ -397,6 +397,8 @@ func command(text, prompt string) string {
 			cmd = cmd[:i]
 		}
 	}
+	// the dialog's ╌ rules around the command: a wide pane draws them hundreds of runes long, and they would fill the line
+	cmd = strings.Join(strings.FieldsFunc(cmd, func(r rune) bool { return r == ' ' || r >= 0x2500 && r <= 0x257F }), " ")
 	if r := []rune(cmd); len(r) > 200 {
 		cmd = string(r[:199]) + "…"
 	}

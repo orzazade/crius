@@ -237,8 +237,8 @@ func providerCmd(args []string, w io.Writer) int {
 	}
 	rep, err := wakewatch.ProviderErrors(d)
 	now = d.Now
-	fmt.Fprintf(w, "provider-error sweep %s: %d failed or interrupted T3 thread(s) read, %d remote tab(s) read, %d stopped by a provider error\n",
-		now.Local().Format("2006-01-02 15:04:05"), rep.Threads, rep.Tabs, rep.Stopped)
+	fmt.Fprintf(w, "provider-error sweep %s: %d failed or interrupted T3 thread(s) read, %d remote tab(s) read, %d stopped by a provider error, %d on a prompt\n",
+		now.Local().Format("2006-01-02 15:04:05"), rep.Threads, rep.Tabs, rep.Stopped, rep.Prompts)
 	for _, a := range rep.Actions {
 		fmt.Fprintln(w, "  "+a)
 	}

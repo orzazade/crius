@@ -4,7 +4,8 @@
 // "crius-wakewatch clicks" posts each tab that waits on a prompt only the owner may answer (wakewatch.Clicks) and times
 // every open prompt (wakewatch.Prompts: crius:ops at 2 min, Crius at 3 or 10 min); launchd
 // starts it every minute. "crius-wakewatch signin" prints each Max account's sign-in end and state (wakewatch.Signins), which
-// every 5 min run also watches. Every 5 min run also restarts a session stopped by a provider error (wakewatch.ProviderErrors);
+// every 5 min run also watches. Every 5 min run also restarts a session stopped by a provider error (wakewatch.ProviderErrors)
+// and, in the same look at each remote tmux tab, wakes Crius for a prompt open there 10 min;
 // "crius-wakewatch provider-errors [-fixtures DIR]" runs that sweep dry and prints what it saw and would do.
 package main
 

@@ -19,6 +19,11 @@ import (
 // latest run failed or was interrupted, and at each remote tmux tab in providerTabsFile, and types a fixed carry-on line
 // once per stop. A second stop of the same session within providerAgain of a restart is said to Crius instead, so it
 // never loops. Each restart is one bus line and wakes Crius; what it cannot look at is said to Crius, never "none".
+//
+// The same look at each remote tab times an open dialog there, as the stuck-prompt check (stuckprompt.go) does for the
+// Mac's own sessions: one open promptAfter wakes Crius once (11-17: Legion quotes:qa sat on a `git clean -f` permission
+// prompt 05:30-12:41 and nobody was woken, as that check reads only the Mac's hook log). A tab that cannot be read keeps
+// its prompt's timer; it is a failed look (said after providerMisses in a row), never "no prompt".
 
 const (
 	providerAgain = 15 * time.Minute // a stop this soon after a restart is said to Crius, not restarted again
@@ -69,6 +74,7 @@ type ProviderDeps struct {
 // ProviderReport says what one sweep saw and did, one line per action.
 type ProviderReport struct {
 	Threads, Tabs, Stopped int
+	Prompts                int // remote tabs read with a dialog open
 	Actions                []string
 }
 
@@ -83,6 +89,15 @@ type providerState struct {
 	Restarted map[string]time.Time    // a session's last restart: "t3 <thread>" or "tab <box> <target>"
 	Failing   map[string]time.Time    // a "could not look" said to Crius, by what could not be looked at
 	Missed    map[string]int          // what could not be looked at -> sweeps in a row it failed
+	Prompts   map[string]remotePrompt // "<box> <target>" -> the dialog open in that tab
+}
+
+// remotePrompt is a remote tab's open dialog: its hash (promptKey, so a rewrap keeps it), when first seen, and whether
+// Crius was told.
+type remotePrompt struct {
+	Hash  string
+	Since time.Time
+	Said  bool
 }
 
 // ProviderStateFile is where the sweep keeps what it did.
@@ -199,7 +214,7 @@ func ProviderErrors(d ProviderDeps) (ProviderReport, error) {
 			return
 		}
 		st.Failing[what] = d.Now
-		say("ALERT", fmt.Sprintf("the provider-error sweep could not look at %s, so a session stopped there is not seen: %v", what, err))
+		say("ALERT", fmt.Sprintf("the provider-error sweep could not look at %s, so a session stopped there or waiting on a prompt is not seen: %v", what, err))
 	}
 	// stop handles one session stopped by a provider error: restart it once, or tell Crius when it stopped again soon
 	// after a restart, or when the restart could not be sent.
@@ -272,17 +287,43 @@ func ProviderErrors(d ProviderDeps) (ProviderReport, error) {
 			return d.SendThread(th.ID, fmt.Sprintf(ThreadText, text))
 		})
 	}
+	prompts := map[string]remotePrompt{} // replaces st.Prompts: a tab read with no dialog open drops its entry
 	tabs, err := d.Tabs()
 	if err != nil {
 		cannot("the remote tab list "+ProviderTabsFile(d.Home), err)
+		prompts = st.Prompts // no tab was looked at: every timer goes on
 	}
 	for _, t := range tabs {
 		screen, err := d.Capture(t)
 		if err != nil {
 			cannot("tab "+t.String(), err)
+			if p, ok := st.Prompts[t.String()]; ok { // not seen is not answered: the timer goes on
+				prompts[t.String()] = p
+			}
 			continue
 		}
 		rep.Tabs++
+		if prompt, open := openDialog(screen); open {
+			rep.Prompts++
+			p := st.Prompts[t.String()]
+			if h := hash(promptKey(prompt)); p.Hash != h {
+				p = remotePrompt{Hash: h, Since: d.Now}
+			}
+			age := d.Now.Sub(p.Since)
+			kind := "permission prompt"
+			if !strings.Contains(prompt, "Do you want") {
+				kind = "question"
+			}
+			if age >= promptAfter && !p.Said {
+				say("ALERT", fmt.Sprintf("%s unanswered for %d min in tab %s: first seen at %s, %q; the tab's screen still shows the dialog",
+					kind, int(age.Minutes()), t.String(), p.Since.Format("15:04"), command(screen, prompt)))
+				p.Said = true
+			} else if d.Dry {
+				rep.Actions = append(rep.Actions, fmt.Sprintf("%s open %d min in tab %s (Crius hears at %d min): %s",
+					kind, int(age.Minutes()), t.String(), int(promptAfter.Minutes()), command(screen, prompt)))
+			}
+			prompts[t.String()] = p
+		}
 		line, key, ok := ProviderStop(screen)
 		if !ok {
 			continue
@@ -302,6 +343,7 @@ func ProviderErrors(d ProviderDeps) (ProviderReport, error) {
 		}
 	}
 	st.Missed = missed
+	st.Prompts = prompts
 	for k, s := range st.Stops {
 		if d.Now.Sub(s.At) > providerKeep {
 			delete(st.Stops, k)
@@ -339,6 +381,9 @@ func loadProvider(home string) (st providerState, err error) {
 	}
 	if st.Failing == nil {
 		st.Failing = map[string]time.Time{}
+	}
+	if st.Prompts == nil {
+		st.Prompts = map[string]remotePrompt{}
 	}
 	return st, err
 }
