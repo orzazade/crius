@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/orzazade/crius/internal/sessionstate"
 	"github.com/orzazade/crius/internal/testutil"
 )
 
@@ -248,6 +249,63 @@ func TestAFinishedT3LeadStaysQuiet(t *testing.T) {
 		runOnce(t, home, f, t0)
 		if w := t3Wakes(f, "th-lead"); len(w) != want {
 			t.Errorf("Done: %s%%: want %d wakes, got %q", done, want, w)
+		}
+	}
+}
+
+// 11-17 15:30 live: "cortex · lead (T3 thread mcp:launch:6c403f7c…) is idle 758 min". That thread was settled in T3 at
+// 22:51 the night before (the owner or Crius is done with it); the role's file still named its session. A thread settled
+// or archived in T3 never wakes Crius, however long it sits.
+func TestASettledT3ThreadNeverWakesCrius(t *testing.T) {
+	home := threadHome(t, "api", "ms")
+	f := &fake{threads: map[string]T3Thread{
+		"th-api": {Status: "completed", Updated: t0.Add(-758 * time.Minute), LastReply: "pushed the fix ✅", Settled: true},
+		"th-ms":  {Status: "completed", Updated: t0.Add(-time.Hour), LastReply: "Which tenant? ❓", Unanswered: true, Settled: true},
+	}}
+	runOnce(t, home, f, t0)
+	if w := t3Wakes(f); len(w) != 0 {
+		t.Fatalf("a settled thread woke Crius: %q", w)
+	}
+}
+
+// When two threads are filed under one role, only the newest session's thread speaks for it: an older thread of the
+// role never wakes Crius, and a settled newest thread (the role is done) does not hand the role back to an older one.
+// A role whose newest session runs in a cmux tab is left to the tab checks, whatever thread it ran in before (review P1).
+func TestOnlyTheNewestSessionsThreadOfARoleCounts(t *testing.T) {
+	idle := T3Thread{Status: "completed", Updated: t0.Add(-30 * time.Minute), LastReply: "done ✅"}
+	settled := idle
+	settled.Settled = true
+	for _, c := range []struct {
+		name          string
+		old, new      T3Thread
+		newThread     string
+		wantOld, want int
+	}{
+		{"old settled, new idle", settled, idle, "th-api2", 0, 1},
+		{"both idle", idle, idle, "th-api2", 0, 1},
+		{"new settled, old idle", idle, settled, "th-api2", 0, 0},
+		{"both settled", settled, settled, "th-api2", 0, 0},
+		{"new session in a tab, old idle", idle, idle, "", 0, 0},
+	} {
+		home := threadHome(t, "api")
+		// crius-hook's files: a later session of quotes:api (in another thread, or in a tab) while the role's file still
+		// names s-api, in th-api; and a session of another role in a third thread that is not quotes:api's
+		f := &fake{threads: map[string]T3Thread{"th-api": c.old, "th-api2": c.new}, states: []sessionstate.State{
+			{SessionID: "s-api", Project: "quotes", Role: "api", Thread: "th-api", Time: t0.Add(-2 * time.Hour)},
+			{SessionID: "s-api2", Project: "quotes", Role: "api", Thread: c.newThread, Time: t0.Add(-time.Hour)},
+			{SessionID: "s-x", Project: "quotes", Role: "unknown", Thread: "th-x", Time: t0},
+		}}
+		runOnce(t, home, f, t0)
+		if w := t3Wakes(f, "th-api)"); len(w) != c.wantOld {
+			t.Errorf("%s: want %d wakes for the older thread, got %q", c.name, c.wantOld, w)
+		}
+		if w := t3Wakes(f, "th-api2)"); len(w) != c.want {
+			t.Errorf("%s: want %d wakes for the newer thread, got %q", c.name, c.want, w)
+		}
+		for _, id := range f.read {
+			if id != "th-api2" {
+				t.Errorf("%s: read thread %s, not the role's newest", c.name, id)
+			}
 		}
 	}
 }

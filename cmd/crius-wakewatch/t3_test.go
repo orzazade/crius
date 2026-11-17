@@ -87,3 +87,17 @@ func TestThreadFailuresAreErrors(t *testing.T) {
 		}
 	}
 }
+
+// 11-17 15:30: the T3 idle check woke Crius for the old Cortex lead thread, settled in T3 at 22:51 the night before. A
+// thread settled or archived in T3 is read as Settled; one that is neither is not.
+func TestThreadReadsSettledOrArchived(t *testing.T) {
+	dir := fakeT3(t)
+	for field, want := range map[string]bool{"": false, `"settled":true,`: true, `"archived":true,`: true,
+		`"settled":false,"archived":false,`: false} {
+		put(t, dir, "out", strings.Replace(showJSON, `"activeRunId":null,`, `"activeRunId":null,`+field, 1))
+		th, err := thread("x")
+		if err != nil || th.Settled != want {
+			t.Errorf("%q: want Settled %v, got %+v %v", field, want, th, err)
+		}
+	}
+}

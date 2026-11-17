@@ -39,7 +39,8 @@ func CriusThread(home string) (string, error) {
 
 // T3Thread is what `t3 thread show --json` tells of a thread: its status ("running", "completed", …), whether a run is
 // open (activeRunId), how many requests (an approval or a question) wait on someone, when it last changed, its newest
-// assistant message ("" when the messages read hold none), and whether a user message came after that reply.
+// assistant message ("" when the messages read hold none), whether a user message came after that reply, and whether
+// the owner or Crius settled or archived it (T3's sign that nobody wants more from the thread).
 type T3Thread struct {
 	Status     string
 	Active     bool
@@ -47,6 +48,7 @@ type T3Thread struct {
 	Updated    time.Time
 	LastReply  string
 	Unanswered bool
+	Settled    bool
 }
 
 // ErrT3NoAnswer marks a t3 call that timed out: the T3 server hangs, so the other threads are not read on this run.
@@ -67,11 +69,44 @@ func roleThread(home string, r sessionstate.State) string {
 	return r.Thread
 }
 
+// newestThread gives the T3 Code thread of the role's newest session, "" when that session runs in none (a cmux tab).
+// The sessions are the role's current one (with roleThread's thread) and each one crius-hook filed under project:role
+// (states), dated by their latest event. A role whose sessions moved to a new thread may still name an old one in its
+// file (11-17: cortex:lead); an older session never speaks for the role, so one moved back to a tab is not watched here.
+func newestThread(home, project, role string, r sessionstate.State, states []sessionstate.State) string {
+	type seen struct {
+		thread string
+		at     time.Time
+	}
+	by := map[string]seen{}
+	for _, s := range states {
+		if s.Project == project && s.Role == role {
+			by[s.SessionID] = seen{s.Thread, s.Time}
+		}
+	}
+	cur := seen{roleThread(home, r), r.Time} // the role's file is dated when it was filed
+	if o, ok := by[r.SessionID]; ok {
+		cur.at = o.at // the session's own file, rewritten on every event
+	} else if c, err := sessionstate.Read(filepath.Join(home, "sessions"), r.SessionID); err == nil && !c.Time.IsZero() {
+		cur.at = c.Time
+	}
+	by[r.SessionID] = cur
+	var newest, best string
+	var at time.Time
+	for sid, s := range by {
+		if newest == "" || s.at.After(at) || s.at.Equal(at) && sid < newest {
+			newest, best, at = sid, s.thread, s.at
+		}
+	}
+	return best
+}
+
 // t3Idle wakes Crius for each team member that runs as a T3 Code thread and has stopped while it still owes work
 // (11-15: AXI api-split, ms-flow and qa sat idle 13 to 50 min, found by hand at 04:05 and 05:48; nothing watched a
-// thread). It looks at each open role of a watched team whose current session runs in a thread other than Crius's own,
+// thread). It looks at each open role of a watched team whose newest session runs in a thread other than Crius's own,
 // and leaves out, as the tab check does, a parked role, a lead whose goal is finished, and a role whose WAIT on the bus
-// still runs. A thread with no open run is idle since its last update (or since the line that unparked it or ended its
+// still runs, and a thread settled or archived in T3: the owner or Crius is done with it (11-17: an old Cortex lead
+// thread, settled 13 h before, woke Crius as idle 758 min). A thread with no open run is idle since its last update (or since the line that unparked it or ended its
 // WAIT, when later). It wakes Crius when:
 //   - a request (an approval or a question) has waited on someone for over t3IdleAfter;
 //   - a message to it after its last reply has no answer, after t3IdleAfter;
@@ -97,6 +132,8 @@ func t3Idle(d Deps, watch projects, park parked, prompted map[string]bool) [][2]
 		out = append(out, [2]string{"t3-failed", "the T3 thread idle check failed to look: " + err.Error()})
 	}
 	var done map[string]bool // read once a thread is idle
+	var states []sessionstate.State
+	statesRead := false
 	hung := false
 	for _, f := range files {
 		project, role, _ := strings.Cut(strings.TrimSuffix(filepath.Base(f), ".json"), ".")
@@ -112,11 +149,16 @@ func t3Idle(d Deps, watch projects, park parked, prompted map[string]bool) [][2]
 			failed(err.Error())
 			continue
 		}
-		id := roleThread(d.Home, r)
+		if !statesRead { // its errors are readHooks' "states-failed" alert; the roles' own files still name a thread each
+			if d.States != nil {
+				states, _ = d.States()
+			}
+			statesRead = true
+		}
+		id := newestThread(d.Home, project, role, r, states)
 		if id == "" || id == crius {
 			continue
 		}
-		name := fmt.Sprintf("%s · %s (T3 thread %s)", project, role, id)
 		if closed, err := sessionstate.ClosedRole(dir, project, role); err != nil {
 			failed(err.Error())
 			continue
@@ -147,6 +189,10 @@ func t3Idle(d Deps, watch projects, park parked, prompted map[string]bool) [][2]
 			failed(fmt.Sprintf("thread %s: %v (if the role ended on purpose: crius-spawn -close %s %s)", id, err, project, role))
 			continue
 		}
+		if th.Settled {
+			continue
+		}
+		name := fmt.Sprintf("%s · %s (T3 thread %s)", project, role, id)
 		if (th.Status == "running" || th.Active) && th.Pending == 0 || th.Pending > 0 && prompted[id] {
 			continue
 		}

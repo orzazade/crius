@@ -55,6 +55,8 @@ func parseThread(b []byte) (wakewatch.T3Thread, error) {
 			ActiveRunID *string `json:"activeRunId"`
 			Pending     int     `json:"pendingRequestCount"`
 			UpdatedAt   string  `json:"updatedAt"`
+			Settled     bool    `json:"settled"`
+			Archived    bool    `json:"archived"`
 		} `json:"thread"`
 		Messages []struct {
 			Role string `json:"role"`
@@ -72,7 +74,7 @@ func parseThread(b []byte) (wakewatch.T3Thread, error) {
 		return wakewatch.T3Thread{}, fmt.Errorf("t3 thread show: thread updatedAt %q: %v", v.Thread.UpdatedAt, err)
 	}
 	th := wakewatch.T3Thread{Status: v.Thread.Status, Active: v.Thread.ActiveRunID != nil && *v.Thread.ActiveRunID != "",
-		Pending: v.Thread.Pending, Updated: at}
+		Pending: v.Thread.Pending, Updated: at, Settled: v.Thread.Settled || v.Thread.Archived}
 	for i := len(v.Messages) - 1; i >= 0; i-- {
 		if v.Messages[i].Role == "assistant" {
 			th.LastReply = v.Messages[i].Text
