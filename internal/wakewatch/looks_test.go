@@ -109,6 +109,7 @@ var notLooks = map[string]string{
 	"swap":              "swap above the line",
 	"t3idle":            "an idle T3 thread",
 	"tabname":           "a tab with no name",
+	"twins":             "two live sessions for one role",
 	"wait-cursor-ahead": "the waiter cursor is past the log",
 	"waited":            "a lead waited on",
 	"waiter":            "a bus log with no waiter",
@@ -499,10 +500,13 @@ func TestEveryDirectAlertIsKnown(t *testing.T) {
 		"rearm":          "types a waiter re-arm line into a team's tab: an order, not an alert",
 		"postLine":       "posts a re-arm or rig line on a team's bus: an order, not an alert",
 		"tellLeads":      "tells a team's leads that a role died: a finding",
+		"Restart":        "crius-wakewatch restart prints its verdict to the caller once: there is no next run to wait for",
+		"restartTab":     "types /clear and a brief into a tab (an order) and prints its verdict to the caller once",
 	}
 	gated := map[string]bool{"alertOnce": true, "ProviderErrors": true}
 	// oneOff: functions whose failed-look text is said at once, and the words that text must hold
-	oneOff := map[string]string{"AfterBoot": "", "Run": "was unreadable", "clicks": "was unreadable"}
+	oneOff := map[string]string{"AfterBoot": "", "Run": "was unreadable", "clicks": "was unreadable", "Restart": "FAILED",
+		"restartTab": "FAILED"}
 	sends := map[string]bool{"Post": true, "PostOn": true, "Send": true, "SendCrius": true, "SendTab": true, "Push": true, "say": true, "alertOnce": true}
 	fs, files := pkgSource(t)
 	n := 0

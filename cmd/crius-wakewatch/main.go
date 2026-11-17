@@ -92,8 +92,24 @@ func main() {
 	if len(os.Args) >= 2 && os.Args[1] == "provider-errors" {
 		os.Exit(providerCmd(os.Args[2:], os.Stdout)) // the provider-error sweep on its own (wakewatch.ProviderErrors)
 	}
+	if len(os.Args) >= 3 && os.Args[1] == "restart" {
+		// the one safe fresh restart of a role (wakewatch.Restart): refuses while a turn runs, says ready only once no claude
+		// of the role runs; on a remote tmux tab, with a brief, it types /clear and then the brief
+		home, err := os.UserHomeDir()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "crius-wakewatch restart:", err)
+			os.Exit(wakewatch.RestartFailed)
+		}
+		os.Exit(wakewatch.Restart(wakewatch.RestartDeps{Home: store.Home(), Out: os.Stdout,
+			Sessions: func() ([]wakewatch.Session, error) { return wakewatch.LiveSessions(home) },
+			States: func() ([]sessionstate.State, error) {
+				return sessionstate.List(filepath.Join(store.Home(), "sessions"))
+			},
+			Thread: thread, Tabs: func() ([]wakewatch.RemoteTab, error) { return wakewatch.ReadProviderTabs(store.Home()) },
+			Capture: captureTab, SendTab: sendTab}, os.Args[2], strings.Join(os.Args[3:], " ")))
+	}
 	if len(os.Args) > 1 {
-		fmt.Fprintln(os.Stderr, "usage: crius-wakewatch [after-boot | clicks | flagged <surface> | gone <surface> | signin | provider-errors [-fixtures DIR]]")
+		fmt.Fprintln(os.Stderr, "usage: crius-wakewatch [after-boot | clicks | flagged <surface> | gone <surface> | signin | provider-errors [-fixtures DIR] | restart <project:role> [brief…]]")
 		os.Exit(2)
 	}
 	// Messages held on an earlier run go first, so a new alert never jumps ahead of an older one.

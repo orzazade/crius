@@ -180,6 +180,7 @@ type state struct {
 	Signin      map[string]string    // sign-in alert key (account and state) -> the day it was raised (signin.go)
 	SigninMiss  map[string]int       // read (status:<account>, login:<account>, spool:<host>) -> runs in a row it failed (signin.go)
 	LookMiss    map[string]int       // failed-look alert key -> runs in a row it was raised (looks.go)
+	Twins       map[string]int       // role and pids of a role with two live claudes -> runs in a row seen (twins.go)
 }
 
 // waitGap is when a bus log was first seen with no waiter, and whether that gap was said to Crius. From is the log's size
@@ -235,8 +236,9 @@ func Run(d Deps) error {
 		st.Rig = map[string]string{}
 	}
 	for k, at := range st.Typed {
-		// a dead role's line stays raised as long as the role is dead, so its key goes only when the alert does (review P2-1)
-		if d.Now.Sub(at) > window+resend && !strings.HasPrefix(k, "dead:") {
+		// a dead role's line stays raised as long as the role is dead, so its key goes only when the alert does (review P2-1);
+		// so does a role's pair of live claudes
+		if d.Now.Sub(at) > window+resend && !strings.HasPrefix(k, "dead:") && !strings.HasPrefix(k, "twins:") {
 			delete(st.Typed, k)
 		}
 	}
@@ -251,6 +253,7 @@ func Run(d Deps) error {
 	alerts = append(alerts, m...)
 	ss, sesErr := d.Sessions()
 	alerts = append(alerts, paid(d, ss)...)
+	alerts = append(alerts, twins(d, &st, ss, sesErr)...)
 	hv, ha := readHooks(d, st.Views, ss, sesErr)
 	alerts = append(alerts, ha...)
 	tabsGone := st.TabsGone
@@ -316,7 +319,7 @@ func Run(d Deps) error {
 		if err != nil {
 			sendErr = err
 		}
-		if (strings.HasPrefix(a[0], "bus:") || strings.HasPrefix(a[0], "folder:") || strings.HasPrefix(a[0], "restore:") || strings.HasPrefix(a[0], "handed:") || strings.HasPrefix(a[0], "dead:") || strings.HasPrefix(a[0], "waited:") || strings.HasPrefix(a[0], "t3idle:") || strings.HasPrefix(a[0], "prompt:") || strings.HasPrefix(a[0], "prompt-unread:") || strings.HasPrefix(a[0], "prompt-untold:")) && (err == nil || d.HandedOver != nil && d.HandedOver(err)) {
+		if (strings.HasPrefix(a[0], "bus:") || strings.HasPrefix(a[0], "folder:") || strings.HasPrefix(a[0], "restore:") || strings.HasPrefix(a[0], "handed:") || strings.HasPrefix(a[0], "dead:") || strings.HasPrefix(a[0], "waited:") || strings.HasPrefix(a[0], "t3idle:") || strings.HasPrefix(a[0], "prompt:") || strings.HasPrefix(a[0], "prompt-unread:") || strings.HasPrefix(a[0], "prompt-untold:") || strings.HasPrefix(a[0], "twins:")) && (err == nil || d.HandedOver != nil && d.HandedOver(err)) {
 			st.Typed[a[0]] = d.Now
 		}
 		// Crius's waiter wakes on a bus line: a wake that cannot be typed goes there, so none is lost (S2, 10-22).
@@ -360,7 +363,7 @@ func Run(d Deps) error {
 		base := strings.TrimSuffix(k, ":typed")
 		kind, rest, _ := strings.Cut(base, ":")
 		id, _, _ := strings.Cut(rest, ":")
-		seen := kind == "folder" || kind == "restore" && !active["restore-unread"] || kind == "dead" && !active["roles-failed"] || kind == "handed" && !active[screensFailed] && !active["screen-failed:"+rest[:max(0, strings.LastIndex(rest, ":"))]]
+		seen := kind == "folder" || kind == "twins" || kind == "restore" && !active["restore-unread"] || kind == "dead" && !active["roles-failed"] || kind == "handed" && !active[screensFailed] && !active["screen-failed:"+rest[:max(0, strings.LastIndex(rest, ":"))]]
 		if seen && !active[base] && !active[base+":typed"] && !hv.blind && !active["role-unread:"+id] {
 			delete(st.Typed, k)
 		}
