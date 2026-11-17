@@ -18,12 +18,38 @@ import (
 
 // Types are the Crius-bus types. The one written list is the "- Types" line in docs/MEMORY-AND-MEASUREMENT.md §6;
 // a test keeps the two equal. Any other type stays malformed (a loud warning), on purpose.
-var Types = map[string]bool{"DONE": true, "BLOCKED": true, "NEED-OWNER": true, "PAUSE": true, "PAUSED": true, "LIMIT": true,
-	"ITEM": true, "DECISION": true, "RESUMED": true, "ALERT": true, "INFO": true, "NEED": true, "WAIT": true,
-	"PARKED": true, "VERIFIED": true, "CORRECTED": true, "GO": true, "ACK": true,
-	"ORDER": true, "ANSWER": true, "ASK": true, "START": true, "CLEAR-READY": true, "OWNER": true,
-	"READY": true, "PASS": true, "FAIL": true, "LANDED": true, "CORRECTION": true, "OWNER-CLICK": true,
-	"CRIUS-CLICK": true, "LEARNED": true}
+// The restart words are types too.
+var Types = func() map[string]bool {
+	t := map[string]bool{"DONE": true, "BLOCKED": true, "NEED-OWNER": true, "PAUSE": true, "PAUSED": true, "LIMIT": true,
+		"ITEM": true, "DECISION": true, "RESUMED": true, "ALERT": true, "INFO": true, "NEED": true, "WAIT": true,
+		"PARKED": true, "VERIFIED": true, "CORRECTED": true, "GO": true, "ACK": true,
+		"ORDER": true, "ANSWER": true, "ASK": true, "START": true, "OWNER": true,
+		"READY": true, "PASS": true, "FAIL": true, "LANDED": true, "CORRECTION": true, "OWNER-CLICK": true,
+		"CRIUS-CLICK": true, "LEARNED": true}
+	for _, w := range RestartWords {
+		t[w] = true
+	}
+	return t
+}()
+
+// RestartWords ask Crius for a fresh restart of the session that posts one: READY-RESTART (the word the 11-16 briefs
+// teach, mostly inside a DONE or INFO line: "READY-RESTART notes=<path> next=<item>") and CLEAR-READY (the older word,
+// mostly a line's type). Every Go reader of a restart request goes through RestartWord; the shell waiter
+// (~/.claude/skills/cmux-team/scripts/team-wait.sh) keeps the same word edge.
+var RestartWords = []string{"CLEAR-READY", "READY-RESTART"}
+
+// A restart word is whole: no letter, digit or '-' right before or after it ("READY-RESTART-ISH" asks nothing). RE2 has
+// no look-around, so the edges are groups.
+var restartRe = regexp.MustCompile(`(?:^|[^A-Za-z0-9-])(` + strings.Join(RestartWords, "|") + `)(?:[^A-Za-z0-9-]|$)`)
+
+// RestartWord gives the first restart word that text holds as a whole word, or "" when text asks for no restart. Pass
+// a whole bus line to read its type and text alike.
+func RestartWord(text string) string {
+	if m := restartRe.FindStringSubmatch(text); m != nil {
+		return m[1]
+	}
+	return ""
+}
 
 const MaxLen = 300
 

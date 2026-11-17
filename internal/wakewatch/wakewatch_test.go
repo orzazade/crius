@@ -399,6 +399,31 @@ func TestOnlyWakeTypesToCriusLeadCount(t *testing.T) {
 	}
 }
 
+// 11-17 14:32: staffy:qa's "INFO … — READY-RESTART notes=… next=RQ1" (the word the 11-16 briefs teach, inside an INFO
+// or DONE line) is a restart request like a CLEAR-READY line, whatever the line's type; READY-RESTART-ISH is no request.
+func TestAReadyRestartLineOfAnyTypeToCriusWakes(t *testing.T) {
+	bus := stamp(t0) + " INFO quotes:qa -> crius:lead — READY-RESTART notes=docs/build/qa/STATUS.md next=RQ1 info-line\n" +
+		stamp(t0) + " READY-RESTART quotes:dev -> crius:lead — notes=n.md next=AC125 typed-line\n" +
+		stamp(t0) + " INFO quotes:b2 -> crius:lead — READY-RESTART-ISH word-edge\n" +
+		stamp(t0) + " INFO quotes:b3 -> quotes:lead — READY-RESTART notes=x not-to-crius\n"
+	home := setup(t, map[string]string{"quotes.log": bus})
+	f := &fake{}
+	if err := Run(f.deps(home, t0.Add(25*time.Minute))); err != nil {
+		t.Fatal(err)
+	}
+	all := strings.Join(f.sent, "\n")
+	for _, want := range []string{"info-line", "typed-line"} {
+		if !strings.Contains(all, want) {
+			t.Errorf("no wake for the READY-RESTART %s: %q", want, f.sent)
+		}
+	}
+	for _, not := range []string{"word-edge", "not-to-crius"} {
+		if strings.Contains(all, not) {
+			t.Errorf("woke for %s: %q", not, f.sent)
+		}
+	}
+}
+
 func TestAMissedLineAlertsOnce(t *testing.T) {
 	home := setup(t, map[string]string{"quotes.log": done(t0)})
 	f := &fake{}
@@ -882,6 +907,32 @@ func TestCLEARREADYOnAScreenAlertsForAnyRole(t *testing.T) {
 	}, 0, 16)
 	if len(f.sent) != 1 || !strings.Contains(f.sent[0], "CLEAR-READY") || !strings.Contains(f.sent[0], "crius:build") {
 		t.Fatal(f.sent)
+	}
+}
+
+// 11-17: READY-RESTART, the word of the 11-16 briefs, on a screen counts like CLEAR-READY.
+func TestREADYRESTARTOnAScreenAlertsForAnyRole(t *testing.T) {
+	home := setup(t, map[string]string{"crius.log": busFrom("crius:build", t0)})
+	f := &fake{}
+	runAt(t, home, f, func(at time.Time) []Screen {
+		return []Screen{screen("crius · build", tab("crius · build", "READY-RESTART notes=STATUS.md next=item 4.\n\n⏳", "", at))}
+	}, 0, 16)
+	if len(f.sent) != 1 || !strings.Contains(f.sent[0], "its screen says READY-RESTART") || !strings.Contains(f.sent[0], "crius:build") {
+		t.Fatalf("want one idle alert noting READY-RESTART, got %q", f.sent)
+	}
+}
+
+// The screen check keeps the shell waiter's word edge: CLEAR-READY-ISH or READY-RESTART-ISH asks for no restart.
+func TestARestartWordInsideALongerWordOnAScreenDoesNotCount(t *testing.T) {
+	for _, text := range []string{"CLEAR-READY-ISH", "READY-RESTART-ISH", "PRE-READY-RESTART"} {
+		home := setup(t, map[string]string{"crius.log": busFrom("crius:build", t0)})
+		f := &fake{}
+		runAt(t, home, f, func(at time.Time) []Screen {
+			return []Screen{screen("crius · build", tab("crius · build", text+" item 3.\n\n⏳", "", at))}
+		}, 0, 16)
+		if len(f.sent) != 1 || strings.Contains(f.sent[0], "its screen says") {
+			t.Errorf("%s: want one idle alert with no restart note, got %q", text, f.sent)
+		}
 	}
 }
 

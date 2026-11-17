@@ -600,10 +600,7 @@ func TestBuildReadsALeadFromItsCommittedObject(t *testing.T) {
 // busLine stores a Crius bus line as the ingest does (source key bus:...).
 func busLine(t *testing.T, db *sql.DB, ts time.Time, sender, kind string) {
 	t.Helper()
-	id := line(t, db, ts, sender, kind, "x")
-	if _, err := db.Exec("update event set source_key = ? where id = ?", fmt.Sprint("bus:f:", id), id); err != nil {
-		t.Fatal(err)
-	}
+	busText(t, db, ts, sender, kind, "x")
 }
 
 // Crius GO 10-19 18:25: a lead's status file is STALE when the lead has a DONE or CLEAR-READY on the Crius bus newer
@@ -619,6 +616,19 @@ func TestBuildMarksAStaleGoal(t *testing.T) {
 			"crius:build: STALE: GOAL (2026-10-17 08:30) is older than its DONE 2026-10-17 08:40 on the bus · 50% claimed"},
 		{"clear-ready newer", func(db *sql.DB) { busLine(t, db, stamp.Add(time.Minute), "crius:build", "clear-ready") },
 			"crius:build: STALE: GOAL (2026-10-17 08:30) is older than its CLEAR-READY 2026-10-17 08:31 on the bus · 50% claimed"},
+		// 11-17: READY-RESTART, the word of the 11-16 briefs, typed or inside an INFO line, counts like CLEAR-READY
+		{"ready-restart typed newer", func(db *sql.DB) { busLine(t, db, stamp.Add(time.Minute), "crius:build", "ready-restart") },
+			"crius:build: STALE: GOAL (2026-10-17 08:30) is older than its READY-RESTART 2026-10-17 08:31 on the bus · 50% claimed"},
+		{"info with ready-restart newer", func(db *sql.DB) {
+			busText(t, db, stamp.Add(2*time.Minute), "crius:build", "info", "READY-RESTART notes=docs/STATUS.md next=RQ1")
+		}, "crius:build: STALE: GOAL (2026-10-17 08:30) is older than its READY-RESTART 2026-10-17 08:32 on the bus · 50% claimed"},
+		{"info with ready-restart-ish newer", func(db *sql.DB) {
+			busText(t, db, stamp.Add(2*time.Minute), "crius:build", "info", "READY-RESTART-ISH, not a request")
+		}, ""},
+		{"done older than a non-request", func(db *sql.DB) {
+			busLine(t, db, stamp.Add(10*time.Minute), "crius:build", "done")
+			busText(t, db, stamp.Add(20*time.Minute), "crius:build", "info", "will post READY-RESTARTS later")
+		}, "crius:build: STALE: GOAL (2026-10-17 08:30) is older than its DONE 2026-10-17 08:40 on the bus · 50% claimed"},
 		{"same minute", func(db *sql.DB) { busLine(t, db, stamp, "crius:build", "done") }, ""},
 		{"done older", func(db *sql.DB) { busLine(t, db, stamp.Add(-time.Minute), "crius:build", "done") }, ""},
 		{"info newer", func(db *sql.DB) {

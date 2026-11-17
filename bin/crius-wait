@@ -1,7 +1,7 @@
 #!/bin/bash
 # Crius's one bus waiter (owner 10-30, "too much noise"): one team-wait over every bus log in place of one per project.
 # It wakes Crius only on an allow-list (Crius 11-06): DONE, NEED and NEED-*, BLOCKED, ALERT, ASK, CORRECTED,
-# CLEAR-READY, S1, OWNER, OWNER-CLICK, owner lines, an idle_prompt wait, crius:ops lines other than "click …" receipts,
+# CLEAR-READY, READY-RESTART, S1, OWNER, OWNER-CLICK, owner lines, an idle_prompt wait, crius:ops lines other than "click …" receipts,
 # and the first answer to what Crius wrote. Every other line (other waits:* kinds, CRIUS-CLICK: the ops tab clicks
 # those) goes to the digest file the 09:00/18:00 report counts. --watch-dir reads every bus log, a log born while it waits from line 1. Arm it
 # again after each wake, like any waiter. Extra arguments go to team-wait (e.g. --max-hours 12).

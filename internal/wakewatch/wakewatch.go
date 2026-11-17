@@ -1,6 +1,7 @@
-// Package wakewatch tells the owner when Crius missed a wake: a lead's DONE, NEED, CLEAR-READY or ASK to Crius with no
-// crius:lead line after it on the same bus for 20 min, a lead tab waiting on a question or dialog for 10 min, or any
-// tab of a team idle for 10 min (noting when its last reply says CLEAR-READY), a lead tab idle an hour whatever runs in
+// Package wakewatch tells the owner when Crius missed a wake: a lead's DONE, NEED or ASK to Crius, or any line to it
+// that asks for a fresh restart (READY-RESTART or CLEAR-READY, store.RestartWord), with no crius:lead line after it on
+// the same bus for 20 min, a lead tab waiting on a question or dialog for 10 min, or any
+// tab of a team idle for 10 min (noting when its last reply asks for a fresh restart), a lead tab idle an hour whatever runs in
 // its background and watched or not, the
 // Mac short of disk or deep in swap, and a tool the team needs (cmux, gh, az, bun, docker) that fails or does not answer, and a lead still in the same session
 // 20 min after its DONE, a bus log no waiter of Crius's covers for 10 min, and a Max account whose sign-in ends in
@@ -39,6 +40,7 @@ import (
 	"github.com/orzazade/crius/internal/quota"
 	"github.com/orzazade/crius/internal/redact"
 	"github.com/orzazade/crius/internal/sessionstate"
+	"github.com/orzazade/crius/internal/store"
 	"github.com/orzazade/crius/internal/watchdog"
 )
 
@@ -61,9 +63,10 @@ const (
 	screensFailed = "screens-failed"
 )
 
-// wakeTypes ask Crius to act; replyTypes from crius:lead show it woke.
+// wakeTypes ask Crius to act, as does a restart request in a line of any type (store.RestartWord); replyTypes from
+// crius:lead show it woke.
 var (
-	wakeTypes  = map[string]bool{"DONE": true, "NEED": true, "CLEAR-READY": true, "ASK": true}
+	wakeTypes  = map[string]bool{"DONE": true, "NEED": true, "ASK": true}
 	replyTypes = map[string]bool{"ORDER": true, "ANSWER": true, "VERIFIED": true, "ACK": true, "INFO": true, "GO": true, "OWNER": true}
 	lineRe     = regexp.MustCompile(`^(\d{4}-\d\d-\d\dT\d\d:\d\dZ?) ([A-Z][A-Z-]*) (\S+)(?: -> (.*?))? — `)
 	// A Claude Code permission or choice dialog: a numbered option under the cursor. Its spaces are plain: the idle input
@@ -566,7 +569,7 @@ func missed(home string, now time.Time, watch projects, park parked) ([][2]strin
 					return asker != "crius:lead" && addressed(to, asker, team)
 				})
 			}
-			if !wakeTypes[typ] || !toCrius(to) || answered(typ, from, line, park) || i < delivered {
+			if !wakeTypes[typ] && store.RestartWord(line) == "" || !toCrius(to) || answered(typ, from, line, park) || i < delivered {
 				continue
 			}
 			// A team's line on another team's bus ("aitch:build" on crius.log) goes by the sender's team.
@@ -724,7 +727,7 @@ func waiting(st *state, d Deps, watch projects, park parked, screens []Screen, h
 		}
 		ask := view == "asks"
 		var who string
-		var clear bool
+		var restart string // the restart word the last reply holds
 		var lastLine, unparked time.Time
 		var w waitState
 		if !ask {
@@ -736,7 +739,7 @@ func waiting(st *state, d Deps, watch projects, park parked, screens []Screen, h
 			if closedOnPurpose(d.Home, who) {
 				continue
 			}
-			clear = clearReady(body)
+			restart = restartReady(body)
 			var found bool
 			var err error
 			if lastLine, found, err = lastFrom(d.Home, who, "", d.Now); err != nil {
@@ -801,8 +804,8 @@ func waiting(st *state, d Deps, watch projects, park parked, screens []Screen, h
 			if lastLine.IsZero() { // Quotes builders post as "P3": only the screen's age is known
 				text = fmt.Sprintf("%s (tab %q, %s) is idle: not working, %s, screen unchanged for %d min, no bus line from %s", who, s.Title, s.Surface, running, int(wait.Minutes()), who)
 			}
-			if clear {
-				text += "; its screen says CLEAR-READY"
+			if restart != "" {
+				text += "; its screen says " + restart
 			}
 			if why, ok := unread[strings.ToLower(who)]; ok {
 				text += "; not seen as finished: its " + why
@@ -1262,16 +1265,16 @@ func session(text, title string) (who, role string) {
 	return m[1] + ":" + m[2], m[2]
 }
 
-// clearReady reports whether the last reply above the input box says CLEAR-READY. A screen with no reply marker has
-// no last reply to read.
-func clearReady(body string) bool {
+// restartReady gives the restart word (store.RestartWord) the last reply above the input box holds, or "". A screen
+// with no reply marker has no last reply to read.
+func restartReady(body string) string {
 	lines := strings.Split(body, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
 		if strings.HasPrefix(strings.TrimSpace(lines[i]), "⏺") {
-			return strings.Contains(strings.Join(lines[i:], "\n"), "CLEAR-READY")
+			return store.RestartWord(strings.Join(lines[i:], "\n"))
 		}
 	}
-	return false
+	return ""
 }
 
 // lastFrom gives the time of the newest whole line sent by who ("quotes:lead") on its project's bus, of type typ or

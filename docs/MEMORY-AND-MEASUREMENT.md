@@ -460,7 +460,7 @@ more than a late one.
   more than 10 min ahead of the clock, raises an ALERT naming the writer, one per file, writer, day and kind.
 - Types (the one list; `internal/store` tests check the Go list equals it): `DONE`, `BLOCKED`, `NEED-OWNER`,
   `PAUSE`, `PAUSED`, `LIMIT`, `ITEM`, `DECISION`, `RESUMED`, `ALERT`, `INFO`, `NEED`, `WAIT`, `PARKED`, `VERIFIED`,
-  `CORRECTED`, `GO`, `ACK`, `ORDER`, `ANSWER`, `ASK`, `START`, `CLEAR-READY`, `OWNER`, `READY`, `PASS`, `FAIL`,
+  `CORRECTED`, `GO`, `ACK`, `ORDER`, `ANSWER`, `ASK`, `START`, `CLEAR-READY`, `READY-RESTART`, `OWNER`, `READY`, `PASS`, `FAIL`,
   `LANDED`, `CORRECTION`, `OWNER-CLICK`, `CRIUS-CLICK`, `LEARNED`. Tests also check that RULES.md and the
   cmux-team skill name no other type.
 - Who writes them: OWNER only Crius, for the owner's own words it relays (the goal report lists them with the decisions); ALERT only Crius's

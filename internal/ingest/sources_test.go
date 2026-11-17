@@ -733,7 +733,7 @@ func TestMalformedLinesAreCountedWhenRead(t *testing.T) {
 	x, _, _ := busCase(t)
 	testutil.Write(t, filepath.Join(x.home, "bus", "demo.log"),
 		"2026-10-17T03:00 CORRECTED demo:lead -> crius — F-1 was wrong\n"+
-			"2026-10-17T03:01 READY-RESTART demo:lead -> crius — not a type\n"+
+			"2026-10-17T03:01 QUEUE demo:lead -> crius — a team-only type\n"+ // READY-RESTART was the sample until it became a type 11-17
 			"no stamp at all\n")
 	before := time.Now().UTC().Add(-time.Second).Format("2006-01-02T15:04:05Z")
 	x.run()

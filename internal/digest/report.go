@@ -19,6 +19,7 @@ import (
 	"github.com/orzazade/crius/internal/quota"
 	"github.com/orzazade/crius/internal/recall"
 	"github.com/orzazade/crius/internal/redact"
+	"github.com/orzazade/crius/internal/store"
 )
 
 // maxLines bounds the report (Crius 10-17: ≤ 60 lines, plain short sentences).
@@ -319,28 +320,44 @@ func GitStatus(l ingest.Lead) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
-// staleness says a lead's GOAL block is stale when the lead posted a DONE or CLEAR-READY on the Crius bus after its
-// stamp (Crius GO 10-19 18:25): its status file was not written with the milestone. INFO, NEED and team log lines
-// never count. A stamp in a repeated hour (DST fall-back) is taken at its later reading. "" when it is not stale.
+// staleness says a lead's GOAL block is stale when the lead posted a DONE or a restart request (store.RestartWord, as
+// the line's type or in its text: "INFO … — READY-RESTART notes=… next=…") on the Crius bus after its stamp (Crius GO
+// 10-19 18:25): its status file was not written with the milestone. Other INFO, NEED and team log lines never count.
+// A stamp in a repeated hour (DST fall-back) is taken at its later reading. "" when it is not stale.
 func staleness(db *sql.DB, lead string, g *Goal) (string, error) {
 	project, role, _ := strings.Cut(lead, ":")
 	latest := laterReading(g.Updated)
-	var ts, kind string
-	err := db.QueryRow("select ts, kind from event where project = ? and actor = ? and kind in ('done', 'clear-ready')"+
-		" and source_key like 'bus:%' and ts > ? order by ts desc, id desc limit 1",
-		project, role, latest.UTC().Format("2006-01-02T15:04:05Z")).Scan(&ts, &kind)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
+	// SQL narrows to lines that may hold a restart word; RestartWord decides (LIKE has no word edge and ignores case).
+	q, args := "select ts, kind, coalesce(text, '') from event where project = ? and actor = ? and source_key like 'bus:%'"+
+		" and ts > ? and (kind = 'done'", []any{project, role, latest.UTC().Format("2006-01-02T15:04:05Z")}
+	for _, w := range store.RestartWords {
+		q += " or kind = ? or text like ?"
+		args = append(args, strings.ToLower(w), "%"+w+"%")
 	}
+	rows, err := db.Query(q+") order by ts desc, id desc", args...)
 	if err != nil {
 		return "", err
 	}
-	at, err := time.Parse(time.RFC3339, ts)
-	if err != nil {
-		return "", fmt.Errorf("event %s %s: ts %q: %w", lead, kind, ts, err)
+	defer rows.Close()
+	for rows.Next() {
+		var ts, kind, text string
+		if err := rows.Scan(&ts, &kind, &text); err != nil {
+			return "", err
+		}
+		label := strings.ToUpper(kind)
+		if label != "DONE" {
+			if label = store.RestartWord(label + " " + text); label == "" {
+				continue
+			}
+		}
+		at, err := time.Parse(time.RFC3339, ts)
+		if err != nil {
+			return "", fmt.Errorf("event %s %s: ts %q: %w", lead, kind, ts, err)
+		}
+		return fmt.Sprintf("STALE: GOAL (%s) is older than its %s %s on the bus · ", g.Updated.Format("2006-01-02 15:04"),
+			label, at.Local().Format("2006-01-02 15:04")), nil
 	}
-	return fmt.Sprintf("STALE: GOAL (%s) is older than its %s %s on the bus · ", g.Updated.Format("2006-01-02 15:04"),
-		strings.ToUpper(kind), at.Local().Format("2006-01-02 15:04")), nil
+	return "", rows.Err()
 }
 
 // laterReading gives the later reading of a GOAL stamp in a repeated hour (DST fall-back), else the stamp.

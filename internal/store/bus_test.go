@@ -218,7 +218,9 @@ func TestAppendLineGoesToProjectLog(t *testing.T) {
 // Real ~/.crius/bus lines (INFO, NEED, WAIT) were warned as malformed: the Go list and the written list drifted.
 func TestEveryCriusBusTypeParsesStrict(t *testing.T) {
 	for _, typ := range []string{"DONE", "BLOCKED", "NEED-OWNER", "PAUSED", "LIMIT", "ITEM", "DECISION", "RESUMED",
-		"ALERT", "INFO", "NEED", "WAIT", "PARKED", "ACK", "CLEAR-READY"} { // CLEAR-READY: Crius TYPE rule 10-19 16:58
+		"ALERT", "INFO", "NEED", "WAIT", "PARKED", "ACK", "CLEAR-READY", // CLEAR-READY: Crius TYPE rule 10-19 16:58
+		"READY-RESTART"} { // its 11-16 successor
+
 		if ParseLine("2026-10-16T09:20 "+typ+" demo:leader -> crius — x", nil, true) == nil {
 			t.Error(typ)
 		}
@@ -467,5 +469,44 @@ func TestATypedTimeOffTheStampIsRefused(t *testing.T) {
 		if _, err := FormatLine("INFO", c.project, c.role, c.text, "quotes:lead", day(c.now)); err != nil {
 			t.Errorf("%s:%s at %s %q: %v", c.project, c.role, c.now, c.text, err)
 		}
+	}
+}
+
+// 11-17: a restart request is READY-RESTART (the 11-16 briefs) or CLEAR-READY, as a whole word anywhere in a line.
+func TestRestartWordNeedsAWholeWord(t *testing.T) {
+	for text, want := range map[string]string{
+		"2026-11-17T14:32 INFO staffy:qa -> crius:lead — READY-RESTART notes=docs/build/qa/STATUS.md next=RQ1": "READY-RESTART",
+		"2026-11-17T14:32 CLEAR-READY crius:build -> crius:lead — at 200K":                                     "CLEAR-READY",
+		"READY-RESTART":                     "READY-RESTART",
+		"(READY-RESTART) next=x":            "READY-RESTART",
+		"done; READY-RESTART.":              "READY-RESTART",
+		"READY-RESTART-ISH":                 "",
+		"PRE-READY-RESTART":                 "",
+		"READY-RESTARTS":                    "",
+		"CLEAR-READY2":                      "",
+		"ready-restart":                     "",
+		"READY RESTART, CLEAR READY, READY": "",
+	} {
+		if got := RestartWord(text); got != want {
+			t.Errorf("RestartWord(%q) = %q, want %q", text, got, want)
+		}
+	}
+}
+
+// The shell waiter (team-wait.sh) wakes Crius on the same restart words with the same word edge as RestartWord.
+func TestTheShellWaiterKeepsTheRestartWords(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(home, ".claude", "skills", "cmux-team", "scripts", "team-wait.sh"))
+	if errors.Is(err, fs.ErrNotExist) {
+		t.Skip("no cmux-team skill on this machine")
+	} else if err != nil {
+		t.Fatal(err)
+	}
+	want := `(^|[^A-Za-z0-9-])(` + strings.Join(RestartWords, "|") + `)([^A-Za-z0-9-]|$)`
+	if !strings.Contains(string(b), want) {
+		t.Fatalf("team-wait.sh has no %s: the shell and Go restart words drifted", want)
 	}
 }
