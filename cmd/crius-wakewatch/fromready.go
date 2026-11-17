@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,7 +46,11 @@ func briefRead(host, path string) ([]byte, error) {
 		}
 		return os.ReadFile(p)
 	}
-	return onBoxHost(host, nil, "cat -- "+shQuote(path))
+	b, err := onBoxHost(host, nil, "cat -- "+shQuote(path))
+	if err != nil && strings.Contains(err.Error(), "No such file or directory") {
+		return nil, fmt.Errorf("%w: %v", fs.ErrNotExist, err)
+	}
+	return b, err
 }
 
 // briefSave keeps a copy of the template as prev (refused when prev exists), then writes body over the template with
@@ -112,9 +117,10 @@ func macSave(path, prev string, body []byte) error {
 
 // boxSaveCmd is briefSave as one shell command on a Linux box, the new text on its stdin.
 func boxSaveCmd(path, prev string) string {
-	p, q, t := shQuote(path), shQuote(prev), shQuote(path+".new")
+	p, q := shQuote(path), shQuote(prev)
 	return "set -e; if [ -e " + q + " ]; then echo " + shQuote("old copy "+prev+" exists") + " >&2; exit 1; fi; " +
-		"cp -p -- " + p + " " + q + "; cat > " + t + "; chmod --reference " + p + " -- " + t + "; mv -f -- " + t + " " + p
+		"cp -p -- " + p + " " + q + "; t=$(mktemp " + shQuote(path+".new.XXXXXX") + "); trap 'rm -f \"$t\"' EXIT; " +
+		"cat > \"$t\"; chmod --reference " + p + " -- \"$t\"; mv -f -- \"$t\" " + p
 }
 
 // shQuote quotes a checked path for a remote shell, leaving a leading ~/ outside the quotes so the box expands it.

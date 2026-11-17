@@ -68,8 +68,8 @@ func TestBoxSaveCmdQuotesThePaths(t *testing.T) {
 	if !strings.HasPrefix(got, "set -e; if [ -e ~/'b/RESTART-qa.md.prev-2305' ]; then") {
 		t.Errorf("got %q", got)
 	}
-	for _, h := range []string{"cp -p -- ~/'b/RESTART-qa.md' ~/'b/RESTART-qa.md.prev-2305'", "cat > ~/'b/RESTART-qa.md.new'",
-		"chmod --reference ~/'b/RESTART-qa.md' -- ~/'b/RESTART-qa.md.new'", "mv -f -- ~/'b/RESTART-qa.md.new' ~/'b/RESTART-qa.md'"} {
+	for _, h := range []string{"cp -p -- ~/'b/RESTART-qa.md' ~/'b/RESTART-qa.md.prev-2305'", "t=$(mktemp ~/'b/RESTART-qa.md.new.XXXXXX')",
+		`cat > "$t"; chmod --reference ~/'b/RESTART-qa.md' -- "$t"; mv -f -- "$t" ~/'b/RESTART-qa.md'`} {
 		if !strings.Contains(got, h) {
 			t.Errorf("got %q, lacks %q", got, h)
 		}

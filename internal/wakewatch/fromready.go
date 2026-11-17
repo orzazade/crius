@@ -133,6 +133,12 @@ func BuildFromReady(d FromReadyDeps, role string) (ReadyBrief, error) {
 		return ReadyBrief{}, fmt.Errorf("the template %s on %s already continues from the %s READY-RESTART line of %s: no READY-RESTART "+
 			"line newer than the last restart", path, place.Host, ready.Time, role)
 	}
+	prev := path + ".prev-" + d.Now.Format("1504")
+	if _, err := d.Read(place.Host, prev); err == nil {
+		return ReadyBrief{}, fmt.Errorf("the old-copy name %s on %s is taken: run again in a minute", prev, place.Host)
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return ReadyBrief{}, fmt.Errorf("could not check the old-copy name %s on %s: %w", prev, place.Host, err)
+	}
 	end := start + 1 // step 6 runs on over its indented lines
 	for end < len(lines) && strings.TrimSpace(lines[end]) != "" && (lines[end][0] == ' ' || lines[end][0] == '\t') {
 		end++
@@ -150,7 +156,7 @@ func BuildFromReady(d FromReadyDeps, role string) (ReadyBrief, error) {
 		"   Crius since then: " + since,
 	}
 	out := slices.Concat(lines[:start], repl, lines[end:])
-	return ReadyBrief{Host: place.Host, Path: path, Prev: path + ".prev-" + d.Now.Format("1504"),
+	return ReadyBrief{Host: place.Host, Path: path, Prev: prev,
 		Text: strings.Join(out, "\n")}, nil
 }
 
@@ -171,12 +177,15 @@ func readyLines(busPath, project, name string) (ready *store.Line, later, own []
 		if l == nil {
 			continue
 		}
-		if strings.EqualFold(l.Project, project) && strings.EqualFold(l.Role, name) &&
-			store.RestartWord(l.Type+" "+l.Text) == "READY-RESTART" {
+		// a bare sender on a project's own bus is that project's role, as the ingest reads it
+		mine := strings.EqualFold(l.Role, name) && (l.Project == "" || strings.EqualFold(l.Project, project))
+		// the request is the line's type or opens its text: a line that only mentions the word asks nothing
+		if mine && (store.RestartWord(l.Type) == "READY-RESTART" ||
+			strings.HasPrefix(l.Text, "READY-RESTART") && store.RestartWord(l.Text) == "READY-RESTART") {
 			ready, later, own = l, nil, nil
 			continue
 		}
-		if ready != nil && strings.EqualFold(l.Project, project) && strings.EqualFold(l.Role, name) {
+		if ready != nil && mine {
 			own = append(own, l)
 			continue
 		}
@@ -229,14 +238,33 @@ func RestartFromReady(d FromReadyDeps, role string, dry bool) int {
 			"Nothing was sent or saved.\n-----\n%s\n-----\n", role, b.Path, b.Host, filepath.Base(b.Prev), b.Text)
 		return RestartReady
 	}
-	if code := Restart(d.RestartDeps, role, b.Text); code != RestartReady {
+	tabs, err := d.Tabs()
+	if err != nil {
+		fmt.Fprintf(d.Out, "FAILED %s: could not read the remote tab list: %v. Nothing was sent or saved.\n", role, err)
+		return RestartFailed
+	}
+	tab := slices.ContainsFunc(tabs, func(t RemoteTab) bool { return strings.EqualFold(t.Target, role) })
+	code := Restart(d.RestartDeps, role, b.Text)
+	// saved once the brief went or may have gone (tmux SENT, MAYBE SENT) or is Crius's to send (T3 READY), so a
+	// run after it refuses the same line rather than send it twice; a busy or failed run leaves the line for the next
+	if code != RestartReady && code != RestartMaybe {
 		return code
 	}
 	if err := d.Save(b.Host, b.Path, b.Prev, []byte(b.Text)); err != nil {
-		fmt.Fprintf(d.Out, "UNSAVED %s: the restart above went, but the template %s on %s was not saved (%v): it still holds the "+
-			"old step 6. Save the brief by hand before the next restart.\n", role, b.Path, b.Host, err)
+		fmt.Fprintf(d.Out, "UNSAVED %s: after the restart step above, the template %s on %s was not saved (%v): it still holds "+
+			"the old step 6, so a run of --from-ready now would build the same brief again. Save the brief by hand first.\n",
+			role, b.Path, b.Host, err)
 		return RestartUnsaved
 	}
-	fmt.Fprintf(d.Out, "SAVED %s: the brief is now %s on %s (old copy %s).\n", role, b.Path, b.Host, filepath.Base(b.Prev))
-	return RestartReady
+	fmt.Fprintf(d.Out, "SAVED %s: the brief is now %s on %s (old copy %s).", role, b.Path, b.Host, filepath.Base(b.Prev))
+	switch {
+	case code == RestartMaybe:
+		fmt.Fprintf(d.Out, " The brief may not have gone: if the tab shows it did not, put the old copy back over the "+
+			"template before the next --from-ready, which refuses this line now.")
+	case !tab:
+		fmt.Fprintf(d.Out, " It is not sent yet: send it with the t3_thread_send call above. If you do not send it, put "+
+			"the old copy back over the template before the next --from-ready, which refuses this line now.")
+	}
+	fmt.Fprintln(d.Out)
+	return code
 }

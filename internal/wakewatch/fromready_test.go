@@ -236,3 +236,55 @@ func TestFromReadySaysUnsavedWhenTheSaveFails(t *testing.T) {
 	wantOut(t, f.restartFake, RestartFromReady(f.deps(home), "acme:qa", false), RestartUnsaved,
 		"SENT acme:qa", "UNSAVED acme:qa", "prev-2305 exists", "still holds the old step 6")
 }
+
+// A brief that may have gone (crius-tsend MAYBE SENT) is saved too, so a later run refuses the same line instead of
+// sending it twice; the run says how to undo that if it did not go.
+func TestFromReadySavesAMaybeSentBrief(t *testing.T) {
+	f, home := newFRFake(t, frBus, frTemplate)
+	f.sendErr[frWant] = errors.New("crius-tsend: exit status 3: MAYBE SENT box1 acme:qa")
+	wantOut(t, f.restartFake, RestartFromReady(f.deps(home), "acme:qa", false), RestartMaybe,
+		"MAYBE SENT acme:qa", "SAVED acme:qa", "may not have gone", "put the old copy back")
+	if len(f.saved) != 4 {
+		t.Errorf("saved %q, want one save", f.saved)
+	}
+}
+
+// A T3 role: Restart only prints the send, which is Crius's; the saved brief says it is not sent yet.
+func TestFromReadyOnAT3ThreadSaysTheSendIsPending(t *testing.T) {
+	f, home := newFRFake(t, frBus, frTemplate)
+	f.tabs = nil
+	testutil.Write(t, filepath.Join(home, "roles", "acme.qa.json"),
+		`{"session_id":"s-acme-qa","project":"acme","role":"qa","t3_thread":"thr-acme-qa","time":"2026-11-17T13:48:00Z"}`)
+	f.f.threads["thr-acme-qa"] = T3Thread{Status: "completed", Updated: t0}
+	wantOut(t, f.restartFake, RestartFromReady(f.deps(home), "acme:qa", false), RestartReady,
+		"READY acme:qa", "t3_thread_send", "SAVED acme:qa", "It is not sent yet")
+	if len(f.typed) != 0 || len(f.saved) != 4 {
+		t.Errorf("typed %q, saved %q", f.typed, f.saved)
+	}
+}
+
+// The old-copy name is checked before anything is sent: a taken one refuses, never a send that cannot be saved.
+func TestFromReadyRefusesATakenOldCopyName(t *testing.T) {
+	f, home := newFRFake(t, frBus, frTemplate)
+	f.files["box1:"+frPath+".prev-2305"] = "an older copy"
+	wantOut(t, f.restartFake, RestartFromReady(f.deps(home), "acme:qa", false), RestartNoBrief,
+		"NO BRIEF acme:qa", "the old-copy name "+frPath+".prev-2305 on box1 is taken")
+	if len(f.typed) != 0 || len(f.saved) != 0 {
+		t.Errorf("typed %q, saved %q", f.typed, f.saved)
+	}
+}
+
+// A bare sender on the project's own bus is that project's role; a role line that only mentions READY-RESTART is work
+// after the request, never a new request.
+func TestFromReadyReadsBareSendersAndOnlyRealRequests(t *testing.T) {
+	f, home := newFRFake(t, frBus+"\n2026-11-17T11:00 INFO qa -> crius:lead — READY-RESTART notes=b.md next=bare item", frTemplate)
+	b, err := BuildFromReady(f.deps(home), "acme:qa")
+	if err != nil || !strings.Contains(b.Text, "your 11:00 READY-RESTART line (notes=b.md, next=bare item)\n   Crius since then: nothing") {
+		t.Errorf("bare sender: %v\n%s", err, b.Text)
+	}
+	f, home = newFRFake(t, frBus+"\n2026-11-17T11:00 INFO acme:qa -> crius:lead — resumed per READY-RESTART notes=x next=y", frTemplate)
+	_, err = BuildFromReady(f.deps(home), "acme:qa")
+	if err == nil || !strings.Contains(err.Error(), "posted 1 line(s) after its 10:00 READY-RESTART line (the newest 11:00 INFO)") {
+		t.Errorf("a mention: %v", err)
+	}
+}
