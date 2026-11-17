@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/orzazade/crius/internal/sessionstate"
 	"github.com/orzazade/crius/internal/testutil"
 )
 
@@ -156,8 +157,9 @@ func TestAnUnreadableProcessTreeStillAlerts(t *testing.T) {
 }
 
 func TestItemsInNamesPRNumbersAndRowIds(t *testing.T) {
-	got := itemsIn(waitReply + " Suite 3 of 5, 47 min, P1=0, S1, see F-118 and #77 and B105. 2026-11-17 23:10")
-	want := []string{"R3.C4", "5521", "F-118", "77", "B105"}
+	got := itemsIn(waitReply+" Suite 3 of 5, 47 min, P1=0, S1, see F-118 and #377 and B105. 2026-11-17 23:10",
+		"Step #2 next; 1532 passed on port 5432, pid 48211; UTF-8, SHA-256, TS-1 and Go1.22 are fine.")
+	want := []string{"R3.C4", "5521", "F-118", "377", "B105"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("itemsIn = %q, want %q", got, want)
 	}
@@ -176,5 +178,118 @@ func TestWaitingPrintsWhatARoleWaitsOn(t *testing.T) {
 	want := "quotes:qa WAITING ON 5521 (build's heavy run (pid 200)), bus waiter buswait.sh (pid 102); idle 50 min after ⏳, held until 120 min (T3 thread th-qa)\n"
 	if b.String() != want {
 		t.Fatalf("got %q, want %q", b.String(), want)
+	}
+}
+
+// Review P2-1: a line to the waiting role after its newest line should have woken it through its waiter. A thread that
+// has not moved since is what the alert is for, so the hold ends, whatever the line's type.
+func TestALineToTheWaitingRoleEndsTheHold(t *testing.T) {
+	home := threadHome(t, "qa")
+	f := waitingFake(50 * time.Minute)
+	f.procs = append(f.procs, heavyRun)
+	testutil.Write(t, filepath.Join(home, "bus", "quotes.log"), stamp(t0.Add(-60*time.Minute))+" INFO quotes:qa -> quotes:lead — waiting on 5521\n"+
+		stamp(t0.Add(-30*time.Minute))+" FAIL quotes:build -> quotes:qa — 5521 build broke, over to you\n")
+	runOnce(t, home, f, t0)
+	if w := t3Wakes(f); len(w) != 1 || !strings.Contains(w[0], "FAIL line to it") {
+		t.Fatalf("a FAIL to qa after its newest line held the alert: %q", w)
+	}
+}
+
+// Review P3-7: the hold counts from the role's own newest bus line (quiet), not from its last reply (idle): a role
+// idle 130 min that posted 60 min ago is still held; past 2 h quiet, one alert.
+func TestTheHoldCountsFromTheRolesOwnNewestBusLine(t *testing.T) {
+	home := threadHome(t, "qa")
+	f := waitingFake(130 * time.Minute)
+	f.procs = append(f.procs, heavyRun)
+	testutil.Write(t, filepath.Join(home, "bus", "quotes.log"), stamp(t0.Add(-60*time.Minute))+" INFO quotes:qa -> quotes:lead — still waiting on 5521\n")
+	runOnce(t, home, f, t0)
+	if w := t3Wakes(f); len(w) != 0 {
+		t.Fatalf("quiet 60 min, held: woke %q", w)
+	}
+	runOnce(t, home, f, t0.Add(61*time.Minute))
+	if w := t3Wakes(f); len(w) != 1 || !strings.Contains(w[0], "WAITING ON 5521") || !strings.Contains(w[0], "for 121 min") {
+		t.Fatalf("quiet 121 min: want one alert naming 5521: %q", w)
+	}
+}
+
+// The waiter is found under a session crius-hook filed under the role, not only under the role file's session.
+func TestTheWaiterIsFoundUnderASessionFiledUnderTheRole(t *testing.T) {
+	home := threadHome(t, "qa")
+	f := waitingFake(50 * time.Minute)
+	f.procs = append(f.procs, heavyRun)
+	f.ses = []Session{{ID: "s-qa-new", PID: 100}}
+	f.states = []sessionstate.State{{SessionID: "s-qa-new", Project: "quotes", Role: "qa", Thread: "th-qa", Time: t0}}
+	runOnce(t, home, f, t0)
+	if w := t3Wakes(f); len(w) != 0 {
+		t.Fatalf("the waiter under s-qa-new (filed as quotes:qa) was not found: %q", w)
+	}
+}
+
+// Review P3-3: a line about the item from days before says nothing of now.
+func TestAStaleLineAboutTheItemDoesNotHold(t *testing.T) {
+	home := threadHome(t, "qa")
+	f := waitingFake(50 * time.Minute)
+	testutil.Write(t, filepath.Join(home, "bus", "quotes.log"), stamp(t0.Add(-72*time.Hour))+" INFO quotes:build -> quotes:lead — 5521 record run started\n")
+	runOnce(t, home, f, t0)
+	if w := t3Wakes(f); len(w) != 1 || !strings.Contains(w[0], "Not held as waiting") {
+		t.Fatalf("a 3-day-old line held the alert: %q", w)
+	}
+}
+
+// Review P3-5: crius-wakewatch waiting exits 2 when a check could not be read.
+func TestWaitingExitsTwoWhenAProcessListCannotBeRead(t *testing.T) {
+	home := threadHome(t, "qa")
+	f := waitingFake(50 * time.Minute)
+	f.procErr = errors.New("ps: exit status 1")
+	var b strings.Builder
+	if code := Waiting(f.deps(home, t0), &b, []string{"quotes:qa"}); code != 2 || !strings.Contains(b.String(), "ps: exit status 1") {
+		t.Fatalf("exit %d: %q", code, b.String())
+	}
+}
+
+// A line to the role that came before its ⏳ reply was read in that turn: it does not end the hold.
+func TestALineToTheRoleBeforeItsLastReplyKeepsTheHold(t *testing.T) {
+	home := threadHome(t, "qa")
+	f := waitingFake(50 * time.Minute)
+	f.procs = append(f.procs, heavyRun)
+	testutil.Write(t, filepath.Join(home, "bus", "quotes.log"), stamp(t0.Add(-90*time.Minute))+" INFO quotes:qa -> quotes:lead — waiting on 5521\n"+
+		stamp(t0.Add(-55*time.Minute))+" DONE quotes:build -> quotes:qa — R3.C4 is yours\n")
+	runOnce(t, home, f, t0)
+	if w := t3Wakes(f); len(w) != 0 {
+		t.Fatalf("a DONE to qa read before its last reply ended the hold: %q", w)
+	}
+}
+
+// A quiet line to the role (an INFO that asks nothing) does not wake its team-wait waiter, so it does not end the hold;
+// an INFO that asks it something does.
+func TestOnlyALineThatWakesTheWaiterEndsTheHold(t *testing.T) {
+	for _, c := range []struct {
+		line string
+		held bool
+	}{
+		{"INFO quotes:build -> quotes:qa — 5521 record run is at suite 3 of 6", true},
+		{"ACK quotes:build -> quotes:qa — seen", true},
+		{"INFO quotes:build -> quotes:qa — can you re-run R3.C4 now?", false},
+		{"INFO quotes:lead -> quotes:all — qa: pick up R3.C4", false},
+		{"NEED quotes:build -> quotes:qa — 5521 needs your fixture", false},
+	} {
+		home := threadHome(t, "qa")
+		f := waitingFake(50 * time.Minute)
+		f.procs = append(f.procs, heavyRun)
+		testutil.Write(t, filepath.Join(home, "bus", "quotes.log"), stamp(t0.Add(-90*time.Minute))+" INFO quotes:qa -> quotes:lead — waiting on 5521\n"+
+			stamp(t0.Add(-20*time.Minute))+" "+c.line+"\n")
+		runOnce(t, home, f, t0)
+		if w := t3Wakes(f); (len(w) == 0) != c.held {
+			t.Errorf("%q: held %v, want %v (%q)", c.line, len(w) == 0, c.held, w)
+		}
+	}
+}
+
+func TestWakesFollowsTeamWaitForALead(t *testing.T) {
+	if !wakes("quotes", "quotes:lead", "INFO", "quotes:lead", "suite 3 green") {
+		t.Error("an INFO to a lead wakes it")
+	}
+	if wakes("quotes", "quotes:qa", "INFO", "quotes:lead", "qa: done?") {
+		t.Error("a line to another role does not wake qa")
 	}
 }

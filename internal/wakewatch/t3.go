@@ -253,7 +253,7 @@ func t3Idle(d Deps, ss []Session, sesErr error, watch projects, park parked, pro
 			if quiet <= t3WaitAfter {
 				continue
 			}
-			h, why := waitingOn(d, readProcs, ss, sesErr, states, who, r.SessionID, th.LastReply, from)
+			h, why, _ := waitingOn(d, readProcs, ss, sesErr, states, who, r.SessionID, th.LastReply, from)
 			switch {
 			case why == "" && quiet <= t3WaitingFor: // waiting on an item in flight, its waiter armed: not idle yet
 			case why == "":
