@@ -179,6 +179,7 @@ type state struct {
 	TabsGone    map[string]bool      // surface ids cmux has no tab for, said once in wakewatch-state.log while they stay gone (wrongFolder)
 	Signin      map[string]string    // sign-in alert key (account and state) -> the day it was raised (signin.go)
 	SigninMiss  map[string]int       // read (status:<account>, login:<account>, spool:<host>) -> runs in a row it failed (signin.go)
+	LookMiss    map[string]int       // failed-look alert key -> runs in a row it was raised (looks.go)
 }
 
 // waitGap is when a bus log was first seen with no waiter, and whether that gap was said to Crius. From is the log's size
@@ -284,11 +285,15 @@ func Run(d Deps) error {
 		alerts = append(alerts, [2]string{"statelog-failed", "wakewatch could not write its screen-versus-state log: " + err.Error()})
 	}
 
+	held := holdLooks(&st, alerts) // a look that failed on this run only waits a run (looks.go)
 	active := map[string]bool{}
 	var sendErr error
 	tried := false
 	for _, a := range alerts {
 		active[a[0]] = true
+		if held[a[0]] {
+			continue
+		}
 		if _, ok := st.Typed[a[0]]; ok {
 			continue
 		}
@@ -311,7 +316,7 @@ func Run(d Deps) error {
 		if err != nil {
 			sendErr = err
 		}
-		if (strings.HasPrefix(a[0], "bus:") || strings.HasPrefix(a[0], "folder:") || strings.HasPrefix(a[0], "restore:") || strings.HasPrefix(a[0], "handed:") || strings.HasPrefix(a[0], "dead:") || strings.HasPrefix(a[0], "waited:") || strings.HasPrefix(a[0], "t3idle:") || strings.HasPrefix(a[0], "prompt:") || strings.HasPrefix(a[0], "prompt-unread:")) && (err == nil || d.HandedOver != nil && d.HandedOver(err)) {
+		if (strings.HasPrefix(a[0], "bus:") || strings.HasPrefix(a[0], "folder:") || strings.HasPrefix(a[0], "restore:") || strings.HasPrefix(a[0], "handed:") || strings.HasPrefix(a[0], "dead:") || strings.HasPrefix(a[0], "waited:") || strings.HasPrefix(a[0], "t3idle:") || strings.HasPrefix(a[0], "prompt:") || strings.HasPrefix(a[0], "prompt-unread:") || strings.HasPrefix(a[0], "prompt-untold:")) && (err == nil || d.HandedOver != nil && d.HandedOver(err)) {
 			st.Typed[a[0]] = d.Now
 		}
 		// Crius's waiter wakes on a bus line: a wake that cannot be typed goes there, so none is lost (S2, 10-22).
@@ -360,6 +365,24 @@ func Run(d Deps) error {
 			delete(st.Typed, k)
 		}
 	}
+	if werr := saveState(path, st); werr != nil {
+		// A held look's count lives in this state: unsaved, every run starts it at 1 again and never says it (review r2
+		// P2-B). So the looks held this run are said here, with why.
+		if len(held) > 0 {
+			keys := slices.Sorted(maps.Keys(held))
+			// cause first: the bus line is cut at 300 characters, and the keys can run long (folder paths)
+			if perr := watchdog.Post(d.Home, d.Now, "wakewatch could not save its state ("+werr.Error()+
+				"), so the failed looks it holds for a second run would never be said: "+strings.Join(keys, ", ")); perr != nil {
+				return errors.Join(werr, sendErr, perr)
+			}
+		}
+		return errors.Join(werr, sendErr)
+	}
+	return sendErr
+}
+
+// saveState writes the state to path through a temp file and a rename.
+func saveState(path string, st state) error {
 	b, _ := json.Marshal(st)
 	tmp, err := os.CreateTemp(filepath.Dir(path), "wakewatch.json.")
 	if err != nil {
@@ -374,9 +397,8 @@ func Run(d Deps) error {
 	}
 	if werr != nil {
 		os.Remove(tmp.Name())
-		return werr
 	}
-	return sendErr
+	return werr
 }
 
 func hash(s string) string {

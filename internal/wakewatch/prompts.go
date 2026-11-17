@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -99,7 +100,7 @@ func prompts(d PromptDeps) error {
 	}
 	screens, err := d.Screens()
 	if err != nil {
-		return err
+		return failedLook(err) // a cmux read that may work next minute (looks.go)
 	}
 	// projects.toml unread: no session is known to be Crius's, so every Azure DevOps ask is the owner's (Clicks says why)
 	crius, _ := criusRuns(d.Home)
@@ -451,14 +452,35 @@ func packQueued(head string, items []queued) []packedLine {
 }
 
 // alertOnce posts err as an ALERT on Crius's bus, once per error (the last one kept in state/<file>), and gives it back;
-// nil clears the file. The log of a launchd job is read by nobody.
+// nil clears the files. The log of a launchd job is read by nobody. A run whose every error is a failed look
+// (failedLook) is posted only once it failed lookMisses runs in a row (looks.go; the count kept in state/<file>.misses):
+// 11-05 to 11-14, 19 "owner-click watch failed: cmux tree … timed out" alerts, each a run that failed once while the
+// next one worked. Any other error (a failed write or post, not tried again next run) is posted at once, and so is a
+// look whose count cannot be saved: a count that cannot grow would hold it for ever.
 func alertOnce(home string, now time.Time, file, what string, err error) error {
 	last := filepath.Join(home, "state", file)
+	count := last + ".misses"
 	if err == nil {
-		if rerr := os.Remove(last); rerr != nil && !os.IsNotExist(rerr) {
-			return rerr
+		for _, p := range []string{last, count} {
+			if rerr := os.Remove(p); rerr != nil && !os.IsNotExist(rerr) {
+				return rerr
+			}
 		}
 		return nil
+	}
+	if onlyLooks(err) {
+		prev := map[string]int{}
+		if b, rerr := os.ReadFile(count); rerr == nil {
+			prev["run"], _ = strconv.Atoi(strings.TrimSpace(string(b))) // a count that does not read is 0: one more run waits
+		}
+		n, due := newMisses(prev).fail("run")
+		if werr := os.WriteFile(count, []byte(strconv.Itoa(n)+"\n"), 0o600); werr != nil {
+			err = fmt.Errorf("%w; and its count of failed runs was not saved: %v", err, werr)
+		} else if !due {
+			return err
+		}
+	} else if rerr := os.Remove(count); rerr != nil && !os.IsNotExist(rerr) {
+		err = fmt.Errorf("%w; %v", err, rerr)
 	}
 	msg, _ := redact.Redact(err.Error())
 	if b, rerr := os.ReadFile(last); rerr != nil || strings.TrimSuffix(string(b), "\n") != msg {

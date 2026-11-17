@@ -70,10 +70,6 @@ const (
 	// ClaudeMissing is the exit code of RemoteClaude when no CLI is there; [ -f ] leaves out a link whose target is gone
 	// (an update swapping the binary), so that reads as not found too.
 	ClaudeMissing = 69
-	// signinMisses: a read (an account's status or login, a machine's spool) must fail this many runs in a row before it
-	// wakes Crius (11-17: five false wakes in 70 minutes, each read fine by hand a minute later; an ssh blip fails all
-	// three). A real, lasting failure still wakes on the second run.
-	signinMisses = 2
 	// SpoolRemote prints a remote machine's quota spool: nothing when it keeps none (the Legion runs no statusline).
 	SpoolRemote = `f=~/.crius/spool/quota.jsonl; [ -e "$f" ] || exit 0; tail -n 20000 "$f"`
 )
@@ -368,8 +364,9 @@ func span(d time.Duration) string {
 // one per row whose login is not known, and one per machine whose spool could not be read: each raised only when due,
 // once per key (account or login, and state) and day (the day as d.Now's clock reads it), so the 5 min runs and the 20
 // min resend say it once. A new state the same day says it again. An alert that comes from a failed read (UNREAD, a spool
-// that could not be read) is raised only once the read failed signinMisses runs in a row (st.SigninMiss); one good read
-// starts the count again. A week UNKNOWN waits while any read failed this run for the first time (it may be only that).
+// that could not be read) is raised only once the read failed lookMisses runs in a row (st.SigninMiss, counted by misses
+// as every failed look is: looks.go; 11-17: five false wakes in 70 minutes, each read fine by hand a minute later); one
+// good read starts the count again. A week UNKNOWN waits while any read failed this run for the first time (it may be only that).
 func signins(d Deps, st *state) [][2]string {
 	day := d.Now.Format("2006-01-02")
 	if st.Signin == nil {
@@ -390,17 +387,17 @@ func signins(d Deps, st *state) [][2]string {
 	}
 	w := Signins(SigninReads{Status: d.Signin, Login: d.Login, Spool: d.Spool}, d.Home, d.Now)
 	loc := d.Now.Location()
-	// failed counts a read that failed this run; it gives "" while the read has failed fewer than signinMisses runs in a
+	// failed counts a read that failed this run; it gives "" while the read has failed fewer than lookMisses runs in a
 	// row (its alert waits a run), else the count to name. A read not failed this run drops out, so its count starts again.
-	miss := map[string]int{}
+	miss := newMisses(st.SigninMiss)
 	fresh := false // a read failed this run for the first time(s): a week UNKNOWN may be only that
 	failed := func(key string) string {
-		miss[key] = st.SigninMiss[key] + 1
-		if miss[key] < signinMisses {
+		n, due := miss.fail(key)
+		if !due {
 			fresh = true
 			return ""
 		}
-		return fmt.Sprintf(" (%d reads in a row)", miss[key])
+		return fmt.Sprintf(" (%d reads in a row)", n)
 	}
 	for _, r := range w.Rows {
 		if r.State == SigninUnread {
@@ -425,7 +422,7 @@ func signins(d Deps, st *state) [][2]string {
 			failed("login:" + r.Name)
 		}
 	}
-	st.SigninMiss = miss
+	st.SigninMiss = miss.counts()
 	for _, g := range weekGroups(w.Rows) {
 		if g[0].Week == WeekUnknown && fresh {
 			continue

@@ -132,7 +132,7 @@ func TestAT3ThreadOnAnHourglassWakesCriusAfter45MinWithNoBusLine(t *testing.T) {
 func TestAT3ReadFailureIsLoud(t *testing.T) {
 	home := threadHome(t, "api")
 	f := &fake{threadErr: errors.New("t3 thread show: exit status 1: Thread th-api is no longer available.")}
-	runOnce(t, home, f, t0)
+	runLooked(t, f, f.deps(home, t0))
 	var hit []string
 	for _, s := range f.sent {
 		if strings.Contains(s, "T3 thread idle check failed to look at") {
@@ -220,9 +220,9 @@ func TestAT3ThreadOnAWaitStaysQuietAndAnEmptyReplyIsNamed(t *testing.T) {
 func TestAHungT3StopsTheRunsOtherReadsAndEachRoleFailsOnItsOwn(t *testing.T) {
 	home := threadHome(t, "api", "ms")
 	f := &fake{threadErr: fmt.Errorf("t3 thread show: %w (10s)", ErrT3NoAnswer)}
-	runOnce(t, home, f, t0)
-	if len(f.read) != 1 {
-		t.Errorf("read %d threads after t3 hung: %q", len(f.read), f.read)
+	runLooked(t, f, f.deps(home, t0))
+	if len(f.read) != lookMisses { // one thread a run
+		t.Errorf("read %d threads in %d runs after t3 hung: %q", len(f.read), lookMisses, f.read)
 	}
 	var hit []string
 	for _, s := range f.sent {

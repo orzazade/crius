@@ -47,8 +47,15 @@ func paid(d Deps, ss []Session) [][2]string {
 		names[s.PID] = s.Name
 	}
 	var out [][2]string
-	failed := func(key, what string) {
-		out = append(out, [2]string{"paid-failed:" + key, "the paid-usage check failed to look: " + what})
+	// failed collects a failed look by its cause, never by pid: a short-lived claude's own key would start its count
+	// afresh each run and never be said (looks.go; review r2 P2-A). One alert per cause names every process it hit.
+	var causes []string
+	failedOn := map[string][]string{}
+	failed := func(cause, what string) {
+		if failedOn[cause] == nil {
+			causes = append(causes, cause)
+		}
+		failedOn[cause] = append(failedOn[cause], what)
 	}
 	s1 := func(key, what string) {
 		out = append(out, [2]string{"paid:" + key, "S1 paid usage: " + what +
@@ -62,7 +69,7 @@ func paid(d Deps, ss []Session) [][2]string {
 			who += " (" + n + ")"
 		}
 		if c.Err != nil {
-			failed(strconv.Itoa(c.PID), who+": "+c.Err.Error())
+			failed("procs", who+": "+c.Err.Error())
 			continue
 		}
 		for _, k := range append(credVars, switchVars...) {
@@ -72,7 +79,8 @@ func paid(d Deps, ss []Session) [][2]string {
 		}
 		dir, home := c.Env["CLAUDE_CONFIG_DIR"], c.Env["HOME"]
 		if dir == "" && home == "" {
-			failed(strconv.Itoa(c.PID), who+" has neither CLAUDE_CONFIG_DIR nor HOME, so its sign-in is unknown")
+			// said at once: a second look reads the same environment (looks.go lookNow)
+			out = append(out, [2]string{"paid-unknown:" + strconv.Itoa(c.PID), "the paid-usage check failed to look: " + who + " has neither CLAUDE_CONFIG_DIR nor HOME, so its sign-in is unknown"})
 			continue
 		}
 		user := filepath.Join(dir, "settings.json")
@@ -90,7 +98,7 @@ func paid(d Deps, ss []Session) [][2]string {
 			}
 			set, err := settingsCreds(f)
 			if err != nil {
-				failed(strconv.Itoa(c.PID)+":"+name, who+": "+name+": "+err.Error())
+				failed("settings:"+name, who+": "+name+": "+err.Error())
 			}
 			for _, k := range set {
 				s1(strconv.Itoa(c.PID)+":"+name+":"+k, who+" runs with "+k+" set in "+name)
@@ -115,6 +123,9 @@ func paid(d Deps, ss []Session) [][2]string {
 		case extra:
 			s1("extra:"+dir, who+" on "+dir+", whose sign-in has extra usage (usage credits) on")
 		}
+	}
+	for _, c := range causes {
+		out = append(out, [2]string{"paid-failed:" + c, "the paid-usage check failed to look: " + strings.Join(failedOn[c], "; ")})
 	}
 	return out
 }

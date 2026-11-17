@@ -49,7 +49,8 @@ type permPrompt struct {
 // after it: then it is a later one that logged no line (a subagent's), timed and keyed from its own start (Opened).
 //
 // Crius's own thread is left out; parked teams are not, as a prompt blocks a parked role too. A state that cannot be
-// read, or a thread T3 cannot show, is a loud "could not tell" wake of its own (key prompt-unread:). Run says each key
+// read, or a thread T3 cannot show, is a loud "could not tell" wake of its own (key prompt-unread:, held a run as every
+// failed look is: looks.go; prompt-untold: when the hook's record cannot tell, said at once). Run says each key
 // once (Typed); the 12 h lookback ends before Run forgets a key (window+resend), so a prompt wakes once. prompted names
 // each thread whose newest prompt the hook state still shows open, at any age: t3Idle leaves their open requests to this
 // check, so one stuck prompt wakes Crius once.
@@ -93,14 +94,17 @@ func stuckPrompts(d Deps) (out [][2]string, prompted map[string]bool) {
 		waited := func() time.Duration { return d.Now.Sub(asked) }
 		name, about := fmt.Sprintf("%q", p.title), []string{"cwd " + p.cwd, "session " + p.sid}
 		where := func() string { return name + " (" + strings.Join(about, ", ") + ")" }
-		unread := func(why string) {
+		// unread says a prompt it could not tell about: kind prompt-unread for a look that may work next run (held a run,
+		// looks.go), prompt-untold for a record a second look reads the same (said at once).
+		unreadAs := func(kind, why string) {
 			if waited() >= promptAfter {
-				out = append(out, [2]string{"prompt-unread:" + key(), fmt.Sprintf("permission prompt in %s, asked at %s (%d min ago), %q: could not tell whether it was answered: %s. Look at it by hand.",
+				out = append(out, [2]string{kind + key(), fmt.Sprintf("permission prompt in %s, asked at %s (%d min ago), %q: could not tell whether it was answered: %s. Look at it by hand.",
 					where(), asked.Format("15:04"), int(waited().Minutes()), text, why)})
 			}
 		}
+		unread := func(why string) { unreadAs("prompt-unread:", why) }
 		if !sidRe.MatchString(p.sid) {
-			unread("the hook logged no session id (sid=" + p.sid + ")")
+			unreadAs("prompt-untold:", "the hook logged no session id (sid="+p.sid+")")
 			continue
 		}
 		s, why := promptSession(d.Home, p)
@@ -113,7 +117,7 @@ func stuckPrompts(d Deps) (out [][2]string, prompted map[string]bool) {
 		}
 		if s.State != sessionstate.Waiting {
 			if !s.Time.After(p.at) {
-				unread(fmt.Sprintf("crius-hook's state shows %q from %s, older than the prompt, so it did not record the dialog", s.State, s.Time.Format("15:04:05")))
+				unreadAs("prompt-untold:", fmt.Sprintf("crius-hook's state shows %q from %s, older than the prompt, so it did not record the dialog", s.State, s.Time.Format("15:04:05")))
 			}
 			continue // else it moved on after the prompt: answered
 		}

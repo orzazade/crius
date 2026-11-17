@@ -61,9 +61,7 @@ func TestAClaudeOnPaidUsageIsS1(t *testing.T) {
 			{PID: 210, Args: []string{"claude", "--settings", `{"apiKeyHelper":"/usr/local/bin/key"}`}, Env: env("CLAUDE_CONFIG_DIR", maxDir)},
 			{PID: 211, Err: errors.New("sysctl kern.procargs2: operation not permitted")},
 		}}
-	if err := Run(f.deps(home, t0)); err != nil {
-		t.Fatal(err)
-	}
+	runLooked(t, f, f.deps(home, t0))
 	all := strings.Join(f.sent, "\n")
 	for _, want := range []string{
 		"S1 paid usage: claude pid 202 runs with ANTHROPIC_API_KEY set",
@@ -99,9 +97,7 @@ func TestAClaudeOnPaidUsageIsS1(t *testing.T) {
 	}
 	// failed to look is not found nothing
 	f = &fake{claudeErr: errors.New("ps -axww -o pid=,ppid=,command=: signal: killed")}
-	if err := Run(f.deps(setup(t, nil), t0)); err != nil {
-		t.Fatal(err)
-	}
+	runLooked(t, f, f.deps(setup(t, nil), t0))
 	if all := strings.Join(f.sent, "\n"); !strings.Contains(all, "the paid-usage check failed to look: ps -axww") {
 		t.Errorf("a failed look is silent: %q", all)
 	}

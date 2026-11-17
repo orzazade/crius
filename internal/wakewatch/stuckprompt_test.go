@@ -337,7 +337,11 @@ func TestAPromptItCannotPlaceSaysCouldNotTell(t *testing.T) {
 			}
 			c.setup(home)
 			f := &fake{threads: map[string]T3Thread{"th-cortex": {Pending: 1, Updated: at}, "th-other": {Pending: 1, Updated: at}}}
-			runOnce(t, home, f, t0.Add(11*time.Minute))
+			if c.why == "no session id" || c.why == "did not record the dialog" { // the hook's record: said at once
+				runOnce(t, home, f, t0.Add(11*time.Minute))
+			} else {
+				runLooked(t, f, f.deps(home, t0.Add(11*time.Minute)))
+			}
 			w := promptWakes(f)
 			if c.why == "" {
 				if len(w) != 0 {
@@ -365,7 +369,8 @@ func TestALineAheadOfNowDoesNotHideAStuckPrompt(t *testing.T) {
 	}
 }
 
-// When t3 hangs on one thread, the next is not read on that run (each call waits 10 s); both prompts say so.
+// When t3 hangs on one thread, the next is not read on that run (each call waits 10 s); both prompts say so, on the
+// second run in a row (looks.go).
 func TestAHungT3IsReadOncePerRun(t *testing.T) {
 	at := t0.Add(9 * time.Second)
 	second := "c4f82274-d5e6-4c3d-952d-84d9ea65a6a1"
@@ -374,7 +379,7 @@ func TestAHungT3IsReadOncePerRun(t *testing.T) {
 	testutil.Write(t, log, testutil.Read(t, log)+permWait(at, second))
 	writeSession(t, home, second, "waiting", at, "th-second")
 	f := &fake{threadErr: fmt.Errorf("%w (10s)", ErrT3NoAnswer)}
-	runOnce(t, home, f, t0.Add(11*time.Minute))
+	runLooked(t, f, f.deps(home, t0.Add(11*time.Minute)))
 	w := promptWakes(f)
 	if len(w) != 2 || !strings.Contains(w[1], "t3 gave no answer for an earlier thread") {
 		t.Fatalf("want two could-not-tell wakes, the second not read: %q", w)
@@ -385,8 +390,8 @@ func TestAHungT3IsReadOncePerRun(t *testing.T) {
 			reads++
 		}
 	}
-	if reads != 1 {
-		t.Fatalf("t3 read %d times after it hung: %q", reads, f.read)
+	if reads != lookMisses { // one read a run
+		t.Fatalf("t3 read %d times in %d runs after it hung: %q", reads, lookMisses, f.read)
 	}
 }
 

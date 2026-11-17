@@ -320,7 +320,7 @@ func TestABadWaiterCursorIsAnAlertAndHidesNothing(t *testing.T) {
 		bus, _ := filepath.EvalSymlinks(filepath.Join(home, "bus"))
 		testutil.Write(t, filepath.Join(home, "wait-cursor-all"), strings.ReplaceAll(cursor, "%s", filepath.Join(bus, "quotes.log")))
 		f := &fake{}
-		if err := Run(f.deps(home, t0.Add(25*time.Minute))); err != nil {
+		if err := Run(f.deps(home, t0.Add(25*time.Minute))); err != nil { // said at once (looks.go lookNow)
 			t.Fatal(err)
 		}
 		all := strings.Join(f.sent, "\n")
@@ -649,15 +649,19 @@ func TestALongAlertIsRedactedBeforeItIsCut(t *testing.T) {
 }
 
 // While the whole tab check fails, a tab already reported as unreadable is not reported again once the check is back.
+// Each failure is said on its second run in a row (looks.go).
 func TestAWholeCheckFailureKeepsPerTabFailures(t *testing.T) {
 	home := setup(t, nil)
 	bad := Screen{Surface: "surface:9", Title: "axi: lead", Err: "surface gone"}
 	f := &fake{screens: []Screen{bad}}
 	Run(f.deps(home, t0))
+	Run(f.deps(home, t0.Add(time.Minute)))
 	f.scrErr = errors.New("cmux: socket not found")
 	Run(f.deps(home, t0.Add(5*time.Minute)))
+	Run(f.deps(home, t0.Add(6*time.Minute)))
 	f.scrErr = nil
 	Run(f.deps(home, t0.Add(10*time.Minute)))
+	Run(f.deps(home, t0.Add(11*time.Minute)))
 	if n := strings.Count(strings.Join(f.sent, "\n"), "surface gone"); n != 1 || len(f.sent) != 2 {
 		t.Fatal(n, f.sent)
 	}
@@ -1033,10 +1037,10 @@ func TestAnOpenItemWakesCriusAtMostOncePer20Min(t *testing.T) {
 	}
 	home = setup(t, nil)
 	f = &fake{scrErr: errors.New("cmux: socket not found")}
-	for _, m := range []time.Duration{0, 19, 20, 25*60 + 5} {
+	for _, m := range []time.Duration{0, 1, 20, 21, 25*60 + 5} {
 		Run(f.deps(home, t0.Add(m*time.Minute)))
 	}
-	if len(f.sent) != 3 { // 0, 20, a day later
+	if len(f.sent) != 3 { // 1 (its second failed run in a row: looks.go), 21, a day later
 		t.Fatal("failing check:", f.sent)
 	}
 }
@@ -1124,9 +1128,7 @@ func TestEachRunLogsTheLoad(t *testing.T) {
 		t.Fatalf("%q, want %q", got, want)
 	}
 	f = &fake{loadErr: errors.New("sysctl: exit status 1")}
-	if err := Run(f.deps(home, t0.Add(10*time.Minute))); err != nil {
-		t.Fatal(err)
-	}
+	runLooked(t, f, f.deps(home, t0.Add(10*time.Minute)))
 	if len(f.sent) != 1 || !strings.Contains(f.sent[0], "the load check failed to look: sysctl: exit status 1") {
 		t.Fatal(f.sent)
 	}
@@ -1136,27 +1138,25 @@ func TestEachRunLogsTheLoad(t *testing.T) {
 func TestADiskOrSwapReadFailureIsAnAlert(t *testing.T) {
 	home := setup(t, nil)
 	f := &fake{resErr: errors.New("sysctl: exit status 1")}
-	if err := Run(f.deps(home, t0)); err != nil {
-		t.Fatal(err)
-	}
+	runLooked(t, f, f.deps(home, t0))
 	if len(f.sent) != 1 || !strings.Contains(f.sent[0], "sysctl: exit status 1") {
 		t.Fatal(f.sent)
 	}
 }
 
 // Brief P7 item 4: a tool the team needs (cmux, gh, az, bun, docker) that fails or does not answer wakes Crius, one
-// alert per tool, on the same 20 min rhythm; a tool that answers again stops it.
+// alert per tool, on the same 20 min rhythm, from its second miss in a row (looks.go); a tool that answers again stops it.
 func TestAToolThatDoesNotAnswerWakesCrius(t *testing.T) {
 	home := setup(t, nil)
 	f := &fake{tools: map[string]error{"gh": errors.New("gh auth status: exit status 1: token invalid"), "bun": nil,
 		"docker": errors.New("no answer in 10s")}}
-	for _, m := range []int{0, 5, 21} {
+	for _, m := range []int{0, 5, 21, 25} {
 		if err := Run(f.deps(home, t0.Add(time.Duration(m)*time.Minute))); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if len(f.sent) != 4 {
-		t.Fatalf("want gh and docker at 0 and 21 min: %q", f.sent)
+		t.Fatalf("want gh and docker at 5 and 25 min: %q", f.sent)
 	}
 	all := strings.Join(f.sent, "\n")
 	for _, want := range []string{"gh", "token invalid", "docker", "no answer in 10s"} {
@@ -1198,7 +1198,7 @@ func TestALeadDONEWithNoFreshStartSaysNothing(t *testing.T) {
 func TestAFailedSessionReadIsAnAlert(t *testing.T) {
 	home := setup(t, nil)
 	f := &fake{sesErr: errors.New("open ~/.claude/sessions: permission denied")}
-	if err := Run(f.deps(home, t0)); err != nil {
+	if err := Run(f.deps(home, t0)); err != nil { // said at once: the screen decides alone on this run (looks.go lookNow)
 		t.Fatal(err)
 	}
 	if len(f.sent) != 1 || !strings.Contains(f.sent[0], "session list could not be read") ||
@@ -1306,9 +1306,7 @@ func TestATabReadFailureOfAnUnlistedProjectStaysQuiet(t *testing.T) {
 	f := &fake{screens: []Screen{{Surface: "surface:1", Title: "quotes: qa", Err: "surface gone"},
 		{Surface: "surface:2", Title: "axi: lead", Err: "surface gone"}, {Surface: "surface:3", Err: "surface gone"},
 		{Surface: "surface:4", Title: "✳ Quotes: lead", Err: "surface gone"}, {Surface: "surface:5", Title: "❓", Err: "surface gone"}}}
-	if err := Run(f.deps(home, t0)); err != nil {
-		t.Fatal(err)
-	}
+	runLooked(t, f, f.deps(home, t0))
 	got := strings.Join(f.sent, "\n")
 	for _, want := range []string{"surface:1", "surface:3", "surface:4", "surface:5"} {
 		if !strings.Contains(got, want) {
@@ -1414,9 +1412,7 @@ func TestATeamTabWithADefaultNameAlerts(t *testing.T) {
 func TestAFailedWorkspaceReadAlerts(t *testing.T) {
 	home := setup(t, nil)
 	f := &fake{wsErr: errors.New("cmux workspace list: socket closed")}
-	if err := Run(f.deps(home, t0)); err != nil {
-		t.Fatal(err)
-	}
+	runLooked(t, f, f.deps(home, t0))
 	if len(f.sent) != 1 || !strings.Contains(f.sent[0], "failed to look: cmux workspace list: socket closed") {
 		t.Fatal(f.sent)
 	}
@@ -1584,7 +1580,7 @@ func TestABadModeOrAFailedStateReadIsLoud(t *testing.T) {
 		home := setup(t, nil)
 		setMode(t, home, c.mode)
 		f := &fake{stErr: c.err}
-		Run(f.deps(home, t0))
+		Run(f.deps(home, t0)) // said at once: the screen decides on this run (looks.go lookNow)
 		if c.want == "" && len(f.sent) != 0 || c.want != "" && (len(f.sent) != 1 || !strings.Contains(f.sent[0], c.want)) {
 			t.Errorf("%s: %q", name, f.sent)
 		}
@@ -2107,11 +2103,10 @@ func TestASessionRestoredOnTheDefaultFolderIsCaught(t *testing.T) {
 		!strings.Contains(f.sent[0], max2) || !strings.Contains(f.sent[0], "crius-spawn -resume quotes p3") {
 		t.Fatalf("sent %q, want one wake naming quotes · p3, both folders and the fix", f.sent)
 	}
-	// A run that cannot read the role file did not see it go (review): no second wake once it reads again.
+	// A run that cannot read the role file did not see it go (review): no second wake once it reads again. The failed
+	// read is said on its second run in a row (looks.go).
 	testutil.Write(t, filepath.Join(home, "roles", "quotes.p3.json"), "{")
-	if err := Run(f.deps(home, t0.Add(90*time.Minute))); err != nil {
-		t.Fatal(err)
-	}
+	runLooked(t, f, f.deps(home, t0.Add(90*time.Minute)))
 	file(max2)
 	if err := Run(f.deps(home, t0.Add(100*time.Minute))); err != nil {
 		t.Fatal(err)
@@ -2170,6 +2165,10 @@ func TestATabThatWouldRestoreOnAnotherFolderIsCaught(t *testing.T) {
 	run := func(restore map[string][]string, err error) []string {
 		f.sent, f.restore, f.rsErr = nil, restore, err
 		at = at.Add(30 * time.Minute)
+		if err != nil { // a failed look is said on its second run in a row (looks.go)
+			runLooked(t, f, f.deps(home, at))
+			return f.sent
+		}
 		if err := Run(f.deps(home, at)); err != nil {
 			t.Fatal(err)
 		}
@@ -2440,7 +2439,7 @@ func TestTheWaiterCheckWatchesTheListedProjectsAndFailsLoud(t *testing.T) {
 		t.Fatalf("sent %q, want one wake for quotes alone", f.sent)
 	}
 	f.sent, f.waitErr = nil, errors.New("ps: exit status 1")
-	runAt(t, home, f, func(time.Time) []Screen { return nil }, 12)
+	runAt(t, home, f, func(time.Time) []Screen { return nil }, 12, 17) // said on its second failed run in a row (looks.go)
 	if len(f.sent) != 1 || !strings.Contains(f.sent[0], "the waiter check failed to look: ps: exit status 1") {
 		t.Fatalf("sent %q, want the failed look", f.sent)
 	}
@@ -2994,7 +2993,9 @@ func TestARestoreRecordOfAClosedTabIsDroppedQuietly(t *testing.T) {
 			f.sesErr = errors.New("sessions: no answer")
 		}
 		at = at.Add(30 * time.Minute)
-		if err := Run(f.deps(home, at)); err != nil {
+		if c.err != nil && c.wake != "" { // a restore record not read: said on its second run in a row (looks.go)
+			runLooked(t, f, f.deps(home, at))
+		} else if err := Run(f.deps(home, at)); err != nil {
 			t.Fatal(err)
 		}
 		if c.wake == "" && len(f.sent) != 0 {

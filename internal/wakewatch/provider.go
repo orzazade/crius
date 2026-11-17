@@ -23,16 +23,13 @@ import (
 // The same look at each remote tab times an open dialog there, as the stuck-prompt check (stuckprompt.go) does for the
 // Mac's own sessions: one open promptAfter wakes Crius once (11-17: Legion quotes:qa sat on a `git clean -f` permission
 // prompt 05:30-12:41 and nobody was woken, as that check reads only the Mac's hook log). A tab that cannot be read keeps
-// its prompt's timer; it is a failed look (said after providerMisses in a row), never "no prompt".
+// its prompt's timer; it is a failed look (said after lookMisses in a row: looks.go), never "no prompt".
 
 const (
 	providerAgain = 15 * time.Minute // a stop this soon after a restart is said to Crius, not restarted again
 	providerLoud  = time.Hour        // a "could not look" is said to Crius when it starts, then once an hour while it lasts
-	// providerMisses: a look must fail this many sweeps in a row before Crius hears of it (11-17 12:37: a 2-minute router
-	// restart failed one sweep's ssh to four tabs and woke Crius four times; the next sweep looked fine)
-	providerMisses = 2
-	providerKeep   = 7 * 24 * time.Hour
-	providerOld    = 12 * time.Hour // a thread stopped longer ago was left so on purpose (Crius swept every 5 min since 11-13)
+	providerKeep  = 7 * 24 * time.Hour
+	providerOld   = 12 * time.Hour // a thread stopped longer ago was left so on purpose (Crius swept every 5 min since 11-13)
 )
 
 // ThreadText is what a T3 thread stopped by a provider error is sent; %s is the error.
@@ -172,8 +169,9 @@ func ProviderStop(text string) (line, key string, ok bool) {
 }
 
 // ProviderErrors runs one sweep. The error names each thing it could not look at, read, send or save; each of those
-// is also said to Crius (a "could not look" once it failed providerMisses sweeps in a row, then once an hour while it
-// lasts).
+// is also said to Crius (a "could not look" once it failed lookMisses sweeps in a row, then once an hour while it
+// lasts). 11-17 12:37: a 2-minute router restart failed one sweep's ssh to four tabs and woke Crius four times; the next
+// sweep looked fine (looks.go).
 func ProviderErrors(d ProviderDeps) (ProviderReport, error) {
 	var rep ProviderReport
 	var errs []error
@@ -202,12 +200,11 @@ func ProviderErrors(d ProviderDeps) (ProviderReport, error) {
 	}
 	prev := st.LastRun // a tab stop seen now happened after the last look
 	looked := map[string]bool{}
-	missed := map[string]int{} // replaces st.Missed: what looked fine this sweep starts its count again
+	missed := newMisses(st.Missed) // what looked fine this sweep starts its count again
 	cannot := func(what string, err error) {
 		errs = append(errs, fmt.Errorf("could not look at %s: %v", what, err))
 		looked[what] = true
-		missed[what] = st.Missed[what] + 1
-		if missed[what] < providerMisses {
+		if _, due := missed.fail(what); !due {
 			return
 		}
 		if last, ok := st.Failing[what]; ok && d.Now.Sub(last) < providerLoud {
@@ -350,7 +347,7 @@ func ProviderErrors(d ProviderDeps) (ProviderReport, error) {
 			delete(st.Failing, what)
 		}
 	}
-	st.Missed = missed
+	st.Missed = missed.counts()
 	st.Prompts = prompts
 	for k, s := range st.Stops {
 		if d.Now.Sub(s.At) > providerKeep {

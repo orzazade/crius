@@ -493,29 +493,15 @@ var toolChecks = map[string][]string{
 
 var toolWait = 10 * time.Second
 
-// toolRetry: a tool that missed is asked again this much later (Crius 10-23 22:36: az and gh missed the 10 s once under
-// load 100-180 on 14 cores and answered in a second on the recheck).
-var toolRetry = 30 * time.Second
-
-// tools runs the checks at once and gives each tool's failure, or nil. A tool fails only when it misses twice, toolRetry
-// apart; its failure names both misses and the 1-minute load.
+// tools runs the checks at once and gives each tool's failure, or nil; a failure names the 1-minute load (Crius 10-23
+// 22:36: az and gh missed the 10 s once under load 100-180 on 14 cores and answered in a second on a recheck). A miss
+// wakes Crius only on its second run in a row, as every failed look does (wakewatch looks.go).
 func tools() map[string]error {
 	res := ask(toolChecks)
-	again := map[string][]string{}
 	for name, err := range res {
 		if err != nil {
-			again[name] = toolChecks[name]
+			res[name] = fmt.Errorf("%v (1-min load %s)", err, load())
 		}
-	}
-	if len(again) == 0 {
-		return res
-	}
-	time.Sleep(toolRetry)
-	for name, err := range ask(again) {
-		if err != nil {
-			err = fmt.Errorf("%v; again %v later: %v (1-min load %s)", res[name], toolRetry, err, load())
-		}
-		res[name] = err
 	}
 	return res
 }

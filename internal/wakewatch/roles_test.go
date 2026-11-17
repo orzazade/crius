@@ -183,7 +183,7 @@ func TestARoleFileThatDoesNotReadIsSaid(t *testing.T) {
 	home := roleHome(t)
 	testutil.Write(t, filepath.Join(home, "roles", "quotes.p3.json"), "{")
 	f := &fake{}
-	deadAt(t, home, f, func(int) []Session { return nil }, 0)
+	deadAt(t, home, f, func(int) []Session { return nil }, 0, 5)
 	found := false
 	for _, s := range f.sent {
 		found = found || strings.Contains(s, "the dead-role check failed to look") && strings.Contains(s, "quotes.p3.json")
@@ -286,7 +286,7 @@ func TestNoProjectsTomlTellsCriusAlone(t *testing.T) {
 			return []Session{{ID: "L"}}
 		}
 		return nil
-	}, 0, 16)
+	}, 0, 16, 21)
 	failed := false
 	for _, s := range f.sent {
 		failed = failed || strings.Contains(s, "the dead-role check failed to look: projects.toml")

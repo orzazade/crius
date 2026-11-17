@@ -177,7 +177,7 @@ func clicks(d ClickDeps, crius map[string]bool) error {
 	}
 	screens, err := d.Screens()
 	if err != nil {
-		return err
+		return failedLook(err) // a cmux read that may work next minute (looks.go)
 	}
 	next := map[string]flagged{}
 	var posts, posted []string

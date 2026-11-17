@@ -101,9 +101,7 @@ func TestARigCheckThatCannotLookIsSaid(t *testing.T) {
 	home := setup(t, map[string]string{"team.log": ""})
 	testutil.Write(t, filepath.Join(home, "projects.toml"), "[projects.team]\nleads = { lead = \"/nowhere/STATUS.md\" }\nrig = \""+filepath.Join(home, "none")+"\"\n")
 	f := &fake{bootErr: os.ErrPermission, ses: []Session{{Name: "team · lead", ID: "s1"}}}
-	if err := Run(f.deps(home, t0)); err != nil {
-		t.Fatal(err)
-	}
+	runLooked(t, f, f.deps(home, t0))
 	if s := strings.Join(f.sent, "\n"); !strings.Contains(s, "the rig check failed to look: boot time: permission denied") ||
 		!strings.Contains(s, "rig folder: ") {
 		t.Fatalf("sent %q", f.sent)
@@ -180,9 +178,7 @@ func TestNoRigNoBootRead(t *testing.T) {
 	home := setup(t, map[string]string{"team.log": ""})
 	testutil.Write(t, filepath.Join(home, "projects.toml"), "[projects.team]\nleads = { lead = \"/nowhere/STATUS.md\" }\n")
 	f := &fake{bootErr: os.ErrPermission, ses: []Session{{Name: "team · lead", ID: "s1"}}}
-	if err := Run(f.deps(home, t0)); err != nil {
-		t.Fatal(err)
-	}
+	runLooked(t, f, f.deps(home, t0))
 	if s := strings.Join(f.sent, "\n"); strings.Contains(s, "rig check") {
 		t.Fatalf("sent %q", f.sent)
 	}
