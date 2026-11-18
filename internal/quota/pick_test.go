@@ -86,7 +86,7 @@ func TestPickTakesALinkedSignedInMaxAccount(t *testing.T) {
 		{"ended week goes after a measured one", report(use(wm, 70), use(m2, 30), use(m3, 50), ended), "max", 90, "max2", m2, ""},
 		{"ties go to the first row", report(use(wm, 30), use(m2, 30), use(m3, 30), use(m6, 60)), "max", 90, "max2", m2, ""},
 		{"at pause_at is passed over", report(use(wm, 92), use(m2, 95), use(m3, 91), use(m6, 90)), "max", 90, "", "",
-			"max1 is held back (owner 11-19) until every other Max account is at its limit: max4 quota not measured, max5 quota not measured"},
+			"max1 is held back (owner 11-19) until every other Max account is at its limit: max3 7d 91%, max4 not signed in, max5 quota not measured, max6 7d 90%; every other one with a folder here is at its limit: max2 7d 95%"},
 		{"full is passed over without pause_at", report(use(wm, 100), use(m2, 100), use(m3, 100), use(m6, 100)), "max", 0,
 			"", "", "max1 is held back (owner 11-19)"},
 		{"named row", report(use(wm, 10), use(m2, 30)), "max2", 90, "max2", m2, ""},

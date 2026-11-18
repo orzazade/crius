@@ -28,7 +28,7 @@ func Pick(r *Report, as *Accounts, root, want string, pauseAt int) (name, dir, w
 	if as == nil {
 		as = &Accounts{}
 	}
-	held, full := reserveHeld(r, as, pauseAt)
+	held, full := reserveHeld(r, as)
 	switch {
 	case held == "":
 		name, dir, why, err = pick(r, as, root, want, pauseAt)
@@ -51,7 +51,7 @@ func Pick(r *Report, as *Accounts, root, want string, pauseAt int) (name, dir, w
 	if name == "" || err != nil {
 		// every other row of this persona is full, or none has a folder in it: aitch's own route must not take max1
 		if err != nil {
-			return "", "", "", fmt.Errorf("%s; the others: %w", held, err)
+			return "", "", "", fmt.Errorf("%s; %s", held, strings.Replace(err.Error(), "every Max account is at its limit", "every other one with a folder here is at its limit", 1))
 		}
 		return "", "", "", errors.New(held)
 	}
@@ -64,13 +64,9 @@ const Reserve = "max1"
 
 // reserveHeld says why Reserve may not be picked yet, "" when every other Max row is at its limit (or there is no
 // other, or no Reserve row); full lists those rows with their shares. A row is at its limit as Pick passes one over:
-// full by Room, or its 7d share at Limit (or the lower pauseAt). A row not measured, or whose week ended with no sample
-// since, is not.
-func reserveHeld(r *Report, as *Accounts, pauseAt int) (held, full string) {
-	limit := Limit
-	if pauseAt > 0 && pauseAt < limit {
-		limit = pauseAt
-	}
+// full by Room (a 5h window at 100% too), or its 7d share at Limit; a project's lower pause_at pauses that project and
+// puts no account at its limit. A row not signed in, not measured, or whose week ended with no sample since, is not.
+func reserveHeld(r *Report, as *Accounts) (held, full string) {
 	var room, at []string
 	reserve := false
 	for _, a := range as.Rows {
@@ -83,13 +79,15 @@ func reserveHeld(r *Report, as *Accounts, pauseAt int) (held, full string) {
 		}
 		v := r.Account(a.Login)
 		switch {
-		case a.Login == "" || v == nil || v.Ended.IsZero() && v.Reset.IsZero():
+		case a.Login == "":
+			room = append(room, a.Name+" not signed in")
+		case v == nil || v.Ended.IsZero() && v.Reset.IsZero():
 			room = append(room, a.Name+" quota not measured")
 		case !v.Ended.IsZero():
 			room = append(room, a.Name+" 7d 0%, a new week since "+when(v.Ended))
 		default:
 			share := fmt.Sprintf("%s 7d %.0f%%", a.Name, math.Floor(v.SevenPct))
-			if verdict, _ := Room(v); verdict == "full" || v.SevenPct >= float64(limit) {
+			if verdict, _ := Room(v); verdict == "full" || v.SevenPct >= Limit {
 				at = append(at, share)
 			} else {
 				room = append(room, share)

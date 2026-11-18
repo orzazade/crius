@@ -72,7 +72,7 @@ func TestPickHoldsMax1UntilMax2AndMax3AreAtTheLimit(t *testing.T) {
 		{"max2 full, max3 has room", work, "max", r(10, 96, 20), "max3", m3, []string{"max1 held back"}, ""},
 		{"max2 and max3 full", work, "max", r(10, 96, 97), "max1", wm, []string{"every other Max account is at its limit (max2 7d 96%, max3 7d 97%)"}, ""},
 		{"personal: max3 has room but no folder", personal, "max", r(10, 96, 20), "", "",
-			nil, "max1 is held back (owner 11-19) until every other Max account is at its limit: max3 7d 20%"},
+			nil, "max1 is held back (owner 11-19) until every other Max account is at its limit: max3 7d 20%; every other one with a folder here is at its limit: max2 7d 96%"},
 		{"personal: max3 unmeasured", personal, "max", &Report{Now: now, Accounts: []AcctUse{use(l1, 10, time.Hour),
 			use(l2, 96, time.Hour)}}, "", "", nil, "max3 quota not measured"},
 		{"personal: both full", personal, "max", r(10, 96, 99), "max1", own, nil, ""},
@@ -80,8 +80,15 @@ func TestPickHoldsMax1UntilMax2AndMax3AreAtTheLimit(t *testing.T) {
 			"max1 is held back (owner 11-19) until every other Max account is at its limit: max2 7d 50%"},
 		{"max1 by name once both are full", work, "max1", r(10, 96, 99), "max1", wm, []string{"as asked"}, ""},
 		{"max1 full too", work, "max", r(99, 96, 97), "", "", nil, "every Max account is at its limit"},
+		// review: a project's lower pause_at pauses that project, it does not put the others at their limit
+		{"pause_at under the others' shares", work, "max", r(10, 50, 60), "", "", nil,
+			"max1 is held back (owner 11-19) until every other Max account is at its limit: max2 7d 50%, max3 7d 60%; every other one with a folder here is at its limit"},
 	} {
-		name, dir, why, err := Pick(c.r, as, c.root, c.want, 0)
+		pauseAt := 0
+		if strings.HasPrefix(c.name, "pause_at") {
+			pauseAt = 40
+		}
+		name, dir, why, err := Pick(c.r, as, c.root, c.want, pauseAt)
 		switch {
 		case c.err != "" && (err == nil || !strings.Contains(err.Error(), c.err)):
 			t.Errorf("%s: err %v, want %q", c.name, err, c.err)

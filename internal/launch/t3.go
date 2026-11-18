@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/orzazade/crius/internal/sessionstate"
+	"github.com/orzazade/crius/internal/wakewatch"
 )
 
 // T3 is what crius-spawn needs to run a role as a T3 Code thread instead of a cmux tab (crius-spawn -backend t3).
@@ -118,7 +120,7 @@ func RunT3(s Spawn, d Deps, t T3) (T3Started, error) {
 		err = fmt.Errorf("crius-hook filed no session for thread %s after %d reads: its role record cannot be written, so nothing watches it", id, t.Tries)
 	}
 	if err != nil {
-		return T3Started{}, fmt.Errorf("%s: %w", name, err)
+		return T3Started{}, fmt.Errorf("%s (thread %s, running): %w", name, id, err)
 	}
 	if realPath(sess.Config) != realPath(dir) {
 		return T3Started{}, fmt.Errorf("thread %s: its Claude session %s runs in %s, not %s (account %s)", id, sess.SessionID, sess.Config, dir, acct)
@@ -295,13 +297,15 @@ func realPath(p string) string {
 	return filepath.Clean(p)
 }
 
-// RoleThread is the T3 Code thread a role's current session r runs in, "" for none (a tab): from the session's own file,
-// which crius-hook rewrites on every event, else from the role's file (as wakewatch and bus-post read it).
-func RoleThread(home string, r sessionstate.State) string {
-	if cur, err := sessionstate.Read(filepath.Join(home, "sessions"), r.SessionID); err == nil && cur.Thread != "" {
-		return cur.Thread
+// RoleThread is the T3 Code thread of the role's newest session, "" when that session runs in none (a tab): the one
+// wakewatch watches (wakewatch.NewestThread), as a role whose sessions moved to a new thread may still name the old one
+// in its file r (11-17: cortex:lead).
+func RoleThread(home, project, role string, r sessionstate.State) (string, error) {
+	states, err := sessionstate.List(filepath.Join(home, "sessions"))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, sessionstate.ErrDamaged) {
+		return "", fmt.Errorf("crius's session files: %w", err)
 	}
-	return r.Thread
+	return wakewatch.NewestThread(home, project, role, r, states), nil
 }
 
 // ErrT3Move says why a role in a T3 thread is not moved (owner 10-30: a move keeps the same session, with its full

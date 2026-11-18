@@ -2,9 +2,11 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/orzazade/crius/internal/launch"
 	"github.com/orzazade/crius/internal/sessionstate"
@@ -94,5 +96,38 @@ func TestARefusedT3ResumeLeavesTheRoleClosed(t *testing.T) {
 	}
 	if c, err := sessionstate.ClosedRole(roles, "lab", "probe"); err != nil || c != s.SessionID {
 		t.Errorf("closed %q %v, want it still closed", c, err)
+	}
+}
+
+// A role whose sessions moved to a new thread may still name the old one in its file (11-17: cortex:lead); -resume
+// goes to the thread of the role's newest session, as wakewatch watches it, never the old one.
+func TestAT3ResumeGoesToTheNewestSessionsThread(t *testing.T) {
+	home := t.TempDir()
+	old := sessionstate.State{SessionID: "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b", Project: "lab", Role: "probe", Thread: "mcp:old",
+		Time: time.Now().Add(-time.Hour)}
+	if err := sessionstate.WriteRole(filepath.Join(home, "roles"), old, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := sessionstate.Write(filepath.Join(home, "sessions"), old); err != nil {
+		t.Fatal(err)
+	}
+	cur := sessionstate.State{SessionID: "7f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b", Project: "lab", Role: "probe", Thread: "mcp:new", Time: time.Now()}
+	if err := sessionstate.Write(filepath.Join(home, "sessions"), cur); err != nil {
+		t.Fatal(err)
+	}
+	var sent []string
+	runs := 1
+	cli := func(stdin string, args ...string) (string, error) {
+		if args[1] == "send" {
+			sent = append(sent, args[3])
+			runs++
+		}
+		return fmt.Sprintf(`{"thread":{"status":"completed","runCount":%d},"messages":[]}`, runs), nil
+	}
+	if err := resume(home, "lab", "probe", launch.Deps{}, launch.T3{CLI: cli, Tries: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if len(sent) != 1 || sent[0] != "mcp:new" {
+		t.Errorf("sent to %q, want mcp:new", sent)
 	}
 }

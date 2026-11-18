@@ -168,7 +168,11 @@ func main() {
 // resume brings back the session crius-hook keeps as the role's current one, and prints where it runs.
 func resume(home, project, role string, d launch.Deps, t launch.T3) error {
 	if r, err := sessionstate.ReadRole(filepath.Join(home, "roles"), project, role); err == nil {
-		if th := launch.RoleThread(home, r); th != "" { // its thread, not a tab: T3 keeps its Claude between turns
+		th, err := launch.RoleThread(home, project, role, r)
+		if err != nil {
+			return err
+		}
+		if th != "" { // it runs in a thread, not a tab
 			if err := launch.ResumeT3(th, t); err != nil {
 				return fmt.Errorf("%s %s: %w", project, role, err)
 			}
