@@ -2,8 +2,10 @@ package store
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"strings"
 	"unicode"
 )
@@ -33,4 +35,56 @@ func RemoteCopy(log string) (string, bool, error) {
 		first = "the marker names no wrapper; post through the machine that holds the live log"
 	}
 	return first, true, nil
+}
+
+// OpenBus opens a bus log for appending (O_APPEND is added to flag). It refuses a log that is only a copy of a bus on
+// another machine, naming the wrapper its marker gives, and writes nothing: the line would reach no one. It does not
+// route the line there: the wrappers run bus-post over ssh, one slow call per line from jobs that run every few minutes
+// and must not hang on a machine that is down, and the marker names the wrapper in words for a person, not as a command.
+// A log with no marker opens as before. Its users: AppendLine, watchdog.PostOn, bus-post and wakewatch's clicks.
+// busappend_test.go checks that every Go function that names O_APPEND is this one or a listed log that is no bus.
+// Not seen by it: a flag built in a package-level var, a read-then-os.WriteFile rewrite, a shell writer (">>").
+// crius-dispatch's Post goes through PostOn and returns the refusal as its error, with no fallback to Crius's bus.
+func OpenBus(path string, flag int, perm os.FileMode) (*os.File, error) {
+	if err := notACopy(path, "posted"); err != nil {
+		return nil, err
+	}
+	return os.OpenFile(path, flag|os.O_APPEND, perm)
+}
+
+// ErrRemoteCopy is what a refusal of a copy of a bus on another machine is (errors.Is); it is also a Refused. The error's
+// text names the log and the wrapper the marker gives. A caller with another place to say the line (Crius's own bus)
+// says it there.
+var ErrRemoteCopy = errors.New("the log is a copy of a bus on another machine")
+
+type remoteCopyError struct {
+	r   *Refused
+	use string // the marker's first line
+}
+
+func (e *remoteCopyError) Error() string   { return e.r.msg }
+func (e *remoteCopyError) Unwrap() []error { return []error{ErrRemoteCopy, e.r} }
+
+// notACopy refuses a log that is a copy of a bus on another machine; done says what did not happen.
+func notACopy(log, done string) error {
+	use, ok, err := RemoteCopy(log)
+	if err != nil {
+		return fmt.Errorf("could not read the remote-copy marker of %s: %w", log, err)
+	}
+	if ok {
+		// the base name: every bus log is in <home>/bus, and a bus line has 300 runes for the rest
+		return &remoteCopyError{&Refused{fmt.Sprintf("%s is a copy of a bus on another machine, nothing %s: %s",
+			filepath.Base(log), done, use)}, use}
+	}
+	return nil
+}
+
+// CopyWrapper gives the marker line an ErrRemoteCopy refusal names, the wrapper that posts on the live bus; "" for any
+// other error.
+func CopyWrapper(err error) string {
+	var e *remoteCopyError
+	if errors.As(err, &e) {
+		return e.use
+	}
+	return ""
 }
