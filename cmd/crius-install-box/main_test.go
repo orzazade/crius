@@ -393,7 +393,28 @@ func TestABoxWithoutSha256sumSaysSo(t *testing.T) {
 	if err := os.Remove(filepath.Join(shims, "sha256sum")); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PATH", shims+":/usr/bin:/bin") // macOS keeps a sha256sum in /sbin
+	// The system folders hold a sha256sum on Linux (coreutils) and on newer macOS: give the box a copy of them
+	// made of links to every tool except sha256sum.
+	sys := t.TempDir()
+	for _, d := range []string{"/usr/bin", "/bin"} {
+		ents, err := os.ReadDir(d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range ents {
+			dst := filepath.Join(sys, e.Name())
+			if e.Name() == "sha256sum" {
+				continue
+			}
+			if _, err := os.Lstat(dst); err == nil {
+				continue // /usr/bin comes first in PATH, so its copy wins
+			}
+			if err := os.Symlink(filepath.Join(d, e.Name()), dst); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	t.Setenv("PATH", shims+":"+sys)
 	if p, err := exec.LookPath("sha256sum"); err == nil {
 		t.Fatalf("sha256sum still found at %s; the test cannot fake a box without one", p)
 	}

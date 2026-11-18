@@ -18,8 +18,8 @@ Restarted from scratch on 2026-10-16. The March 2026 harness prototype is on bra
   builds every command under `cmd/` (crius-hook and crius-wakewatch too) into `~/.crius/bin`. The Linux team boxes
   (the playbook's `hosts.json`) run crius-hook, bus-post, crius-statusline and playbook from their own `~/.crius/bin`:
   build each with `GOOS=linux GOARCH=amd64 CGO_ENABLED=0 GOTOOLCHAIN=local go build -o <file> ./cmd/<tool>`
-  (`TestLinuxToolsBuildFromTheRepo` keeps that build working) and copy it there over the box's ssh; no script does
-  that copy yet. A record one tool writes and another reads ships to the Mac and every box together: crius-hook's
+  (`TestLinuxToolsBuildFromTheRepo` keeps that build working); `bin/crius-install-box <box>` builds and copies them
+  (see "Installing on the Linux boxes" below). A record one tool writes and another reads ships to the Mac and every box together: crius-hook's
   role record `started` is read by `crius-wakewatch restart --from-ready`, which until then refuses a READY-RESTART
   line older than the role's last resume or compact ("cannot tell when the session … took it").
 - Tests: `GOTOOLCHAIN=local go test ./...` (Go 1.25.6; one dependency, `modernc.org/sqlite`, pure Go; fixtures are
@@ -43,8 +43,8 @@ Known gaps:
 - The 30 s t3 timeout has no test (it would need a fake t3 that sleeps).
 - A ⏳ reply whose only running job is the bus waiter is denied, though a restart would cost only the waiter.
 
-Install (not done by the build): put the binary at `~/.crius/bin/crius-spawn` and add to the `hooks` of the settings.json
-of each config folder whose sessions call the tool. The hook timeout (45 s) is larger than the check's 30 s t3 timeout:
+Install: `bin/crius-install-launchd` builds the binary into `~/.crius/bin/crius-spawn`; the hook is a manual step: add it
+to the `hooks` of the settings.json of each config folder whose sessions call the tool. The hook timeout (45 s) is larger than the check's 30 s t3 timeout:
 
 ```json
 "PreToolUse": [
