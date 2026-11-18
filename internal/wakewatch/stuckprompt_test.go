@@ -423,3 +423,28 @@ func TestADialogOpenedJustAfterItsLineIsTheLines(t *testing.T) {
 		t.Fatalf("want one wake aged from the line: %q", w)
 	}
 }
+
+// A spent run budget for t3 stops the reads like a hang, but the prompt that is not read says why: slow answers.
+func TestASpentT3BudgetIsReadOncePerRunAndBlamesSlowAnswers(t *testing.T) {
+	at := t0.Add(9 * time.Second)
+	second := "c4f82274-d5e6-4c3d-952d-84d9ea65a6a1"
+	home := stuckHome(t, at, "waiting", at, "th-cortex")
+	log := filepath.Join(home, "bus", "waits.log")
+	testutil.Write(t, log, testutil.Read(t, log)+permWait(at, second))
+	writeSession(t, home, second, "waiting", at, "th-second")
+	f := &fake{threadErr: fmt.Errorf("%w (4m0s)", ErrT3BudgetSpent)}
+	runLooked(t, f, f.deps(home, t0.Add(11*time.Minute)))
+	w := promptWakes(f)
+	if len(w) != 2 || !strings.Contains(w[1], "not read: slow t3 answers") || strings.Contains(strings.Join(w, "\n"), "no answer") {
+		t.Fatalf("want two could-not-tell wakes, the second not read for slow answers, none a hang: %q", w)
+	}
+	var reads int
+	for _, id := range f.read {
+		if id == "th-cortex" || id == "th-second" {
+			reads++
+		}
+	}
+	if reads != lookMisses { // one read a run
+		t.Fatalf("t3 read %d times in %d runs after the budget was spent: %q", reads, lookMisses, f.read)
+	}
+}

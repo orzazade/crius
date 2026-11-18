@@ -82,7 +82,7 @@ func stuckPrompts(d Deps) (out [][2]string, prompted map[string]bool) {
 		out = append(out, [2]string{"prompts-failed", "the stuck permission prompt check could not tell Crius's own thread: " + err.Error()})
 	}
 	prompted = map[string]bool{}
-	hung := false
+	stop := "" // why no more threads are read on this run
 	for _, sid := range slices.Sorted(maps.Keys(newest)) {
 		p := newest[sid]
 		if d.Now.Sub(p.at) > window {
@@ -145,13 +145,13 @@ func stuckPrompts(d Deps) (out [][2]string, prompted map[string]bool) {
 			continue
 		}
 		about = append(about, "T3 thread "+s.Thread)
-		if hung {
-			unread("not read: t3 gave no answer for an earlier thread on this run")
+		if stop != "" {
+			unread(stop)
 			continue
 		}
 		th, err := d.Thread(s.Thread)
 		if err != nil {
-			hung = errors.Is(err, ErrT3NoAnswer)
+			stop = t3Stop(err)
 			unread("t3 could not show its thread: " + err.Error())
 			continue
 		}
