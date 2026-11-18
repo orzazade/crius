@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/orzazade/crius/internal/ingest"
+	"github.com/orzazade/crius/internal/store"
 	"github.com/orzazade/crius/internal/watchdog"
 )
 
@@ -249,7 +250,8 @@ func base(cmd string) string {
 }
 
 // post sends the line to the leads of the holder's project on its bus, or to Crius when the project or its bus is
-// not known; sent says the line went out. A lookup failure is said in the error even when the line went to Crius.
+// not known or its bus here is a copy of one on another machine; sent says the line went out. A lookup failure is said
+// in the error even when the line went to Crius.
 func post(d deps, now time.Time, cwd, text string) (sent bool, err error) {
 	project, leads, lerr := d.lead(cwd)
 	if lerr == nil && project != "" {
@@ -259,9 +261,12 @@ func post(d deps, now time.Time, cwd, text string) (sent bool, err error) {
 				leads = []string{project + ":lead"}
 			}
 			err := watchdog.PostOn(d.home, project, "INFO", "crius:loadwatch", strings.Join(leads, ", "), now, text)
-			return err == nil, err
-		}
-		if !errors.Is(serr, fs.ErrNotExist) {
+			if !errors.Is(err, store.ErrRemoteCopy) {
+				return err == nil, err
+			}
+			// its bus lives on another machine: Crius is told instead, first whom it was for (PostOn cuts the end)
+			text = "for " + strings.Join(leads, ", ") + ", whose bus is on another machine: " + text
+		} else if !errors.Is(serr, fs.ErrNotExist) {
 			lerr = serr
 		}
 	}

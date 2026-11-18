@@ -199,14 +199,14 @@ func PostOn(home, log, typ, from, to string, now time.Time, text string) error {
 		text = string(r[:300])
 	}
 	path := filepath.Join(home, "bus", log+".log")
+	f, err := store.OpenBus(path, os.O_WRONLY|os.O_CREATE, 0o600) // a copy is refused before its log is read
+	if err != nil {
+		return err
+	}
 	// A bus that ends mid-line (a writer died) gets a newline first, so the alert is a line of its own.
 	lead := ""
 	if b, err := os.ReadFile(path); err == nil && len(b) > 0 && b[len(b)-1] != '\n' {
 		lead = "\n"
-	}
-	f, err := store.OpenBus(path, os.O_WRONLY|os.O_CREATE, 0o600)
-	if err != nil {
-		return err
 	}
 	if _, err := fmt.Fprintf(f, "%s%s %s %s -> %s — %s\n", lead, now.Format("2006-01-02T15:04"), typ, from, to, text); err != nil {
 		f.Close()

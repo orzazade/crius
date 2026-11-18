@@ -311,6 +311,14 @@ func (r *runner) pauseChecks(tx *sql.Tx, rep *quota.Report, as *quota.Accounts) 
 		if p.pauseAt == 0 {
 			continue
 		}
+		// A bus that is a copy of one on another machine takes no PAUSE from here (store.OpenBus): each NEED says so.
+		copyOf, copied, err := store.RemoteCopy(filepath.Join(r.home, "bus", p.slug+".log"))
+		if err != nil {
+			return err
+		}
+		if !copied {
+			copyOf = ""
+		}
 		for _, st := range rep.Stale {
 			if projects, ok := rep.StaleProjects[st]; ok && !slices.Contains(projects, p.slug) && !slices.Contains(projects, "unknown") {
 				continue // an account only other known projects run on (Crius 10-29); a session of no known project may be p's
@@ -322,7 +330,7 @@ func (r *runner) pauseChecks(tx *sql.Tx, rep *quota.Report, as *quota.Accounts) 
 			}
 		}
 		if len(rep.Accounts) > 0 {
-			if err := r.pauseAccounts(tx, rep, as, p); err != nil {
+			if err := r.pauseAccounts(tx, rep, as, p, copyOf); err != nil {
 				return err
 			}
 			continue
@@ -335,14 +343,17 @@ func (r *runner) pauseChecks(tx *sql.Tx, rep *quota.Report, as *quota.Accounts) 
 			return err
 		}
 		at, resets := rep.SevenAt.Local().Format("15:04"), rep.Reset.Local().Format("Mon 15:04")
-		if err := r.queueLine(tx, key, "PAUSE", p.slug, p.slug+":all", fmt.Sprintf(
+		posted := "PAUSE posted on " + p.slug + ".log"
+		if copyOf != "" {
+			posted = notPosted(copyOf, p.slug+":all")
+		} else if err := r.queueLine(tx, key, "PAUSE", p.slug, p.slug+":all", fmt.Sprintf(
 			"quota: Max 7d at %g%% (%s) reached %s's pause at %d%%: stop all %s work now; Crius says when to resume "+
 				"(the window resets %s)", rep.SevenPct, at, p.slug, p.pauseAt, p.slug, resets)); err != nil {
 			return err
 		}
 		if err := r.queueLine(tx, key+":crius", "NEED", "crius", "crius:lead", fmt.Sprintf(
-			"quota guard: Max 7d at %g%% (%s) reached %s's pause at %d%%; PAUSE posted on %s.log. Park %s in "+
-				"~/.crius/parked and stop its tabs", rep.SevenPct, at, p.slug, p.pauseAt, p.slug, p.slug)); err != nil {
+			"quota guard: Max 7d at %g%% (%s) reached %s's pause at %d%%; %s. Park %s in "+
+				"~/.crius/parked and stop its tabs", rep.SevenPct, at, p.slug, p.pauseAt, posted, p.slug)); err != nil {
 			return err
 		}
 	}
@@ -354,7 +365,7 @@ func (r *runner) pauseChecks(tx *sql.Tx, rep *quota.Report, as *quota.Accounts) 
 // statusline line within quota.Gap). Crius gets one NEED per account and window, and one more when a later run pauses a
 // new role, naming the roles, the tabs with no role (no bus line reaches them) and the accounts with room. Every account at the limit pauses the whole team. Resuming
 // stays Crius's word, per account.
-func (r *runner) pauseAccounts(tx *sql.Tx, rep *quota.Report, as *quota.Accounts, p project) error {
+func (r *runner) pauseAccounts(tx *sql.Tx, rep *quota.Report, as *quota.Accounts, p project, copyOf string) error {
 	tabs, err := tabsByLogin(tx, p.slug, rep.Now)
 	if err != nil {
 		return err
@@ -422,6 +433,9 @@ func (r *runner) pauseAccounts(tx *sql.Tx, rep *quota.Report, as *quota.Accounts
 				continue
 			}
 			roles = append(roles, role)
+			if copyOf != "" {
+				continue
+			}
 			added, err := r.queueNew(tx, key+":"+role, "PAUSE", p.slug, p.slug+":"+role, fmt.Sprintf(
 				"quota: account %s at %g%% of its 7d (%s) reached %s's pause at %d%%: you run on it, stop now; Crius "+
 					"says when to resume or moves you to an account with room (it resets %s)", a.Name, a.SevenPct, at,
@@ -432,7 +446,9 @@ func (r *runner) pauseAccounts(tx *sql.Tx, rep *quota.Report, as *quota.Accounts
 			news = news || added
 		}
 		paused := "no tab of " + p.slug + " has a role on it"
-		if len(roles) > 0 {
+		if len(roles) > 0 && copyOf != "" {
+			paused = notPosted(copyOf, p.slug+":"+strings.Join(roles, ", "+p.slug+":"))
+		} else if len(roles) > 0 {
 			paused = "PAUSE posted to " + p.slug + ":" + strings.Join(roles, ", "+p.slug+":")
 		} else if len(split) > 0 {
 			paused = "no PAUSE posted"
@@ -474,15 +490,18 @@ func (r *runner) pauseAccounts(tx *sql.Tx, rep *quota.Report, as *quota.Accounts
 	if err != nil {
 		return err
 	}
-	if err := r.queueLine(tx, key, "PAUSE", p.slug, p.slug+":all", fmt.Sprintf(
+	posted := "PAUSE posted to " + p.slug + ":all"
+	if copyOf != "" {
+		posted = notPosted(copyOf, p.slug+":all")
+	} else if err := r.queueLine(tx, key, "PAUSE", p.slug, p.slug+":all", fmt.Sprintf(
 		"quota: every Max account reached %s's pause at %d%% (%s): stop all %s work now; Crius says when to resume "+
 			"(the first window resets %s)", p.slug, p.pauseAt, strings.Join(shares, ", "), p.slug,
 		first.Local().Format("Mon 15:04"))); err != nil {
 		return err
 	}
 	return r.queueLine(tx, key+":crius", "NEED", "crius", "crius:lead", fmt.Sprintf(
-		"quota guard: every Max account reached %s's pause at %d%% (%s); PAUSE posted to %s:all. Park %s in "+
-			"~/.crius/parked and stop its tabs", p.slug, p.pauseAt, strings.Join(shares, ", "), p.slug, p.slug))
+		"quota guard: every Max account reached %s's pause at %d%% (%s); %s. Park %s in "+
+			"~/.crius/parked and stop its tabs", p.slug, p.pauseAt, strings.Join(shares, ", "), posted, p.slug))
 }
 
 // limitChecks tells Crius when a Max account its sessions run on reaches quota.Limit of its week (owner 10-28 23:5x):
@@ -613,4 +632,9 @@ func tabsByLogin(tx *sql.Tx, slug string, now time.Time) (map[string][]string, e
 		}
 	}
 	return out, rows.Err()
+}
+
+// notPosted is the NEED's words for a PAUSE to whom that was not queued: the bus here is a copy; use is its marker's line.
+func notPosted(use, whom string) string {
+	return "PAUSE not posted: its bus here is a copy (" + use + "); pause " + whom + " there"
 }

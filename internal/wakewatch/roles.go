@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/orzazade/crius/internal/sessionstate"
+	"github.com/orzazade/crius/internal/store"
 	"github.com/orzazade/crius/internal/watchdog"
 )
 
@@ -101,7 +102,10 @@ func deadRoles(d Deps, st *state, ss []Session, sesErr error, watch projects, pa
 		if leadErr == nil && !leads[project+":"+role] { // with no projects.toml no lead is known: Crius alone (review P3-3)
 			to := leadsOf(leads, project)
 			if e.Told != r.SessionID {
-				if ok, err := tellLeads(d, project, to, what); err != nil {
+				if ok, err := tellLeads(d, project, to, what); errors.Is(err, store.ErrRemoteCopy) {
+					// as with no bus log, Crius alone is told: the check did look
+					what += ". " + strings.Join(to, ", ") + " was not told: " + err.Error()
+				} else if err != nil {
 					failed = append(failed, err.Error())
 				} else if ok {
 					e.Told = r.SessionID

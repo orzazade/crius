@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -86,5 +87,16 @@ func TestRecordDecisionOnACopyOfARemoteBusRecordsNothing(t *testing.T) {
 	}
 	if got := testutil.Read(t, log); got != old {
 		t.Errorf("the copy was written:\n%s", got)
+	}
+}
+
+// The refusal is errors.Is ErrRemoteCopy, so a caller can tell it from a failed write, and still a refusal for crius-rec.
+func TestTheCopyRefusalIsErrRemoteCopy(t *testing.T) {
+	_, home := testutil.Temp(t)
+	copyBus(t, home, "demo", true)
+	err := AppendLine(home, "demo", "2026-11-19T01:00 INFO crius:lead -> demo:lead — go")
+	if !errors.Is(err, ErrRemoteCopy) || !IsRefused(err) {
+		t.Errorf("want errors.Is ErrRemoteCopy and a refusal, got %v (Is %v, refused %v)", err, errors.Is(err, ErrRemoteCopy),
+			IsRefused(err))
 	}
 }
