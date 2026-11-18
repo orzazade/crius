@@ -14,7 +14,7 @@ func TestEveryPackageVetsForLinux(t *testing.T) {
 		t.Skip("vets the whole repo for Linux; skipped with -short")
 	}
 	cmd := exec.Command("go", "vet", "./...")
-	cmd.Env = append(os.Environ(), "GOTOOLCHAIN=local", "GOFLAGS=", "GOOS=linux", "GOARCH=amd64", "CGO_ENABLED=0")
+	cmd.Env = append(os.Environ(), "GOTOOLCHAIN=local", "GOFLAGS=", "GOPROXY=off", "GOOS=linux", "GOARCH=amd64", "CGO_ENABLED=0")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("GOOS=linux go vet ./...: %v\n%s", err, out)
 	}
