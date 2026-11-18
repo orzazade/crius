@@ -282,6 +282,12 @@ var waiters = map[string]bgJob{
 		kids: []string{"bun wt/qa/bus-watch.ts /home/crius/.crius/bus/staffy.log --me staffy:qa", "tail -c +320111 -F /home/crius/.crius/bus/staffy.log"}},
 	"a monitor: tail | grep (staffy:builder)": {cmd: "tail -n 0 -F ~/.crius/bus/staffy.log | grep --line-buffered -E \"staffy:builder\"",
 		kids: []string{"tail -n 0 -F /home/crius/.crius/bus/staffy.log", "/usr/bin/grep --line-buffered -E ^[^ ]+ [A-Z-]+ (staffy:builder|all)"}, flat: true},
+	// a tail that reads only its pipe is a filter like cut (11-18: quotes:dev refused as BUSY for its "| tail -20")
+	"team-wait.sh | tail -20 | cut (quotes:dev, 11-18)": {cmd: "~/.claude-work-max3/skills/cmux-team/scripts/team-wait.sh --role quotes:dev --cursor ~/.crius/wait-cursor-quotes-dev ~/.crius/bus/quotes.log 2>&1 | tail -20 | cut -c1-400",
+		kids: []string{"/bin/bash /home/crius/.claude-work-max3/skills/cmux-team/scripts/team-wait.sh --role quotes:dev --cursor /home/crius/.crius/wait-cursor-quotes-dev /home/crius/.crius/bus/quotes.log",
+			"tail -20", "cut -c1-400"}, flat: true},
+	"crius-wait | tail -fn 20 (an option's value)": {cmd: "~/.crius/bin/crius-wait 2>&1 | tail -fn 20",
+		kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait", "tail -fn 20"}, flat: true},
 }
 
 // testRun is a real job in a background shell: a test run through the heavy-slot wrapper (quotes:builder-2, 11-17).
@@ -344,6 +350,22 @@ func TestRestartOfATabRunningATestInABackgroundShellIsBusy(t *testing.T) {
 		"a quote escaped inside quotes":       {"1 shell", []bgJob{{cmd: `~/.crius/bin/crius-wait "a\"b"; go test ./... # "`, kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait a\"b"}}}, "go test"},
 		"a comment with an apostrophe":        {"1 shell", []bgJob{{cmd: "~/.crius/bin/crius-wait x  # builder's DONE\ngo test ./...", kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait x"}}}, "go test"},
 		"an awk that starts a run on a line":  {"1 shell", []bgJob{{cmd: `tail -F ~/.crius/bus/q.log | awk '/DONE/{system("go test ./...")}'`, kids: []string{"tail -F /home/crius/.crius/bus/q.log", "awk /DONE/{system(\"go test ./...\")}"}, flat: true}}, "awk"},
+		// a tail that names a file other than the bus watches that file, even in a waiter's pipe (11-18)
+		"a waiter piped into a tail of a run log": {"1 shell", []bgJob{{cmd: "team-wait.sh --role q:dev ~/.crius/bus/q.log | tail -f /tmp/run.log",
+			kids: []string{"/bin/bash /home/crius/.claude-work/skills/cmux-team/scripts/team-wait.sh --role q:dev /home/crius/.crius/bus/q.log", "tail -f /tmp/run.log"}, flat: true}}, "run.log"},
+		"a tail of a file beside the waiter": {"1 shell", []bgJob{{cmd: "~/.crius/bin/crius-wait; tail -20 /tmp/x.log",
+			kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait"}}}, "x.log"},
+		"a tail of a redirected file beside the waiter": {"1 shell", []bgJob{{cmd: "~/.crius/bin/crius-wait | tail -20 < /tmp/x.log",
+			kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait", "tail -20"}, flat: true}}, "x.log"},
+		"a tail of a file under the waiter shell": {"1 shell", []bgJob{{cmd: "~/.crius/bin/crius-wait | tail -20",
+			kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait", "tail -20 /tmp/x.log"}, flat: true}}, "crius-wait"},
+		// a file hidden in an option word or a number, or after --, is still a file (tail filter review P1, P2)
+		"a redirect glued to a tail option": {"1 shell", []bgJob{{cmd: "~/.crius/bin/crius-wait | tail -f -n0</tmp/run.log",
+			kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait", "tail -f -n0"}, flat: true}}, "run.log"},
+		"a tail of a file named by digits": {"1 shell", []bgJob{{cmd: "~/.crius/bin/crius-wait | tail -f 2026",
+			kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait", "tail -f 2026"}, flat: true}}, "2026"},
+		"a tail of a file after --": {"1 shell", []bgJob{{cmd: "~/.crius/bin/crius-wait | tail -f -- -run.log",
+			kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait", "tail -f -- -run.log"}, flat: true}}, "-run.log"},
 	} {
 		r, home := newRestartFake(t)
 		r.screen["staffy:builder"] = tab("staffy · builder", "Started the red run. ⏳", "  ⏵⏵ bypass permissions on · "+c.footer+"\n", t0)

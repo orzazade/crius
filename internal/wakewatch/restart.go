@@ -301,6 +301,34 @@ func isWaiter(w []string) bool {
 // numRe is an option's number (tail -n 0, -c +320111).
 var numRe = regexp.MustCompile(`^\+?\d+$`)
 
+// tailOptRe is a tail option word with nothing else in it (-20, -fn5, --pid=12, --follow=name): a redirect glued on
+// (-n0</tmp/run.log) or a path fails it.
+var tailOptRe = regexp.MustCompile(`^(-[A-Za-z0-9+]+|--[a-z-]+(=(\+?\d+|[a-z]+))?)$`)
+
+// tailValueRe is a tail option that takes the next word as its number (-n 20, -fn 20, --pid 12).
+var tailValueRe = regexp.MustCompile(`^(-[A-Za-z]*[bcns]|--(lines|bytes|pid|sleep-interval|max-unchanged-stats))$`)
+
+// stdinTail says whether a command's words run a tail that names no file, so it reads only its pipe: a filter like head
+// or cut (team-wait.sh … | tail -20, 11-18). Every word is an option, or the number an option takes; any other word (a
+// file, even one named by digits or after --, or a redirect) makes it a job unless isWaiter.
+func stdinTail(w []string) bool {
+	if progOf(w) != "tail" {
+		return false
+	}
+	args := w[slices.IndexFunc(w, func(s string) bool { return filepath.Base(s) == "tail" })+1:]
+	for i := 0; i < len(args); i++ {
+		switch a := args[i]; {
+		case !tailOptRe.MatchString(a):
+			return false
+		case tailValueRe.MatchString(a):
+			if i++; i == len(args) || !numRe.MatchString(args[i]) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 type proc struct {
 	pid, ppid int
 	args      string
@@ -335,8 +363,8 @@ func shellCommand(argv []string) string {
 }
 
 // waiterCommand says whether a shell command only waits on the bus: each of its simple commands (split at ; & | && ||
-// and newlines outside quotes, # comments left out) is a waiter or one of waiterSteps, and one is a waiter. "crius-wait && go test" is a job
-// even while it waits: its test starts later, under no session.
+// and newlines outside quotes, # comments left out) is a waiter, one of waiterSteps or a stdinTail, and one is a
+// waiter. "crius-wait && go test" is a job even while it waits: its test starts later, under no session.
 func waiterCommand(cmd string) bool {
 	var steps []string
 	var cur strings.Builder
@@ -376,7 +404,7 @@ func waiterCommand(cmd string) bool {
 		case prog == "":
 		case isWaiter(w):
 			waiters++
-		case !waiterSteps[prog]:
+		case !waiterSteps[prog] && !stdinTail(w):
 			return false
 		}
 	}
@@ -385,8 +413,8 @@ func waiterCommand(cmd string) bool {
 
 // tabJobs reads Procs' answer (the pane pid, then ps lines) and gives the number of tool shells of the claude in that
 // pane and the ones among them that are no bus waiter. A waiter shell's command only waits (waiterCommand), and nothing
-// runs under it but waiters and waiterSteps, nor under a waiter but waiterHelpers. MCP servers, which claude starts
-// without a shell, are no shells. A pane with no claude is an error, never idle.
+// runs under it but waiters, waiterSteps and stdin tails, nor under a waiter but waiterHelpers. MCP servers, which
+// claude starts without a shell, are no shells. A pane with no claude is an error, never idle.
 func tabJobs(out string) (shells int, jobs []string, err error) {
 	first, rest, _ := strings.Cut(strings.TrimLeft(out, " \t\n"), "\n")
 	pane, err := strconv.Atoi(strings.TrimSpace(first))
@@ -445,7 +473,7 @@ func tabJobs(out string) (shells int, jobs []string, err error) {
 				if !quiet(k.pid, waiterHelpers) {
 					return false
 				}
-			case !allowed[k.prog()] || !quiet(k.pid, allowed):
+			case !allowed[k.prog()] && !stdinTail(strings.Fields(k.args)) || !quiet(k.pid, allowed):
 				return false
 			}
 		}
