@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/orzazade/crius/internal/quota"
+	"github.com/orzazade/crius/internal/sessionstate"
 	"github.com/orzazade/crius/internal/store"
 	"github.com/orzazade/crius/internal/testutil"
 )
@@ -1810,6 +1811,81 @@ func TestQuotaLimitNeedNeedsAMeasuredShareAndAnActiveSession(t *testing.T) {
 				t.Fatalf("NEED lacks %q: %q", c.has, need[0])
 			}
 		})
+	}
+}
+
+// Review of 66688ff (live 11-18: 23 of 24 sessions with requests had no statusline line): a session in a T3 thread
+// writes no statusline, so the move NEED never named it. crius-hook records each session's config folder on every
+// event (~/.crius/sessions/<id>.json), which places it on that folder's login. A session the hook places elsewhere
+// later than its statusline line has moved. A working session neither places is counted and named, never dropped.
+func TestQuotaLimitNeedPlacesSessionsByTheirHookRecord(t *testing.T) {
+	clock = func() time.Time { return qNow }
+	t.Cleanup(func() { clock = time.Now })
+	x := newIC(t, cfg{extra: limitProject})
+	d1, d2 := filepath.Join(x.home, "cfg1"), filepath.Join(x.home, "cfg2")
+	l1, _ := x.signIn(d1, "u-1"), x.signIn(d2, "u-2")
+	testutil.Write(t, filepath.Join(x.home, "accounts.toml"), "[[account]]\nname = \"max1\"\nplan = \"max\"\ndirs = [\""+
+		d1+"\"]\n[[account]]\nname = \"max2\"\nplan = \"max\"\ndirs = [\""+d2+"\"]\n")
+	tag := func(role string) string { return "[crius account=max project=lab role=" + role + "]" }
+	meter, thread, moved, ended, lost := "aaaaaaaa-0000-0000-0000-000000000001", "bbbbbbbb-0000-0000-0000-000000000002",
+		"cccccccc-0000-0000-0000-000000000003", "dddddddd-0000-0000-0000-000000000004", "eeeeeeee-0000-0000-0000-000000000005"
+	x.session("work", meter, "/work/lab", tag("lead"), qNow.Add(-2*time.Minute))
+	x.session("work", thread, "/work/lab", tag("p2"), qNow.Add(-10*time.Minute))
+	x.session("work", moved, "/work/lab", tag("p3"), qNow.Add(-8*time.Minute))
+	x.session("work", ended, "/work/lab", tag("p4"), qNow.Add(-3*time.Hour))
+	x.session("work", lost, "/work/lab", tag("p5"), qNow.Add(-20*time.Minute))
+	responded := true
+	line := func(sid string, at time.Time, seven float64) quota.Line {
+		l := sampleAt(sid, at, seven, qNow.Add(24*time.Hour))
+		l.Kind, l.Responded, l.Persona, l.Login, l.Dir = "change", &responded, "work", l1, d1
+		return l
+	}
+	// max1 measured at 96% by the one statusline session; moved's line on max1 is older than its hook record on max2.
+	x.spool(line(meter, qNow.Add(-2*time.Minute), 96), line(moved, qNow.Add(-30*time.Minute), 90))
+	hooks := filepath.Join(x.home, "sessions")
+	for _, s := range []sessionstate.State{
+		{SessionID: thread, State: sessionstate.Idle, Event: "Stop", Time: qNow.Add(-9 * time.Minute), Config: d1, Thread: "t-1"},
+		{SessionID: moved, State: sessionstate.Running, Event: "PostToolUse", Time: qNow.Add(-7 * time.Minute), Config: d2},
+		{SessionID: ended, State: sessionstate.Ended, Event: "SessionEnd", Time: qNow.Add(-170 * time.Minute), Config: d1},
+	} {
+		if err := sessionstate.Write(hooks, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	x.run()
+	need := grepAlerts(x.alerts(), " NEED crius:ingest -> crius:lead — quota: account max1")
+	if len(need) != 1 {
+		t.Fatalf("want one move NEED for max1, got %q", x.alerts())
+	}
+	t.Log(need[0])
+	for _, w := range []string{"lab:lead aaaaaaaa", "lab:p2 bbbbbbbb", "1 working session with no known account",
+		"lab:p5 eeeeeeee"} {
+		if !strings.Contains(need[0], w) {
+			t.Errorf("NEED lacks %q: %q", w, need[0])
+		}
+	}
+	for _, w := range []string{"cccccccc", "dddddddd"} {
+		if strings.Contains(need[0], w) {
+			t.Errorf("NEED names %s (moved to max2, or ended): %q", w, need[0])
+		}
+	}
+	// max2 at the limit with no session placed on it but one unplaced: the unplaced one is still shown.
+	y := newIC(t, cfg{extra: limitProject})
+	e1, e2 := filepath.Join(y.home, "cfg1"), filepath.Join(y.home, "cfg2")
+	m1, _ := y.signIn(e1, "u-1"), y.signIn(e2, "u-2")
+	testutil.Write(t, filepath.Join(y.home, "accounts.toml"), "[[account]]\nname = \"max1\"\nplan = \"max\"\ndirs = [\""+
+		e1+"\"]\n[[account]]\nname = \"max2\"\nplan = \"max\"\ndirs = [\""+e2+"\"]\n")
+	y.session("work", meter, "/work/lab", tag("lead"), qNow.Add(-2*time.Hour))
+	y.session("work", lost, "/work/lab", tag("p5"), qNow.Add(-20*time.Minute))
+	l := line(meter, qNow.Add(-2*time.Hour), 97)
+	l.Login, l.Dir = m1, e1
+	y.spool(l)
+	y.run()
+	need = grepAlerts(y.alerts(), " NEED crius:ingest -> crius:lead — quota: account max1")
+	if len(need) != 1 || !strings.Contains(need[0], "1 working session with no known account") ||
+		!strings.Contains(need[0], "lab:p5 eeeeeeee") {
+		t.Fatalf("max1 at 97%% whose one session closed, one working session unplaced: want a NEED naming it, got %q",
+			y.alerts())
 	}
 }
 
