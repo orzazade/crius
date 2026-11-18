@@ -1,0 +1,2 @@
+{"thread":{"threadId":"th-queued","status":"completed","providerInstanceId":"claude-max1","activeRunId":null,"pendingRequestCount":0,"updatedAt":"2026-11-18T20:30:00.000Z"},
+"messages":[{"role":"assistant","text":"Batch two merged. ✅"},{"role":"user","text":"next: run the long suite"}]}

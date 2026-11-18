@@ -3,6 +3,7 @@
 //	crius-spawn [-account max|<name>] [-parent <leader session id>] [-item <project>#<n>] <project> <role> <first prompt…>
 //	crius-spawn -move [-account max|<name>] <project> <role>
 //	crius-spawn -resume <project> <role>
+//	crius-spawn -move-check < <PreToolUse hook input>
 //
 // The tab lands in the project's workspace (made, named and coloured when missing), is named "<project> · <role>",
 // gets the folder-trust dialog answered, its model checked, and the provenance tag line typed before the first prompt.
@@ -21,6 +22,9 @@
 // session there on the Max account whose week resets soonest under 95% (or the row -account names), then prints the new
 // Claude's pid and config folder. A session busy or running a job is left alone, and a resume that lands in another
 // folder fails.
+//
+// With -move-check it is the PreToolUse hook for T3 Code's t3_thread_configure (see runMoveCheck): it denies, with
+// the reason, a move of a T3 thread whose run, open request or ⏳ reply means a restart would kill its background jobs.
 package main
 
 import (
@@ -50,14 +54,24 @@ func main() {
 	again := flag.Bool("resume", false, "bring the role's current session back: <project> <role>, nothing else")
 	closed := flag.Bool("close", false, "mark the role's current session closed on purpose: <project> <role>, nothing else; wakewatch's dead-role check skips it until another session of the role starts or -resume brings it back")
 	move := flag.Bool("move", false, "resume the role's current session on another Max account (-account, default the one whose week resets soonest under 95%): <project> <role>; only at a turn boundary with no background job but its bus waiter")
+	moveCheck := flag.Bool("move-check", false, "PreToolUse hook for "+configureTool+": hook input on stdin; denies, with the reason, moving a T3 thread that is busy or cannot be read")
 	flag.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: crius-spawn [-account max|<name>] [-parent id] [-item project#n] <project> <role> <first prompt…>")
 		fmt.Fprintln(os.Stderr, "       crius-spawn -move [-account max|<name>] <project> <role>")
 		fmt.Fprintln(os.Stderr, "       crius-spawn -resume <project> <role>")
 		fmt.Fprintln(os.Stderr, "       crius-spawn -close <project> <role>")
+		fmt.Fprintln(os.Stderr, "       crius-spawn -move-check < <PreToolUse hook input>")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
+	if *moveCheck {
+		if flag.NArg() != 0 || flag.NFlag() != 1 {
+			flag.Usage()
+			os.Exit(2)
+		}
+		runMoveCheck(store.Home(), os.Stdin, os.Stdout)
+		return
+	}
 	d := launch.Deps{
 		Lock:    filepath.Join(store.Home(), "launch.lock"),
 		Cmux:    runCmux,
