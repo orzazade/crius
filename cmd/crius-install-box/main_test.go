@@ -287,3 +287,36 @@ func TestABuildInAWorktreeIsStampedWithItsOwnHead(t *testing.T) {
 		t.Fatalf("worktree build stamped %s, want its HEAD %s (outer repo is %s)", rev, head, gitIn(outer, "rev-parse", "HEAD"))
 	}
 }
+
+// One commit must give the same bytes from any temp clone, or a reinstall never reads as unchanged and the binary
+// carries a temp path (seen 11-19: the two boxes got different sha256s for one commit).
+func TestTwoBuildsOfOneCommitAreTheSameBytes(t *testing.T) {
+	repo := gitRepo(t)
+	write(t, filepath.Join(repo, "go.mod"), "module example.com/x\n\ngo 1.21\n", 0o644)
+	if err := os.MkdirAll(filepath.Join(repo, "cmd", "x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(repo, "cmd", "x", "main.go"), "package main\n\nfunc main() { panic(\"x\") }\n", 0o644)
+	gitOut(t, repo, "add", ".")
+	gitOut(t, repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "x")
+	head := strings.TrimSpace(gitOut(t, repo, "rev-parse", "HEAD"))
+	var sums []string
+	for range 2 {
+		src, err := buildSource(repo, head, t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := filepath.Join(t.TempDir(), "x")
+		if _, err := goBuild(src, "amd64", "x", out, true); err != nil {
+			t.Fatal(err)
+		}
+		sum, err := fileSum(out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sums = append(sums, sum)
+	}
+	if sums[0] != sums[1] {
+		t.Fatalf("two builds of %s from two clones differ: %s vs %s", head[:7], sums[0], sums[1])
+	}
+}

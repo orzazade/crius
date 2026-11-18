@@ -55,7 +55,8 @@ func main() {
 
 // goBuild runs the real cross-build and reads the revision back with go version -m.
 func goBuild(dir, goarch, name, out string, stamped bool) (string, error) {
-	cmd := exec.Command("go", "-C", dir, "build", fmt.Sprintf("-buildvcs=%t", stamped), "-o", out, "./cmd/"+name)
+	// -trimpath keeps the temp clone's path out of the binary, so one commit always gives the same sha256.
+	cmd := exec.Command("go", "-C", dir, "build", "-trimpath", fmt.Sprintf("-buildvcs=%t", stamped), "-o", out, "./cmd/"+name)
 	cmd.Env = append(os.Environ(), "GOTOOLCHAIN=local", "GOFLAGS=", "GOOS=linux", "GOARCH="+goarch, "CGO_ENABLED=0")
 	if b, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("go build %s: %v\n%s", name, err, b)
