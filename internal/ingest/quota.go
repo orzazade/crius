@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/orzazade/crius/internal/quota"
 	"github.com/orzazade/crius/internal/sessionstate"
@@ -487,12 +488,13 @@ func (r *runner) pauseAccounts(tx *sql.Tx, rep *quota.Report, as *quota.Accounts
 }
 
 // limitChecks tells Crius when a Max account its sessions run on reaches quota.Limit of its week (owner 10-28 23:5x):
-// one NEED per account and window, and one more when a later run finds a session not named before; each names the
-// sessions working on it (sessionsByLogin) and the account each project moves to by the rule (quota.Pick). Each also
-// counts and names the working sessions no record places on an account, as any of them may be on this one: dropping
-// them hid the account's work (live 11-18). Crius moves each, the same session, with crius-spawn -move at its next turn
-// boundary; nothing is stopped here. An account at the limit with no session working on it or unplaced is no news. A
-// login no row lists is checked too: its sessions spend a Max week all the same.
+// one NEED per account and window, and one more when a later run finds a session on it not named before; each names
+// the sessions working on it (sessionsByLogin) and the account each project moves to by the rule (quota.Pick). Crius
+// moves each, the same session, with crius-spawn -move at its next turn boundary; nothing is stopped here. Each NEED
+// also counts the working sessions no record places, as any may be on this account (live 11-18 they were dropped). They
+// are mostly headless runs, a new one every few minutes (review of da1dcd3), so they are counted, never named or keyed:
+// an account at the limit whose only working sessions are unplaced gets one NEED per window. An account with neither
+// is no news. A login no row lists is checked too: its sessions spend a Max week all the same.
 // Only a measured share counts (STATUS 11-17 15:09): the NEED reads and prints the highest share a measurement showed
 // (SevenMeasuredPct), as a higher one on a line that measured nothing is a repeat that may be another login's window.
 // Shares only rise within a window, so a measured one at the limit holds at any age. Wakewatch's weekly watch reads
@@ -519,15 +521,27 @@ func (r *runner) limitChecks(tx *sql.Tx, rep *quota.Report, as *quota.Accounts) 
 		if err != nil {
 			return err
 		}
-		var names, lost, news []string // news: full ids, as two sessions may share 8 characters
+		var names, news []string // news: full ids, as two sessions may share 8 characters
 		next := map[string]string{}
 		for i, s := range append(slices.Clip(open[a.Login]), unknown...) {
-			name := s.project + ":" + s.role + " " + s.id[:min(8, len(s.id))]
-			if i < len(open[a.Login]) {
-				names = append(names, name)
-			} else {
-				lost = append(lost, name)
+			if _, ok := next[s.project]; !ok {
+				to := "none (no Max room)" // short: the line is one bus line
+				root, pauseAt, err := ForSpawn(r.home, s.project)
+				if err == nil {
+					var name string
+					if name, _, _, err = quota.Pick(rep, as, root, "max", pauseAt); err == nil && name != "" {
+						to = name
+					}
+				}
+				if err != nil {
+					to = "none (" + truncate(err.Error(), 40) + ")"
+				}
+				next[s.project] = to
 			}
+			if i >= len(open[a.Login]) {
+				continue // an unplaced one: counted, not keyed
+			}
+			names = append(names, s.project+":"+s.role+" "+s.id[:min(8, len(s.id))])
 			res, err := tx.Exec("insert or ignore into alert (key, ts, text, sent) values (?,?,?,?)", key+":"+s.id,
 				utcNow(), "named in "+key, utcNow())
 			if err != nil {
@@ -538,50 +552,75 @@ func (r *runner) limitChecks(tx *sql.Tx, rep *quota.Report, as *quota.Accounts) 
 			} else if n > 0 {
 				news = append(news, s.id)
 			}
-			if _, ok := next[s.project]; ok {
-				continue
-			}
-			to := "none (no Max account of its persona has room)"
-			root, pauseAt, err := ForSpawn(r.home, s.project)
-			if err == nil {
-				var name string
-				if name, _, _, err = quota.Pick(rep, as, root, "max", pauseAt); err == nil && name != "" {
-					to = name
-				}
-			}
-			if err != nil {
-				to = "none (" + err.Error() + ")"
-			}
-			next[s.project] = to
 		}
-		if news == nil {
+		need := key + ":need:" + strings.Join(news, ",")
+		switch {
+		case len(names) == 0:
+			need = key + ":unplaced" // once per window, however many come and go
+		case news == nil:
 			continue
 		}
 		var moves []string
 		for _, project := range slices.Sorted(maps.Keys(next)) {
 			moves = append(moves, project+" to "+next[project])
 		}
-		on := "no session known"
-		if len(names) > 0 {
-			on = strings.Join(names, ", ")
-		}
-		if len(lost) > 0 {
-			word := "sessions"
-			if len(lost) == 1 {
-				word = "session"
-			}
-			on += fmt.Sprintf("; and %d working %s with no known account (no statusline line, no crius-hook record "+
-				"of a folder accounts.toml lists), maybe on it: %s", len(lost), word, strings.Join(lost, ", "))
-		}
-		if err := r.queueLine(tx, key+":need:"+strings.Join(news, ","), "NEED", "crius", "crius:lead", fmt.Sprintf(
-			"quota: account %s at %g%% of its 7d (%s, resets %s) reached the %d%% limit; on it: %s. Next by the rule: "+
-				"%s. Move each, the same session, at its turn boundary: crius-spawn -move <project> <role>", a.Name, a.SevenMeasuredPct,
-			a.SevenMeasuredAt.Local().Format("15:04"),
-			a.Reset.Local().Format("Mon 15:04"), quota.Limit, on, strings.Join(moves, ", "))); err != nil {
+		if err := r.queueLine(tx, need, "NEED", "crius", "crius:lead", limitLine(a, moves, names, len(unknown))); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// limitLine is the move NEED, in one bus line (store.MaxLen runes; a longer one is cut at the end): the share, the
+// target by the rule and the move hint come first, then the sessions placed on the account as far as they fit, then
+// the count of unplaced ones (review of da1dcd3: a long list cut the target and hint off).
+func limitLine(a quota.AcctUse, moves, names []string, unplaced int) string {
+	head := fmt.Sprintf("quota: account %s at %g%% of its 7d (%s, resets %s) over the %d%% limit. Next by the rule: ",
+		truncate(a.Name, 20), a.SevenMeasuredPct, a.SevenMeasuredAt.Local().Format("15:04"),
+		a.Reset.Local().Format("Mon 15:04"), quota.Limit)
+	hint := ". Move each at its turn boundary: crius-spawn -move <project> <role>. On it: "
+	tail := ""
+	if unplaced > 0 {
+		word := "sessions"
+		if unplaced == 1 {
+			word = "session"
+		}
+		tail = fmt.Sprintf("; and %d working %s with no known account", unplaced, word)
+	}
+	on, reserve := "no session placed", 0
+	if len(names) > 0 {
+		on, reserve = "", utf8.RuneCountInString(fmt.Sprintf("%d not shown", len(names)))
+	}
+	room := store.MaxLen - utf8.RuneCountInString(head+hint+on+tail)
+	// The target by the rule first; the sessions get what it leaves, at least their count.
+	movesText := fitList(moves, room-reserve)
+	if len(names) > 0 {
+		on = fitList(names, room-utf8.RuneCountInString(movesText))
+	}
+	return head + movesText + hint + on + tail
+}
+
+// fitList joins items with ", " as far as they fit in room runes and counts the rest ("a, b +3 more").
+func fitList(items []string, room int) string {
+	out := ""
+	for i, it := range items {
+		s := it
+		if i > 0 {
+			s = out + ", " + it
+		}
+		more := ""
+		if rest := len(items) - i - 1; rest > 0 {
+			more = fmt.Sprintf(" +%d more", rest)
+		}
+		if utf8.RuneCountInString(s+more) > room {
+			if i == 0 {
+				return fmt.Sprintf("%d not shown", len(items))
+			}
+			return out + fmt.Sprintf(" +%d more", len(items)-i)
+		}
+		out = s
+	}
+	return out
 }
 
 // openSession is a session open on a login: its project, role ("unknown" for none) and id.
@@ -601,8 +640,9 @@ const activeWithin = 24 * time.Hour
 //
 // The newer wins, as a session moved to another account keeps its id (crius-spawn -move); on a tie the statusline
 // line wins, as it read the login itself. Sessions with no statusline (T3 threads: 23 of 24 with requests on 11-18)
-// are placed by the hook record alone. A working session neither record places (no record, or a folder no row
-// lists) is unknown, so the NEED counts it: it may be on any account.
+// are placed by the hook record alone. A hook record of a folder no accounts.toml row lists places its session
+// elsewhere, on no Max account (the enterprise folder; review of da1dcd3): never unknown, never named. A working
+// session neither record places (no record, or a listed folder with no sign-in) is unknown: it may be on any account.
 func sessionsByLogin(tx *sql.Tx, now time.Time, hooks map[string]sessionstate.State, as *quota.Accounts) (
 	map[string][]openSession, []openSession, error) {
 	// Sessions with a request or an answered statusline line in the window; lastWork then reads each exactly. The
@@ -661,7 +701,9 @@ func sessionsByLogin(tx *sql.Tx, now time.Time, hooks map[string]sessionstate.St
 			}
 		case hooked && h.State == sessionstate.Ended:
 			// closed: on whichever account, it spends nothing more
-		case hooked && as.Dir(h.Config) != nil && as.Dir(h.Config).Login != "":
+		case hooked && as.Dir(h.Config) == nil:
+			// elsewhere: a folder no row lists is no Max account (accounts.toml lists every one), e.g. the enterprise one
+		case hooked && as.Dir(h.Config).Login != "":
 			login := as.Dir(h.Config).Login
 			out[login] = append(out[login], v.s)
 		default:

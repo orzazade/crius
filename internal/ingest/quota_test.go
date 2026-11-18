@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/orzazade/crius/internal/quota"
 	"github.com/orzazade/crius/internal/sessionstate"
@@ -1814,78 +1815,183 @@ func TestQuotaLimitNeedNeedsAMeasuredShareAndAnActiveSession(t *testing.T) {
 	}
 }
 
-// Review of 66688ff (live 11-18: 23 of 24 sessions with requests had no statusline line): a session in a T3 thread
-// writes no statusline, so the move NEED never named it. crius-hook records each session's config folder on every
-// event (~/.crius/sessions/<id>.json), which places it on that folder's login. A session the hook places elsewhere
-// later than its statusline line has moved. A working session neither places is counted and named, never dropped.
-func TestQuotaLimitNeedPlacesSessionsByTheirHookRecord(t *testing.T) {
+// hookCase is a lab project with Max accounts max1 (cfg1) and max2 (cfg2), and cfg-ent: a folder signed into a third
+// login that accounts.toml does not list as a Max account (like the enterprise folder).
+func hookCase(t *testing.T) (x *ic, d1, d2, other, l1 string) {
 	clock = func() time.Time { return qNow }
 	t.Cleanup(func() { clock = time.Now })
-	x := newIC(t, cfg{extra: limitProject})
-	d1, d2 := filepath.Join(x.home, "cfg1"), filepath.Join(x.home, "cfg2")
-	l1, _ := x.signIn(d1, "u-1"), x.signIn(d2, "u-2")
+	x = newIC(t, cfg{extra: limitProject})
+	d1, d2, other = filepath.Join(x.home, "cfg1"), filepath.Join(x.home, "cfg2"), filepath.Join(x.home, "cfg-ent")
+	l1, _, _ = x.signIn(d1, "u-1"), x.signIn(d2, "u-2"), x.signIn(other, "u-9")
 	testutil.Write(t, filepath.Join(x.home, "accounts.toml"), "[[account]]\nname = \"max1\"\nplan = \"max\"\ndirs = [\""+
 		d1+"\"]\n[[account]]\nname = \"max2\"\nplan = \"max\"\ndirs = [\""+d2+"\"]\n")
-	tag := func(role string) string { return "[crius account=max project=lab role=" + role + "]" }
-	meter, thread, moved, ended, lost := "aaaaaaaa-0000-0000-0000-000000000001", "bbbbbbbb-0000-0000-0000-000000000002",
-		"cccccccc-0000-0000-0000-000000000003", "dddddddd-0000-0000-0000-000000000004", "eeeeeeee-0000-0000-0000-000000000005"
-	x.session("work", meter, "/work/lab", tag("lead"), qNow.Add(-2*time.Minute))
-	x.session("work", thread, "/work/lab", tag("p2"), qNow.Add(-10*time.Minute))
-	x.session("work", moved, "/work/lab", tag("p3"), qNow.Add(-8*time.Minute))
-	x.session("work", ended, "/work/lab", tag("p4"), qNow.Add(-3*time.Hour))
-	x.session("work", lost, "/work/lab", tag("p5"), qNow.Add(-20*time.Minute))
+	return x, d1, d2, other, l1
+}
+
+func labTag(role string) string { return "[crius account=max project=lab role=" + role + "]" }
+
+// answered is a statusline line on login in dir that came with a response, in a window that resets tomorrow.
+func answered(sid string, at time.Time, seven float64, login, dir string) quota.Line {
 	responded := true
-	line := func(sid string, at time.Time, seven float64) quota.Line {
-		l := sampleAt(sid, at, seven, qNow.Add(24*time.Hour))
-		l.Kind, l.Responded, l.Persona, l.Login, l.Dir = "change", &responded, "work", l1, d1
-		return l
-	}
-	// max1 measured at 96% by the one statusline session; moved's line on max1 is older than its hook record on max2.
-	x.spool(line(meter, qNow.Add(-2*time.Minute), 96), line(moved, qNow.Add(-30*time.Minute), 90))
-	hooks := filepath.Join(x.home, "sessions")
-	for _, s := range []sessionstate.State{
-		{SessionID: thread, State: sessionstate.Idle, Event: "Stop", Time: qNow.Add(-9 * time.Minute), Config: d1, Thread: "t-1"},
-		{SessionID: moved, State: sessionstate.Running, Event: "PostToolUse", Time: qNow.Add(-7 * time.Minute), Config: d2},
-		{SessionID: ended, State: sessionstate.Ended, Event: "SessionEnd", Time: qNow.Add(-170 * time.Minute), Config: d1},
-	} {
-		if err := sessionstate.Write(hooks, s); err != nil {
+	l := sampleAt(sid, at, seven, qNow.Add(24*time.Hour))
+	l.Kind, l.Responded, l.Persona, l.Login, l.Dir = "change", &responded, "work", login, dir
+	return l
+}
+
+func writeHooks(t *testing.T, home string, ss ...sessionstate.State) {
+	t.Helper()
+	for _, s := range ss {
+		if err := sessionstate.Write(filepath.Join(home, "sessions"), s); err != nil {
 			t.Fatal(err)
 		}
 	}
+}
+
+// needText is the text of a bus line after its "— ", as it was stored.
+func needText(line string) string {
+	_, text, _ := strings.Cut(line, " — ")
+	return text
+}
+
+// Review of 66688ff (live 11-18: 23 of 24 sessions with requests had no statusline line): a session in a T3 thread
+// writes no statusline, so the move NEED never named it. crius-hook records each session's config folder on every
+// event (~/.crius/sessions/<id>.json), which places it on that folder's login. A working session neither record places
+// is counted, never dropped. Review of da1dcd3: the line keeps the move target and hint within one bus line (P1); the
+// unplaced (mostly headless runs) are counted, not keyed, so a new one is no new NEED (P2-1).
+func TestQuotaLimitNeedPlacesSessionsByTheirHookRecord(t *testing.T) {
+	x, d1, d2, other, l1 := hookCase(t)
+	meter, thread, moved, ended, away := "aaaaaaaa-0000-0000-0000-000000000001", "bbbbbbbb-0000-0000-0000-000000000002",
+		"cccccccc-0000-0000-0000-000000000003", "dddddddd-0000-0000-0000-000000000004", "ffffffff-0000-0000-0000-000000000009"
+	lost := []string{"eeeeeeee-0000-0000-0000-000000000005", "eeeeeeee-0000-0000-0000-000000000006",
+		"eeeeeeee-0000-0000-0000-000000000007"}
+	x.session("work", meter, "/work/lab", labTag("lead"), qNow.Add(-2*time.Minute))
+	x.session("work", thread, "/work/lab", labTag("p2"), qNow.Add(-10*time.Minute))
+	x.session("work", moved, "/work/lab", labTag("p3"), qNow.Add(-8*time.Minute))
+	x.session("work", ended, "/work/lab", labTag("p4"), qNow.Add(-3*time.Hour))
+	x.session("work", away, "/work/lab", labTag("p9"), qNow.Add(-6*time.Minute))
+	for i, s := range lost {
+		x.session("work", s, "/work/lab", labTag(fmt.Sprintf("q%d", i)), qNow.Add(-20*time.Minute))
+	}
+	// max1 measured at 96% by the one statusline session; moved's line on max1 is older than its hook record on max2.
+	x.spool(answered(meter, qNow.Add(-2*time.Minute), 96, l1, d1), answered(moved, qNow.Add(-30*time.Minute), 90, l1, d1))
+	writeHooks(t, x.home,
+		sessionstate.State{SessionID: thread, State: sessionstate.Idle, Event: "Stop", Time: qNow.Add(-9 * time.Minute), Config: d1, Thread: "t-1"},
+		sessionstate.State{SessionID: moved, State: sessionstate.Running, Event: "PostToolUse", Time: qNow.Add(-7 * time.Minute), Config: d2},
+		sessionstate.State{SessionID: ended, State: sessionstate.Ended, Event: "SessionEnd", Time: qNow.Add(-170 * time.Minute), Config: d1},
+		sessionstate.State{SessionID: away, State: sessionstate.Running, Event: "PostToolUse", Time: qNow.Add(-5 * time.Minute), Config: other})
 	x.run()
 	need := grepAlerts(x.alerts(), " NEED crius:ingest -> crius:lead — quota: account max1")
 	if len(need) != 1 {
 		t.Fatalf("want one move NEED for max1, got %q", x.alerts())
 	}
 	t.Log(need[0])
-	for _, w := range []string{"lab:lead aaaaaaaa", "lab:p2 bbbbbbbb", "1 working session with no known account",
-		"lab:p5 eeeeeeee"} {
-		if !strings.Contains(need[0], w) {
-			t.Errorf("NEED lacks %q: %q", w, need[0])
+	text := needText(need[0])
+	if n := utf8.RuneCountInString(text); n > store.MaxLen {
+		t.Errorf("NEED is %d runes, over a bus line's %d: %q", n, store.MaxLen, text)
+	}
+	// away runs on a folder no Max row lists: elsewhere, not unknown (review of da1dcd3, P2-2), so 3 unplaced, not 4.
+	for _, w := range []string{"Next by the rule: lab to ", "crius-spawn -move <project> <role>", "lab:lead aaaaaaaa",
+		"lab:p2 bbbbbbbb", "3 working sessions with no known account"} {
+		if !strings.Contains(text, w) {
+			t.Errorf("NEED lacks %q: %q", w, text)
 		}
 	}
-	for _, w := range []string{"cccccccc", "dddddddd"} {
-		if strings.Contains(need[0], w) {
-			t.Errorf("NEED names %s (moved to max2, or ended): %q", w, need[0])
+	for _, w := range []string{"cccccccc", "dddddddd", "ffffffff"} {
+		if strings.Contains(text, w) {
+			t.Errorf("NEED names %s (moved to max2, ended, or on a folder no Max row lists): %q", w, text)
 		}
 	}
-	// max2 at the limit with no session placed on it but one unplaced: the unplaced one is still shown.
-	y := newIC(t, cfg{extra: limitProject})
-	e1, e2 := filepath.Join(y.home, "cfg1"), filepath.Join(y.home, "cfg2")
-	m1, _ := y.signIn(e1, "u-1"), y.signIn(e2, "u-2")
-	testutil.Write(t, filepath.Join(y.home, "accounts.toml"), "[[account]]\nname = \"max1\"\nplan = \"max\"\ndirs = [\""+
-		e1+"\"]\n[[account]]\nname = \"max2\"\nplan = \"max\"\ndirs = [\""+e2+"\"]\n")
-	y.session("work", meter, "/work/lab", tag("lead"), qNow.Add(-2*time.Hour))
-	y.session("work", lost, "/work/lab", tag("p5"), qNow.Add(-20*time.Minute))
-	l := line(meter, qNow.Add(-2*time.Hour), 97)
-	l.Login, l.Dir = m1, e1
-	y.spool(l)
-	y.run()
-	need = grepAlerts(y.alerts(), " NEED crius:ingest -> crius:lead — quota: account max1")
-	if len(need) != 1 || !strings.Contains(need[0], "1 working session with no known account") ||
-		!strings.Contains(need[0], "lab:p5 eeeeeeee") {
-		t.Fatalf("max1 at 97%% whose one session closed, one working session unplaced: want a NEED naming it, got %q",
-			y.alerts())
+	// A new headless run with no record: still unplaced, no new NEED.
+	x.session("work", "eeeeeeee-0000-0000-0000-000000000008", "/work/lab", labTag("q9"), qNow.Add(-time.Minute))
+	x.run()
+	if need := grepAlerts(x.alerts(), " NEED crius:ingest -> crius:lead — quota: account max1"); len(need) != 1 {
+		t.Fatalf("a new unplaced session: want still one NEED, got %q", need)
+	}
+	// control: a new session placed on max1 is news.
+	x.session("work", "abababab-0000-0000-0000-00000000000a", "/work/lab", labTag("a1"), qNow.Add(-time.Minute))
+	writeHooks(t, x.home, sessionstate.State{SessionID: "abababab-0000-0000-0000-00000000000a", State: sessionstate.Running,
+		Event: "PostToolUse", Time: qNow.Add(-time.Minute), Config: d1})
+	x.run()
+	if need := grepAlerts(x.alerts(), " NEED crius:ingest -> crius:lead — quota: account max1"); len(need) != 2 ||
+		!strings.Contains(need[1], "lab:a1 abababab") {
+		t.Fatalf("a new session placed on max1: want a second NEED naming it, got %q", need)
+	}
+}
+
+// An account at the limit whose only working sessions are unplaced gets one NEED for its window, which counts them;
+// more unplaced sessions add none (review of da1dcd3, P2-1: headless runs would ping every few minutes).
+func TestQuotaLimitNeedWithOnlyUnplacedSessionsIsOnce(t *testing.T) {
+	x, d1, _, _, l1 := hookCase(t)
+	meter := "aaaaaaaa-0000-0000-0000-000000000001"
+	x.session("work", meter, "/work/lab", labTag("lead"), qNow.Add(-2*time.Hour))
+	x.session("work", "eeeeeeee-0000-0000-0000-000000000005", "/work/lab", labTag("q1"), qNow.Add(-20*time.Minute))
+	x.spool(answered(meter, qNow.Add(-2*time.Hour), 97, l1, d1)) // its tab closed since: no line within quota.Gap
+	x.run()
+	need := grepAlerts(x.alerts(), " NEED crius:ingest -> crius:lead — quota: account max1")
+	if len(need) != 1 || !strings.Contains(need[0], "1 working session with no known account") {
+		t.Fatalf("max1 at 97%% with one working session unplaced: want one NEED counting it, got %q", x.alerts())
+	}
+	x.session("work", "eeeeeeee-0000-0000-0000-000000000006", "/work/lab", labTag("q2"), qNow.Add(-time.Minute))
+	x.run()
+	if need := grepAlerts(x.alerts(), " NEED crius:ingest -> crius:lead — quota: account max1"); len(need) != 1 {
+		t.Fatalf("a second unplaced session: want still one NEED, got %q", need)
+	}
+}
+
+// Which record places a session (sessionsByLogin): the newer of its statusline line and its hook record; on a tie the
+// statusline line, which read the login itself. A folder no Max row lists places it elsewhere: neither on a Max login
+// nor unknown (review of da1dcd3, P2-2).
+func TestSessionsByLoginPicksTheNewerRecord(t *testing.T) {
+	x, d1, d2, other, l1 := hookCase(t)
+	tie, lineNewer, hookNewer, away := "aaaaaaaa-0000-0000-0000-000000000001", "bbbbbbbb-0000-0000-0000-000000000002",
+		"cccccccc-0000-0000-0000-000000000003", "dddddddd-0000-0000-0000-000000000004"
+	at := qNow.Add(-5 * time.Minute)
+	for _, s := range []string{tie, lineNewer, hookNewer, away} {
+		x.session("work", s, "/work/lab", labTag("p"+s[:1]), qNow.Add(-time.Minute))
+	}
+	x.spool(answered(tie, at, 50, l1, d1), answered(lineNewer, at, 50, l1, d1), answered(hookNewer, at.Add(-time.Minute), 50, l1, d1))
+	hooks := map[string]sessionstate.State{
+		tie:       {SessionID: tie, State: sessionstate.Running, Time: at, Config: d2},
+		lineNewer: {SessionID: lineNewer, State: sessionstate.Running, Time: at.Add(-time.Minute), Config: d2},
+		hookNewer: {SessionID: hookNewer, State: sessionstate.Running, Time: at, Config: d2},
+		away:      {SessionID: away, State: sessionstate.Running, Time: at, Config: other},
+	}
+	x.run()
+	as, err := quota.LoadAccounts(x.home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", filepath.Join(x.home, "state", "record.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	open, unknown, err := sessionsByLogin(tx, qNow, hooks, as)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for login, ss := range open {
+		for _, s := range ss {
+			got[s.id] = as.Name(login)
+		}
+	}
+	for _, s := range unknown {
+		got[s.id] = "unknown"
+	}
+	want := map[string]string{tie: "max1", lineNewer: "max1", hookNewer: "max2"}
+	for id, w := range want {
+		if got[id] != w {
+			t.Errorf("session %s: want %s, got %q (all: %v)", id[:8], w, got[id], got)
+		}
+	}
+	if v, ok := got[away]; ok {
+		t.Errorf("session on a folder no Max row lists: want it neither placed nor unknown, got %q", v)
 	}
 }
 
@@ -2073,5 +2179,27 @@ func TestQuotaAMaxFolderLineWithoutRateLimitsIsMax(t *testing.T) {
 	var acct string
 	if err := sqlOne(x, "select account from session where id = ?", onMax, &acct); err != nil || acct != "max" {
 		t.Errorf("session account %q %v", acct, err)
+	}
+}
+
+// The move NEED fits one bus line whatever the lists hold, and keeps the target and the hint (review of da1dcd3, P1).
+func TestLimitLineFitsABusLine(t *testing.T) {
+	a := quota.AcctUse{Name: strings.Repeat("n", 60), SevenMeasuredPct: 99.5, SevenMeasuredAt: qNow, Reset: qNow.Add(time.Hour)}
+	var moves, names []string
+	for i := range 12 {
+		moves = append(moves, fmt.Sprintf("project-%02d to none (no Max room)", i))
+		names = append(names, fmt.Sprintf("project-%02d:builder-%02d abcdef%02d", i, i, i))
+	}
+	for _, c := range []struct{ moves, names []string }{{moves, names}, {moves[:1], names}, {moves, names[:1]}, {moves[:1], nil}} {
+		line := limitLine(a, c.moves, c.names, 164)
+		if n := utf8.RuneCountInString(line); n > store.MaxLen {
+			t.Errorf("%d moves, %d names: %d runes, over %d: %q", len(c.moves), len(c.names), n, store.MaxLen, line)
+		}
+		for _, w := range []string{"Next by the rule: project-00 to none", "crius-spawn -move <project> <role>",
+			"164 working sessions with no known account"} {
+			if !strings.Contains(line, w) {
+				t.Errorf("%d moves, %d names: line lacks %q: %q", len(c.moves), len(c.names), w, line)
+			}
+		}
 	}
 }
