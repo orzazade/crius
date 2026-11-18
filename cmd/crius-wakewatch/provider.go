@@ -118,8 +118,9 @@ func captureTab(t wakewatch.RemoteTab) (string, error) {
 	return tabsend.Visible(string(out)), nil
 }
 
-// tabProcs gives a remote tab's pane pid, every process of its box, then the raw command line of each Claude Code tool
-// shell (wakewatch.RestartDeps.Procs). The boxes run Linux: /proc keeps a newline that ps shows as a space.
+// tabProcs gives a remote tab's pane pid, every process of its box with its parent, then the raw command line of each
+// Claude Code tool shell (wakewatch.RestartDeps.Procs). /proc keeps a newline that ps shows as a space; a box without
+// /proc (macOS) gives empty command lines, and the ps line is read instead.
 func tabProcs(t wakewatch.RemoteTab) (string, error) {
 	out, err := onBox(t, "tmux display-message -p -t '"+t.Target+"' '#{pane_pid}' && ps -ww -A -o pid=,ppid=,args= && "+
 		"{ echo '--- cmdline'; for p in $(pgrep -f /shell-snapshots/snapshot-); do printf '%s ' \"$p\"; "+

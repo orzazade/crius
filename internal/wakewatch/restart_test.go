@@ -276,8 +276,6 @@ var waiters = map[string]bgJob{
 		kids: []string{"/bin/bash /home/crius/.claude-work/skills/cmux-team/scripts/team-wait.sh --role quotes:dev /home/crius/.crius/bus/quotes.log", "sleep 10"}},
 	"crius-wait (the Mac)": {cmd: "S=/tmp/s; sleep 1; ~/.crius/bin/crius-wait > $S/wait.out 2>&1",
 		kids: []string{"/Users/orkhanrzazade/.crius/bin/crius-wait"}},
-	"crius-wait, in its sleep first": {cmd: "S=/tmp/s; sleep 1; ~/.crius/bin/crius-wait > $S/wait.out 2>&1",
-		kids: []string{"sleep 1"}},
 	"bus-watch.ts (staffy:qa)": {cmd: "bun wt/qa/bus-watch.ts /home/crius/.crius/bus/staffy.log --me staffy:qa",
 		kids: []string{"bun wt/qa/bus-watch.ts /home/crius/.crius/bus/staffy.log --me staffy:qa", "tail -c +320111 -F /home/crius/.crius/bus/staffy.log"}},
 	"a monitor: tail | grep (staffy:builder)": {cmd: "tail -n 0 -F ~/.crius/bus/staffy.log | grep --line-buffered -E \"staffy:builder\"",
@@ -329,7 +327,8 @@ func TestRestartOfATabWhoseOnlyShellIsItsBusWaiterSendsTheBrief(t *testing.T) {
 }
 
 // (b) A background shell that runs a real job (a test run, a build) is busy, whatever the footer says, and the refusal
-// names it. So is a waiter's shell that first runs a job, and a job beside the waiter.
+// names it. So is a waiter's shell that first runs a job, and a job beside the waiter. Only what is alive counts: a
+// shell whose only live process is its waiter is idle, whatever its text (TestRestartJudgesATabByWhatIsAliveNotByItsCommandText).
 func TestRestartOfATabRunningATestInABackgroundShellIsBusy(t *testing.T) {
 	for name, c := range map[string]struct {
 		footer string
@@ -352,51 +351,45 @@ func TestRestartOfATabRunningATestInABackgroundShellIsBusy(t *testing.T) {
 		"a login shell with -c":        {"", []bgJob{{shell: "/bin/bash -l -c go test ./...", kids: []string{"go test ./..."}}}, "go test"},
 		// the footer counts more jobs than run as shells: a kind not seen, so busy (review P2-3)
 		"footer counts a job no process shows": {"2 background tasks", []bgJob{waiters["waitbus.sh (quotes:qa, 20:40)"]}, "only 1 shell(s) run under its claude"},
-		// what a waiter starts, or a job chained after it, is a job (review r2 P2-A, P2-B, P3-C)
+		// what a waiter starts is a job (review r2 P2-A, P2-B, P3-C)
 		"a test run under a waitbus.sh": {"1 shell", []bgJob{{cmd: "bash /tmp/s/waitbus.sh", kids: []string{"bash /tmp/s/waitbus.sh", "dotnet test big"}}}, "waitbus.sh"},
 		"a bash -c that tails the bus, then tests": {"1 shell", []bgJob{{cmd: `bash -c "tail -n0 -F ~/.crius/bus/q.log | grep -m1 DONE; go test ./..."`,
 			kids: []string{`bash -c tail -n0 -F ~/.crius/bus/q.log | grep -m1 DONE; go test ./...`, "go test ./..."}}}, "go test"},
-		"a test chained after the waiter": {"1 shell", []bgJob{{cmd: "~/.crius/bin/crius-wait && go test ./...", kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait"}}}, "go test"},
-		"a tail of the bus and a run log": {"1 shell", []bgJob{{cmd: "tail -F ~/.crius/bus/q.log /w/run.log", kids: []string{"tail -F /home/crius/.crius/bus/q.log /w/run.log"}}}, "run.log"},
-		// ps shows a newline in a command as a space: a job on the line after the waiter hides in it (review r3 P1)
-		"a test on the line after the waiter": {"1 shell", []bgJob{{cmd: "~/.crius/bin/crius-wait axi:qa\ngo test ./...", kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait axi:qa"}}}, "go test"},
-		"a quote escaped inside quotes":       {"1 shell", []bgJob{{cmd: `~/.crius/bin/crius-wait "a\"b"; go test ./... # "`, kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait a\"b"}}}, "go test"},
-		"a comment with an apostrophe":        {"1 shell", []bgJob{{cmd: "~/.crius/bin/crius-wait x  # builder's DONE\ngo test ./...", kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait x"}}}, "go test"},
-		"an awk that starts a run on a line":  {"1 shell", []bgJob{{cmd: `tail -F ~/.crius/bus/q.log | awk '/DONE/{system("go test ./...")}'`, kids: []string{"tail -F /home/crius/.crius/bus/q.log", "awk /DONE/{system(\"go test ./...\")}"}, flat: true}}, "awk"},
+		"a tail of the bus and a run log":    {"1 shell", []bgJob{{cmd: "tail -F ~/.crius/bus/q.log /w/run.log", kids: []string{"tail -F /home/crius/.crius/bus/q.log /w/run.log"}}}, "run.log"},
+		"an awk that starts a run on a line": {"1 shell", []bgJob{{cmd: `tail -F ~/.crius/bus/q.log | awk '/DONE/{system("go test ./...")}'`, kids: []string{"tail -F /home/crius/.crius/bus/q.log", "awk /DONE/{system(\"go test ./...\")}"}, flat: true}}, "awk"},
 		// a tail that names a file other than the bus watches that file, even in a waiter's pipe (11-18)
 		"a waiter piped into a tail of a run log": {"1 shell", []bgJob{{cmd: "team-wait.sh --role q:dev ~/.crius/bus/q.log | tail -f /tmp/run.log",
 			kids: []string{"/bin/bash /home/crius/.claude-work/skills/cmux-team/scripts/team-wait.sh --role q:dev /home/crius/.crius/bus/q.log", "tail -f /tmp/run.log"}, flat: true}}, "run.log"},
-		"a tail of a file beside the waiter": {"1 shell", []bgJob{{cmd: "~/.crius/bin/crius-wait; tail -20 /tmp/x.log",
-			kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait"}}}, "x.log"},
-		"a tail of a redirected file beside the waiter": {"1 shell", []bgJob{{cmd: "~/.crius/bin/crius-wait | tail -20 < /tmp/x.log",
-			kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait", "tail -20"}, flat: true}}, "x.log"},
 		"a tail of a file under the waiter shell": {"1 shell", []bgJob{{cmd: "~/.crius/bin/crius-wait | tail -20",
 			kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait", "tail -20 /tmp/x.log"}, flat: true}}, "crius-wait"},
 		// a file hidden in an option word or a number, or after --, is still a file (tail filter review P1, P2)
-		"a redirect glued to a tail option": {"1 shell", []bgJob{{cmd: "~/.crius/bin/crius-wait | tail -f -n0</tmp/run.log",
-			kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait", "tail -f -n0"}, flat: true}}, "run.log"},
 		"a tail of a file named by digits": {"1 shell", []bgJob{{cmd: "~/.crius/bin/crius-wait | tail -f 2026",
 			kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait", "tail -f 2026"}, flat: true}}, "2026"},
 		"a tail of a file after --": {"1 shell", []bgJob{{cmd: "~/.crius/bin/crius-wait | tail -f -- -run.log",
 			kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait", "tail -f -- -run.log"}, flat: true}}, "-run.log"},
-		// only steps before a running waiter, chained in sequence, have finished; the rest can still run (11-18)
-		"a test after the waiter, with ;": {"1 shell", []bgJob{{cmd: "~/.crius/bin/crius-wait; go test ./...",
-			kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait"}}}, "go test"},
+		// a job alive beside a running waiter, or before it, is a job (11-18)
 		"a build in the background beside the waiter": {"1 shell", []bgJob{{cmd: "make build & ~/.crius/bin/crius-wait",
 			kids: []string{"make build", "/bin/bash /home/crius/.crius/bin/crius-wait"}, flat: true}}, "make build"},
-		"a test in a background && list before the waiter": {"1 shell", []bgJob{{cmd: "bus-post x && go test ./... & ~/.crius/bin/crius-wait",
-			kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait"}, flat: true}}, "go test"},
 		"a bus-post still running before the waiter": {"1 shell", []bgJob{{cmd: `~/.crius/bin/bus-post ~/.crius/bus/quotes.log INFO quotes:qa "x" ; bash /tmp/s/waitbus.sh 1577`,
 			kids: []string{"/home/crius/.crius/bin/bus-post /home/crius/.crius/bus/quotes.log INFO quotes:qa x"}}}, "bus-post"},
 		"a live job beside a running waiter after a bus-post": {"1 shell", []bgJob{{cmd: `~/.crius/bin/bus-post ~/.crius/bus/quotes.log INFO quotes:qa "x" ; bash /tmp/s/waitbus.sh 1577`,
 			kids: []string{"bash /tmp/s/waitbus.sh 1577", "go test ./..."}, flat: true}}, "waitbus.sh"},
 		"a deploy not started yet: its sleep runs, no waiter yet": {"1 shell", []bgJob{{cmd: "bus-post x; sleep 120; bun run deploy; bash /tmp/s/waitbus.sh",
 			kids: []string{"sleep 120"}}}, "bun run deploy"},
-		"a second waiter after a test": {"1 shell", []bgJob{{cmd: "~/.crius/bin/crius-wait; go test ./...; ~/.crius/bin/crius-wait",
-			kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait"}}}, "go test"},
 		"a test piped into the waiter": {"1 shell", []bgJob{{cmd: "go test ./... |& ~/.crius/bin/crius-wait",
 			kids: []string{"go test ./...", "/bin/bash /home/crius/.crius/bin/crius-wait"}, flat: true}}, "go test"},
-		// the waiter running now may be one the text check does not see, so what follows it has not run (review r1 P1-a)
+		// work chained after the running waiter has not started, so no process shows it: its text after the waiter is
+		// read (review 11-18 P2); so is a list run in the background beside it
+		"a test chained after the waiter":     {"1 shell", []bgJob{{cmd: "~/.crius/bin/crius-wait && go test ./...", kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait"}}}, "go test"},
+		"a test on the line after the waiter": {"1 shell", []bgJob{{cmd: "~/.crius/bin/crius-wait axi:qa\ngo test ./...", kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait axi:qa"}}}, "go test"},
+		"a quote escaped inside quotes":       {"1 shell", []bgJob{{cmd: `~/.crius/bin/crius-wait "a\"b"; go test ./... # "`, kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait a\"b"}}}, "go test"},
+		"a comment with an apostrophe":        {"1 shell", []bgJob{{cmd: "~/.crius/bin/crius-wait x  # builder's DONE\ngo test ./...", kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait x"}}}, "go test"},
+		"a tail of a file beside the waiter": {"1 shell", []bgJob{{cmd: "~/.crius/bin/crius-wait; tail -20 /tmp/x.log",
+			kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait"}}}, "x.log"},
+		"a test after the waiter, with ;": {"1 shell", []bgJob{{cmd: "~/.crius/bin/crius-wait; go test ./...",
+			kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait"}}}, "go test"},
+		"a second waiter after a test": {"1 shell", []bgJob{{cmd: "~/.crius/bin/crius-wait; go test ./...; ~/.crius/bin/crius-wait",
+			kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait"}}}, "go test"},
 		"a waiter in an if, a test, a waiter": {"1 shell", []bgJob{{cmd: "if ~/.crius/bin/crius-wait; then go test ./...; fi; ~/.crius/bin/crius-wait",
 			kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait"}}}, "go test"},
 		"a waiter in braces, a test, a waiter": {"1 shell", []bgJob{{cmd: "{ ~/.crius/bin/crius-wait && go test ./...; }; ~/.crius/bin/crius-wait",
@@ -407,76 +400,29 @@ func TestRestartOfATabRunningATestInABackgroundShellIsBusy(t *testing.T) {
 			kids: []string{"bash /tmp/s/waitbus.sh 1", "sleep 20"}}}, "go test"},
 		"a waiter in a function, a test, a waiter": {"1 shell", []bgJob{{cmd: "w() { ~/.crius/bin/crius-wait; }; w && go test ./...; ~/.crius/bin/crius-wait",
 			kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait"}}}, "go test"},
-		"a bus tail in a process substitution, a test": {"1 shell", []bgJob{{cmd: "head -1 <(tail -F ~/.crius/bus/q.log); go test ./...; ~/.crius/bin/crius-wait",
-			kids: []string{"head -1 /dev/fd/63", "tail -F /home/crius/.crius/bus/q.log"}, flat: true}}, "go test"},
-		// a finished step may leave work that runs after it, out of the shell's process tree (review r1 P1-b, P2-a)
-		"a trap that deploys at exit":      {"1 shell", []bgJob{{cmd: "trap 'bun run deploy' EXIT; ~/.crius/bin/crius-wait", kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait"}}}, "bun run deploy"},
-		"a bash -c that detaches a test":   {"1 shell", []bgJob{{cmd: "bash -c 'go test ./... > /tmp/t.log 2>&1 &'; ~/.crius/bin/crius-wait", kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait"}}}, "go test"},
-		"an eval that detaches a test":     {"1 shell", []bgJob{{cmd: `eval "go test ./... > /tmp/t.log 2>&1 &"; ~/.crius/bin/crius-wait`, kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait"}}}, "go test"},
-		"a setsid that detaches a test":    {"1 shell", []bgJob{{cmd: "setsid -f go test ./... > /tmp/t.log 2>&1; ~/.crius/bin/crius-wait", kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait"}}}, "go test"},
-		"a test in a command substitution": {"1 shell", []bgJob{{cmd: `bus-post x "$(go test ./... > /tmp/t.log 2>&1 &)"; ~/.crius/bin/crius-wait`, kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait"}}}, "go test"},
-		// a step before the waiter that is no plain finished program may have left work, or be the waiter now (review r2 P1-a, P1-b)
-		"a python -c that detaches a test": {"1 shell", []bgJob{{cmd: `python3 -c "import subprocess; subprocess.Popen(['go','test','./...'], start_new_session=True)"; ~/.crius/bin/crius-wait`,
-			kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait"}}}, "python3"},
-		"an awk that detaches a test": {"1 shell", []bgJob{{cmd: `awk 'BEGIN{system("go test ./... >/tmp/t.log 2>&1 &")}'; ~/.crius/bin/crius-wait`,
-			kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait"}}}, "go test"},
-		"a here-string to bash":        {"1 shell", []bgJob{{cmd: "bash <<< 'go test ./... > /tmp/t.log 2>&1 &'; ~/.crius/bin/crius-wait", kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait"}}}, "go test"},
-		"a test in a detached tmux":    {"1 shell", []bgJob{{cmd: "tmux new-session -d 'go test ./...'; ~/.crius/bin/crius-wait", kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait"}}}, "go test"},
-		"a git alias that runs a test": {"1 shell", []bgJob{{cmd: "git -c alias.t='!go test ./... &' t; ~/.crius/bin/crius-wait", kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait"}}}, "go test"},
-		"a waiter function, a test, a waiter": {"1 shell", []bgJob{{cmd: "qwait && go test ./...; ~/.crius/bin/crius-wait",
-			kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait"}}}, "go test"},
-		"a waiter in a variable, a test, a waiter": {"1 shell", []bgJob{{cmd: "$WAIT && go test ./...; ~/.crius/bin/crius-wait",
-			kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait"}}}, "go test"},
-		// a substitution in a step after the waiter runs once the waiter returns (review r2 P1-c)
 		"a process substitution after the waiter": {"1 shell", []bgJob{{cmd: "~/.crius/bin/crius-wait; cat <(go test ./...)",
 			kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait"}}}, "go test"},
 		"a command substitution after the waiter": {"1 shell", []bgJob{{cmd: `~/.crius/bin/crius-wait && sleep "$(go test ./... >/tmp/t.log 2>&1; echo 1)"`,
 			kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait"}}}, "go test"},
-		// $$ is the shell's pid: the ' after it opens a plain quote (review r2 P3)
 		"a pid before a quote": {"1 shell", []bgJob{{cmd: `~/.crius/bin/crius-wait $$'x\' ; go test ./... # '`,
 			kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait 123x\\"}}}, "go test"},
-		// a variable can hold code the shell runs as it expands it, before or after the waiter (review r3 P1-a)
-		"an arithmetic expansion runs a stored command": {"1 shell", []bgJob{{cmd: "x='a[$(./run-tests.sh>/dev/null&)]'; echo $[x]; ~/.crius/bin/crius-wait",
-			kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait"}}}, "run-tests.sh"},
-		"a substring offset runs a stored command": {"1 shell", []bgJob{{cmd: "x='a[$(./run-tests.sh>/dev/null&)]' y=abc; echo ${y:x}; ~/.crius/bin/crius-wait",
-			kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait"}}}, "run-tests.sh"},
-		"a printf -v index runs a stored command": {"1 shell", []bgJob{{cmd: "printf -v 'a[$(./run-tests.sh>/dev/null&)]' x; ~/.crius/bin/crius-wait",
-			kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait"}}}, "run-tests.sh"},
-		"a zsh glob qualifier in a variable": {"1 shell", []bgJob{{cmd: "x='*(e:./run-tests.sh:)'; ls -d ${~x}; ~/.crius/bin/crius-wait",
-			kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait"}}}, "run-tests.sh"},
-		"an escaped parenthesis in a stored command": {"1 shell", []bgJob{{cmd: `x=$'a[$\x28./run-tests.sh&\x29]'; echo $[x]; ~/.crius/bin/crius-wait`,
-			kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait"}}}, "run-tests.sh"},
-		"a stored command expanded after the waiter": {"1 shell", []bgJob{{cmd: "~/.crius/bin/crius-wait; x='a[$(./run-tests.sh&)]'; cat $[x]",
-			kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait"}}}, "run-tests.sh"},
-		// git settings can run a program (review r3 P1-b); so can a setting that makes the waiter load a file (r3 P2)
-		"a git -c diff.external":              {"1 shell", []bgJob{{cmd: "git -c diff.external=./run-tests.sh diff; ~/.crius/bin/crius-wait", kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait"}}}, "run-tests.sh"},
-		"a GIT_EXTERNAL_DIFF before git":      {"1 shell", []bgJob{{cmd: "GIT_EXTERNAL_DIFF=./run-tests.sh git diff; ~/.crius/bin/crius-wait", kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait"}}}, "run-tests.sh"},
-		"an exported GIT_EXTERNAL_DIFF":       {"1 shell", []bgJob{{cmd: "export GIT_EXTERNAL_DIFF=./run-tests.sh; git diff; ~/.crius/bin/crius-wait", kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait"}}}, "run-tests.sh"},
-		"a git -c core.fsmonitor":             {"1 shell", []bgJob{{cmd: "git -c core.fsmonitor=./run-tests.sh status; ~/.crius/bin/crius-wait", kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait"}}}, "run-tests.sh"},
-		"an exported BASH_ENV, then a waiter": {"1 shell", []bgJob{{cmd: "export BASH_ENV=./run-tests.sh; bash /tmp/s/waitbus.sh 1577", kids: []string{"bash /tmp/s/waitbus.sh 1577", "sleep 20"}}}, "run-tests.sh"},
-		"a BASH_ENV set on the waiter":        {"1 shell", []bgJob{{cmd: "BASH_ENV=./run-tests.sh bash /tmp/s/waitbus.sh 1577", kids: []string{"bash /tmp/s/waitbus.sh 1577", "sleep 20"}}}, "run-tests.sh"},
-		// an allowed name run by path or through an interpreter is another program (review r3 P3)
-		"a script named date":          {"1 shell", []bgJob{{cmd: "./scripts/date; ~/.crius/bin/crius-wait", kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait"}}}, "scripts/date"},
-		"a script named date, in bash": {"1 shell", []bgJob{{cmd: "bash date; ~/.crius/bin/crius-wait", kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait"}}}, "bash date"},
-		// an escaped space starts no comment, |> is a pipe, and the command may hold Claude Code's wrapper text (review r4)
-		"an escaped space before a #": {"1 shell", []bgJob{{cmd: "echo \\ # ; (go test ./... >/tmp/t.log 2>&1 &)\n~/.crius/bin/crius-wait",
-			kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait"}}}, "go test"},
-		"an escaped space before a #, then a trap": {"1 shell", []bgJob{{cmd: "echo \\ # ; trap \"go test ./...\" EXIT\n~/.crius/bin/crius-wait",
-			kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait"}}}, "go test"},
-		"a pipe into a redirect before the waiter": {"1 shell", []bgJob{{cmd: "echo hi |>/dev/null bash -c 'go test ./... >/tmp/t.log 2>&1 &'; ~/.crius/bin/crius-wait",
+		"an ANSI-C quote with an escaped quote": {"1 shell", []bgJob{{cmd: `~/.crius/bin/crius-wait $'don\'t' && go test ./... && echo 'ok'`,
+			kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait don't"}}}, "go test"},
+		"the wrapper's text inside the command": {"1 shell", []bgJob{{cmd: "~/.crius/bin/crius-wait; cat ' < /dev/null'; go test ./...",
 			kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait"}}}, "go test"},
 		"a pipe into a redirect after the waiter": {"1 shell", []bgJob{{cmd: "~/.crius/bin/crius-wait; cat /dev/null |>/dev/null bash -c 'go test ./... &'",
 			kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait"}}}, "go test"},
-		"the wrapper's text inside the command": {"1 shell", []bgJob{{cmd: "~/.crius/bin/crius-wait; cat ' < /dev/null'; go test ./...",
-			kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait"}}}, "go test"},
-		// a quote in $'…' escaped by a backslash does not end it (review r1 P2-b)
-		"an ANSI-C quote with an escaped quote": {"1 shell", []bgJob{{cmd: `~/.crius/bin/crius-wait $'don\'t' && go test ./... && echo 'ok'`,
-			kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait don't"}}}, "go test"},
-		// an && list goes on past a newline, and a subshell run with & runs beside the waiter (review r1 P3-a, P3-b)
+		"a stored command expanded after the waiter": {"1 shell", []bgJob{{cmd: "~/.crius/bin/crius-wait; x='a[$(./run-tests.sh&)]'; cat $[x]",
+			kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait"}}}, "run-tests.sh"},
 		"a background list split by a newline": {"1 shell", []bgJob{{cmd: "go test ./... &&\n true &\n~/.crius/bin/crius-wait",
-			kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait"}}}, "go test"},
+			kids: []string{"go test ./...", "/bin/bash /home/crius/.crius/bin/crius-wait"}, flat: true}}, "go test"},
 		"a background subshell with a ;": {"1 shell", []bgJob{{cmd: "(go test ./... ; true ) & ~/.crius/bin/crius-wait",
-			kids: []string{"/bin/bash /home/crius/.crius/bin/crius-wait"}}}, "go test"},
+			kids: []string{"go test ./...", "/bin/bash /home/crius/.crius/bin/crius-wait"}, flat: true}}, "go test"},
+		"a test in a background && list before the waiter": {"1 shell", []bgJob{{cmd: "bus-post x && go test ./... & ~/.crius/bin/crius-wait",
+			kids: []string{"go test ./...", "/bin/bash /home/crius/.crius/bin/crius-wait"}, flat: true}}, "go test"},
+		// the waiter has not started yet: its sleep runs alone, so busy for a moment (the text no longer says what follows)
+		"crius-wait, in its sleep first": {"1 shell", []bgJob{{cmd: "S=/tmp/s; sleep 1; ~/.crius/bin/crius-wait > $S/wait.out 2>&1",
+			kids: []string{"sleep 1"}}}, "sleep 1"},
 	} {
 		r, home := newRestartFake(t)
 		r.screen["staffy:builder"] = tab("staffy · builder", "Started the red run. ⏳", "  ⏵⏵ bypass permissions on · "+c.footer+"\n", t0)
@@ -499,11 +445,10 @@ func TestRestartThatCannotReadTheTabsProcessesFails(t *testing.T) {
 		err  error
 		says string
 	}{
-		"ssh failed":       {"", errors.New("ssh: connect to host 100.109.19.101 port 22: Operation timed out"), "Operation timed out"},
-		"no answer":        {"", nil, "no pane pid"},
-		"no claude":        {"100\n 100 99 -bash\n 101 100 vim notes.txt\n--- cmdline\n", nil, "no claude"},
-		"pane not in ps":   {"4242\n 100 99 -bash\n--- cmdline\n", nil, "4242"},
-		"no command lines": {"100\n 100 99 -bash\n 200 100 claude\n", nil, "no command lines"},
+		"ssh failed":     {"", errors.New("ssh: connect to host 100.109.19.101 port 22: Operation timed out"), "Operation timed out"},
+		"no answer":      {"", nil, "no pane pid"},
+		"no claude":      {"100\n 100 99 -bash\n 101 100 vim notes.txt\n", nil, "no claude"},
+		"pane not in ps": {"4242\n 100 99 -bash\n", nil, "4242"},
 	} {
 		r, home := newRestartFake(t)
 		r.screen["staffy:builder"] = shellTab
@@ -536,4 +481,116 @@ func TestRestartStopsWhenAJobStartsAfterTheClear(t *testing.T) {
 	if strings.Join(r.typed, "|") != "staffy:builder /clear" {
 		t.Errorf("typed %q, want only the /clear", r.typed)
 	}
+}
+
+// (d) The verdict comes from what is alive under each background shell, never from the shell's command text (11-18
+// 17:12-17:17: quotes:qa refused as BUSY four times for a `sed -i` that had long finished before its waitbus.sh). A
+// step that ran before the waiter is gone from the process list, whatever its text; anything alive besides the waiter
+// is a job, whatever the text says.
+func TestRestartJudgesATabByWhatIsAliveNotByItsCommandText(t *testing.T) {
+	waitbus := []string{"bash /tmp/claude-1000/q/scratchpad/waitbus.sh 15855", "sleep 20"}
+	idle := map[string]bgJob{
+		// the 17:12 shape, as ps showed it on the Legion
+		"a finished sed -i, then waitbus.sh (quotes:qa, 17:12)": {cmd: `sed -i '2i - 17:12 batch 4 verdicts posted' ~/.crius/state/quotes/QA-STATE.md; bash /tmp/claude-1000/q/scratchpad/waitbus.sh 15855`,
+			kids: waitbus},
+		// STATUS.md "Checks to build" 11-18: shapes the text check misread
+		"a bus-post whose text has $(…), then the waiter": {cmd: `~/.crius/bin/bus-post ~/.crius/bus/quotes.log INFO quotes:qa "READY-RESTART $(date +%H:%M)"; bash /tmp/claude-1000/q/scratchpad/waitbus.sh 15855`,
+			kids: waitbus},
+		"a here-doc, then the waiter": {cmd: "cat > /tmp/s/note.md <<'EOF'\nbatch (4) done; go test next\nEOF\nbash /tmp/claude-1000/q/scratchpad/waitbus.sh 15855",
+			kids: waitbus},
+		"a PATH= and a bus-post at another path, then the waiter": {cmd: `PATH=/opt/crius/bin:$PATH; /opt/crius/bin/bus-post ~/.crius/bus/quotes.log INFO quotes:qa "x"; bash /tmp/claude-1000/q/scratchpad/waitbus.sh 15855`,
+			kids: waitbus},
+		"a HOME= and a python step, then the waiter": {cmd: `HOME=/home/crius; python3 -c "print(1)"; bash /tmp/claude-1000/q/scratchpad/waitbus.sh 15855`,
+			kids: waitbus},
+		"a message that names the waiter, then the waiter": {cmd: `~/.crius/bin/bus-post ~/.crius/bus/quotes.log INFO quotes:qa "arming waitbus.sh; then QA"; bash /tmp/claude-1000/q/scratchpad/waitbus.sh 15855`,
+			kids: waitbus},
+		"a here-doc with an apostrophe that names the waiter": {cmd: "cat > /tmp/s/note.md <<'EOF'\nbuilder's DONE; waitbus.sh next\nEOF\nbash /tmp/claude-1000/q/scratchpad/waitbus.sh 15855",
+			kids: waitbus},
+		// a step that only names the waiter's path (writes it, makes it runnable, a message) is no waiter (review r2 P2)
+		"the waiter written, made runnable, then run": {cmd: "cat > /tmp/s/waitbus.sh <<'EOF'\nwhile sleep 20; do :; done\nEOF\nchmod +x /tmp/s/waitbus.sh && /tmp/s/waitbus.sh 15855",
+			kids: []string{"/bin/bash /tmp/s/waitbus.sh 15855", "sleep 20"}},
+		"a message naming the waiter's path": {cmd: `~/.crius/bin/bus-post ~/.crius/bus/quotes.log INFO quotes:qa "arming /tmp/s/waitbus.sh"; bash /tmp/s/waitbus.sh 1`,
+			kids: []string{"bash /tmp/s/waitbus.sh 1", "sleep 20"}},
+		"the waiter under env, then a date": {cmd: "env -u X A=1 /tmp/s/waitbus.sh 1; date", kids: []string{"/bin/bash /tmp/s/waitbus.sh 1"}},
+		// what may follow the waiter: steps that end at once and start nothing
+		"the waiter, then || true and an echo": {cmd: "bash /tmp/claude-1000/q/scratchpad/waitbus.sh 15855 2>&1 | tail -5 || true\necho \"woke $?\"", kids: waitbus},
+		"the waiter piped into tee":            {cmd: "bash /tmp/claude-1000/q/scratchpad/waitbus.sh 15855 |& tee /tmp/s/w.out", kids: append(waitbus[:1:1], "tee /tmp/s/w.out"), flat: true},
+		// a known limit: a step that detached work before the waiter has left the shell's tree, so no process shows it
+		// a known limit: a waiter run by another name (a function, a variable) before the one the text names, with work
+		// between them; only the text before the named waiter could show it, and that text is not judged
+		"limit: a waiter in a variable, a test, a waiter": {cmd: "$WAIT && go test ./...; bash /tmp/claude-1000/q/scratchpad/waitbus.sh 15855", kids: waitbus},
+		"limit: a setsid that detached a test":            {cmd: "setsid -f go test ./... > /tmp/t.log 2>&1; bash /tmp/claude-1000/q/scratchpad/waitbus.sh 15855", kids: waitbus},
+	}
+	for name, j := range idle {
+		r, home := newRestartFake(t)
+		r.screen["staffy:builder"] = shellTab
+		r.procs["staffy:builder"] = paneTree(j)
+		code := Restart(r.deps(home), "staffy:builder", "Read BRIEF.md and go")
+		if code != RestartReady || !strings.Contains(r.out.String(), "SENT staffy:builder") {
+			t.Errorf("%s: exit %d, said %q; want exit 0 and SENT", name, code, r.out.String())
+		}
+	}
+	busy := map[string]struct {
+		job   bgJob
+		names string
+	}{
+		// a lane runner alive under the shell is a job, though the text names a waiter (13:08 axi:qa-2, q2-lane.sh)
+		"a lane runner after a waiter": {bgJob{cmd: "bash /tmp/s/waitbus.sh 1; bash ~/w/axi/qa/q2-lane.sh 2 > /tmp/lane2.log 2>&1",
+			kids: []string{"bash /home/crius/w/axi/qa/q2-lane.sh 2", "dotnet test tests/Axi.Api.Tests"}}, "running pid 301 bash /home/crius/w/axi/qa/q2-lane.sh 2"},
+		"a lane runner beside a live waiter": {bgJob{cmd: "bash ~/w/axi/qa/suite-parts.sh > /tmp/p.log 2>&1 & bash /tmp/s/waitbus.sh 1",
+			kids: []string{"bash /home/crius/w/axi/qa/suite-parts.sh", "bash /tmp/s/waitbus.sh 1"}, flat: true}, "running pid 301 bash /home/crius/w/axi/qa/suite-parts.sh"},
+		// a step the text calls finished but that still runs is a job
+		"a sed still running before the waiter": {bgJob{cmd: `sed -i '2i x' /w/big.md; bash /tmp/s/waitbus.sh 1`,
+			kids: []string{"sed -i 2i x /w/big.md"}}, "running pid 301 sed -i"},
+		"a here-doc that starts a test, then the waiter": {bgJob{cmd: "bash <<'EOF'\ngo test ./...\nEOF\nbash /tmp/s/waitbus.sh 1",
+			kids: []string{"bash", "go test ./..."}}, "running pid 301 bash, pid 302 go test"},
+		// work chained after the running waiter has not started: its text after the waiter is read (review 11-18 P2)
+		"a deploy chained after the waiter": {bgJob{cmd: "bash /tmp/claude-1000/q/scratchpad/waitbus.sh 15855 && bun run deploy",
+			kids: waitbus}, "chained after its waiter: bun run deploy"},
+		"a lane runner on the line after the waiter": {bgJob{cmd: "bash /tmp/claude-1000/q/scratchpad/waitbus.sh 15855\nbash ~/w/axi/qa/q2-lane.sh 2",
+			kids: waitbus}, "chained after its waiter: bash ~/w/axi/qa/q2-lane.sh 2"},
+		"a merge after the waiter's pipe": {bgJob{cmd: "bash /tmp/claude-1000/q/scratchpad/waitbus.sh 15855 | tail -5; gh pr merge 12",
+			kids: append(waitbus[:1:1], "tail -5"), flat: true}, "chained after its waiter: gh pr merge 12"},
+		"a waiter in a variable": {bgJob{cmd: "$WAIT; go test ./...", kids: waitbus}, "names no waiter"},
+		// a here-string is no here-doc: what follows it still counts (review r2 P2)
+		"a test after a here-string": {bgJob{cmd: "bash /tmp/claude-1000/q/scratchpad/waitbus.sh 15855; cat <<< \"$x\"\ngo test ./...",
+			kids: waitbus}, "chained after its waiter: go test ./..."},
+		// an expansion after the waiter can run a stored command (review r2 P3)
+		"a printf -v after the waiter": {bgJob{cmd: "bash /tmp/claude-1000/q/scratchpad/waitbus.sh 15855; printf -v 'a[$(go test ./... &)]' x",
+			kids: waitbus}, "chained after its waiter: printf -v"},
+		"an arithmetic expansion after the waiter": {bgJob{cmd: "x='a[$(go test&)]'; bash /tmp/claude-1000/q/scratchpad/waitbus.sh 15855; echo $[x]",
+			kids: waitbus}, "chained after its waiter: echo $[x]"},
+		"an escaped $ before a quote after the waiter": {bgJob{cmd: `bash /tmp/claude-1000/q/scratchpad/waitbus.sh 15855; echo \$'a\'; go test ./...; echo 'b\'`,
+			kids: waitbus}, "chained after its waiter: go test ./..."},
+	}
+	for name, c := range busy {
+		r, home := newRestartFake(t)
+		r.screen["staffy:builder"] = shellTab
+		r.procs["staffy:builder"] = paneTree(c.job)
+		code := Restart(r.deps(home), "staffy:builder", "Read BRIEF.md and go")
+		if code != RestartBusy || !strings.Contains(r.out.String(), "BUSY staffy:builder") || !strings.Contains(r.out.String(), c.names) {
+			t.Errorf("%s: exit %d, said %q; want exit 3, BUSY naming %q", name, code, r.out.String(), c.names)
+		}
+		if len(r.typed) != 0 {
+			t.Errorf("%s: typed %q into a busy tab", name, r.typed)
+		}
+	}
+	// a box without /proc (macOS) gives no command lines: the ps line still shows a chained step
+	r, home := newRestartFake(t)
+	r.screen["staffy:builder"] = shellTab
+	ps, _, _ := strings.Cut(paneTree(busy["a deploy chained after the waiter"].job), "--- cmdline")
+	r.procs["staffy:builder"] = ps
+	wantOut(t, r, Restart(r.deps(home), "staffy:builder", "Read BRIEF.md and go"), RestartBusy, "chained after its waiter: bun run deploy")
+	// and its ps shows a newline as \012, which is read as one
+	r, home = newRestartFake(t)
+	r.screen["staffy:builder"] = shellTab
+	ps, _, _ = strings.Cut(paneTree(bgJob{cmd: `bash /tmp/s/waitbus.sh 1\012go test ./...`, kids: waitbus}), "--- cmdline")
+	r.procs["staffy:builder"] = ps
+	wantOut(t, r, Restart(r.deps(home), "staffy:builder", "Read BRIEF.md and go"), RestartBusy, "chained after its waiter: go test ./...")
+	// a box that lists command lines but not this shell's: its newlines are not known, so busy (review r2 P3)
+	r, home = newRestartFake(t)
+	r.screen["staffy:builder"] = shellTab
+	ps, _, _ = strings.Cut(paneTree(bgJob{cmd: "bash /tmp/s/waitbus.sh 1", kids: waitbus}), "--- cmdline")
+	r.procs["staffy:builder"] = ps + "--- cmdline\n555 /bin/bash\x01-c\x01true\x01\n"
+	wantOut(t, r, Restart(r.deps(home), "staffy:builder", "Read BRIEF.md and go"), RestartBusy, "its command line could not be read")
 }
