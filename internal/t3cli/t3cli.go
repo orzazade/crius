@@ -137,12 +137,10 @@ func proved(bin, id, run, text string, timeout time.Duration) (queued bool, err 
 	if err := json.Unmarshal(out, &s); err != nil || s.Thread == nil {
 		return false, fmt.Errorf("t3 thread show printed no thread JSON: %.80q", out)
 	}
+	// A run can hold more than one message (two queued on a busy thread): another one in it is not this one.
 	for _, m := range s.Messages {
 		if m.Role == "user" && m.RunID == run && squash(m.Text) == squash(text) {
 			return false, nil
-		}
-		if m.RunID == run && m.Role == "user" {
-			return false, fmt.Errorf("run %s holds the message %.60q, not this one", run, m.Text)
 		}
 	}
 	active, latest := deref(s.Thread.ActiveRunID), deref(s.Thread.LatestRunID)

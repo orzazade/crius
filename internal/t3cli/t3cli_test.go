@@ -139,3 +139,14 @@ func TestBinPrefersTheCriusLink(t *testing.T) {
 		t.Errorf("with a link: %q", got)
 	}
 }
+
+// Review 11-19: two messages queued on a busy thread can share one run (the Crius thread's runs 2754 and 2755 hold two
+// each). A message of the run with other text is not this one: the look goes on to the next, it does not fail.
+func TestDeliverFindsItsMessageAfterAnotherInTheSameRun(t *testing.T) {
+	bin, dir := fakeT3(t)
+	put(t, dir, "send.out", sentAs(3))
+	put(t, dir, "show", shown(3, 3, "user", "3", "an earlier message", "user", "3", "check the build"))
+	if _, err := Deliver(bin, "mcp:abc", "check the build", time.Second); err != nil {
+		t.Errorf("Deliver: %v", err)
+	}
+}

@@ -400,8 +400,18 @@ func typeOut(home, to string, all []stored, notes map[string]string) error {
 			deliver = func(string, string, bool, func(bool) error) error { return err }
 		case id != "":
 			thread = id
-			deliver = func(_, text string, _ bool, _ func(bool) error) error {
+			// Marked before the send: a run killed after t3 took it must not send it again (review 11-19).
+			deliver = func(_, text string, entered bool, mark func(bool) error) error {
+				if entered {
+					return fmt.Errorf("a send of it began before and was not seen to end: %w", t3cli.ErrUnproved)
+				}
+				if err := mark(true); err != nil {
+					return err
+				}
 				d, err := t3cli.Deliver(t3cli.Bin(home, T3), id, text, CmuxTimeout)
+				if errors.Is(err, t3cli.ErrNotSent) {
+					return errors.Join(err, mark(false))
+				}
 				note = Said(id, d)
 				return err
 			}

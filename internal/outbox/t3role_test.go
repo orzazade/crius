@@ -202,3 +202,49 @@ func TestARoleWithATabStaysOnCmux(t *testing.T) {
 		})
 	}
 }
+
+// Review 11-19: a crius-say killed after its t3 send went, before the file was removed, left the message stored unmarked,
+// and the next Flush sent it again. The send is marked before it goes, and a marked T3 message is set aside as maybe sent,
+// never sent again.
+func TestAT3MessageMarkedSentIsNotSentAgain(t *testing.T) {
+	noCmux(t)
+	dir := provingT3(t)
+	home := t.TempDir()
+	qaInAThread(t, home)
+	putFile(t, filepath.Join(dir, "send.out"), sentRun3)
+	putFile(t, filepath.Join(dir, "show"), showInRun3)
+	if err := os.MkdirAll(filepath.Join(home, "outbox"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	m, err := add(home, "axi:qa", "check the build")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Entered = true // as a send left it when it was killed after t3 took the message
+	if err := write(m.path, m.Message); err != nil {
+		t.Fatal(err)
+	}
+	aside, held := Flush(home)
+	if held != nil || len(aside) != 1 || !errors.Is(aside[0], ErrMaybeSent) {
+		t.Errorf("Flush: aside %v, held %v; want it set aside as maybe sent", aside, held)
+	}
+	if got := readOr(t, filepath.Join(dir, "calls")); got != "" {
+		t.Errorf("sent again: t3 calls %q", got)
+	}
+}
+
+// A send t3 refused is unmarked again, so the next Flush may send it.
+func TestAT3MessageT3RefusedStaysUnmarked(t *testing.T) {
+	noCmux(t)
+	dir := provingT3(t)
+	home := t.TempDir()
+	qaInAThread(t, home)
+	putFile(t, filepath.Join(dir, "send.rc"), "1")
+	if err := Send(home, "axi:qa", "check the build"); !errors.Is(err, ErrHeld) {
+		t.Fatalf("Send: %v, want held", err)
+	}
+	all, err := list(home)
+	if err != nil || len(all) != 1 || all[0].Entered {
+		t.Errorf("stored %+v (%v), want one unmarked message", all, err)
+	}
+}
