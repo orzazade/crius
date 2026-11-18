@@ -1,6 +1,6 @@
 // Command crius-spawn opens a team session and starts it:
 //
-//	crius-spawn [-account max|<name>] [-parent <leader session id>] [-item <project>#<n>] <project> <role> <first prompt…>
+//	crius-spawn [-backend cmux|t3] [-account max|<name>] [-parent <leader session id>] [-item <project>#<n>] <project> <role> <first prompt…>
 //	crius-spawn -move [-account max|<name>] <project> <role>
 //	crius-spawn -resume <project> <role>
 //
@@ -21,9 +21,16 @@
 // session there on the Max account whose week resets soonest under 95% (or the row -account names), then prints the new
 // Claude's pid and config folder. A session busy or running a job is left alone, and a resume that lands in another
 // folder fails.
+//
+// With -backend t3 the role runs as a T3 Code thread instead of a tab (launch.RunT3): on the same account pick, on the
+// T3 provider instance that runs in that account's folder, titled "<project> · <role>", with the tag line before the
+// first prompt; it prints the thread, its Claude session and its account, and fails loudly when the thread starts no
+// work or crius-hook files no session for it. -resume of a role whose session runs in a thread sends it the resume
+// prompt there; -move of one is refused (launch.ErrT3Move: T3 cannot keep the session across accounts).
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -50,8 +57,9 @@ func main() {
 	again := flag.Bool("resume", false, "bring the role's current session back: <project> <role>, nothing else")
 	closed := flag.Bool("close", false, "mark the role's current session closed on purpose: <project> <role>, nothing else; wakewatch's dead-role check skips it until another session of the role starts or -resume brings it back")
 	move := flag.Bool("move", false, "resume the role's current session on another Max account (-account, default the one whose week resets soonest under 95%): <project> <role>; only at a turn boundary with no background job but its bus waiter")
+	backend := flag.String("backend", "cmux", "where a new role runs: cmux (a tab) or t3 (a T3 Code thread); -resume and -move go by where the role's session runs")
 	flag.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: crius-spawn [-account max|<name>] [-parent id] [-item project#n] <project> <role> <first prompt…>")
+		fmt.Fprintln(os.Stderr, "usage: crius-spawn [-backend cmux|t3] [-account max|<name>] [-parent id] [-item project#n] <project> <role> <first prompt…>")
 		fmt.Fprintln(os.Stderr, "       crius-spawn -move [-account max|<name>] <project> <role>")
 		fmt.Fprintln(os.Stderr, "       crius-spawn -resume <project> <role>")
 		fmt.Fprintln(os.Stderr, "       crius-spawn -close <project> <role>")
@@ -74,6 +82,22 @@ func main() {
 		Front: outbox.Front,
 		Typed: outbox.Typed,
 		Send:  func(ws, surface, text string) error { return outbox.SendTo(store.Home(), ws, surface, text) },
+	}
+	t3 := launch.T3{CLI: runT3, Instances: t3Instances, Roles: filepath.Join(store.Home(), "roles"), Wait: time.Second, Tries: 120,
+		Sessions: func() ([]sessionstate.State, error) {
+			ss, err := sessionstate.List(filepath.Join(store.Home(), "sessions"))
+			if errors.Is(err, sessionstate.ErrDamaged) { // one damaged file names no thread; the others still do
+				err = nil
+			}
+			return ss, err
+		}}
+	if *backend != "cmux" && *backend != "t3" {
+		fmt.Fprintf(os.Stderr, "crius-spawn: bad -backend %q: want cmux or t3\n", *backend)
+		os.Exit(2)
+	}
+	if *backend != "cmux" && (*closed || *move || *again) {
+		fmt.Fprintln(os.Stderr, "crius-spawn: -backend is for a new role; -resume and -move go by where the role's session runs")
+		os.Exit(2)
 	}
 	if *closed {
 		if flag.NArg() != 2 || *again || *account != "" || *move || *parent != "" || *item != "" {
@@ -112,7 +136,7 @@ func main() {
 			flag.Usage()
 			os.Exit(2)
 		}
-		if err := resume(store.Home(), flag.Arg(0), flag.Arg(1), d); err != nil {
+		if err := resume(store.Home(), flag.Arg(0), flag.Arg(1), d, t3); err != nil {
 			fmt.Fprintln(os.Stderr, "crius-spawn:", err)
 			os.Exit(1)
 		}
@@ -124,6 +148,15 @@ func main() {
 	}
 	s := launch.Spawn{Project: flag.Arg(0), Role: flag.Arg(1), Account: *account, Parent: *parent, Item: *item,
 		Prompt: strings.Join(flag.Args()[2:], " ")}
+	if *backend == "t3" {
+		st, err := launch.RunT3(s, d, t3)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "crius-spawn:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("OK t3 %s session %s on %s (T3 instance %s)\n%s\n", st.Thread, st.Session, st.Account, st.Instance, st.Tag)
+		return
+	}
 	ws, surface, tag, err := launch.Run(s, d)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "crius-spawn:", err)
@@ -133,7 +166,19 @@ func main() {
 }
 
 // resume brings back the session crius-hook keeps as the role's current one, and prints where it runs.
-func resume(home, project, role string, d launch.Deps) error {
+func resume(home, project, role string, d launch.Deps, t launch.T3) error {
+	if r, err := sessionstate.ReadRole(filepath.Join(home, "roles"), project, role); err == nil {
+		if th := launch.RoleThread(home, r); th != "" { // its thread, not a tab: T3 keeps its Claude between turns
+			if err := launch.ResumeT3(th, t); err != nil {
+				return fmt.Errorf("%s %s: %w", project, role, err)
+			}
+			if err := sessionstate.OpenRole(filepath.Join(home, "roles"), project, role); err != nil { // back: no longer closed
+				return err
+			}
+			fmt.Printf("OK t3 %s resumed\n", th)
+			return nil
+		}
+	}
 	s, err := stopped(home, project, role, "resume")
 	if err != nil {
 		return err
@@ -253,6 +298,48 @@ func runCmux(args ...string) (string, error) {
 	}
 	return string(out), nil
 }
+
+// t3Timeout bounds one t3 call: it takes about 1 s, up to 5 s under load; a hung server must not hold the launch.
+const t3Timeout = 30 * time.Second
+
+// runT3 runs the t3 in the Crius bin folder when there is one (nvm keeps t3 off launchd's PATH), else t3 on the PATH,
+// with stdin, and gives its stdout; on failure its stderr and stdout with the error.
+func runT3(stdin string, args ...string) (string, error) {
+	bin := "t3"
+	if p := filepath.Join(store.Home(), "bin", "t3"); fileThere(p) {
+		bin = p
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), t3Timeout)
+	defer cancel()
+	var out, errOut strings.Builder
+	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = strings.NewReader(stdin), &out, &errOut
+	cmd.WaitDelay = time.Second
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			err = fmt.Errorf("no answer in %s", t3Timeout)
+		}
+		return out.String(), fmt.Errorf("%v: %s", err, strings.TrimSpace(errOut.String()+"\n"+out.String()))
+	}
+	return out.String(), nil
+}
+
+// t3Instances reads T3 Code's provider instances from its settings.json, in $T3CODE_HOME (default ~/.t3).
+func t3Instances() (map[string]string, error) {
+	home := os.Getenv("T3CODE_HOME")
+	if h, err := os.UserHomeDir(); err == nil {
+		switch {
+		case home == "":
+			home = filepath.Join(h, ".t3")
+		case home == "~" || strings.HasPrefix(home, "~/"):
+			home = filepath.Join(h, home[1:])
+		}
+	}
+	return launch.T3Instances(filepath.Join(home, "userdata", "settings.json"))
+}
+
+// fileThere says p is there, a link that points nowhere too: running it then fails under its own name.
+func fileThere(p string) bool { _, err := os.Lstat(p); return err == nil }
 
 // sessionAccount is the row of accounts.toml that lists config, the folder a session ran in, and that folder; ""
 // when no row lists it.
