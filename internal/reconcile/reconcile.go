@@ -1,15 +1,32 @@
 // Package reconcile compares a team's board with git: a row whose work is already on the integration branch but whose
-// state is not done (stale), and a row whose state is done but whose sha or PR is not on the branch (unlanded).
+// state is not done (stale), and a row whose state is done but whose own sha or PR is not on the branch (unlanded).
 //
-// It reads git only through commands that never write: rev-parse, merge-base --is-ancestor and log, run with
-// GIT_OPTIONAL_LOCKS=0. It never fetches or checks out, so it judges the branch as the local repo has it.
+// It reads git only through commands that never write: rev-parse, cat-file, merge-base --is-ancestor and log, run
+// with GIT_OPTIONAL_LOCKS=0. It never fetches or checks out, so it judges the branch as the local repo has it.
+//
+// A sha in a row is looked up as an object id only (rev-parse --disambiguate), never as a branch or tag name.
 //
 // Landed evidence for a row, any of:
-//   - sha: a sha the row names is an ancestor of the branch tip (git merge-base --is-ancestor);
+//   - sha: a sha that is the row's own is an ancestor of the branch tip (git merge-base --is-ancestor). In a TSV the
+//     sha column is the row's own. In markdown text shas are cited (a row may name a baseline sha): the left of
+//     "A -> B" (the old tip) is never the row's own, and for an open row a cited sha proves landing only when it is
+//     the right of "A -> B" or its own commit subject names the row (the subject rule below);
 //   - merge-subject: a commit in the last Depth commits of the branch has a merge subject naming a PR the row names
-//     ("Merged PR 12: …" (Azure DevOps), "Merge pull request #12 …" (GitHub merge), "… (#12)" (GitHub squash));
-//   - row-id-subject: a commit in the last Depth commits names the row id as a whole word in its subject
-//     ("fix(A12b): …"; a word joined by "-" is another word, so "P3-6" does not name P3).
+//     ("Merged PR 12: …" (Azure DevOps), "Merge pull request #12 …" (GitHub merge), "… (#12)" (GitHub squash)). A PR
+//     merged in more than one of the repos is ambiguous and proves nothing;
+//   - row-id-subject: a commit in the last Depth commits names the row in its subject (the subject rule).
+//
+// The subject rule: a subject names a row only as a tag, case-sensitive, with ids not split at dots or dashes
+// (C1.M2 is not C1, P3-6 is not P3): as a conventional-commit scope ("fix(R1): …", "feat(R1, R2): …", "fix(R1/web):
+// …"), or as "ID:" at the start of the subject, after an optional type prefix ("R1: …", "fix(web): R1: …"). A row id
+// in running text ("fix(review): P1 null check", "unblocks X9") does not count, and a subject that starts with
+// "Revert" never names a row.
+//
+// Verdicts: an open row with any evidence is stale. A done row is unlanded when a PR it names is not merged, or when
+// its shas are missing: any sha of a sha column; for shas cited in markdown text, the right of an "A -> B", or all of
+// them when none is on the branch (rows cite history: commits from before a rebase, red tests on rig branches). A
+// subject naming a done row never clears it; a done row that names no own sha or PR is unchecked. Partial rows with
+// evidence are noted, skipped rows are not judged, and a row in a state no list names is reported as unknown.
 package reconcile
 
 import (
@@ -25,30 +42,41 @@ import (
 	"strings"
 )
 
-// Row is one board row: its id, its state as the board writes it, its line in the file, and the shas and PR numbers
-// it names.
+// Row is one board row: its id, its state as the board writes it, its line in the file, the shas it names as its own
+// (the left of "A -> B" left out), the subset that is the right of "A -> B", whether its shas are cited in free text
+// (markdown) rather than given in a sha column, and the PR numbers it names.
 type Row struct {
 	ID, State string
 	Line      int
-	SHAs, PRs []string
+	SHAs      []string
+	Arrow     []string
+	Cited     bool
+	PRs       []string
+}
+
+// NotRead is a line in the board's section that looks like a row (it starts with a status mark, a task box or a
+// pipe) but gives no row the parser can judge.
+type NotRead struct {
+	Line int
+	Text string
 }
 
 // Repo is a git repo and the branch rows land on.
 type Repo struct{ Path, Branch string }
 
 // Config names the board's states (compared without case): Done rows must be landed, Partial rows may have landed
-// parts (noted, not judged), Skip rows (dropped) are not judged; every other state is open and must not be landed.
-// Depth is how many commits of each branch the subject searches read.
+// parts (noted, not judged), Skip rows (dropped) are not judged, Open rows must not be landed; a row in none of them
+// is unknown (reported, not judged). Depth is how many commits of each branch the subject searches read.
 type Config struct {
-	Done, Partial, Skip []string
-	Depth               int
+	Done, Partial, Skip, Open []string
+	Depth                     int
 }
 
 // Evidence is one proof that a row's work is on a branch: Kind is sha, merge-subject or row-id-subject.
 type Evidence struct{ Kind, Ref, Commit, Subject, Repo, Branch string }
 
 // Finding is a row whose state and git disagree: Kind "stale" (open but landed, with Evidence) or "unlanded" (done
-// but nothing found, with what was looked for in Misses).
+// but an own sha or PR missing, named in Misses).
 type Finding struct {
 	Row      Row
 	Kind     string
@@ -62,38 +90,70 @@ type Scan struct {
 	Commits                   int
 }
 
-// Report is the result: counts per kind of row, the findings, partial rows with landed work, and done rows that name
-// no sha or PR and whose id is in no scanned subject (Unchecked: nothing proves them either way).
+// Report is the result: counts per kind of row, the findings, partial rows with landed work, done rows that name no
+// own sha or PR (Unchecked), rows in an unknown state ("ID (state)"), and Notes (a PR merged in several repos).
 type Report struct {
 	Rows, Done, Open, Partial, Skipped int
 	Findings                           []Finding
 	PartialLanded, Unchecked           []string
+	Unknown, Notes                     []string
 	Scans                              []Scan
 }
 
 var (
-	wordRe = regexp.MustCompile(`[A-Za-z0-9_]+(?:-[A-Za-z0-9_]+)*`)
-	hexRe  = regexp.MustCompile(`^[0-9a-fA-F]{7,40}$`)
-	// prRe finds PR numbers in board text: "PR 12", "PR12", "PR #12", "!12", "#12" (not "&#12", not "x#12").
-	prRe     = regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9_&])(?:PR\s*#?\s*|!|#)(\d+)\b`)
+	// shaWordRe splits text into words for the sha search: a dash joins (so "fp-0a1b2c3d" is one word, not a sha), a
+	// dot does not ("abc1234." is a sha).
+	shaWordRe = regexp.MustCompile(`[A-Za-z0-9_]+(?:-[A-Za-z0-9_]+)*`)
+	// idRe is a whole id: a dash or a dot joins its parts (A8-5, C1.M2).
+	idRe  = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*(?:[-.][A-Za-z0-9_]+)*$`)
+	hexRe = regexp.MustCompile(`^[0-9a-fA-F]{7,40}$`)
+	// arrowRe is the text between A and B in "A -> B".
+	arrowRe = regexp.MustCompile(`^\s*(?:->|→|=>)\s*$`)
+	// prRe finds PR numbers in board text: "PR 12", "PR12", "PR #12", "PR#12", "!12". A bare "#12" is not a PR.
+	prRe     = regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9_])(?:PR\s*#?\s*|!)(\d+)\b`)
 	mergeRes = []*regexp.Regexp{
 		regexp.MustCompile(`^Merged PR (\d+):`),
 		regexp.MustCompile(`^Merge pull request #(\d+)\b`),
 		regexp.MustCompile(`\(#(\d+)\)\s*$`),
 	}
+	// typeRe is a conventional-commit prefix: type, optional (scope), optional "!", colon.
+	typeRe = regexp.MustCompile(`^[A-Za-z]+(?:\(([^)]*)\))?!?:\s*`)
+	// leadIDRe is "ID:" at the start of what follows the prefix.
+	leadIDRe = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9_]*(?:[-.][A-Za-z0-9_]+)*):`)
 )
 
-// shas are the words of s that look like commit shas: 7 to 40 hex digits with at least one letter and one digit (so
-// plain numbers and words like "decade" are not shas; an all-digit sha is missed). A word joined by "-" such as a
-// gate fingerprint "fp-0a1b2c3d4e" is not a sha.
-func shas(s string) []string {
-	var out []string
-	for _, w := range wordRe.FindAllString(s, -1) {
-		if hexRe.MatchString(w) && strings.ContainsAny(w, "0123456789") && strings.ContainsAny(strings.ToLower(w), "abcdef") {
-			out = appendNew(out, w)
+func isSHA(w string) bool {
+	return hexRe.MatchString(w) && strings.ContainsAny(w, "0123456789") && strings.ContainsAny(strings.ToLower(w), "abcdef")
+}
+
+// citedSHAs are the shas in free text s: words of 7 to 40 hex digits with at least one letter and one digit (plain
+// numbers and words like "decade" are not shas; an all-digit sha is missed). own leaves out a sha that is only ever
+// the left of "A -> B"; arrow is the rights.
+func citedSHAs(s string) (own, arrow []string) {
+	left, right := map[string]bool{}, map[string]bool{}
+	var all []string
+	prevSHA, prevEnd := "", 0
+	for _, ix := range shaWordRe.FindAllStringIndex(s, -1) {
+		w := s[ix[0]:ix[1]]
+		if !isSHA(w) {
+			prevSHA = ""
+			continue
+		}
+		if prevSHA != "" && arrowRe.MatchString(s[prevEnd:ix[0]]) {
+			left[prevSHA], right[w] = true, true
+		}
+		all = appendNew(all, w)
+		prevSHA, prevEnd = w, ix[1]
+	}
+	for _, w := range all {
+		if right[w] {
+			arrow = append(arrow, w)
+		}
+		if !left[w] || right[w] {
+			own = append(own, w)
 		}
 	}
-	return out
+	return own, arrow
 }
 
 func prs(s string) []string {
@@ -105,23 +165,49 @@ func prs(s string) []string {
 }
 
 func appendNew(list []string, s string) []string {
-	for _, x := range list {
-		if x == s {
-			return list
-		}
+	if contains(list, s) {
+		return list
 	}
 	return append(list, s)
 }
 
-// isID says whether w can be a row id: a word that starts with a letter and holds a digit (docs/RULES.md §3.1).
-func isID(w string) bool {
-	return w != "" && wordRe.FindString(w) == w && strings.ContainsAny(w, "0123456789") &&
-		strings.ContainsAny(strings.ToLower(w[:1]), "abcdefghijklmnopqrstuvwxyz")
+func contains(list []string, s string) bool {
+	for _, x := range list {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}
+
+// isID says whether w can be a row id: it starts with a letter and holds a digit (docs/RULES.md §3.1); a dash or a
+// dot may join its parts.
+func isID(w string) bool { return idRe.MatchString(w) && strings.ContainsAny(w, "0123456789") }
+
+// subjectIDs are the row ids a commit subject names as a tag (the subject rule in the package comment).
+func subjectIDs(subject string) []string {
+	if strings.HasPrefix(subject, "Revert") {
+		return nil
+	}
+	var out []string
+	rest := subject
+	if m := typeRe.FindStringSubmatch(subject); m != nil {
+		for _, s := range strings.FieldsFunc(m[1], func(r rune) bool { return r == ',' || r == '/' || r == ' ' }) {
+			if isID(s) {
+				out = appendNew(out, s)
+			}
+		}
+		rest = subject[len(m[0]):]
+	}
+	if m := leadIDRe.FindStringSubmatch(rest); m != nil && isID(m[1]) {
+		out = appendNew(out, m[1])
+	}
+	return out
 }
 
 // ParseTSV reads a board with a header row. Columns are found by name (any order, no case): the row id ("row" or
-// "id") and the state ("state" or "status") are required; shas come from the "sha" or "commit" column, PR numbers
-// from every cell. Blank lines and lines with an empty id are left out.
+// "id") and the state ("state" or "status") are required; the row's own shas come from the "sha" or "commit" column,
+// PR numbers from every cell. Blank lines and lines with an empty id are left out.
 func ParseTSV(r io.Reader) ([]Row, error) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 1<<20), 1<<24)
@@ -155,8 +241,13 @@ func ParseTSV(r io.Reader) ([]Row, error) {
 		if cell("row") == "" {
 			continue
 		}
-		row := Row{ID: cell("row"), State: cell("state"), Line: n, SHAs: shas(cell("sha")), PRs: prs(strings.Join(cells, "\t"))}
-		rows = append(rows, row)
+		var own []string
+		for _, w := range shaWordRe.FindAllString(cell("sha"), -1) {
+			if isSHA(w) {
+				own = appendNew(own, w)
+			}
+		}
+		rows = append(rows, Row{ID: cell("row"), State: cell("state"), Line: n, SHAs: own, PRs: prs(strings.Join(cells, "\t"))})
 	}
 	if err := sc.Err(); err != nil {
 		return nil, err
@@ -168,23 +259,45 @@ func ParseTSV(r io.Reader) ([]Row, error) {
 }
 
 var (
-	headingRe = regexp.MustCompile(`^(#+)\s+(.*)$`)
-	bulletRe  = regexp.MustCompile(`^\s*(?:[-*+]|\d+\.)\s+(\S+)\s+(\S+)`)
+	headingRe   = regexp.MustCompile(`^(#+)\s+(.*)$`)
+	bulletRe    = regexp.MustCompile(`^\s*(?:[-*+]|\d+\.)\s+(.*)$`)
+	taskRe      = regexp.MustCompile(`^\[([ xX~])\]\s+(.*)$`)
+	fenceRe     = regexp.MustCompile("^\\s*(```|~~~)")
+	separatorRe = regexp.MustCompile(`^\|?[\s:|-]*-[\s:|-]*\|?$`)
 )
 
 // ParseMarkdown reads the rows under the heading that contains section (any level, up to the next heading of that
-// level or higher; "" reads the whole file). A row is a bullet "- <mark> <id> …" whose mark is a symbol (no letter or
-// digit, e.g. ✅ ⬜ 🔶) and whose id is a word with a letter and a digit, or a table line "| <id> | … |" whose state is
-// the first later cell that is a symbol, else the second cell. Shas and PR numbers come from the whole line.
-func ParseMarkdown(r io.Reader, section string) ([]Row, error) {
+// level or higher; "" reads the whole file). Code fences are skipped. Rows:
+//   - a bullet "- <mark> <id> …" whose mark is a symbol (no letter or digit, e.g. ✅ ⬜ 🔶), or a task-list bullet
+//     "- [ ] <id> …" / "- [x] …" / "- [~] …" (state "[ ]", "[x]", "[~]"); the id may be in **bold** or `code`;
+//   - a table line "| <id> | … |": the state is the header's "state" or "status" column when the table has one,
+//     else the first later cell that is a symbol, else the second cell. A dash ("-", "–", "—") is no state.
+//
+// Shas and PR numbers come from the whole line (shas are cited, see Row). A line in the section that starts with a
+// mark, a task box or a pipe but gives no row (two ids "X1/X2", "(X1)", a first cell that is no id) is returned as
+// NotRead; a table's header and separator lines are not.
+func ParseMarkdown(r io.Reader, section string) ([]Row, []NotRead, error) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 1<<20), 1<<24)
-	in, found, level := section == "", section == "", 0
-	var rows []Row
-	n := 0
+	var lines []string
 	for sc.Scan() {
-		n++
-		line := strings.TrimRight(sc.Text(), "\r")
+		lines = append(lines, strings.TrimRight(sc.Text(), "\r"))
+	}
+	if err := sc.Err(); err != nil {
+		return nil, nil, err
+	}
+	in, found, level, fence := section == "", section == "", 0, false
+	stateCol := -1
+	var rows []Row
+	var notRead []NotRead
+	for i, line := range lines {
+		if fenceRe.MatchString(line) {
+			fence = !fence
+			continue
+		}
+		if fence {
+			continue
+		}
 		if m := headingRe.FindStringSubmatch(line); m != nil {
 			switch {
 			case section != "" && strings.Contains(m[2], section) && !found:
@@ -197,59 +310,108 @@ func ParseMarkdown(r io.Reader, section string) ([]Row, error) {
 		if !in {
 			continue
 		}
+		t := strings.TrimSpace(line)
 		var id, state string
-		if t := strings.TrimSpace(line); strings.HasPrefix(t, "|") {
-			cells := strings.Split(strings.Trim(t, "|"), "|")
-			for i := range cells {
-				cells[i] = strings.TrimSpace(cells[i])
-			}
-			if len(cells) < 2 {
+		switch {
+		case strings.HasPrefix(t, "|"):
+			if separatorRe.MatchString(t) {
 				continue
 			}
-			first := wordRe.FindString(cells[0])
-			if !isID(first) || first != strings.Trim(cells[0], "*`") {
+			cells := tableCells(t)
+			if i+1 < len(lines) && separatorRe.MatchString(strings.TrimSpace(lines[i+1])) {
+				stateCol = -1 // a header line: remember its state column
+				for j, c := range cells {
+					if k := strings.ToLower(c); k == "state" || k == "status" {
+						stateCol = j
+						break
+					}
+				}
 				continue
 			}
-			id, state = first, strings.Fields(cells[1] + " ")[0]
-			for _, c := range cells[1:] {
-				if isMark(c) {
-					state = c
-					break
+			if i == 0 || !strings.HasPrefix(strings.TrimSpace(lines[i-1]), "|") {
+				stateCol = -1 // a table with no header
+			}
+			id = unwrap(cells[0])
+			if stateCol >= 0 {
+				if stateCol < len(cells) {
+					state = cells[stateCol]
+				}
+			} else {
+				for _, c := range cells[1:] {
+					if isMark(c) {
+						state = c
+						break
+					}
+				}
+				if state == "" && len(cells) > 1 {
+					state = cells[1] // no header and no symbol: the second cell is the state
 				}
 			}
-		} else if m := bulletRe.FindStringSubmatch(line); m != nil && isMark(m[1]) {
-			w := strings.TrimRight(m[2], ":,;.)")
-			if !isID(w) {
+			if isDash(state) {
+				state = ""
+			}
+		default:
+			m := bulletRe.FindStringSubmatch(line)
+			if m == nil {
 				continue
 			}
-			id, state = w, m[1]
-		} else {
-			continue
-		}
-		var s []string
-		for _, x := range shas(line) {
-			if x != id {
-				s = append(s, x)
+			body := m[1]
+			if tm := taskRe.FindStringSubmatch(body); tm != nil {
+				state, body = "["+strings.ToLower(tm[1])+"]", tm[2]
+			} else if f := strings.Fields(body); len(f) > 0 && isMark(f[0]) {
+				state, body = f[0], strings.TrimSpace(strings.TrimPrefix(body, f[0]))
+			} else {
+				continue // a plain bullet: no row and no claim to be one
+			}
+			if f := strings.Fields(body); len(f) > 0 {
+				id = unwrap(strings.TrimRight(f[0], ":,;"))
 			}
 		}
-		rows = append(rows, Row{ID: id, State: state, Line: n, SHAs: s, PRs: prs(line)})
-	}
-	if err := sc.Err(); err != nil {
-		return nil, err
+		if !isID(id) {
+			notRead = append(notRead, NotRead{Line: i + 1, Text: t})
+			continue
+		}
+		var own, arrow []string
+		o, a := citedSHAs(line)
+		for _, x := range o {
+			if x != id {
+				own = append(own, x)
+			}
+		}
+		for _, x := range a {
+			if x != id {
+				arrow = append(arrow, x)
+			}
+		}
+		rows = append(rows, Row{ID: id, State: state, Line: i + 1, SHAs: own, Arrow: arrow, Cited: true, PRs: prs(line)})
 	}
 	if !found {
-		return nil, fmt.Errorf("no section heading contains %q", section)
+		return nil, nil, fmt.Errorf("no section heading contains %q", section)
 	}
-	return rows, nil
+	return rows, notRead, nil
 }
 
-// isMark says whether s is a status symbol: not empty, no letter or digit (✅, ⬜, 🔶, ✖, …).
+func tableCells(t string) []string {
+	cells := strings.Split(strings.Trim(t, "|"), "|")
+	for i := range cells {
+		cells[i] = strings.TrimSpace(cells[i])
+	}
+	return cells
+}
+
+// unwrap takes **bold**, __bold__ or `code` marks off an id.
+func unwrap(s string) string { return strings.Trim(s, "*_`") }
+
+func isDash(s string) bool { return strings.Trim(s, "-–— ") == "" }
+
+// isMark says whether s is a status symbol: not empty, not a dash, no ASCII letter, digit, pipe or bracket
+// (✅, ⬜, 🔶, ✖, …).
 func isMark(s string) bool {
-	if s == "" {
+	if isDash(s) {
 		return false
 	}
 	for _, c := range s {
-		if c < 128 && (c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9') || c == '|' || c == '-' {
+		if c < 128 && (c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.ContainsRune("|[(", c)) {
 			return false
 		}
 	}
@@ -258,7 +420,7 @@ func isMark(s string) bool {
 
 // norm compares states without case and without emoji variation selectors.
 func norm(s string) string {
-	return strings.ToLower(strings.ReplaceAll(strings.TrimSpace(s), "️", ""))
+	return strings.ToLower(strings.ReplaceAll(strings.TrimSpace(s), string(rune(0xFE0F)), ""))
 }
 
 func in(list []string, s string) bool {
@@ -270,7 +432,7 @@ func in(list []string, s string) bool {
 	return false
 }
 
-// branch is one repo's branch as read: its tip, and the PR numbers and row-id words its scanned subjects name.
+// branch is one repo's branch as read: its tip, and the PR numbers and row ids its scanned subjects name.
 type branch struct {
 	repo     Repo
 	name     string
@@ -306,7 +468,7 @@ func Check(rows []Row, repos []Repo, cfg Config) (Report, error) {
 	}
 	rep.Rows = len(rows)
 	for _, row := range rows {
-		kind := "open"
+		var kind string
 		switch {
 		case in(cfg.Skip, row.State):
 			rep.Skipped++
@@ -317,76 +479,159 @@ func Check(rows []Row, repos []Repo, cfg Config) (Report, error) {
 		case in(cfg.Partial, row.State):
 			kind = "partial"
 			rep.Partial++
-		default:
+		case in(cfg.Open, row.State):
+			kind = "open"
 			rep.Open++
+		default:
+			rep.Unknown = append(rep.Unknown, fmt.Sprintf("%s (%s)", row.ID, row.State))
+			continue
 		}
-		ev, misses, err := evidence(row, bs)
+		wrap := func(err error) error { return fmt.Errorf("row %s (line %d): %w", row.ID, row.Line, err) }
+		if kind == "done" {
+			if len(row.SHAs)+len(row.PRs) == 0 {
+				rep.Unchecked = append(rep.Unchecked, row.ID)
+				continue
+			}
+			misses, err := doneMisses(row, bs)
+			if err != nil {
+				return rep, wrap(err)
+			}
+			if len(misses) > 0 {
+				rep.Findings = append(rep.Findings, Finding{Row: row, Kind: "unlanded", Misses: misses})
+			}
+			continue
+		}
+		ev, notes, err := openEvidence(row, bs)
 		if err != nil {
-			return rep, fmt.Errorf("row %s (line %d): %w", row.ID, row.Line, err)
+			return rep, wrap(err)
 		}
+		rep.Notes = append(rep.Notes, notes...)
 		switch {
 		case kind == "open" && len(ev) > 0:
 			rep.Findings = append(rep.Findings, Finding{Row: row, Kind: "stale", Evidence: ev})
 		case kind == "partial" && len(ev) > 0:
 			rep.PartialLanded = append(rep.PartialLanded, row.ID)
-		case kind == "done" && len(ev) == 0 && len(row.SHAs)+len(row.PRs) == 0:
-			rep.Unchecked = append(rep.Unchecked, row.ID)
-		case kind == "done" && len(ev) == 0:
-			rep.Findings = append(rep.Findings, Finding{Row: row, Kind: "unlanded", Misses: misses})
 		}
 	}
 	return rep, nil
 }
 
-// evidence lists every proof that row landed, and for each sha and PR it names that landed nowhere, why.
-func evidence(row Row, bs []*branch) (ev []Evidence, misses []string, err error) {
+// landed looks a sha up in every repo: the branch it is on and its full id, or (branch nil) why it is on none.
+func landed(sha string, bs []*branch) (*branch, string, string, error) {
+	var why []string
+	for _, b := range bs {
+		full, miss, err := resolve(b.repo.Path, sha)
+		if err != nil {
+			return nil, "", "", err
+		}
+		if full == "" {
+			why = append(why, miss+" in "+filepath.Base(b.repo.Path))
+			continue
+		}
+		anc, err := ancestor(b.repo.Path, full, b.tip)
+		if err != nil {
+			return nil, "", "", err
+		}
+		if anc {
+			return b, full, "", nil
+		}
+		why = append(why, "not on "+label(b))
+	}
+	return nil, "", strings.Join(why, ", "), nil
+}
+
+// prMerged finds a PR's merge subject: the one branch whose scanned subjects name it, or (branch nil) why none counts:
+// merged in none, or in several repos (ambiguous).
+func prMerged(p string, bs []*branch) (*branch, commitRef, string) {
+	var hits []*branch
+	for _, b := range bs {
+		if _, ok := b.pr[p]; ok {
+			hits = append(hits, b)
+		}
+	}
+	switch len(hits) {
+	case 0:
+		return nil, commitRef{}, "no merge subject in the scanned commits"
+	case 1:
+		return hits[0], hits[0].pr[p], ""
+	}
+	var names []string
+	for _, b := range hits {
+		names = append(names, label(b))
+	}
+	return nil, commitRef{}, "merged in " + strings.Join(names, " and ") + " (ambiguous)"
+}
+
+// doneMisses names what a done row lacks on the branch: each PR it names that is not merged, and its missing shas. A
+// sha column (not Cited) holds only the row's own shas, so each missing one counts. Cited shas (markdown text) count
+// as missing only when one is the right of "A -> B" or when none of them is on the branch: such rows also cite
+// history (a commit from before a rebase, a red test on a rig branch) that never lands under its own sha.
+func doneMisses(row Row, bs []*branch) ([]string, error) {
+	var misses, cited []string
+	anyLanded := false
 	for _, s := range row.SHAs {
-		var why []string
-		hit := false
-		for _, b := range bs {
-			full, ok, err := resolve(b.repo.Path, s)
-			if err != nil {
-				return nil, nil, err
-			}
-			if !ok {
-				why = append(why, "not found in "+label(b))
-				continue
-			}
-			anc, err := ancestor(b.repo.Path, full, b.tip)
-			if err != nil {
-				return nil, nil, err
-			}
-			if anc {
-				ev = append(ev, Evidence{Kind: "sha", Ref: s, Commit: short(full), Repo: b.repo.Path, Branch: b.name})
-				hit = true
-				break
-			}
-			why = append(why, "not on "+label(b))
+		b, _, why, err := landed(s, bs)
+		if err != nil {
+			return nil, err
 		}
-		if !hit {
-			misses = append(misses, "sha "+s+": "+strings.Join(why, ", "))
+		switch {
+		case b != nil:
+			anyLanded = true
+		case !row.Cited || contains(row.Arrow, s):
+			misses = append(misses, "sha "+s+": "+why)
+		default:
+			cited = append(cited, "sha "+s+": "+why)
 		}
+	}
+	if !anyLanded {
+		misses = append(misses, cited...)
 	}
 	for _, p := range row.PRs {
-		hit := false
-		for _, b := range bs {
-			if c, ok := b.pr[p]; ok {
-				ev = append(ev, Evidence{Kind: "merge-subject", Ref: "PR " + p, Commit: short(c.sha), Subject: c.subject, Repo: b.repo.Path, Branch: b.name})
-				hit = true
-				break
-			}
-		}
-		if !hit {
-			misses = append(misses, fmt.Sprintf("PR %s: no merge subject in the scanned commits", p))
+		if b, _, why := prMerged(p, bs); b == nil {
+			misses = append(misses, "PR "+p+": "+why)
 		}
 	}
+	return misses, nil
+}
+
+// openEvidence lists every proof that an open or partial row landed, and notes on PRs that were ambiguous.
+func openEvidence(row Row, bs []*branch) (ev []Evidence, notes []string, err error) {
+	for _, s := range row.SHAs {
+		b, full, _, err := landed(s, bs)
+		if err != nil {
+			return nil, nil, err
+		}
+		if b == nil {
+			continue
+		}
+		if row.Cited && !contains(row.Arrow, s) {
+			subj, err := subjectOf(b.repo.Path, full)
+			if err != nil {
+				return nil, nil, err
+			}
+			if !contains(subjectIDs(subj), row.ID) {
+				continue // a cited sha whose commit is not tagged with the row (a baseline): no proof
+			}
+		}
+		ev = append(ev, Evidence{Kind: "sha", Ref: s, Commit: short(full), Repo: b.repo.Path, Branch: b.name})
+	}
+	for _, p := range row.PRs {
+		b, c, why := prMerged(p, bs)
+		if b == nil {
+			if strings.HasSuffix(why, "(ambiguous)") {
+				notes = append(notes, fmt.Sprintf("%s: PR %s %s, not counted", row.ID, p, why))
+			}
+			continue
+		}
+		ev = append(ev, Evidence{Kind: "merge-subject", Ref: "PR " + p, Commit: short(c.sha), Subject: c.subject, Repo: b.repo.Path, Branch: b.name})
+	}
 	for _, b := range bs {
-		if c, ok := b.word[strings.ToLower(row.ID)]; ok {
+		if c, ok := b.word[row.ID]; ok {
 			ev = append(ev, Evidence{Kind: "row-id-subject", Ref: row.ID, Commit: short(c.sha), Subject: c.subject, Repo: b.repo.Path, Branch: b.name})
 			break
 		}
 	}
-	return ev, misses, nil
+	return ev, notes, nil
 }
 
 func label(b *branch) string { return b.name + " (" + filepath.Base(b.repo.Path) + ")" }
@@ -416,17 +661,35 @@ func gitRun(repo string, args ...string) (string, int, error) {
 	return out.String(), 0, nil
 }
 
-// resolve finds rev as a commit in repo: ok false when it is unknown (or an ambiguous short sha), an error for any
-// other git failure.
-func resolve(repo, rev string) (string, bool, error) {
-	out, code, err := gitRun(repo, "rev-parse", "--verify", "-q", rev+"^{commit}")
-	switch code {
+// pickCommit chooses among the commits whose id starts with a sha: none is "not found", several are "ambiguous".
+func pickCommit(commits []string) (full, why string) {
+	switch len(commits) {
 	case 0:
-		return strings.TrimSpace(out), true, nil
+		return "", "not found"
 	case 1:
-		return "", false, nil
+		return commits[0], ""
 	}
-	return "", false, err
+	return "", "ambiguous"
+}
+
+// resolve looks sha up as an object id only (never a branch or tag name): the full commit id, or why there is none.
+func resolve(repo, sha string) (full, why string, err error) {
+	out, _, err := gitRun(repo, "rev-parse", "--disambiguate="+sha)
+	if err != nil {
+		return "", "", err
+	}
+	var commits []string
+	for _, o := range strings.Fields(out) {
+		typ, _, err := gitRun(repo, "cat-file", "-t", o)
+		if err != nil {
+			return "", "", err
+		}
+		if strings.TrimSpace(typ) == "commit" {
+			commits = append(commits, o)
+		}
+	}
+	full, why = pickCommit(commits)
+	return full, why, nil
 }
 
 func ancestor(repo, sha, tip string) (bool, error) {
@@ -440,18 +703,24 @@ func ancestor(repo, sha, tip string) (bool, error) {
 	return false, err
 }
 
+func subjectOf(repo, full string) (string, error) {
+	out, _, err := gitRun(repo, "log", "-1", "--format=%s", full)
+	return strings.TrimSpace(out), err
+}
+
 func readBranch(r Repo, depth int) (*branch, error) {
 	if _, code, err := gitRun(r.Path, "rev-parse", "--git-dir"); code != 0 {
 		return nil, fmt.Errorf("%s is not a git repo: %w", r.Path, err)
 	}
-	tip, ok, err := resolve(r.Path, r.Branch)
-	if err != nil {
+	out, code, err := gitRun(r.Path, "rev-parse", "--verify", "-q", r.Branch+"^{commit}")
+	switch {
+	case code == 1:
+		return nil, fmt.Errorf("branch %q not found in %s", r.Branch, r.Path)
+	case err != nil:
 		return nil, err
 	}
-	if !ok {
-		return nil, fmt.Errorf("branch %q not found in %s", r.Branch, r.Path)
-	}
-	out, _, err := gitRun(r.Path, "log", fmt.Sprintf("-n%d", depth), "--format=%H%x1f%cs%x1f%s", tip)
+	tip := strings.TrimSpace(out)
+	out, _, err = gitRun(r.Path, "log", fmt.Sprintf("-n%d", depth), "--format=%H%x1f%cs%x1f%s", tip)
 	if err != nil {
 		return nil, err
 	}
@@ -464,6 +733,9 @@ func readBranch(r Repo, depth int) (*branch, error) {
 		b.commits++
 		b.oldest = f[1]
 		c := commitRef{sha: f[0], subject: f[2]}
+		if strings.HasPrefix(c.subject, "Revert") {
+			continue
+		}
 		for _, re := range mergeRes {
 			if m := re.FindStringSubmatch(c.subject); m != nil {
 				if _, seen := b.pr[m[1]]; !seen {
@@ -471,11 +743,9 @@ func readBranch(r Repo, depth int) (*branch, error) {
 				}
 			}
 		}
-		for _, w := range wordRe.FindAllString(c.subject, -1) {
-			if k := strings.ToLower(w); isID(w) {
-				if _, seen := b.word[k]; !seen {
-					b.word[k] = c
-				}
+		for _, id := range subjectIDs(c.subject) {
+			if _, seen := b.word[id]; !seen {
+				b.word[id] = c
 			}
 		}
 	}

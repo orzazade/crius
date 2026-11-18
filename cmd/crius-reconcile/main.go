@@ -1,15 +1,20 @@
 // Command crius-reconcile compares a team's board with git, read-only (package reconcile): it flags a row whose work is
-// already on the integration branch while its state is not done (STALE), and a row whose state is done while none of
-// its shas or PRs is on the branch (UNLANDED). Run it before Crius or a builder picks a next row.
+// already on the integration branch while its state is not done (STALE), and a row whose state is done while one of
+// its own shas or PRs is not on the branch (UNLANDED). Run it before Crius or a builder picks a next row.
 //
 //	crius-reconcile --board FILE --format tsv|md [--section TEXT] --git REPO:BRANCH [--git REPO:BRANCH …]
-//	                [--done LIST] [--partial LIST] [--skip LIST] [--depth N]
+//	                [--done LIST] [--partial LIST] [--skip LIST] [--open LIST] [--depth N]
 //
 // --git may repeat: a sha on any repo's branch counts as landed (a row may name a web and a backend sha). LISTs are
-// comma-separated states, compared without case. It never fetches: fetch first if the local branch may be behind.
+// comma-separated states, compared without case. It never fetches: BRANCH is read as the local repo has it, so for a
+// clone pass REPO:origin/BRANCH (as fresh as that clone's last fetch).
 //
-// Exit codes: 0 every row agrees with git, 4 mismatches found (one line each), 1 failed to look (an unreadable board,
-// a board that parses to 0 rows, a missing branch, a git error: never reported as clean), 2 bad arguments.
+// Besides the mismatches it prints, without changing the exit code: NOT-READ lines (in the section, they look like a
+// row but give none), rows in a state no list names (unknown, not judged), partial rows with landed work, done rows
+// naming no own sha or PR (not checked), and PRs merged in more than one repo (ambiguous, not counted).
+//
+// Exit codes: 0 no mismatch, 4 mismatches found (one line each), 1 failed to look (an unreadable board, a board that
+// parses to 0 rows, a missing branch, a git error: never reported as clean), 2 bad arguments.
 package main
 
 import (
@@ -56,9 +61,10 @@ func run(args []string, out, errw io.Writer) int {
 		board   = fs.String("board", "", "board file")
 		format  = fs.String("format", "", "tsv or md")
 		section = fs.String("section", "", "md: only rows under the heading that contains this text")
-		done    = fs.String("done", "merged,done,proven,landed,✅", "states that mean the work landed")
-		partial = fs.String("partial", "🔶,🟡,partial", "states of rows that may have landed parts (noted, not judged)")
+		done    = fs.String("done", "merged,done,proven,landed,✅,[x]", "states that mean the work landed")
+		partial = fs.String("partial", "🔶,🟡,partial,[~]", "states of rows that may have landed parts (noted, not judged)")
 		skip    = fs.String("skip", "✖,dropped,cancelled", "states not judged")
+		open    = fs.String("open", "⬜,open,todo,ready,building,check-written,in-progress,review,pr,blocked,[ ]", "states that mean the work has not landed")
 		depth   = fs.Int("depth", 5000, "commits per branch the subject searches read")
 	)
 	bad := func(msg string) int {
@@ -90,18 +96,20 @@ func run(args []string, out, errw io.Writer) int {
 	}
 	defer f.Close()
 	var rows []reconcile.Row
+	var notRead []reconcile.NotRead
 	if *format == "tsv" {
 		rows, err = reconcile.ParseTSV(f)
 	} else {
-		rows, err = reconcile.ParseMarkdown(f, *section)
+		rows, notRead, err = reconcile.ParseMarkdown(f, *section)
 	}
 	if err != nil {
 		return fail(fmt.Errorf("%s: %w", *board, err))
 	}
 	if len(rows) == 0 {
-		return fail(fmt.Errorf("%s parsed to 0 rows (format %s, section %q): nothing was checked", *board, *format, *section))
+		return fail(fmt.Errorf("%s parsed to 0 rows (format %s, section %q, %d lines not read): nothing was checked", *board, *format, *section, len(notRead)))
 	}
-	rep, err := reconcile.Check(rows, repos, reconcile.Config{Done: list(*done), Partial: list(*partial), Skip: list(*skip), Depth: *depth})
+	rep, err := reconcile.Check(rows, repos, reconcile.Config{Done: list(*done), Partial: list(*partial), Skip: list(*skip),
+		Open: list(*open), Depth: *depth})
 	if err != nil {
 		return fail(err)
 	}
@@ -114,13 +122,22 @@ func run(args []string, out, errw io.Writer) int {
 			unlanded++
 		}
 	}
-	fmt.Fprintf(out, "SUMMARY %s: %d rows (%d done, %d open, %d partial, %d skipped) · %d stale · %d unlanded\n",
-		*board, rep.Rows, rep.Done, rep.Open, rep.Partial, rep.Skipped, stale, unlanded)
+	for _, n := range notRead {
+		fmt.Fprintf(out, "NOT-READ line %d: %s\n", n.Line, n.Text)
+	}
+	fmt.Fprintf(out, "SUMMARY %s: %d rows (%d done, %d open, %d partial, %d skipped, %d unknown) · %d stale · %d unlanded · %d not read\n",
+		*board, rep.Rows, rep.Done, rep.Open, rep.Partial, rep.Skipped, len(rep.Unknown), stale, unlanded, len(notRead))
+	if len(rep.Unknown) > 0 {
+		fmt.Fprintf(out, "  unknown state: %s (not judged; name the state with --done/--open/--partial/--skip)\n", strings.Join(rep.Unknown, " "))
+	}
 	if len(rep.PartialLanded) > 0 {
 		fmt.Fprintf(out, "  partial rows with landed work (not judged): %s\n", strings.Join(rep.PartialLanded, " "))
 	}
 	if len(rep.Unchecked) > 0 {
-		fmt.Fprintf(out, "  done rows naming no sha or PR, id in no scanned subject (not checked): %s\n", strings.Join(rep.Unchecked, " "))
+		fmt.Fprintf(out, "  done rows naming no own sha or PR (not checked): %s\n", strings.Join(rep.Unchecked, " "))
+	}
+	for _, n := range rep.Notes {
+		fmt.Fprintf(out, "  note: %s\n", n)
 	}
 	for _, s := range rep.Scans {
 		fmt.Fprintf(out, "  read %s %s at %.10s: %d commits back to %s for subjects; shas checked against the whole branch\n",
@@ -136,7 +153,7 @@ func run(args []string, out, errw io.Writer) int {
 func line(fd reconcile.Finding) string {
 	head := fmt.Sprintf("%s %s state=%s (line %d)", strings.ToUpper(fd.Kind), fd.Row.ID, fd.Row.State, fd.Row.Line)
 	if fd.Kind != "stale" {
-		return head + " but nothing on the branch: " + strings.Join(fd.Misses, "; ")
+		return head + " but not on the branch: " + strings.Join(fd.Misses, "; ")
 	}
 	var ev []string
 	for _, e := range fd.Evidence {

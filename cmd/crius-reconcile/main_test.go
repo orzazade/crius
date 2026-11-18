@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -14,7 +15,9 @@ import (
 func git(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
-	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+	// a fixed date keeps the shas the same on every run, so none comes out as a word a board would not read as a sha
+	const date = "2026-01-02T03:04:05Z"
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1", "GIT_AUTHOR_DATE="+date, "GIT_COMMITTER_DATE="+date)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
@@ -36,8 +39,15 @@ func setup(t *testing.T) (root, repo, landed, unlanded string) {
 	git(t, repo, "commit", "-q", "--allow-empty", "-m", "feat: the thing")
 	landed = git(t, repo, "rev-parse", "--short=8", "HEAD")
 	git(t, repo, "commit", "-q", "--allow-empty", "-m", "Merged PR 101: add y")
+	for _, s := range []string{landed, unlanded} {
+		if !shaLike.MatchString(s) || !strings.ContainsAny(s, "abcdef") || !strings.ContainsAny(s, "0123456789") {
+			t.Fatalf("sha %s would not be read as a sha by a board: change the date", s)
+		}
+	}
 	return root, repo, landed, unlanded
 }
+
+var shaLike = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
 
 func runCLI(t *testing.T, args ...string) (int, string, string) {
 	t.Helper()
@@ -116,6 +126,38 @@ func TestBadArgsExit2(t *testing.T) {
 	} {
 		if code, _, _ := runCLI(t, args...); code != 2 {
 			t.Errorf("%q: exit %d, want 2", args, code)
+		}
+	}
+}
+
+// A git error while reading (here a commit object missing from the history: git log exits 128) is a failed look.
+func TestGitErrorExit1(t *testing.T) {
+	root, repo, landed, _ := setup(t)
+	full := git(t, repo, "rev-parse", landed)
+	if err := os.Remove(filepath.Join(repo, ".git", "objects", full[:2], full[2:])); err != nil {
+		t.Fatal(err)
+	}
+	board := filepath.Join(root, "board.tsv")
+	testutil.Write(t, board, "row\tstate\tsha\nR1\tmerged\t"+landed+"\n")
+	code, out, errw := runCLI(t, "--board", board, "--format", "tsv", "--git", repo+":integ")
+	if code != 1 || !strings.Contains(errw, "FAILED TO LOOK") || !strings.Contains(errw, "exit 128") {
+		t.Fatalf("exit %d err %q, want 1 naming git's exit 128\nout:\n%s", code, errw, out)
+	}
+}
+
+// Lines the parser could not read and rows in a state no list names are shown and counted, never silently dropped;
+// they are not mismatches, so the exit stays 0.
+func TestNotReadAndUnknownStateShown(t *testing.T) {
+	root, repo, landed, _ := setup(t)
+	board := filepath.Join(root, "board.md")
+	testutil.Write(t, board, "## ROWS\n- ✅ X1 done ("+landed+")\n- ⬜ X6/X7 two ids\n| X2 | weird |\n")
+	code, out, errw := runCLI(t, "--board", board, "--format", "md", "--section", "ROWS", "--git", repo+":integ")
+	if code != 0 {
+		t.Fatalf("exit %d, want 0\nout:\n%s\nerr:\n%s", code, out, errw)
+	}
+	for _, want := range []string{"NOT-READ line 3: - ⬜ X6/X7 two ids", "1 not read", "unknown state: X2 (weird)", "1 unknown"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output lacks %q:\n%s", want, out)
 		}
 	}
 }
