@@ -58,7 +58,7 @@ func newBox(t *testing.T) *box {
 }
 
 // fakeBuild writes a small file per tool in place of a Go cross-build.
-func fakeBuild(repo, goarch, name, out string) (string, error) {
+func fakeBuild(repo, goarch, name, out string, stamped bool) (string, error) {
 	rev, err := exec.Command("git", "-C", repo, "rev-parse", "HEAD").Output()
 	if err != nil {
 		return "", err
@@ -247,4 +247,43 @@ func gitOut(t *testing.T, repo string, args ...string) string {
 		t.Fatal(err)
 	}
 	return string(out)
+}
+
+// Go's vcs stamping skips a .git file, so a build in a git worktree stamps the revision of whatever repo holds the
+// worktree folder (seen 11-19: the home folder's repo, vcs.modified=true). The tools must carry the checkout's HEAD.
+func TestABuildInAWorktreeIsStampedWithItsOwnHead(t *testing.T) {
+	gitIn := func(dir string, args ...string) string {
+		t.Helper()
+		out, err := exec.Command("git", append([]string{"-C", dir, "-c", "user.name=t", "-c", "user.email=t@t"}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	outer, inner := t.TempDir(), t.TempDir()
+	gitIn(outer, "init", "-q")
+	gitIn(outer, "commit", "-q", "--allow-empty", "-m", "outer")
+	gitIn(inner, "init", "-q")
+	write(t, filepath.Join(inner, "go.mod"), "module example.com/x\n\ngo 1.21\n", 0o644)
+	if err := os.MkdirAll(filepath.Join(inner, "cmd", "x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(inner, "cmd", "x", "main.go"), "package main\n\nfunc main() {}\n", 0o644)
+	gitIn(inner, "add", ".")
+	gitIn(inner, "commit", "-q", "-m", "inner")
+	wt := filepath.Join(outer, "wt")
+	gitIn(inner, "worktree", "add", "-q", wt)
+	head := gitIn(wt, "rev-parse", "HEAD")
+
+	src, err := buildSource(wt, head, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rev, err := goBuild(src, "amd64", "x", filepath.Join(t.TempDir(), "x"), true)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if rev != head {
+		t.Fatalf("worktree build stamped %s, want its HEAD %s (outer repo is %s)", rev, head, gitIn(outer, "rev-parse", "HEAD"))
+	}
 }

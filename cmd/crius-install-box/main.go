@@ -5,8 +5,8 @@
 //
 // <box> is a host name in ~/.crius/state/playbook/hosts.json (legion, thinkpad), reached with that host's ssh
 // command, as crius-tsend and wakewatch reach it. The build is GOOS=linux, GOARCH from the box's uname -m,
-// CGO_ENABLED=0, stamped with the commit (go version -m shows vcs.revision); a tree with changes is refused unless
-// --allow-dirty. Each binary goes up on ssh's stdin to a temp name, is checked against its sha256, the old one is kept
+// CGO_ENABLED=0, from a shared clone at HEAD so Go stamps the commit (go version -m shows vcs.revision); a tree
+// with changes is refused unless --allow-dirty, which builds the working tree unstamped. Each binary goes up on ssh's stdin to a temp name, is checked against its sha256, the old one is kept
 // as <name>.prev-<new short sha>, and only then is it moved into place, so a cut copy leaves the old binary running.
 // After the copies it reads every binary's sha256 back and prints one line per tool: old, new, OK or FAILED.
 // --dry-run builds locally and only runs uname -m and ls -l on the box.
@@ -35,8 +35,9 @@ import (
 type deps struct {
 	repo  string
 	hosts string
-	// build cross-builds ./cmd/<name> for linux/<goarch> into out and returns the vcs.revision stamped in it.
-	build func(repo, goarch, name, out string) (string, error)
+	// build cross-builds ./cmd/<name> in dir for linux/<goarch> into out; stamped, it returns the vcs.revision
+	// stamped in the binary, else it builds with -buildvcs=false and returns "".
+	build func(dir, goarch, name, out string, stamped bool) (string, error)
 }
 
 // callTimeout bounds each ssh call, so a hung box cannot hold the install.
@@ -53,11 +54,14 @@ func main() {
 }
 
 // goBuild runs the real cross-build and reads the revision back with go version -m.
-func goBuild(repo, goarch, name, out string) (string, error) {
-	cmd := exec.Command("go", "-C", repo, "build", "-buildvcs=true", "-o", out, "./cmd/"+name)
+func goBuild(dir, goarch, name, out string, stamped bool) (string, error) {
+	cmd := exec.Command("go", "-C", dir, "build", fmt.Sprintf("-buildvcs=%t", stamped), "-o", out, "./cmd/"+name)
 	cmd.Env = append(os.Environ(), "GOTOOLCHAIN=local", "GOFLAGS=", "GOOS=linux", "GOARCH="+goarch, "CGO_ENABLED=0")
 	if b, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("go build %s: %v\n%s", name, err, b)
+	}
+	if !stamped {
+		return "", nil
 	}
 	info, err := exec.Command("go", "version", "-m", out).Output()
 	if err != nil {
@@ -146,22 +150,32 @@ func run(args []string, d deps, out, errs io.Writer) int {
 		return fail("%v", err)
 	}
 	defer os.RemoveAll(tmp)
-	type tool struct{ name, path, rev, sum string }
+	// A clean tree builds from a clone at HEAD, stamped by Go. A dirty tree (--allow-dirty) builds the working tree
+	// itself, unstamped: the box then shows "-" as its revision, and only the sha256 check holds.
+	src, stamped := d.repo, status == ""
+	if stamped {
+		if src, err = buildSource(d.repo, head, tmp); err != nil {
+			return fail("%v", err)
+		}
+	} else {
+		fmt.Fprintf(errs, "crius-install-box: building uncommitted changes in %s, unstamped (--allow-dirty)\n", d.repo)
+	}
+	type tool struct{ name, path, sum string }
 	var tools []tool
 	for _, name := range boxtools.Tools {
 		p := filepath.Join(tmp, name)
-		rev, err := d.build(d.repo, goarch, name, p)
+		rev, err := d.build(src, goarch, name, p, stamped)
 		if err != nil {
 			return fail("%v", err)
 		}
-		if rev != head {
+		if stamped && rev != head {
 			return fail("%s is stamped %s, not HEAD %s", name, rev, head)
 		}
 		sum, err := fileSum(p)
 		if err != nil {
 			return fail("%v", err)
 		}
-		tools = append(tools, tool{name, p, rev, sum})
+		tools = append(tools, tool{name, p, sum})
 	}
 	fmt.Fprintf(out, "box %s (%s): built %d tools for linux/%s at %s from %s\n", h.Name, h.Target, len(tools), goarch, mark, d.repo)
 
@@ -316,4 +330,18 @@ func short12(sum string) string {
 		return sum
 	}
 	return sum[:12]
+}
+
+// buildSource returns a folder holding exactly head to build from: a shared clone of the checkout in tmp. Go's vcs
+// stamping looks for a .git folder and skips a worktree's .git file, so a build in a worktree would stamp the
+// revision of whatever repo holds that folder (11-19: the home folder's repo). A clone has its own .git folder.
+func buildSource(repo, head, tmp string) (string, error) {
+	src := filepath.Join(tmp, "src")
+	if _, err := git(repo, "clone", "-q", "--shared", "--no-checkout", repo, src); err != nil {
+		return "", err
+	}
+	if _, err := git(src, "-c", "advice.detachedHead=false", "checkout", "-q", head); err != nil {
+		return "", err
+	}
+	return src, nil
 }
