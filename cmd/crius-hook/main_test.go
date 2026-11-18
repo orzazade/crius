@@ -436,6 +436,20 @@ func TestARoleFileKeepsWhenItsSessionTookTheRole(t *testing.T) {
 	if id, _, started := read("a resume of a file with no started"); id != "s-3" || !started.Equal(old) {
 		t.Errorf("after a resume of a file with no started: %s, started %v; want its old time %v", id, started, old)
 	}
+	// a back-filled start is marked as only a bound, and stays marked through the next resume; a known one is not
+	bound := func() bool { b, _ := os.ReadFile(path); return strings.Contains(string(b), `"started_bound":true`) }
+	if !bound() {
+		t.Errorf("after a resume of a file with no started: no started_bound mark")
+	}
+	run(t, w.env(), `{"session_id":"s-3","hook_event_name":"SessionStart","source":"compact","cwd":"/w/crius"}`)
+	if _, _, started := read("a compact of s-3"); !started.Equal(old) || !bound() {
+		t.Errorf("after a compact of s-3: started %v, bound %v; want %v kept, marked", started, bound(), old)
+	}
+	holds("s-4")
+	run(t, w.env(), `{"session_id":"s-4","hook_event_name":"SessionStart","source":"clear","cwd":"/w/crius"}`)
+	if bound() {
+		t.Errorf("after the start of s-4: a known start is marked as a bound")
+	}
 }
 
 // Review 10-22 (item 5): a SessionStart the hook did not file under the role (after /clear the new id may not be in

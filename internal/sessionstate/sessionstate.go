@@ -65,6 +65,9 @@ type State struct {
 	// Started, in a role's file only: when this session id became the role's session. A resume, compact or move of the
 	// same id keeps it; a new id (a fresh start, /clear, another session taking the role) sets it. See StartedAt.
 	Started time.Time `json:"started,omitzero"`
+	// StartedBound: Started was back-filled from a role file written before crius-hook kept it, so it is only the latest
+	// time by which the session held the role, not when it took it.
+	StartedBound bool `json:"started_bound,omitempty"`
 	// PromptSHA is the first 16 hex digits of the sha256 of the last submitted prompt, trimmed: proof that a message
 	// a watcher typed was submitted as itself, not mixed with a draft. The prompt itself is never stored.
 	PromptSHA  string    `json:"prompt_sha,omitempty"`

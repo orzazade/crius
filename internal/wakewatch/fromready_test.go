@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -92,11 +93,19 @@ func frRec(id, detail, at, started string) string {
 	return s + "}"
 }
 
-// newFRMac is newFRFake with acme's templates on this machine, where the role record is the one under CRIUS_HOME.
+// frBound is a record crius-hook back-filled: started is only the latest the session can have taken the role by, read
+// from a record written before it kept a start time.
+func frBound(id, detail, at, started string) string {
+	return strings.TrimSuffix(frRec(id, detail, at, started), "}") + `,"started_bound":true}`
+}
+
+// newFRMac is newFRFake with acme's templates on this machine and the role run here too (a T3 thread, no tab), so its
+// record is the one under CRIUS_HOME.
 func newFRMac(t *testing.T, bus, template, record string) (*frFake, string) {
 	f, home := newFRFake(t, bus, "")
 	testutil.Write(t, RestartBriefsFile(home), "acme mac ~/briefs/acme/RESTART-{role}.md\n")
 	delete(f.files, "box1:"+frRecPath)
+	f.tabs = nil
 	f.files["mac:"+frPath] = template
 	if record != "" {
 		testutil.Write(t, filepath.Join(home, "roles", "acme.qa.json"), record)
@@ -285,7 +294,8 @@ func TestFromReadyOnAT3ThreadSaysTheSendIsPending(t *testing.T) {
 	f, home := newFRFake(t, frBus, frTemplate)
 	f.tabs = nil
 	testutil.Write(t, filepath.Join(home, "roles", "acme.qa.json"),
-		`{"session_id":"s-acme-qa","project":"acme","role":"qa","t3_thread":"thr-acme-qa","time":"2026-11-17T13:48:00Z"}`)
+		`{"session_id":"s-acme-qa","project":"acme","role":"qa","t3_thread":"thr-acme-qa","time":"2026-11-17T13:48:00Z",`+
+			`"started":"`+time.Date(2026, 11, 17, 9, 30, 0, 0, time.Local).Format(time.RFC3339)+`"}`) // took the role before its 10:00 line
 	f.f.threads["thr-acme-qa"] = T3Thread{Status: "completed", Updated: t0}
 	wantOut(t, f.restartFake, RestartFromReady(f.deps(home), "acme:qa", false), RestartReady,
 		"READY acme:qa", "t3_thread_send", "SAVED acme:qa", "It is not sent yet")
@@ -382,7 +392,10 @@ func TestFromReadyRefusesWorkAndRestartsAfterTheLine(t *testing.T) {
 		"a new session in the line's minute": {frAsked + answer, frTemplate, frRec("s-qa-2", "startup", "10:00", "10:00"),
 			[]string{"a new session of acme:qa (s-qa-2) took the role at 2026-11-17 10:00", none}},
 		"an old record rewritten after the line": {frAsked + answer, frTemplate, frRec("s-qa-1", "resume", "10:21", ""),
-			[]string{"(s-qa-1) took the role at 2026-11-17 10:21", "keeps no start time", none}},
+			[]string{"cannot tell when the session that holds the role (s-qa-1) took it", "last written at 2026-11-17 10:21",
+				"no start time", none}},
+		"a back-filled start after the line": {frAsked + answer, frTemplate, frBound("s-qa-1", "resume", "10:30", "10:21"),
+			[]string{"cannot tell when the session that holds the role (s-qa-1) took it", "at 2026-11-17 10:21 or before", none}},
 		"a damaged record": {frAsked + answer, frTemplate, "{not json",
 			[]string{"could not read crius-hook's record " + frRecPath + " on box1"}},
 		"restarted: the template": {frAsked + answer, used, "",
@@ -396,7 +409,11 @@ func TestFromReadyRefusesWorkAndRestartsAfterTheLine(t *testing.T) {
 		if code != RestartNoBrief {
 			t.Errorf("%s: exit %d, want %d; said %q", name, code, RestartNoBrief, f.out.String())
 		}
-		for _, h := range append([]string{"NO BRIEF", "Nothing was sent or saved."}, c.has...) {
+		has := append([]string{"NO BRIEF", "Nothing was sent or saved."}, c.has...)
+		if slices.Contains(c.has, none) { // each refusal of a used line says what to do
+			has = append(has, ": ask acme:qa to post a new READY-RESTART line.")
+		}
+		for _, h := range has {
 			if !strings.Contains(f.out.String(), h) {
 				t.Errorf("%s: said %q, lacks %q", name, f.out.String(), h)
 			}
@@ -404,6 +421,24 @@ func TestFromReadyRefusesWorkAndRestartsAfterTheLine(t *testing.T) {
 		if len(f.typed) != 0 || len(f.saved) != 0 {
 			t.Errorf("%s: typed %q, saved %q", name, f.typed, f.saved)
 		}
+	}
+}
+
+// The record is read where the role runs, not where its template lives: a role whose template is on this machine but
+// which runs as a tmux tab on box1 is checked against box1's record, never a stale one here.
+func TestFromReadyReadsTheRecordWhereTheRoleRuns(t *testing.T) {
+	bus := frAsked + "\n2026-11-17T10:22 ANSWER acme:qa -> crius:lead — Re 10:20: green, run 12 (40/40)"
+	f, home := newFRMac(t, bus, frTemplate, frRec("s-old", "startup", "08:00", "08:00")) // weeks-old style record here
+	f.tabs = []RemoteTab{{"box1", "acme:qa"}}
+	f.files["box1:"+frRecPath] = frRec("s-qa-2", "clear", "10:15", "10:15")
+	wantOut(t, f.restartFake, RestartFromReady(f.deps(home), "acme:qa", true), RestartNoBrief,
+		"a new session of acme:qa (s-qa-2) took the role at 2026-11-17 10:15 (crius-hook's record "+frRecPath+" on box1)")
+	f, home = newFRMac(t, bus, frTemplate, "")
+	f.tabs = []RemoteTab{{"box1", "acme:qa"}}
+	f.files["box1:"+frRecPath] = frRec("s-qa-1", "resume", "10:21", "09:30")
+	code := RestartFromReady(f.deps(home), "acme:qa", true)
+	if out := f.out.String(); code != RestartReady || strings.Contains(out, "NOTE acme:qa") || !strings.Contains(out, "your ANSWER Re 10:20") {
+		t.Errorf("box record of the same session: exit %d, said %q", code, out)
 	}
 }
 

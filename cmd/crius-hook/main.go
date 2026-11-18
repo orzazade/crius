@@ -222,7 +222,8 @@ func apply(home, dir string, ev sessionstate.Event) error {
 	if replace {
 		cur, err := sessionstate.ReadRole(roles, s.Project, s.Role)
 		if err == nil && cur.SessionID == s.SessionID {
-			s.Started = cur.StartedAt()
+			// a file with no Started gives its time, only the latest the session can have taken the role by: marked so
+			s.Started, s.StartedBound = cur.StartedAt(), cur.Started.IsZero() || cur.StartedBound
 		}
 		sameTab := s.Surface != "" && cur.Surface == s.Surface && !(in.Event == "SessionStart" && s.Detail == "startup")
 		if err == nil && (cur.SessionID == s.SessionID || sameTab) {

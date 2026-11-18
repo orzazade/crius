@@ -105,10 +105,12 @@ func BuildFromReady(d FromReadyDeps, role string) (ReadyBrief, error) {
 		return ReadyBrief{}, err
 	}
 	ready, later := s.ready, s.later
+	// every refusal of a used line ends with what to do
+	ask := ": ask " + role + " to post a new READY-RESTART line"
 	if s.block != nil { // the role went on working (or a fresh session of it started): its line no longer says where it is
 		return ReadyBrief{}, fmt.Errorf("%s posted %d line(s) after its %s READY-RESTART line in %s, and its %s %s %s line is "+
-			"no answer to Crius (%s): no READY-RESTART line newer than the last restart or work",
-			role, s.own, ready.Time, busPath, s.block.Date, s.block.Time, s.block.Type, s.why)
+			"no answer to Crius (%s): no READY-RESTART line newer than the last restart or work%s",
+			role, s.own, ready.Time, busPath, s.block.Date, s.block.Time, s.block.Type, s.why, ask)
 	}
 	// A session that took the role since the line (a restart typed by hand changes neither the template nor the bus) is
 	// not the one the line speaks for, and any answer since may be its own. crius-hook's record of the role names the
@@ -122,23 +124,37 @@ func BuildFromReady(d FromReadyDeps, role string) (ReadyBrief, error) {
 			return ReadyBrief{}, fmt.Errorf("the newest READY-RESTART line of %s in %s has no readable time: %w", role, busPath, err)
 		}
 	}
-	cur, where, err := d.roleRecord(place.Host, project, name)
+	// The record is where the role runs, not where its template lives: a remote tmux tab's box, else this machine.
+	tabs, err := d.Tabs()
+	if err != nil {
+		return ReadyBrief{}, fmt.Errorf("could not read the remote tab list, to find where %s runs: %w", role, err)
+	}
+	host := "mac"
+	if i := slices.IndexFunc(tabs, func(t RemoteTab) bool { return strings.EqualFold(t.Target, role) }); i >= 0 {
+		host = tabs[i].Box
+	}
+	cur, where, err := d.roleRecord(host, project, name)
+	stamp := func(t time.Time) string { return t.In(time.Local).Format("2006-01-02 15:04") }
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		note = fmt.Sprintf("no record of the role's session at %s on %s: could not check that no newer session took the role "+
-			"after its %s READY-RESTART line", where, place.Host, ready.Time)
+			"after its %s READY-RESTART line", where, host, ready.Time)
 	case err != nil:
 		return ReadyBrief{}, fmt.Errorf("could not read crius-hook's record %s on %s, to check that no newer session of %s took the "+
-			"role after its %s READY-RESTART line: %w", where, place.Host, role, ready.Time, err)
-	case cur.Started.IsZero() && !cur.Time.Before(readyAt):
-		return ReadyBrief{}, fmt.Errorf("the session of %s that holds the role (%s) took the role at %s or before, and the "+
-			"READY-RESTART line is %s: crius-hook's record %s on %s keeps no start time (written before it kept one), so its "+
-			"last write stands for it and a newer session cannot be ruled out: no READY-RESTART line newer than the last restart",
-			role, cur.SessionID, cur.Time.In(time.Local).Format("2006-01-02 15:04"), ready.Time, where, place.Host)
+			"role after its %s READY-RESTART line: %w", where, host, role, ready.Time, err)
+	case !cur.StartedAt().Before(readyAt) && (cur.Started.IsZero() || cur.StartedBound):
+		// a record from before crius-hook kept a start time: the same session resumed or a new one, it cannot say which
+		at := "last written at " + stamp(cur.Time) + " with no start time"
+		if !cur.Started.IsZero() {
+			at = "at " + stamp(cur.Started) + " or before (a start time filled in from a record written before crius-hook kept one)"
+		}
+		return ReadyBrief{}, fmt.Errorf("cannot tell when the session that holds the role (%s) took it: crius-hook's record %s on %s "+
+			"has it %s, not before %s's %s READY-RESTART line in %s: no READY-RESTART line newer than the last restart%s",
+			cur.SessionID, where, host, at, role, ready.Time, busPath, ask)
 	case !cur.StartedAt().Before(readyAt):
 		return ReadyBrief{}, fmt.Errorf("a new session of %s (%s) took the role at %s (crius-hook's record %s on %s), after its %s "+
-			"READY-RESTART line in %s: no READY-RESTART line newer than the last restart", role, cur.SessionID,
-			cur.Started.In(time.Local).Format("2006-01-02 15:04"), where, place.Host, ready.Time, busPath)
+			"READY-RESTART line in %s: no READY-RESTART line newer than the last restart%s", role, cur.SessionID,
+			stamp(cur.Started), where, host, ready.Time, busPath, ask)
 	}
 	notes, next, err := readyFields(ready)
 	if err != nil {
@@ -165,7 +181,7 @@ func BuildFromReady(d FromReadyDeps, role string) (ReadyBrief, error) {
 	start := at[0]
 	if strings.Contains(lines[start], "your "+ready.Time+" READY-RESTART line") {
 		return ReadyBrief{}, fmt.Errorf("the template %s on %s already continues from the %s READY-RESTART line of %s: no READY-RESTART "+
-			"line newer than the last restart", path, place.Host, ready.Time, role)
+			"line newer than the last restart%s", path, place.Host, ready.Time, role, ask)
 	}
 	prev := path + ".prev-" + d.Now.Format("1504")
 	if _, err := d.Read(place.Host, prev); err == nil {

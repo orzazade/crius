@@ -8,6 +8,8 @@
 # 3. No DONE, but a new session took the role after the line (a restart typed by hand): refused.
 set -eu
 tmp=$(mktemp -d)
+# the disk runs near full: the temp folder (built binary and fixture) goes on exit, and only a mktemp folder
+trap 'case "$tmp" in */tmp.*) rm -rf -- "$tmp" ;; esac' EXIT
 GOTOOLCHAIN=local go build -o "$tmp/crius-wakewatch" ./cmd/crius-wakewatch
 mkdir -p "$tmp/home/bus" "$tmp/home/roles"
 echo "demo mac $tmp/RESTART-{role}.md" > "$tmp/home/restart-briefs.txt"
@@ -44,4 +46,3 @@ echo "== 3. no DONE, but a new session took the role at 06:10"
 cp "$tmp/bus.keep" "$tmp/home/bus/demo.log"
 record s-qa-2 clear 06:10 06:10
 run
-echo "(fixture left in $tmp)"
