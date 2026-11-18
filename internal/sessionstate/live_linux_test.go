@@ -6,6 +6,8 @@ import (
 	"os"
 	"strconv"
 	"testing"
+
+	"github.com/orzazade/crius/internal/procfs"
 )
 
 // Live on Linux matches the ticks Claude writes (field 22 of /proc/<pid>/stat) and refuses any other start time, so a
@@ -15,7 +17,7 @@ func TestLiveMatchesOwnStartTicks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ticks, err := startTicks(b)
+	ticks, err := procfs.StartTicks(b)
 	if err != nil {
 		t.Fatal(err)
 	}
