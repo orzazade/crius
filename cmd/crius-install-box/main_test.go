@@ -57,13 +57,30 @@ func newBox(t *testing.T) *box {
 	return b
 }
 
-// fakeBuild writes a small file per tool in place of a Go cross-build.
+// fakeBuild writes a small file per tool in place of a Go cross-build, with the revision stamp a Go build carries.
 func fakeBuild(repo, goarch, name, out string, stamped bool) (string, error) {
 	rev, err := exec.Command("git", "-C", repo, "rev-parse", "HEAD").Output()
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(string(rev)), os.WriteFile(out, []byte("new "+name+" "+goarch+"\n"), 0o755)
+	sha := strings.TrimSpace(string(rev))
+	return sha, os.WriteFile(out, []byte(built(name, sha)), 0o755)
+}
+
+// built is what fakeBuild writes for one tool at one commit.
+func built(name, sha string) string {
+	return "new " + name + " amd64 build\tvcs.revision=" + sha + "\n"
+}
+
+// backupOf returns the name of a <name>.prev-* file on the box that holds body, or "".
+func (b *box) backupOf(name, body string) string {
+	es, _ := os.ReadDir(filepath.Join(b.dir, ".crius", "bin"))
+	for _, e := range es {
+		if strings.HasPrefix(e.Name(), name+".prev-") && b.bin(e.Name()) == body {
+			return e.Name()
+		}
+	}
+	return ""
 }
 
 func gitRepo(t *testing.T) string {
@@ -162,13 +179,13 @@ func TestInstallCopiesEveryToolWithABackupAndVerifies(t *testing.T) {
 	if rc := run([]string{"legion"}, b.deps, &out, &errs); rc != 0 {
 		t.Fatalf("install exit %d, want 0\nstdout:\n%s\nstderr:\n%s", rc, out.String(), errs.String())
 	}
-	short := strings.TrimSpace(gitOut(t, b.deps.repo, "rev-parse", "--short=7", "HEAD"))
+	head := strings.TrimSpace(gitOut(t, b.deps.repo, "rev-parse", "HEAD"))
 	for _, name := range boxtools.Tools {
-		if got := b.bin(name); got != "new "+name+" amd64\n" {
+		if got := b.bin(name); got != built(name, head) {
 			t.Errorf("%s on the box = %q, want the new build", name, got)
 		}
-		if got := b.bin(name + ".prev-" + short); got != "old "+name+"\n" {
-			t.Errorf("%s.prev-%s = %q, want the old binary", name, short, got)
+		if b.backupOf(name, "old "+name+"\n") == "" {
+			t.Errorf("no %s.prev-* backup holds the old binary; box has %v", name, b.files(t))
 		}
 		if !hasLine(out.String(), name, "OK") {
 			t.Errorf("no OK line for %s:\n%s", name, out.String())
@@ -197,6 +214,21 @@ func TestACutCopyFailsLoudAndKeepsTheOldBinary(t *testing.T) {
 	}
 	if !hasLine(out.String(), "crius-hook", "OK") {
 		t.Errorf("the other tools should still install; no OK line for crius-hook:\n%s", out.String())
+	}
+	// A half-done install says which tools did change and how to put each back.
+	all := out.String() + errs.String()
+	if !strings.Contains(all, "changed on legion: crius-hook crius-statusline playbook\n") {
+		t.Errorf("output does not name the 3 tools that changed:\n%s", all)
+	}
+	for _, name := range []string{"crius-hook", "crius-statusline", "playbook"} {
+		prev := b.backupOf(name, "old "+name+"\n")
+		undo := "'mv ~/.crius/bin/" + prev + " ~/.crius/bin/" + name + "'"
+		if prev == "" || !strings.Contains(all, undo) {
+			t.Errorf("no undo line %s for %s:\n%s", undo, name, all)
+		}
+	}
+	if strings.Contains(all, "mv ~/.crius/bin/bus-post") {
+		t.Errorf("an undo line for bus-post, which did not change:\n%s", all)
 	}
 	for _, f := range b.files(t) {
 		if strings.HasPrefix(f, ".") {
@@ -318,5 +350,59 @@ func TestTwoBuildsOfOneCommitAreTheSameBytes(t *testing.T) {
 	}
 	if sums[0] != sums[1] {
 		t.Fatalf("two builds of %s from two clones differ: %s vs %s", head[:7], sums[0], sums[1])
+	}
+}
+
+// Installing A, then B, then A again must still keep B: the backup is named after the binary it holds, never skipped
+// because a backup of the same name exists.
+func TestReinstallingAnOlderCommitKeepsTheNewerBackup(t *testing.T) {
+	b := newBox(t)
+	repo := b.deps.repo
+	a := strings.TrimSpace(gitOut(t, repo, "rev-parse", "HEAD"))
+	install := func(step string) {
+		t.Helper()
+		var out, errs bytes.Buffer
+		if rc := run([]string{"legion"}, b.deps, &out, &errs); rc != 0 {
+			t.Fatalf("%s: exit %d\n%s%s", step, rc, out.String(), errs.String())
+		}
+	}
+	install("install A")
+	gitOut(t, repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "b")
+	bSha := strings.TrimSpace(gitOut(t, repo, "rev-parse", "HEAD"))
+	install("install B")
+	gitOut(t, repo, "-c", "advice.detachedHead=false", "checkout", "-q", a)
+	install("install A again")
+	for _, name := range boxtools.Tools {
+		if got := b.bin(name); got != built(name, a) {
+			t.Errorf("%s = %q, want A's build", name, got)
+		}
+		if b.backupOf(name, built(name, bSha)) == "" {
+			t.Errorf("no backup of B's %s after A, B, A; box has %v", name, b.files(t))
+		}
+		if b.backupOf(name, "old "+name+"\n") == "" {
+			t.Errorf("the first backup of %s is gone; box has %v", name, b.files(t))
+		}
+	}
+}
+
+// A box without sha256sum says so, instead of a damaged-copy message with an empty sum.
+func TestABoxWithoutSha256sumSaysSo(t *testing.T) {
+	b := newBox(t)
+	// The box's PATH is the shims folder plus the system folders: take the sha256sum shim away.
+	shims := os.Getenv("FAKE_SHIMS")
+	if err := os.Remove(filepath.Join(shims, "sha256sum")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", shims+":/usr/bin:/bin") // macOS keeps a sha256sum in /sbin
+	if p, err := exec.LookPath("sha256sum"); err == nil {
+		t.Fatalf("sha256sum still found at %s; the test cannot fake a box without one", p)
+	}
+	var out, errs bytes.Buffer
+	rc := run([]string{"legion"}, b.deps, &out, &errs)
+	if rc == 0 || !strings.Contains(errs.String(), "sha256sum missing on box") {
+		t.Fatalf("exit %d, stderr %q; want a refusal that says sha256sum missing on box", rc, errs.String())
+	}
+	if got := b.bin("crius-hook"); got != "old crius-hook\n" {
+		t.Errorf("crius-hook changed on a box without sha256sum: %q", got)
 	}
 }

@@ -26,4 +26,5 @@ of them, from a clean checkout of the commit to install:
     bin/crius-install-box legion             # copies; prints old and new revision and sha256 per tool, OK or FAILED
 
 The box name is a host in `~/.crius/state/playbook/hosts.json` (its ssh command is used). The old binary stays as
-`<tool>.prev-<new short sha>`; a failed copy leaves it in place and exits non-zero. Nothing needs a restart.
+`<tool>.prev-<old rev>-<old sha256>`, and the output prints the ssh line that puts each changed tool back. A failed
+copy leaves the old binary in place and exits non-zero. Nothing needs a restart.
