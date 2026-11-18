@@ -74,7 +74,37 @@ func wantIn(t *testing.T, reason string, parts ...string) {
 func TestMoveCheckDeniesAThreadWithAnOpenRun(t *testing.T) {
 	home := checkRig(t)
 	wantIn(t, decide(t, home, moveInput("th-run")), "th-run", "a run is open", "Running the full suite now.",
-		"READY-RESTART", filepath.Join(home, "state", "move-ok", "th-run"))
+		`from provider instance "claude-max1" to "claude-max2"`, "READY-RESTART", filepath.Join(home, "state", "move-ok", "th-run"))
+	// With no instanceId the call may still change it: it is checked too.
+	in := strings.Replace(moveInput("th-run"), `"instanceId":"claude-max2",`, "", 1)
+	wantIn(t, decide(t, home, in), "a run is open", `from provider instance "claude-max1" to (none given)`)
+}
+
+// A modelSelection that keeps the thread's provider instance restarts nothing: it goes on even while the thread is busy.
+func TestMoveCheckAllowsAModelSelectionThatKeepsTheInstance(t *testing.T) {
+	home := checkRig(t)
+	in := strings.Replace(moveInput("th-run"), `"instanceId":"claude-max2"`, `"instanceId":"claude-max1"`, 1)
+	if r := decide(t, home, in); r != "" {
+		t.Fatalf("a call that keeps the instance was denied: %s", r)
+	}
+}
+
+// An override is used only when the check would deny: one touched for a thread that is idle by now stays for later.
+func TestMoveCheckKeepsTheOverrideWhenTheMoveIsAllowedAnyway(t *testing.T) {
+	home := checkRig(t)
+	ok := filepath.Join(home, "state", "move-ok", "th-done")
+	if err := os.MkdirAll(filepath.Dir(ok), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ok, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if r := decide(t, home, moveInput("th-done")); r != "" {
+		t.Fatalf("an idle thread was denied: %s", r)
+	}
+	if _, err := os.Stat(ok); err != nil {
+		t.Fatalf("the override was used up on a move the check allows anyway: %v", err)
+	}
 }
 
 // RULES §3.5: a last reply that ends on ⏳ says the thread's own background job runs; a restart would kill it.
@@ -157,6 +187,13 @@ func TestMoveCheckOverrideAllowsOneMoveAndIsConsumed(t *testing.T) {
 		t.Fatalf("override files left after use: %v", left)
 	}
 	wantIn(t, decide(t, home, moveInput("th-run")), "a run is open")
-	// An id that is no plain file name gets no override file outside the folder.
-	wantIn(t, decide(t, home, moveInput("../th-run")), "cannot read T3 thread ../th-run")
+	// An id that is no plain file name never reaches a file outside the folder: state/th-run stays.
+	outside := filepath.Join(home, "state", "th-run")
+	if err := os.WriteFile(outside, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	wantIn(t, decide(t, home, moveInput("../th-run")), "../th-run", "not a plain thread id")
+	if _, err := os.Stat(outside); err != nil {
+		t.Fatalf("a move of ../th-run removed %s: %v", outside, err)
+	}
 }

@@ -1,2 +1,2 @@
-{"thread":{"threadId":"th-done","status":"completed","activeRunId":null,"pendingRequestCount":0,"updatedAt":"2026-11-18T20:30:00.000Z"},
+{"thread":{"threadId":"th-done","status":"completed","providerInstanceId":"claude-max1","activeRunId":null,"pendingRequestCount":0,"updatedAt":"2026-11-18T20:30:00.000Z"},
 "messages":[{"role":"assistant","text":"The job b3 finished ⏳ earlier; all 412 tests pass, committed. ✅"}]}

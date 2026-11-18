@@ -1,2 +1,2 @@
-{"thread":{"threadId":"th-ask","status":"completed","activeRunId":null,"pendingRequestCount":1,"updatedAt":"2026-11-18T20:30:00.000Z"},
+{"thread":{"threadId":"th-ask","status":"completed","providerInstanceId":"claude-max1","activeRunId":null,"pendingRequestCount":1,"updatedAt":"2026-11-18T20:30:00.000Z"},
 "messages":[{"role":"assistant","text":"May I run the migration? ❓"}]}

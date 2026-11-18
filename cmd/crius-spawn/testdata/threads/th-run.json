@@ -1,2 +1,2 @@
-{"thread":{"threadId":"th-run","status":"running","activeRunId":"run:7","pendingRequestCount":0,"updatedAt":"2026-11-18T20:30:00.000Z"},
+{"thread":{"threadId":"th-run","status":"running","providerInstanceId":"claude-max1","activeRunId":"run:7","pendingRequestCount":0,"updatedAt":"2026-11-18T20:30:00.000Z"},
 "messages":[{"role":"user","text":"run the full suite"},{"role":"assistant","text":"Running the full suite now."}]}

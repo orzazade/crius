@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -26,14 +27,16 @@ const configureTool = "mcp__t3-code__t3_thread_configure"
 // settings.json must be larger (45 s), or Claude Code cuts the check before it can say why.
 const moveCheckT3Timeout = 30 * time.Second
 
-// runMoveCheck is the PreToolUse hook for configureTool (crius-spawn -move-check, hook input on in). It prints nothing,
-// which lets the call go on, for another tool, for a call with no modelSelection (it only reads), and for a move of a
-// thread that is idle. It prints a deny with its reason for a move of a thread that is busy (an open run, an open
-// request, a message after its last reply that waits for a turn, or a last reply whose newest status emoji is ⏳: RULES
-// §3.5, its own background job runs), of the caller's own thread (no threadId: that thread is mid-turn while it makes
-// the call, and its own jobs would die too), or of a thread whose state cannot be read (failed to look is never found
-// nothing; the local t3 cannot read a thread on another machine either). A file move-ok/<threadId> (move-ok/self for the caller's own thread) under the Crius state
-// folder lets one move go on regardless, on purpose: the check deletes it.
+// runMoveCheck is the PreToolUse hook for configureTool (crius-spawn -move-check, hook input on in). It prints
+// nothing, which lets the call go on, for another tool, for a call with no modelSelection (it only reads), for one
+// whose instanceId is the thread's current provider instance (nothing restarts), and for a move of a thread that is
+// idle. It prints a deny with its reason for a move of a thread that is busy (an open run, an open request, a
+// message after its last reply that waits for a turn, or a last reply whose newest status emoji is ⏳: RULES §3.5,
+// its own background job runs), of the caller's own thread (no threadId: that thread is mid-turn while it makes the
+// call, and its own jobs would die too), or of a thread whose state cannot be read (failed to look is never found
+// nothing; the local t3 cannot read a thread on another machine either). A file move-ok/<threadId> (move-ok/self for
+// the caller's own thread) under the Crius state folder turns one such deny into a go, on purpose: the check deletes
+// it then, and only then.
 func runMoveCheck(home string, in io.Reader, out io.Writer) {
 	if reason := moveCheck(home, in); reason != "" {
 		enc := json.NewEncoder(out)
@@ -63,24 +66,33 @@ func moveCheck(home string, in io.Reader) string {
 	if id == "" {
 		key = "self"
 	}
-	ok := filepath.Join(home, "state", "move-ok", key)
-	plain := key != "." && key != ".." && !strings.HasPrefix(key, "-") && !strings.ContainsAny(key, `/\`)
-	if plain && os.Remove(ok) == nil {
-		return ""
-	}
-	anyway := fmt.Sprintf("To move it anyway, on purpose: mkdir -p %s && touch %s (good for one move; the check deletes it).",
-		filepath.Dir(ok), ok)
-	restart := "Changing its provider instance restarts its provider session and kills its running background shells."
-	if id == "" {
-		return fmt.Sprintf("this call has no threadId, so it would move the caller's own thread, which is mid-turn while "+
-			"it makes the call. %s Pass the thread id of an idle thread instead. %s", restart, anyway)
-	}
-	if !plain {
+	if key == "." || key == ".." || strings.HasPrefix(key, "-") || strings.ContainsAny(key, `/\`) {
 		return fmt.Sprintf("cannot read T3 thread %s: not a plain thread id.", id)
 	}
-	th, err := showThread(home, id)
+	ok := filepath.Join(home, "state", "move-ok", key)
+	// deny is the answer for a move the check would refuse: the override, when there is one, is used up only here.
+	deny := func(why string) string {
+		if os.Remove(ok) == nil {
+			return ""
+		}
+		return fmt.Sprintf("%s To move it anyway, on purpose: mkdir -p %s && touch %s (good for one move; the check deletes it).",
+			why, filepath.Dir(ok), ok)
+	}
+	if id == "" {
+		return deny("this call has no threadId, so it would move the caller's own thread, which is mid-turn while it " +
+			"makes the call; a new provider instance restarts its provider session and kills its running background " +
+			"shells. Pass the thread id of an idle thread instead.")
+	}
+	th, instance, err := showThread(home, id)
 	if err != nil {
-		return fmt.Sprintf("cannot read T3 thread %s, so it may be busy: %v. %s", id, err, anyway)
+		return deny(fmt.Sprintf("cannot read T3 thread %s, so it may be busy: %v.", id, err))
+	}
+	var sel struct {
+		Instance string `json:"instanceId"`
+	}
+	json.Unmarshal(v.Input.Model, &sel) // not an object: no instanceId, checked as a change
+	if instance != "" && sel.Instance == instance {
+		return "" // the same provider instance: nothing restarts
 	}
 	var busy []string
 	if th.Active {
@@ -100,18 +112,23 @@ func moveCheck(home string, in io.Reader) string {
 	if len(busy) == 0 {
 		return ""
 	}
+	to := "(none given)"
+	if sel.Instance != "" {
+		to = strconv.Quote(sel.Instance)
+	}
 	reply := []rune(strings.Join(strings.Fields(th.LastReply), " "))
 	tail := fmt.Sprintf("Last reply: %q.", string(reply[max(0, len(reply)-120):]))
 	if len(reply) == 0 {
 		tail = "No reply in its latest messages."
 	}
-	return fmt.Sprintf("T3 thread %s is busy: %s. %s %s Move it at a READY-RESTART, or once no run is open and its last "+
-		"reply names no running job (ends on ✅ or ❓). %s", id, strings.Join(busy, "; "), restart, tail, anyway)
+	return deny(fmt.Sprintf("T3 thread %s is busy: %s. Moving it from provider instance %q to %s restarts its provider "+
+		"session and kills its running background shells. %s Move it at a READY-RESTART, or once no run is open and its "+
+		"last reply names no running job (ends on ✅ or ❓).", id, strings.Join(busy, "; "), instance, to, tail))
 }
 
 // showThread reads a thread with `t3 thread show --json`: the t3 in the Crius bin folder when there is one (nvm keeps
-// t3 off a hook's PATH), else t3 on the PATH.
-func showThread(home, id string) (wakewatch.T3Thread, error) {
+// t3 off a hook's PATH), else t3 on the PATH. It gives the thread's provider instance too ("" when t3 names none).
+func showThread(home, id string) (wakewatch.T3Thread, string, error) {
 	t3 := "t3"
 	if p := filepath.Join(home, "bin", "t3"); fileExists(p) {
 		t3 = p
@@ -127,11 +144,12 @@ func showThread(home, id string) (wakewatch.T3Thread, error) {
 			err = fmt.Errorf("%w (%s)", wakewatch.ErrT3NoAnswer, moveCheckT3Timeout)
 		}
 		said, _, _ := strings.Cut(strings.TrimSpace(stderr.String()+"\n"+stdout.String()), "\n")
-		return wakewatch.T3Thread{}, fmt.Errorf("t3 thread show: %v: %s", err, said)
+		return wakewatch.T3Thread{}, "", fmt.Errorf("t3 thread show: %v: %s", err, said)
 	}
 	var v struct {
 		Thread *struct {
 			Status      string  `json:"status"`
+			Instance    string  `json:"providerInstanceId"`
 			ActiveRunID *string `json:"activeRunId"`
 			Pending     int     `json:"pendingRequestCount"`
 		} `json:"thread"`
@@ -141,7 +159,7 @@ func showThread(home, id string) (wakewatch.T3Thread, error) {
 		} `json:"messages"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &v); err != nil || v.Thread == nil {
-		return wakewatch.T3Thread{}, fmt.Errorf("t3 thread show printed no thread JSON: %.80q", stdout.String())
+		return wakewatch.T3Thread{}, "", fmt.Errorf("t3 thread show printed no thread JSON: %.80q", stdout.String())
 	}
 	th := wakewatch.T3Thread{Status: v.Thread.Status, Pending: v.Thread.Pending,
 		Active: v.Thread.ActiveRunID != nil && *v.Thread.ActiveRunID != ""}
@@ -152,7 +170,7 @@ func showThread(home, id string) (wakewatch.T3Thread, error) {
 		}
 		th.Unanswered = th.Unanswered || v.Messages[i].Role == "user"
 	}
-	return th, nil
+	return th, v.Thread.Instance, nil
 }
 
 // newestMark gives the newest of ❓, ✅ and ⏳ in text, "" when it has none.
