@@ -308,3 +308,8 @@ func statusMark(text string) string {
 	r, _ := utf8.DecodeRuneInString(text[j:])
 	return string(r)
 }
+
+// NewestThread is newestThread for crius-spawn: -resume and -move go to the thread wakewatch watches for the role.
+func NewestThread(home, project, role string, r sessionstate.State, states []sessionstate.State) string {
+	return newestThread(home, project, role, r, states)
+}

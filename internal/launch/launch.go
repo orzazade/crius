@@ -83,69 +83,91 @@ type Spawn struct {
 
 // Run opens the tab, starts its first prompt, and gives its workspace and surface and the provenance tag line typed.
 func Run(s Spawn, d Deps) (ws, surface, tag string, err error) {
-	switch {
-	case !slugRe.MatchString(s.Project):
-		return "", "", "", fmt.Errorf("bad project %q: want lowercase letters, digits and dashes", s.Project)
-	case !slugRe.MatchString(s.Role):
-		return "", "", "", fmt.Errorf("bad role %q: want lowercase letters, digits and dashes", s.Role)
-	case s.Parent != "" && !parentRe.MatchString(s.Parent):
-		return "", "", "", fmt.Errorf("bad parent %q: want the leader's session id", s.Parent)
-	case s.Item != "" && !itemRe.MatchString(s.Item):
-		return "", "", "", fmt.Errorf("bad item %q: want <project>#<n>", s.Item)
-	case strings.TrimSpace(s.Prompt) == "":
-		return "", "", "", fmt.Errorf("no first prompt: the tag line goes before one")
-	case strings.Contains(s.Prompt, `\`):
-		// cmux send reads a backslash-n or -r as Enter, which would send half the prompt.
-		return "", "", "", fmt.Errorf("the first prompt holds a backslash, which cmux could read as Enter")
-	case strings.IndexFunc(s.Prompt, func(r rune) bool { return !unicode.IsPrint(r) }) >= 0:
-		return "", "", "", fmt.Errorf("the first prompt holds a line break or control character: it must be one line")
-	}
-	cwd, account, persona, err := d.Place(s.Project)
-	if err != nil {
+	if err := s.check(); err != nil {
 		return "", "", "", err
 	}
-	if s.Account != "" {
-		account = s.Account
-	}
-	if account == "enterprise" {
-		// owner 11-07: never the enterprise account, whether -account or projects.toml names it
-		return "", "", "", fmt.Errorf("%s %s: the enterprise account is never launched (owner 11-07): start it on max", s.Project, s.Role)
-	}
-	var acct, dir string
-	switch {
-	case d.Pick != nil && slugRe.MatchString(account):
-		if acct, dir, err = d.Pick(s.Project, account); err != nil {
-			return "", "", "", err
-		}
-		account = "max"
-	case account != "max":
-		return "", "", "", fmt.Errorf("bad account %q: want max", account)
-	}
-	switch {
-	case d.Pick != nil && acct == "": // aitch's route could start it on another account than its tag names (Crius 10-30 22:44)
-		return "", "", "", fmt.Errorf("no signed-in folder for %s on account %s: not launched", s.Project, account)
-	case acct != "" && !slugRe.MatchString(acct): // typed into a shell and a title
-		return "", "", "", fmt.Errorf("bad account name %q: want lowercase letters, digits and dashes", acct)
-	case acct != "" && !safeDir(dir):
-		return "", "", "", fmt.Errorf("bad folder %q for account %s: want an absolute path with no quote, backslash or control character", dir, acct)
+	cwd, persona, account, acct, dir, err := s.place(d)
+	if err != nil {
+		return "", "", "", err
 	}
 	name, model, cmd := command(s.Project, s.Role, acct, dir)
 	ws, surface, err = tab(d, s.Project, persona, name, cwd, cmd)
 	if err != nil {
 		return "", "", "", err
 	}
-	tag = "[crius account=" + account + " project=" + s.Project + " role=" + s.Role
+	tag = s.tag(account)
+	if err := start(d, ws, surface, display(model), tag, s.Prompt); err != nil {
+		return "", "", "", fmt.Errorf("%s in %s %s: %v", name, ws, surface, err)
+	}
+	return ws, surface, tag, nil
+}
+
+// check refuses a spawn whose names or first prompt cannot go into a tab, a title or the tag.
+func (s Spawn) check() error {
+	switch {
+	case !slugRe.MatchString(s.Project):
+		return fmt.Errorf("bad project %q: want lowercase letters, digits and dashes", s.Project)
+	case !slugRe.MatchString(s.Role):
+		return fmt.Errorf("bad role %q: want lowercase letters, digits and dashes", s.Role)
+	case s.Parent != "" && !parentRe.MatchString(s.Parent):
+		return fmt.Errorf("bad parent %q: want the leader's session id", s.Parent)
+	case s.Item != "" && !itemRe.MatchString(s.Item):
+		return fmt.Errorf("bad item %q: want <project>#<n>", s.Item)
+	case strings.TrimSpace(s.Prompt) == "":
+		return fmt.Errorf("no first prompt: the tag line goes before one")
+	case strings.Contains(s.Prompt, `\`):
+		// cmux send reads a backslash-n or -r as Enter, which would send half the prompt.
+		return fmt.Errorf("the first prompt holds a backslash, which cmux could read as Enter")
+	case strings.IndexFunc(s.Prompt, func(r rune) bool { return !unicode.IsPrint(r) }) >= 0:
+		return fmt.Errorf("the first prompt holds a line break or control character: it must be one line")
+	}
+	return nil
+}
+
+// place gives where the spawn starts (its launch folder and persona) and on which account: account is what its tag
+// names ("max"), acct and dir the Max row picked and its config folder ("" with no Pick: aitch's own route).
+func (s Spawn) place(d Deps) (cwd, persona, account, acct, dir string, err error) {
+	cwd, account, persona, err = d.Place(s.Project)
+	if err != nil {
+		return "", "", "", "", "", err
+	}
+	if s.Account != "" {
+		account = s.Account
+	}
+	if account == "enterprise" {
+		// owner 11-07: never the enterprise account, whether -account or projects.toml names it
+		return "", "", "", "", "", fmt.Errorf("%s %s: the enterprise account is never launched (owner 11-07): start it on max", s.Project, s.Role)
+	}
+	switch {
+	case d.Pick != nil && slugRe.MatchString(account):
+		if acct, dir, err = d.Pick(s.Project, account); err != nil {
+			return "", "", "", "", "", err
+		}
+		account = "max"
+	case account != "max":
+		return "", "", "", "", "", fmt.Errorf("bad account %q: want max", account)
+	}
+	switch {
+	case d.Pick != nil && acct == "": // aitch's route could start it on another account than its tag names (Crius 10-30 22:44)
+		return "", "", "", "", "", fmt.Errorf("no signed-in folder for %s on account %s: not launched", s.Project, account)
+	case acct != "" && !slugRe.MatchString(acct): // typed into a shell and a title
+		return "", "", "", "", "", fmt.Errorf("bad account name %q: want lowercase letters, digits and dashes", acct)
+	case acct != "" && !safeDir(dir):
+		return "", "", "", "", "", fmt.Errorf("bad folder %q for account %s: want an absolute path with no quote, backslash or control character", dir, acct)
+	}
+	return cwd, persona, account, acct, dir, nil
+}
+
+// tag is the provenance tag line that goes before the first prompt.
+func (s Spawn) tag(account string) string {
+	tag := "[crius account=" + account + " project=" + s.Project + " role=" + s.Role
 	if s.Parent != "" {
 		tag += " parent=" + s.Parent
 	}
 	if s.Item != "" {
 		tag += " item=" + s.Item
 	}
-	tag += "]"
-	if err := start(d, ws, surface, display(model), tag, s.Prompt); err != nil {
-		return "", "", "", fmt.Errorf("%s in %s %s: %v", name, ws, surface, err)
-	}
-	return ws, surface, tag, nil
+	return tag + "]"
 }
 
 // command gives a role's tab name, its model, and the shell line that starts Claude for it. With an account (acct, its

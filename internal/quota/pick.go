@@ -1,6 +1,7 @@
 package quota
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"path/filepath"
@@ -19,10 +20,98 @@ const Limit = 95
 // reset, so it goes last. A row no line measured has no known reset: it is picked only when no measured row has room,
 // and why says so. One full (Room) or at the limit is passed over, and when every row is, Pick says which and at what
 // share. With no row that has such a folder and want "max", Pick returns "", and the launch is refused (launch.Run).
+//
+// Reserve, max1, comes last (owner 11-19): nothing starts or moves onto it until every other Max row of accounts.toml is
+// at its limit, a row with no folder in this persona included. Until then a pick leaves it out and says so, and a
+// launch that only it could take, or that names it, is refused with the rows that still have room.
 func Pick(r *Report, as *Accounts, root, want string, pauseAt int) (name, dir, why string, err error) {
 	if as == nil {
 		as = &Accounts{}
 	}
+	held, full := reserveHeld(r, as)
+	switch {
+	case held == "":
+		name, dir, why, err = pick(r, as, root, want, pauseAt)
+		if name == Reserve && full != "" {
+			why += "; every other Max account is at its limit (" + full + ")"
+		}
+		return name, dir, why, err
+	case want == Reserve:
+		return "", "", "", errors.New(held)
+	case want != "max":
+		return pick(r, as, root, want, pauseAt)
+	}
+	rest := &Accounts{}
+	var reserve Acct
+	for _, a := range as.Rows {
+		if a.Name != Reserve {
+			rest.Rows = append(rest.Rows, a)
+		} else {
+			reserve = a
+		}
+	}
+	name, dir, why, err = pick(r, rest, root, want, pauseAt)
+	switch {
+	case err != nil: // every other row with a folder in this persona is full
+		return "", "", "", fmt.Errorf("%s; %s", held, strings.Replace(err.Error(), "every Max account is at its limit", "every other one with a folder here is at its limit", 1))
+	case name != "":
+		return name, dir, why + "; " + Reserve + " held back (owner 11-19) until every other Max account is at its limit", nil
+	}
+	// No other row has a folder in this persona: refused while max1 has one; with none, no pick as before (launch.Run
+	// refuses it).
+	if d, err := linked(reserve, root); err != nil {
+		return "", "", "", err
+	} else if d != "" {
+		return "", "", "", errors.New(held)
+	}
+	return "", "", "", nil
+}
+
+// Reserve is the Max account used last (owner 11-19: "nothing moves to or starts on account max1 until max2 and max3
+// are both at their limit").
+const Reserve = "max1"
+
+// reserveHeld says why Reserve may not be picked yet, "" when every other Max row is at its limit (or there is no
+// other, or no Reserve row); full lists those rows with their shares. A row is at its limit as Pick passes one over:
+// full by Room (a 5h window at 100% too), or its 7d share at Limit; a project's lower pause_at pauses that project and
+// puts no account at its limit. A row not signed in, not measured, or whose week ended with no sample since, is not.
+func reserveHeld(r *Report, as *Accounts) (held, full string) {
+	var room, at []string
+	reserve := false
+	for _, a := range as.Rows {
+		if a.Plan != "max" {
+			continue
+		}
+		if a.Name == Reserve {
+			reserve = true
+			continue
+		}
+		v := r.Account(a.Login)
+		switch {
+		case a.Login == "":
+			room = append(room, a.Name+" not signed in")
+		case v == nil || v.Ended.IsZero() && v.Reset.IsZero():
+			room = append(room, a.Name+" quota not measured")
+		case !v.Ended.IsZero():
+			room = append(room, a.Name+" 7d 0%, a new week since "+when(v.Ended))
+		default:
+			share := fmt.Sprintf("%s 7d %.0f%%", a.Name, math.Floor(v.SevenPct))
+			if verdict, _ := Room(v); verdict == "full" || v.SevenPct >= Limit {
+				at = append(at, share)
+			} else {
+				room = append(room, share)
+			}
+		}
+	}
+	if !reserve || room == nil {
+		return "", strings.Join(at, ", ")
+	}
+	return fmt.Sprintf("%s is held back (owner 11-19) until every other Max account is at its limit: %s", Reserve,
+		strings.Join(room, ", ")), strings.Join(at, ", ")
+}
+
+// pick is Pick over the rows of as, Reserve treated as any other.
+func pick(r *Report, as *Accounts, root, want string, pauseAt int) (name, dir, why string, err error) {
 	limit := 100 // a row asked for by name may spend its last 5% on purpose
 	if want == "max" {
 		limit = Limit

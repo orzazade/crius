@@ -41,7 +41,7 @@ func TestResumeReadsTheRolesCurrentSession(t *testing.T) {
 		got = append(got, strings.Join(args, " "))
 		return "", errors.New("stop here")
 	}, Lock: filepath.Join(home, "launch.lock")}
-	err := resume(home, "quotes", "lead", d)
+	err := resume(home, "quotes", "lead", d, launch.T3{})
 	if err == nil || !strings.Contains(err.Error(), filepath.Join(home, "roles", "quotes.lead.json")) {
 		t.Errorf("no role file: err %v, want one naming the file", err)
 	}
@@ -49,7 +49,7 @@ func TestResumeReadsTheRolesCurrentSession(t *testing.T) {
 	if err := sessionstate.WriteRole(filepath.Join(home, "roles"), s, true); err != nil {
 		t.Fatal(err)
 	}
-	if err := resume(home, "quotes", "lead", d); err == nil || len(got) != 1 || got[0] != "tree --all" {
+	if err := resume(home, "quotes", "lead", d, launch.T3{}); err == nil || len(got) != 1 || got[0] != "tree --all" {
 		t.Errorf("err %v, calls %q: want Resume called with the recorded session", err, got)
 	}
 }
@@ -75,7 +75,7 @@ func TestAResumeOfARunningSessionIsRefused(t *testing.T) {
 		got = append(got, strings.Join(args, " "))
 		return "", errors.New("stop here")
 	}}
-	err := resume(home, "quotes", "rig", d)
+	err := resume(home, "quotes", "rig", d, launch.T3{})
 	if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("still runs in process %d", os.Getpid())) || len(got) != 0 {
 		t.Errorf("err %v, cmux calls %q: want a refusal naming the process and no cmux call", err, got)
 	}
@@ -100,7 +100,7 @@ func TestAResumeOfASessionRestoredElsewhereIsRefused(t *testing.T) {
 		got = append(got, strings.Join(args, " "))
 		return "", errors.New("stop here")
 	}}
-	err := resume(home, "quotes", "rig", d)
+	err := resume(home, "quotes", "rig", d, launch.T3{})
 	if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("still runs in process %d", os.Getpid())) || len(got) != 0 {
 		t.Errorf("err %v, cmux calls %q: want a refusal naming the process and no cmux call", err, got)
 	}
@@ -115,7 +115,7 @@ func TestAResumeOfASessionRestoredElsewhereIsRefused(t *testing.T) {
 			}
 			return "", errors.New("stop here")
 		}}
-	if err := resume(home, "quotes", "rig", d); err == nil || len(got) != 3 || !strings.Contains(got[2], "--primary '"+filed+"'") ||
+	if err := resume(home, "quotes", "rig", d, launch.T3{}); err == nil || len(got) != 3 || !strings.Contains(got[2], "--primary '"+filed+"'") ||
 		strings.Contains(got[2], running) {
 		t.Errorf("err %v, cmux calls %q: want the new tab on max2's folder %s", err, got, filed)
 	}
@@ -224,7 +224,7 @@ func TestAResumeWithNoRoleFileSaysHow(t *testing.T) {
 		got = append(got, strings.Join(args, " "))
 		return "", errors.New("stop here")
 	}, Lock: filepath.Join(home, "launch.lock")}
-	err := resume(home, "falcon", "lead", d)
+	err := resume(home, "falcon", "lead", d, launch.T3{})
 	for _, want := range []string{filepath.Join(home, "roles", "falcon.lead.json"), `named "falcon · lead" starts (claude -n)`, "-resume works",
 		"2 sessions skipped, their Claude or their resume line cannot be checked (bad folder \"" + quoted + "\" for account max3",
 		"The newest stopped sessions in " + fal + " filed under no role",
@@ -248,10 +248,10 @@ func TestAResumeWithNoRoleFileSaysHow(t *testing.T) {
 	if _, err := (mover{home: home}).move("falcon", "lead"); err == nil || !strings.Contains(err.Error(), "then -move works") {
 		t.Errorf("move: %v", err)
 	}
-	if err := resume(home, "harbor", "lead", d); err == nil || !strings.HasSuffix(err.Error(), "crius saw no stopped session in "+har+" filed under no role") {
+	if err := resume(home, "harbor", "lead", d, launch.T3{}); err == nil || !strings.HasSuffix(err.Error(), "crius saw no stopped session in "+har+" filed under no role") {
 		t.Errorf("no session: %v", err)
 	}
-	if err := resume(home, "quotes", "lead", d); err == nil || !strings.Contains(err.Error(), "no session offered: ") || strings.Contains(err.Error(), "33333333-") {
+	if err := resume(home, "quotes", "lead", d, launch.T3{}); err == nil || !strings.Contains(err.Error(), "no session offered: ") || strings.Contains(err.Error(), "33333333-") {
 		t.Errorf("no launch folder: %v", err)
 	}
 }
@@ -275,7 +275,7 @@ func TestCloseMarksTheRolesSessionAndResumeOpensIt(t *testing.T) {
 		t.Fatalf("closed %q %v, want %s", id, err, s.SessionID)
 	}
 	d := launch.Deps{Lock: filepath.Join(home, "launch.lock"), Cmux: func(args ...string) (string, error) { return "", errors.New("stop here") }}
-	_ = resume(home, "rig-refresh", "lead", d)
+	_ = resume(home, "rig-refresh", "lead", d, launch.T3{})
 	if id, err := sessionstate.ClosedRole(roles, "rig-refresh", "lead"); err != nil || id != "" {
 		t.Errorf("after -resume: closed %q %v, want open", id, err)
 	}

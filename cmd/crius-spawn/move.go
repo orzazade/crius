@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/orzazade/crius/internal/launch"
 	"github.com/orzazade/crius/internal/quota"
 	"github.com/orzazade/crius/internal/sessionstate"
 )
@@ -53,6 +54,11 @@ func (m mover) move(project, role string) (string, error) {
 	}
 	if err != nil {
 		return "", fmt.Errorf("no session to move for %s %s: %w", project, role, err)
+	}
+	if th, err := launch.RoleThread(m.home, project, role, r); err != nil {
+		return "", err
+	} else if th != "" {
+		return "", fmt.Errorf("%s %s runs in T3 thread %s: %w", project, role, th, launch.ErrT3Move)
 	}
 	as, err := quota.LoadAccounts(m.home)
 	if err != nil {
