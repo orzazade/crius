@@ -1695,8 +1695,10 @@ artifact_dirs = []
 
 // STATUS 11-17 15:09: the limit NEED asked Crius to move sessions off an account "at 100% of its 7d (not measured)",
 // naming tabs idle since 11-13 that only heartbeat. A move NEED needs a measured share at the limit and a session that
-// worked in the last day (a request, or a statusline line that is not an idle heartbeat); else it says nothing.
+// worked in the last day (a request, or a statusline line that came with a response); else it says nothing. The share
+// it reads and prints is the highest one a measurement showed, not a higher repeat (review of 4c7f6bf).
 func TestQuotaLimitNeedNeedsAMeasuredShareAndAnActiveSession(t *testing.T) {
+	tag := func(role string) string { return "[crius account=max project=lab role=" + role + "]" }
 	r1 := qNow.Add(24 * time.Hour) // max1's window ends tomorrow, so it began 6 days ago
 	active, idle, gone := "aaaaaaaa-0000-0000-0000-000000000001", "bbbbbbbb-0000-0000-0000-000000000002",
 		"cccccccc-0000-0000-0000-000000000003"
@@ -1710,12 +1712,46 @@ func TestQuotaLimitNeedNeedsAMeasuredShareAndAnActiveSession(t *testing.T) {
 		setup func(x *ic) []quota.Line
 		want  string // the session the NEED names; "" for no NEED
 		not   string // a session it must not name
+		has   string // more text the NEED must carry
 	}{
 		{"100% seen only on a line that measured nothing", func(x *ic) []quota.Line {
 			x.session("work", active, "/work/lab", "[crius account=max project=lab role=lead]", qNow.Add(-2*time.Minute))
 			return []quota.Line{line(active, qNow.Add(-30*time.Minute), 60, "change", true),
 				line(active, qNow.Add(-3*time.Minute), 100, "change", false)}
-		}, "", ""},
+		}, "", "", ""},
+		{"measured 97%, then 100% on a line that measured nothing", func(x *ic) []quota.Line {
+			x.session("work", active, "/work/lab", tag("lead"), qNow.Add(-2*time.Minute))
+			return []quota.Line{line(active, qNow.Add(-30*time.Minute), 97, "change", true),
+				line(active, qNow.Add(-3*time.Minute), 100, "change", false)}
+		}, "lab:lead aaaaaaaa", "", "at 97% of its 7d (" + qNow.Add(-30*time.Minute).Local().Format("15:04") + ","},
+		{"working by a request alone (its statusline lines all unanswered)", func(x *ic) []quota.Line {
+			x.session("work", gone, "/work/lab", tag("p1"), qNow.Add(-3*time.Hour))
+			x.session("work", active, "/work/lab", tag("lead"), qNow.Add(-2*time.Hour))
+			return []quota.Line{line(gone, qNow.Add(-3*time.Hour), 100, "change", true),
+				line(active, qNow.Add(-2*time.Hour), 100, "session", false),
+				line(active, qNow.Add(-5*time.Minute), 100, "heartbeat", false)}
+		}, "lab:lead aaaaaaaa", "", ""},
+		{"working by an answered statusline line alone (its requests 3 days old)", func(x *ic) []quota.Line {
+			x.session("work", active, "/work/lab", tag("lead"), qNow.Add(-3*24*time.Hour))
+			return []quota.Line{line(active, qNow.Add(-2*time.Hour), 100, "change", true),
+				line(active, qNow.Add(-5*time.Minute), 100, "heartbeat", false)}
+		}, "lab:lead aaaaaaaa", "", ""},
+		{"an unanswered session line of a resumed idle tab is no work", func(x *ic) []quota.Line {
+			x.session("work", gone, "/work/lab", tag("p1"), qNow.Add(-3*time.Hour))
+			x.session("work", idle, "/work/lab", tag("ops"), qNow.Add(-3*24*time.Hour))
+			return []quota.Line{line(gone, qNow.Add(-3*time.Hour), 100, "change", true),
+				line(idle, qNow.Add(-2*time.Hour), 100, "session", false),
+				line(idle, qNow.Add(-90*time.Minute), 100, "change", false),
+				line(idle, qNow.Add(-5*time.Minute), 100, "heartbeat", false)}
+		}, "", "", ""},
+		{"a request 23 h ago is work, one 25 h ago is not", func(x *ic) []quota.Line {
+			x.session("work", gone, "/work/lab", tag("p1"), qNow.Add(-3*time.Hour))
+			x.session("work", active, "/work/lab", tag("lead"), qNow.Add(-23*time.Hour))
+			x.session("work", idle, "/work/lab", tag("ops"), qNow.Add(-25*time.Hour))
+			return []quota.Line{line(gone, qNow.Add(-3*time.Hour), 100, "change", true),
+				line(active, qNow.Add(-6*time.Minute), 100, "heartbeat", false),
+				line(idle, qNow.Add(-5*time.Minute), 100, "heartbeat", false)}
+		}, "lab:lead aaaaaaaa", "lab:ops", ""},
 		{"measured 100%, one session active 2 h ago and one idle 5 days", func(x *ic) []quota.Line {
 			x.session("work", active, "/work/lab", "[crius account=max project=lab role=lead]", qNow.Add(-2*time.Hour))
 			x.session("work", idle, "/work/lab", "[crius account=max project=lab role=ops]", qNow.Add(-5*24*time.Hour))
@@ -1723,18 +1759,18 @@ func TestQuotaLimitNeedNeedsAMeasuredShareAndAnActiveSession(t *testing.T) {
 				line(active, qNow.Add(-2*time.Hour), 100, "change", true),
 				line(idle, qNow.Add(-6*time.Minute), 40, "heartbeat", false),
 				line(active, qNow.Add(-5*time.Minute), 100, "heartbeat", false)}
-		}, "lab:lead aaaaaaaa", "lab:ops"},
+		}, "lab:lead aaaaaaaa", "lab:ops", ""},
 		{"measured 100% with only idle sessions open", func(x *ic) []quota.Line {
 			x.session("work", gone, "/work/lab", "[crius account=max project=lab role=p1]", qNow.Add(-3*time.Hour))
 			x.session("work", idle, "/work/lab", "[crius account=max project=lab role=ops]", qNow.Add(-5*24*time.Hour))
 			return []quota.Line{line(idle, qNow.Add(-5*24*time.Hour), 40, "change", true),
 				line(gone, qNow.Add(-3*time.Hour), 100, "change", true), // its tab closed since: no line within quota.Gap
 				line(idle, qNow.Add(-4*time.Minute), 40, "heartbeat", false)}
-		}, "", ""},
+		}, "", "", ""},
 		{"control: measured 96% with a session working now", func(x *ic) []quota.Line {
 			x.session("work", active, "/work/lab", "[crius account=max project=lab role=lead]", qNow.Add(-2*time.Minute))
 			return []quota.Line{line(active, qNow.Add(-2*time.Minute), 96, "change", true)}
-		}, "lab:lead aaaaaaaa", ""},
+		}, "lab:lead aaaaaaaa", "", "at 96% of its 7d (" + qNow.Add(-2*time.Minute).Local().Format("15:04") + ","},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -1769,7 +1805,9 @@ func TestQuotaLimitNeedNeedsAMeasuredShareAndAnActiveSession(t *testing.T) {
 			case c.want != "" && (len(need) != 1 || !strings.Contains(need[0], c.want)):
 				t.Fatalf("want one move NEED naming %s, got %q", c.want, need)
 			case c.not != "" && strings.Contains(need[0], c.not):
-				t.Fatalf("NEED names %s, idle 5 days: %q", c.not, need[0])
+				t.Fatalf("NEED names %s, which did no work in the last day: %q", c.not, need[0])
+			case c.has != "" && !strings.Contains(need[0], c.has):
+				t.Fatalf("NEED lacks %q: %q", c.has, need[0])
 			}
 		})
 	}

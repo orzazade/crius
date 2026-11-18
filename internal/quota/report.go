@@ -499,6 +499,11 @@ type AcctUse struct {
 	SevenAt, FiveAt         time.Time
 	Reset, FiveReset, Ended time.Time
 	FiveKnown               bool
+	// SevenMeasuredPct and SevenMeasuredAt: the highest 7d share a measurement of the window showed, and the newest
+	// measurement showing it. SevenPct may be higher, from a line that measured nothing (a repeat, maybe of another
+	// login's window); zero when no measurement came.
+	SevenMeasuredPct float64
+	SevenMeasuredAt  time.Time
 }
 
 // reduce keeps the samples of the current epoch and reads its figures from them. Resets only move forward, and an
@@ -548,6 +553,9 @@ func reduce(samples []sample, now time.Time) ([]sample, AcctUse) {
 		if !s.measured() {
 			continue
 		}
+		if s.seven.Float64 >= u.SevenMeasuredPct { // samples come in time order: the newest of the highest
+			u.SevenMeasuredPct, u.SevenMeasuredAt = s.seven.Float64, s.ts
+		}
 		if s.seven.Float64 == u.SevenPct {
 			u.SevenAt = s.ts
 		}
@@ -558,6 +566,7 @@ func reduce(samples []sample, now time.Time) ([]sample, AcctUse) {
 	u.Reset = time.Unix(reset, 0)
 	if !u.Reset.After(now) {
 		u.Ended, u.Reset, u.SevenPct = u.Reset, time.Time{}, 0
+		u.SevenMeasuredPct, u.SevenMeasuredAt = 0, time.Time{}
 	}
 	u.FiveKnown = fiveReset > 0
 	if r := time.Unix(fiveReset, 0); fiveReset > 0 && r.After(now) {
