@@ -8,6 +8,8 @@ import (
 	"os"
 	"strconv"
 	"syscall"
+
+	"github.com/orzazade/crius/internal/procfs"
 )
 
 // Live reports whether pid is still the process that wrote a Claude Code status file. On Linux Claude writes its own
@@ -30,7 +32,7 @@ func Live(pid int, procStart string) (bool, error) {
 		}
 		return false, fmt.Errorf("pid %d: %w", pid, err)
 	}
-	got, err := startTicks(b)
+	got, err := procfs.StartTicks(b)
 	if err != nil {
 		return false, fmt.Errorf("pid %d: %w", pid, err)
 	}

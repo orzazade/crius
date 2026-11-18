@@ -701,7 +701,7 @@ func TestFlushRedactsWhatTheBusMissed(t *testing.T) {
 func TestSessionsSkipsAStatusFileWhosePidWasReused(t *testing.T) {
 	home, me := t.TempDir(), os.Getpid()
 	testutil.Write(t, filepath.Join(home, ".claude", "sessions", "1.json"),
-		fmt.Sprintf(`{"pid":%d,"sessionId":"old","name":"quotes · p1","procStart":"Thu Jan  1 00:00:00 2026"}`, me))
+		fmt.Sprintf(`{"pid":%d,"sessionId":"old","name":"quotes · p1","procStart":%q}`, me, testutil.OtherProcStart))
 	testutil.Write(t, filepath.Join(home, ".claude-work", "sessions", "2.json"),
 		fmt.Sprintf(`{"pid":%d,"sessionId":"now","name":"quotes · p2","procStart":%q}`, me, testutil.ProcStart(t, me)))
 	ss, err := wakewatch.LiveSessions(home)

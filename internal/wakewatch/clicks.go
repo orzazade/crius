@@ -231,7 +231,7 @@ func clicks(d ClickDeps, crius map[string]bool) error {
 		return nil
 	}
 	bus := filepath.Join(d.Home, "bus", "crius.log")
-	f, err := os.OpenFile(bus, os.O_RDWR|os.O_APPEND|os.O_CREATE, 0o600)
+	f, err := store.OpenBus(bus, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return err
 	}

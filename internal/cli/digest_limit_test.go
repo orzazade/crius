@@ -2,34 +2,45 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 )
 
 // 11-06 13:55-14:46 (S2): crius-rec digest ran 51 min at ~80% CPU and nobody heard. A run past its time limit says which
-// step it was on and exits non-zero, so crius-digest-run posts its ALERT. The hang here is a last report that is a FIFO:
-// reading it blocks forever, as the waits query did.
+// step it was on and exits non-zero, so crius-digest-run posts its ALERT. The hang here is a read of the last report
+// that blocks until the test releases it, as the waits query did.
+//
+// 11-19: this test used a FIFO as the last report and ended the read by opening and closing a writer. On macOS a
+// signal that reaches the blocked reader near that close can lose the end-of-file: the reader then waits in read(2)
+// with no writer left (lsof shows only the reader), and the test hung until go test's 10 min limit. A probe of that
+// unblock hung 5 of 400 times with signals arriving. The read now blocks on a channel, and every wait here is bounded.
 func TestDigestPastItsLimitNamesTheStepAndFails(t *testing.T) {
 	home := findStore(t)
 	dir := filepath.Join(home, "state", "digest")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	fifo := filepath.Join(dir, "2026-11-06-0900.json")
-	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "2026-11-06-0900.json"), []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	limit, exit := digestLimit, digestExit
-	t.Cleanup(func() { digestLimit, digestExit = limit, exit })
+	limit, exit, read := digestLimit, digestExit, readReport
+	t.Cleanup(func() { digestLimit, digestExit, readReport = limit, exit, read })
 	// the steps before "last report" take milliseconds; 5 s leaves room on a loaded Mac (review of b8754c7 P3)
 	digestLimit = 5 * time.Second
 	exited := make(chan int, 1)
 	digestExit = func(code int) { exited <- code }
+	release := make(chan struct{})
+	var once sync.Once
+	readReport = func(string) ([]byte, error) {
+		<-release
+		return nil, errors.New("released by the test")
+	}
+	t.Cleanup(func() { once.Do(func() { close(release) }) }) // a failed test still ends the run's goroutine
 
 	var out bytes.Buffer
 	errb := &lockedBuffer{}
@@ -50,10 +61,15 @@ func TestDigestPastItsLimitNamesTheStepAndFails(t *testing.T) {
 		t.Fatalf("want a non-zero exit naming step \"last report\", got %d: %s", code, msg)
 	}
 	// unblock the stuck read so the run's goroutine ends
-	if f, err := os.OpenFile(fifo, os.O_WRONLY, 0); err == nil {
-		f.Close()
+	once.Do(func() { close(release) })
+	select {
+	case rc := <-done:
+		if rc != exitError {
+			t.Fatalf("after its read was released the run returned %d, want %d (the read's error): %s", rc, exitError, errb.String())
+		}
+	case <-time.After(60 * time.Second):
+		t.Fatal("the run is still blocked 60 s after its last-report read was released")
 	}
-	<-done
 }
 
 // lockedBuffer is stderr for a run whose time limit and main path both write to it.

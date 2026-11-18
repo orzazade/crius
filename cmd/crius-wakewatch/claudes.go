@@ -8,8 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"golang.org/x/sys/unix"
-
 	"github.com/orzazade/crius/internal/wakewatch"
 )
 
@@ -57,27 +55,6 @@ func isClaude(f []string) bool {
 		}
 	}
 	return false
-}
-
-// ended says the process is gone, exiting (P_WEXIT) or a zombie (SZOMB): its arguments go before its pid does.
-func ended(pid int) bool {
-	k, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
-	return errors.Is(unix.Kill(pid, 0), unix.ESRCH) ||
-		err == nil && (k.Proc.P_pid != int32(pid) || k.Proc.P_stat == szomb || k.Proc.P_flag&pWexit != 0)
-}
-
-const (
-	szomb  = 5      // p_stat of a zombie (sys/proc.h)
-	pWexit = 0x2000 // p_flag P_WEXIT: working on exiting (sys/proc.h)
-)
-
-// procArgs reads the arguments and the environment a process was started with.
-func procArgs(pid int) ([]string, map[string]string, error) {
-	b, err := unix.SysctlRaw("kern.procargs2", pid)
-	if err != nil {
-		return nil, nil, fmt.Errorf("sysctl kern.procargs2: %v", err)
-	}
-	return parseProcArgs(b)
 }
 
 // parseProcArgs reads a kern.procargs2 buffer: argc (32 bits, little-endian), the executable path, NUL padding, argc

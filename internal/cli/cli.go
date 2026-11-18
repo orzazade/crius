@@ -1090,6 +1090,9 @@ func keepNames(text string, leads []ingest.Lead) string {
 	return text
 }
 
+// readReport reads a saved report (a variable so a test can make the read hang and end it on cue).
+var readReport = os.ReadFile
+
 // lastSnapshot reads the numbers and time of the newest saved report (YYYY-MM-DD-HHMM.json); no saved report yet is an empty snapshot, any other
 // failure an error. An entry that is no lead's numbers is left out and named in lost: one bad entry made every later
 // digest exit 1, so no report could replace it (X15).
@@ -1115,7 +1118,7 @@ func lastSnapshot(dir string) (digest.Snapshot, time.Time, []string, error) {
 	if err != nil {
 		return nil, time.Time{}, nil, err
 	}
-	b, err := os.ReadFile(last)
+	b, err := readReport(last)
 	if err != nil {
 		return nil, time.Time{}, nil, err
 	}

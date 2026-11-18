@@ -14,7 +14,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"golang.org/x/sys/unix"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -372,21 +371,6 @@ func readScreens(lines string) ([]wakewatch.Screen, error) {
 	return out, nil
 }
 
-// process gives the start time of pid, or false when no process has it.
-func process(pid int) (time.Time, bool, error) {
-	if errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) {
-		return time.Time{}, false, nil
-	}
-	k, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
-	if err != nil {
-		if errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) { // it ended while we looked
-			return time.Time{}, false, nil
-		}
-		return time.Time{}, false, fmt.Errorf("pid %d: %w", pid, err)
-	}
-	return time.Unix(k.Proc.P_starttime.Sec, int64(k.Proc.P_starttime.Usec)*1000), true, nil
-}
-
 // launchd tells whether a launchd job is loaded in the user's session; launchctl print exits 113 for one that is not.
 func launchd(label string) (bool, error) {
 	out, err := exec.Command("launchctl", "print", fmt.Sprintf("gui/%d/%s", os.Getuid(), label)).CombinedOutput()
@@ -471,18 +455,6 @@ func resources() (float64, float64, error) {
 		return 0, 0, err
 	}
 	return float64(fs.Bavail) * float64(fs.Bsize) / (1 << 30), swap, nil
-}
-
-// bootTime is when the machine last booted (sysctl kern.boottime).
-func bootTime() (time.Time, error) {
-	tv, err := unix.SysctlTimeval("kern.boottime")
-	if err != nil {
-		return time.Time{}, fmt.Errorf("sysctl kern.boottime: %w", err)
-	}
-	if tv.Sec <= 0 {
-		return time.Time{}, fmt.Errorf("sysctl kern.boottime: %d", tv.Sec)
-	}
-	return time.Unix(tv.Sec, int64(tv.Usec)*1000), nil
 }
 
 // loadAvg reads the 1-minute load from sysctl vm.loadavg ("{ 6.02 5.81 5.40 }").

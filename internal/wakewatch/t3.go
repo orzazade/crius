@@ -51,8 +51,24 @@ type T3Thread struct {
 	Settled    bool
 }
 
-// ErrT3NoAnswer marks a t3 call that timed out: the T3 server hangs, so the other threads are not read on this run.
+// ErrT3NoAnswer marks a t3 call that said nothing in its whole per-call limit: the T3 server hangs, so the check that
+// made the call reads no more threads on this run.
 var ErrT3NoAnswer = errors.New("t3 gave no answer in time")
+
+// ErrT3BudgetSpent marks a read not made, or cut short, because slow t3 answers used up the run's time for t3. It is no
+// hang, but that time is gone, so the check reads no more threads on this run either.
+var ErrT3BudgetSpent = errors.New("not read on this run: slow t3 answers used up the run's time for t3")
+
+// t3Stop says why a check reads no more threads on this run after a read failed with err, or "" when it reads on.
+func t3Stop(err error) string {
+	switch {
+	case errors.Is(err, ErrT3BudgetSpent):
+		return "not read: slow t3 answers used up this run's time for t3"
+	case errors.Is(err, ErrT3NoAnswer):
+		return "not read: t3 gave no answer for an earlier thread on this run"
+	}
+	return ""
+}
 
 const (
 	t3IdleAfter = 10 * time.Minute // a thread whose last reply ends on neither ⏳ nor ❓, or that waits on a request
@@ -154,7 +170,7 @@ func t3Idle(d Deps, ss []Session, sesErr error, watch projects, park parked, pro
 	}
 	var states []sessionstate.State
 	statesRead := false
-	hung := false
+	stop := "" // why no more threads are read on this run
 	for _, f := range files {
 		project, role, _ := strings.Cut(strings.TrimSuffix(filepath.Base(f), ".json"), ".")
 		who := project + ":" + role
@@ -199,14 +215,17 @@ func t3Idle(d Deps, ss []Session, sesErr error, watch projects, park parked, pro
 		} else if w.silent {
 			continue
 		}
-		if hung {
-			failed("not read: t3 gave no answer for an earlier thread on this run")
+		if stop != "" {
+			failed(stop)
 			continue
 		}
 		th, err := d.Thread(id)
 		if err != nil {
-			hung = errors.Is(err, ErrT3NoAnswer)
-			failed(fmt.Sprintf("thread %s: %v (if the role ended on purpose: crius-spawn -close %s %s)", id, err, project, role))
+			if stop = t3Stop(err); errors.Is(err, ErrT3BudgetSpent) {
+				failed(fmt.Sprintf("thread %s: %v", id, err)) // the thread is not at fault: no hint to close its role
+			} else {
+				failed(fmt.Sprintf("thread %s: %v (if the role ended on purpose: crius-spawn -close %s %s)", id, err, project, role))
+			}
 			continue
 		}
 		if th.Settled {

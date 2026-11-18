@@ -239,6 +239,16 @@ func (r *runner) flushAlerts() {
 		if err == nil {
 			err = store.AppendLine(r.home, a[3], line)
 		}
+		if errors.Is(err, store.ErrRemoteCopy) {
+			// That bus lives on another machine: the line can never go out from here, so retrying it would keep every
+			// run partial. Crius is told once on its own bus, the wrapper before the text (fit cuts the end), and the
+			// row is done.
+			line, err = store.FormatLine("ALERT", "crius", "ingest", fit(fmt.Sprintf("%s to %s not delivered (%v); its text: %s",
+				a[2], a[4], err, text)), "crius:lead", time.Now())
+			if err == nil {
+				err = store.AppendLine(r.home, "crius", line)
+			}
+		}
 		if err == nil {
 			_, err = r.db.Exec("update alert set sent=? where key=?", utcNow(), a[0])
 		}

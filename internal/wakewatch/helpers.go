@@ -113,6 +113,9 @@ func AfterBoot(d BootDeps) error {
 	return errors.Join(errs...)
 }
 
+// readPid reads an open pid file (a variable so a test can change the file's time between the read and the stat).
+var readPid = io.ReadAll
+
 // pidDown says why the process of a pid file is not running, or "" when it is: the pid must be a process that started
 // no later than the file was written, else the system gave the pid to a later process (after a restart, often).
 func pidDown(d BootDeps, file string) (string, error) {
@@ -135,7 +138,7 @@ func pidDown(d BootDeps, file string) (string, error) {
 		return "", err
 	}
 	defer f.Close()
-	b, err := io.ReadAll(f)
+	b, err := readPid(f)
 	if err != nil {
 		return "", err
 	}

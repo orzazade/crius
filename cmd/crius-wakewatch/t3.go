@@ -11,8 +11,21 @@ import (
 	"github.com/orzazade/crius/internal/wakewatch"
 )
 
-// t3Timeout bounds one t3 call: it takes about 1 s; a hung server must not hold the run.
-const t3Timeout = 10 * time.Second
+// t3Timeout bounds one t3 call. A call takes about 1 s, 2-4 s under heavy load, and at a load of ~170 on 14 cores some
+// took over the old 10 s while every thread was idle on purpose, so each run said a failed look. A t3 that answers late
+// is alive and its answer is read; one that says nothing in t3Timeout hangs (ErrT3NoAnswer), and the check that made the
+// call reads no more threads on this run (each check stops only its own reads).
+var t3Timeout = 30 * time.Second
+
+// t3Budget bounds all t3 calls of one run (the process is one run), so slow answers for many threads cannot hold it
+// without end: a call gets what is left of it when that is less than t3Timeout, and once it is spent a read is not
+// tried. Either way the read fails with ErrT3BudgetSpent, which says slow answers used the time, not that t3 hangs.
+// 240 s: launchd starts a run every 300 s and never while one still runs (a long run makes it skip a start), and at
+// 12-25 s a call, as under the heavy load this is for, it reads 10-20 threads.
+var t3Budget = 4 * time.Minute
+
+// t3Until is when this run's t3Budget ends, set by its first call.
+var t3Until time.Time
 
 // t3Messages is how many of a thread's latest messages are read to find its last reply: a reply comes as several
 // assistant messages, and a message sent to the thread may follow it.
@@ -21,12 +34,24 @@ const t3Messages = "10"
 // thread reads a T3 Code thread with `t3 thread show --json`: the t3 in the Crius bin folder when there is one (nvm keeps
 // t3 off launchd's PATH), else t3 on the PATH.
 func thread(id string) (wakewatch.T3Thread, error) {
-	out, errOut, err := t3cli.Run(t3cli.Bin(store.Home(), "t3"), t3Timeout, "", "thread", "show", "--json", "--messages", t3Messages, id)
+	now := time.Now()
+	if t3Until.IsZero() {
+		t3Until = now.Add(t3Budget)
+	}
+	limit := min(t3Timeout, t3Until.Sub(now))
+	if limit <= 0 {
+		return wakewatch.T3Thread{}, fmt.Errorf("t3 thread show: %w (all %s of it)", wakewatch.ErrT3BudgetSpent, t3Budget)
+	}
+	out, errOut, err := t3cli.Run(t3cli.Bin(store.Home(), "t3"), limit, "", "thread", "show", "--json", "--messages", t3Messages, id)
 	if err != nil {
-		if errors.Is(err, t3cli.ErrNoAnswer) {
-			err = fmt.Errorf("%w (%s)", wakewatch.ErrT3NoAnswer, t3Timeout)
+		switch {
+		case errors.Is(err, t3cli.ErrNoAnswer) && limit < t3Timeout: // t3 never had its full limit: no hang
+			err = fmt.Errorf("%w (it had %s left)", wakewatch.ErrT3BudgetSpent, limit.Round(time.Millisecond))
+		case errors.Is(err, t3cli.ErrNoAnswer):
+			err = fmt.Errorf("%w (%s)", wakewatch.ErrT3NoAnswer, limit.Round(time.Millisecond))
 		}
-		return wakewatch.T3Thread{}, fmt.Errorf("t3 thread show: %v: %s", err, t3cli.FirstLine(errOut, out)) // a stack trace after it says no more
+		// %w: the checks find ErrT3NoAnswer and ErrT3BudgetSpent with errors.Is to stop reading threads for the run
+		return wakewatch.T3Thread{}, fmt.Errorf("t3 thread show: %w: %s", err, t3cli.FirstLine(errOut, out)) // a stack trace after it says no more
 	}
 	return parseThread(out)
 }
