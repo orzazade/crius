@@ -2239,6 +2239,26 @@ func TestLimitLineKeepsTheFirstMove(t *testing.T) {
 	t.Log(line)
 }
 
+// limitLine never panics on a short or empty folder at any room left (round-3 review of 71fdc07: an empty first folder
+// with 10 runes of room cut r[-1:]).
+func TestLimitLineSurvivesAnEmptyFolderAtEveryRoom(t *testing.T) {
+	a := quota.AcctUse{Name: "max1", SevenMeasuredPct: 97, SevenMeasuredAt: qNow, Reset: qNow.Add(time.Hour)}
+	for pad := 0; pad < 300; pad++ {
+		name := strings.Repeat("p", pad) + " abcdef01"
+		func() {
+			defer func() {
+				if v := recover(); v != nil {
+					t.Fatalf("pad %d: limitLine panicked: %v", pad, v)
+				}
+			}()
+			line := limitLine(a, []string{"p to max2"}, []string{name}, 0, []string{"", "/x/a"})
+			if n := utf8.RuneCountInString(line); n > store.MaxLen {
+				t.Fatalf("pad %d: %d runes, over %d", pad, n, store.MaxLen)
+			}
+		}()
+	}
+}
+
 // The moves are those of the sessions placed on the account: an unplaced session cannot be moved from this NEED, and
 // its project's move sorted first hid the placed one (round-2 review of 85a7444, P2-2).
 func TestQuotaLimitNeedMovesOnlyPlacedProjects(t *testing.T) {

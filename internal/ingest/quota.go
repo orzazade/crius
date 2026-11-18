@@ -616,7 +616,7 @@ func limitLine(a quota.AcctUse, moves, names []string, unplaced int, unlisted []
 		if len(folders) > 1 {
 			keep -= utf8.RuneCountInString(fmt.Sprintf(" +%d more", len(folders)-1))
 		}
-		if r := []rune(folders[0]); len(r) > keep {
+		if r := []rune(folders[0]); keep > 0 && len(r) > keep {
 			folders[0] = "…" + string(r[len(r)-max(1, keep-1):])
 		}
 		if s := " (" + fitList(folders, room-3) + ")"; utf8.RuneCountInString(s) <= room {
