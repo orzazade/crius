@@ -16,9 +16,11 @@
 //     merged in more than one of the repos is ambiguous and proves nothing;
 //   - row-id-subject: a commit in the last Depth commits names the row in its subject (the subject rule).
 //
-// The subject rule: a subject names a row only as a tag, case-sensitive, with ids not split at dots or dashes
-// (C1.M2 is not C1, P3-6 is not P3): as a conventional-commit scope ("fix(R1): …", "feat(R1, R2): …", "fix(R1/web):
-// …"), or as "ID:" at the start of the subject, after an optional type prefix ("R1: …", "fix(web): R1: …"). A row id
+// The subject rule: a subject names a row only as a tag, with ids not split at dots or dashes (C1.M2 is not C1, P3-6
+// is not P3): as a conventional-commit scope ("fix(R1): …", "feat(R1, R2): …", "fix(R1/web): …"), as "ID:" at the
+// start of the subject after an optional type prefix ("R1: …", "fix(web): R1: …"), or in a parenthesised list at the
+// very end ("… (R1)", "… (R1, R2)"). Matching is case-sensitive, except that a scope may differ in case when the id
+// has 3+ characters with a letter and a digit ("fix(a12b): …" names A12b; "feat(s3): …" does not name S3). A row id
 // in running text ("fix(review): P1 null check", "unblocks X9") does not count, and a subject that starts with
 // "Revert" never names a row.
 //
@@ -120,6 +122,8 @@ var (
 	typeRe = regexp.MustCompile(`^[A-Za-z]+(?:\(([^)]*)\))?!?:\s*`)
 	// leadIDRe is "ID:" at the start of what follows the prefix.
 	leadIDRe = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9_]*(?:[-.][A-Za-z0-9_]+)*):`)
+	// trailRe is a parenthesised list at the very end of a subject.
+	trailRe = regexp.MustCompile(`\(([^()]*)\)\s*$`)
 )
 
 func isSHA(w string) bool {
@@ -184,25 +188,52 @@ func contains(list []string, s string) bool {
 // dot may join its parts.
 func isID(w string) bool { return idRe.MatchString(w) && strings.ContainsAny(w, "0123456789") }
 
-// subjectIDs are the row ids a commit subject names as a tag (the subject rule in the package comment).
-func subjectIDs(subject string) []string {
+// subjectTags are the row ids a commit subject names as a tag (the subject rule in the package comment): exact ids
+// (scope, lead "ID:", trailing list) and the scope ids, which may also match a row id that differs in case.
+func subjectTags(subject string) (exact, scope []string) {
 	if strings.HasPrefix(subject, "Revert") {
-		return nil
+		return nil, nil
 	}
-	var out []string
 	rest := subject
 	if m := typeRe.FindStringSubmatch(subject); m != nil {
 		for _, s := range strings.FieldsFunc(m[1], func(r rune) bool { return r == ',' || r == '/' || r == ' ' }) {
 			if isID(s) {
-				out = appendNew(out, s)
+				scope = appendNew(scope, s)
 			}
 		}
 		rest = subject[len(m[0]):]
 	}
+	exact = append(exact, scope...)
 	if m := leadIDRe.FindStringSubmatch(rest); m != nil && isID(m[1]) {
-		out = appendNew(out, m[1])
+		exact = appendNew(exact, m[1])
 	}
-	return out
+	if m := trailRe.FindStringSubmatch(subject); m != nil {
+		for _, s := range strings.Split(m[1], ",") {
+			if s = strings.TrimSpace(s); isID(s) {
+				exact = appendNew(exact, s)
+			}
+		}
+	}
+	return exact, scope
+}
+
+// foldable says whether a scope may name id in another case: 3+ characters with a letter and a digit.
+func foldable(id string) bool { return len(id) >= 3 && isID(id) }
+
+// namesRow applies the subject rule to one subject and one row id.
+func namesRow(subject, id string) bool {
+	exact, scope := subjectTags(subject)
+	if contains(exact, id) {
+		return true
+	}
+	if foldable(id) {
+		for _, s := range scope {
+			if strings.EqualFold(s, id) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // ParseTSV reads a board with a header row. Columns are found by name (any order, no case): the row id ("row" or
@@ -438,6 +469,7 @@ type branch struct {
 	name     string
 	tip      string
 	pr, word map[string]commitRef
+	fold     map[string]commitRef // scope ids in lower case, for foldable row ids
 	commits  int
 	oldest   string
 }
@@ -609,7 +641,7 @@ func openEvidence(row Row, bs []*branch) (ev []Evidence, notes []string, err err
 			if err != nil {
 				return nil, nil, err
 			}
-			if !contains(subjectIDs(subj), row.ID) {
+			if !namesRow(subj, row.ID) {
 				continue // a cited sha whose commit is not tagged with the row (a baseline): no proof
 			}
 		}
@@ -626,7 +658,11 @@ func openEvidence(row Row, bs []*branch) (ev []Evidence, notes []string, err err
 		ev = append(ev, Evidence{Kind: "merge-subject", Ref: "PR " + p, Commit: short(c.sha), Subject: c.subject, Repo: b.repo.Path, Branch: b.name})
 	}
 	for _, b := range bs {
-		if c, ok := b.word[row.ID]; ok {
+		c, ok := b.word[row.ID]
+		if !ok && foldable(row.ID) {
+			c, ok = b.fold[strings.ToLower(row.ID)]
+		}
+		if ok {
 			ev = append(ev, Evidence{Kind: "row-id-subject", Ref: row.ID, Commit: short(c.sha), Subject: c.subject, Repo: b.repo.Path, Branch: b.name})
 			break
 		}
@@ -724,7 +760,7 @@ func readBranch(r Repo, depth int) (*branch, error) {
 	if err != nil {
 		return nil, err
 	}
-	b := &branch{repo: r, name: r.Branch, tip: tip, pr: map[string]commitRef{}, word: map[string]commitRef{}}
+	b := &branch{repo: r, name: r.Branch, tip: tip, pr: map[string]commitRef{}, word: map[string]commitRef{}, fold: map[string]commitRef{}}
 	for _, l := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
 		f := strings.SplitN(l, "\x1f", 3)
 		if len(f) != 3 {
@@ -743,9 +779,17 @@ func readBranch(r Repo, depth int) (*branch, error) {
 				}
 			}
 		}
-		for _, id := range subjectIDs(c.subject) {
+		exact, scope := subjectTags(c.subject)
+		for _, id := range exact {
 			if _, seen := b.word[id]; !seen {
 				b.word[id] = c
+			}
+		}
+		for _, id := range scope {
+			if k := strings.ToLower(id); foldable(id) {
+				if _, seen := b.fold[k]; !seen {
+					b.fold[k] = c
+				}
 			}
 		}
 	}

@@ -385,3 +385,28 @@ func TestCheckFailsLoud(t *testing.T) {
 		t.Errorf("0 rows: want a '0 rows' error, got %v", err)
 	}
 }
+
+// Two more tag forms: a trailing "(ID)" or "(ID, ID2)" at the very end of the subject (case-sensitive), and a scope
+// that differs only in case, but only for an id of 3+ characters with a letter and a digit (a12b names A12b; s3 does
+// not name S3, p1 not P1). "(#12)" names no row 12, and a Revert still names nothing.
+func TestSubjectTagForms(t *testing.T) {
+	root, _ := testutil.Temp(t)
+	dir := testutil.GitRepo(t, filepath.Join(root, "repo"))
+	for _, s := range []string{"init", "fix(a12b): leave out deleted jobs", "fix(web): the header shows the account (A20)",
+		"test: two rows at once (B30, B31)", "feat(s3): upload", "fix(p1): parser", "chore: x (#12)",
+		"docs: the header (A21) and more", `Revert "fix(c40d): thing"`, "fix: lower trailing (a22)"} {
+		commit(t, dir, date1, s)
+	}
+	var rows []Row
+	for _, id := range []string{"A12b", "A20", "B30", "B31", "S3", "P1", "12", "A21", "C40d", "A22"} {
+		rows = append(rows, Row{ID: id, State: "⬜"})
+	}
+	rep, err := Check(rows, []Repo{{Path: dir, Branch: "main"}}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"A12b": "stale", "A20": "stale", "B30": "stale", "B31": "stale"}
+	if k := kinds(rep); !reflect.DeepEqual(k, want) {
+		t.Fatalf("findings:\n got %v\nwant %v", k, want)
+	}
+}
