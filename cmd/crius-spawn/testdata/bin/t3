@@ -1,0 +1,10 @@
+#!/bin/sh
+# A stand-in for `t3 thread show --json --messages N <id>`: prints ../threads/<id>.json, or fails as the
+# real t3 does for a thread it does not know.
+for id; do :; done # the last argument
+f="$(dirname "$0")/../threads/$id.json"
+if [ ! -f "$f" ]; then
+  echo "Thread $id is no longer available." >&2
+  exit 1
+fi
+cat "$f"

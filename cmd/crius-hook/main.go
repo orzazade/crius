@@ -216,8 +216,15 @@ func apply(home, dir string, ev sessionstate.Event) error {
 	// may come before its start), keeps the folder its start filed (Crius 10-29 00:28: cmux restored sessions with no
 	// CLAUDE_CONFIG_DIR, on another account); wakewatch names one that runs elsewhere.
 	s.Filed = s.Config
+	// Started is when this session id took the role: a new id takes it now; the same id resumed, compacted or moved keeps
+	// it (wakewatch restart --from-ready asks whether a new session holds the role since a READY-RESTART line).
+	s.Started = s.Time
 	if replace {
 		cur, err := sessionstate.ReadRole(roles, s.Project, s.Role)
+		if err == nil && cur.SessionID == s.SessionID {
+			// a file with no Started gives its time, only the latest the session can have taken the role by: marked so
+			s.Started, s.StartedBound = cur.StartedAt(), cur.Started.IsZero() || cur.StartedBound
+		}
 		sameTab := s.Surface != "" && cur.Surface == s.Surface && !(in.Event == "SessionStart" && s.Detail == "startup")
 		if err == nil && (cur.SessionID == s.SessionID || sameTab) {
 			s.Filed = cur.FiledConfig()

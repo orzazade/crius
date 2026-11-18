@@ -291,7 +291,7 @@ func TestAnInterruptedToolEndsTheTurn(t *testing.T) {
 func TestProcessSkipsAStatusFileWhosePidWasReused(t *testing.T) {
 	config, me := t.TempDir(), os.Getpid()
 	testutil.Write(t, filepath.Join(config, "sessions", "1.json"),
-		fmt.Sprintf(`{"pid":%d,"sessionId":"s-old","name":"quotes · p1","procStart":"Thu Jan  1 00:00:00 2026"}`, me))
+		fmt.Sprintf(`{"pid":%d,"sessionId":"s-old","name":"quotes · p1","procStart":%q}`, me, testutil.OtherProcStart))
 	testutil.Write(t, filepath.Join(config, "sessions", "2.json"),
 		fmt.Sprintf(`{"pid":%d,"sessionId":"s-now","name":"quotes · p2","procStart":%q}`, me, testutil.ProcStart(t, me)))
 	if pid, name, err := Process(config, "s-old"); err != nil || pid != 0 || name != "" {

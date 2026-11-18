@@ -14,5 +14,57 @@ Restarted from scratch on 2026-10-16. The March 2026 harness prototype is on bra
 - `cmd/`, `internal/`, `bin/crius-rec` — the record store, in Go (design: `docs/MEMORY-AND-MEASUREMENT.md`). Private
   state lives in `~/.crius/` (mode 700, outside every git tree); `bin/crius-rec init` creates it,
   `bin/crius-rec leak-test` checks it. `bin/crius-rec` builds the binary on demand (needs `go` on PATH)
+- Install: on the Mac, `bin/crius-install-launchd` from the clean checkout `~/Projects/scifi/crius-live` at origin/main
+  builds every command under `cmd/` (crius-hook and crius-wakewatch too) into `~/.crius/bin`. The Linux team boxes
+  (the playbook's `hosts.json`) run crius-hook, bus-post, crius-statusline and playbook from their own `~/.crius/bin`:
+  build each with `GOOS=linux GOARCH=amd64 CGO_ENABLED=0 GOTOOLCHAIN=local go build -o <file> ./cmd/<tool>`
+  (`TestLinuxToolsBuildFromTheRepo` keeps that build working); `bin/crius-install-box <box>` builds and copies them
+  (see "Installing on the Linux boxes" below). A record one tool writes and another reads ships to the Mac and every box together: crius-hook's
+  role record `started` is read by `crius-wakewatch restart --from-ready`, which until then refuses a READY-RESTART
+  line older than the role's last resume or compact ("cannot tell when the session … took it").
 - Tests: `GOTOOLCHAIN=local go test ./...` (Go 1.25.6; one dependency, `modernc.org/sqlite`, pure Go; fixtures are
   synthetic). The Python version of step 1 is on branch `archive/step1-python`
+
+## T3 thread move check
+
+Moving a T3 Code thread to another account (`mcp__t3-code__t3_thread_configure` with a `modelSelection` whose
+`instanceId` differs from the thread's `providerInstanceId`) restarts the thread's provider session and kills its
+running background shells. `crius-spawn -move-check` is a PreToolUse hook that denies such a move, with the reason,
+while the thread has an open run, an open request, a message after its last reply waiting for a turn, or a last reply
+whose newest status emoji is ⏳; for a call with no `threadId` (the caller's own thread, mid-turn by definition); and
+when the thread's state cannot be read (t3 missing, no answer in 30 s, bad JSON, a thread the local t3 does not know,
+such as one on another machine). A call with no `modelSelection` only reads, and one that keeps the current instance
+restarts nothing: both are let through. To move a thread anyway, on purpose: `mkdir -p ~/.crius/state/move-ok && touch
+~/.crius/state/move-ok/<threadId>` (`self` for the caller's own thread). The check deletes the file only when it turns a
+deny into a go, so it is good for one move and is not used up by a move that was allowed anyway.
+
+Known gaps:
+- The `t3 thread show` parser and the status-emoji reader are copies of wakewatch's, which are not exported.
+- The 30 s t3 timeout has no test (it would need a fake t3 that sleeps).
+- A ⏳ reply whose only running job is the bus waiter is denied, though a restart would cost only the waiter.
+
+Install: `bin/crius-install-launchd` builds the binary into `~/.crius/bin/crius-spawn`; the hook is a manual step: add it
+to the `hooks` of the settings.json of each config folder whose sessions call the tool. The hook timeout (45 s) is larger than the check's 30 s t3 timeout:
+
+```json
+"PreToolUse": [
+  {
+    "matcher": "mcp__t3-code__t3_thread_configure",
+    "hooks": [{ "type": "command", "command": "~/.crius/bin/crius-spawn -move-check", "timeout": 45 }]
+  }
+]
+```
+
+Demo, with a fake t3 (one deny, one allow): `sh cmd/crius-spawn/testdata/demo-move-check.sh`.
+
+## Installing on the Linux boxes
+
+The Legion and the ThinkPad run a few tools from `~/.crius/bin` (the list is `internal/boxtools`). After a change to one
+of them, from a clean checkout of the commit to install:
+
+    bin/crius-install-box legion --dry-run   # builds, shows the box's current files, copies nothing
+    bin/crius-install-box legion             # copies; prints old and new revision and sha256 per tool, OK or FAILED
+
+The box name is a host in `~/.crius/state/playbook/hosts.json` (its ssh command is used). The old binary stays as
+`<tool>.prev-<old rev>-<old sha256>`, and the output prints the ssh line that puts each changed tool back. A failed
+copy leaves the old binary in place and exits non-zero. Nothing needs a restart.

@@ -62,6 +62,12 @@ type State struct {
 	// Filed, in a role's file only: the config folder the role's session was started in, so its account. A restart of
 	// that session or a /clear in it keeps it (Crius 10-29 00:28: cmux restored sessions on another account's folder).
 	Filed string `json:"filed,omitempty"`
+	// Started, in a role's file only: when this session id became the role's session. A resume, compact or move of the
+	// same id keeps it; a new id (a fresh start, /clear, another session taking the role) sets it. See StartedAt.
+	Started time.Time `json:"started,omitzero"`
+	// StartedBound: Started was back-filled from a role file written before crius-hook kept it, so it is only the latest
+	// time by which the session held the role, not when it took it.
+	StartedBound bool `json:"started_bound,omitempty"`
 	// PromptSHA is the first 16 hex digits of the sha256 of the last submitted prompt, trimmed: proof that a message
 	// a watcher typed was submitted as itself, not mixed with a draft. The prompt itself is never stored.
 	PromptSHA  string    `json:"prompt_sha,omitempty"`
@@ -513,6 +519,17 @@ func (s State) FiledConfig() string {
 		return s.Filed
 	}
 	return s.Config
+}
+
+// StartedAt is the latest time by which a role file's session held the role: Started, or in a file written before
+// crius-hook kept Started, Time. That file was written by this same session at Time, so it held the role by then; it
+// may have held it earlier (Time moves on each resume), so a check that asks "did a new session take the role after X"
+// reads a later Time as yes: the safe side, and crius-hook keeps this bound as Started from the next write on.
+func (s State) StartedAt() time.Time {
+	if !s.Started.IsZero() {
+		return s.Started
+	}
+	return s.Time
 }
 
 // ReadRole gives the state crius-hook kept for a role's current session.

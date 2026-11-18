@@ -13,8 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/sys/unix"
-
 	"github.com/orzazade/crius/internal/redact"
 	"github.com/orzazade/crius/internal/watchdog"
 )
@@ -31,11 +29,7 @@ func main() {
 		}
 		home = filepath.Join(u, ".crius")
 	}
-	var wake time.Time
-	tv, err := unix.SysctlTimeval("kern.waketime")
-	if err == nil {
-		wake = time.Unix(tv.Unix())
-	}
+	wake, err := wakeTime()
 	os.Exit(run(home, time.Now(), wake, err, calendarZone(), os.Stderr))
 }
 

@@ -279,7 +279,7 @@ func AppendLine(home, project, line string) error {
 	if !Slug.MatchString(project) {
 		return refused("bad project slug")
 	}
-	f, err := os.OpenFile(filepath.Join(home, "bus", project+".log"), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+	f, err := OpenBus(filepath.Join(home, "bus", project+".log"), os.O_WRONLY|os.O_CREATE, 0o600)
 	if err != nil {
 		return err
 	}

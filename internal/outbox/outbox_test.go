@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -345,11 +344,7 @@ func TestASendSaysWhatBecameOfItsOwnMessage(t *testing.T) {
 		{name: "another file can be neither read nor moved once its own is stored", tab: &box{title: "crius"},
 			stored: map[string]Message{other: {To: "quotes", Text: "QUOTES: hi"}},
 			setup: func(t *testing.T, home string) {
-				p := filepath.Join(home, "outbox", other)
-				if err := syscall.Chflags(p, 0x2); err != nil { // UF_IMMUTABLE: it cannot be renamed
-					t.Fatal(err)
-				}
-				t.Cleanup(func() { syscall.Chflags(p, 0) })
+				immutable(t, filepath.Join(home, "outbox", other)) // it cannot be renamed
 				failOn(other, 2, nil)
 			}, want: ErrHeld},
 		{name: "its own file passed MaxAge between the store and the typing", tab: &box{title: "crius"},
@@ -412,10 +407,7 @@ func TestAFileThatCanBeNeitherReadNorMovedStopsTheSend(t *testing.T) {
 		t.Fatal(err)
 	}
 	os.Chmod(p, 0)
-	if err := syscall.Chflags(p, 0x2); err != nil { // UF_IMMUTABLE: no rename
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { syscall.Chflags(p, 0) })
+	immutable(t, p) // no rename
 	err := Send(home, "crius", "WAKEWATCH: one")
 	if err == nil || !strings.Contains(err.Error(), filepath.Base(p)) || len(tab.typed) != 0 {
 		t.Errorf("Send: %v, typed %q, want an error naming the file and nothing typed", err, tab.typed)

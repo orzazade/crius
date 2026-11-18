@@ -163,6 +163,10 @@ func RecordDecision(home string, in DecisionInput) (string, error) {
 	if today == "" {
 		today = time.Now().Format("2006-01-02")
 	}
+	// Before DECISIONS.md: a decision saved whose bus line is then refused is half done.
+	if err := notACopy(filepath.Join(home, "bus", in.Project+".log"), "recorded"); err != nil {
+		return "", err
+	}
 	dir := filepath.Join(home, "state", in.Project)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
