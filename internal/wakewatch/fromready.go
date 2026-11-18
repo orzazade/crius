@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/orzazade/crius/internal/sessionstate"
 	"github.com/orzazade/crius/internal/store"
 )
 
@@ -97,14 +98,40 @@ func BuildFromReady(d FromReadyDeps, role string) (ReadyBrief, error) {
 	path := strings.ReplaceAll(place.Path, "{role}", name)
 
 	busPath := filepath.Join(d.Home, "bus", project+".log")
-	ready, later, own, err := readyLines(busPath, project, name)
+	s, err := readyLines(busPath, project, name)
 	if err != nil {
 		return ReadyBrief{}, err
 	}
-	if len(own) > 0 { // the role went on working (or a fresh session of it started): its line no longer says where it is
-		last := own[len(own)-1]
-		return ReadyBrief{}, fmt.Errorf("%s posted %d line(s) after its %s READY-RESTART line (the newest %s %s) in %s: no "+
-			"READY-RESTART line newer than the last restart or work", role, len(own), ready.Time, last.Time, last.Type, busPath)
+	ready, later := s.ready, s.later
+	if s.block != nil { // the role went on working (or a fresh session of it started): its line no longer says where it is
+		return ReadyBrief{}, fmt.Errorf("%s posted %d line(s) after its %s READY-RESTART line in %s, and its %s %s line is no "+
+			"answer to Crius (%s): no READY-RESTART line newer than the last restart or work",
+			role, s.own, ready.Time, busPath, s.block.Time, s.block.Type, s.why)
+	}
+	if s.own > 0 {
+		// Only answers came after the line, but a session that started since may have posted them: a restart typed by
+		// hand changes neither the template nor the bus. crius-hook's record of the role's current session is rewritten
+		// when a session takes the role, so one written at or after the line's minute refuses (a /clear, resume or
+		// compact of the same session too: the safe side). A role with no record here (a box's hook files its own) has
+		// only the template check below and the START line a fresh session posts, which is no answer.
+		at := ready.At // a Z stamp's instant, else its wall time
+		if at.IsZero() {
+			if at, err = lineTime(ready.Date+"T"+ready.Time, d.Now); err != nil {
+				return ReadyBrief{}, fmt.Errorf("the newest READY-RESTART line of %s in %s has no readable time: %w", role, busPath, err)
+			}
+		}
+		dir := filepath.Join(d.Home, "roles")
+		cur, err := sessionstate.ReadRole(dir, project, name)
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+		case err != nil:
+			return ReadyBrief{}, fmt.Errorf("could not read crius-hook's record of the session of %s, to check that no session "+
+				"started after its %s READY-RESTART line: %w", role, ready.Time, err)
+		case !cur.Time.Before(at):
+			return ReadyBrief{}, fmt.Errorf("a session of %s started at %s (crius-hook's record in %s), after its %s READY-RESTART "+
+				"line in %s, so the answers since may be the new session's: no READY-RESTART line newer than the last restart",
+				role, cur.Time.In(time.Local).Format("2006-01-02 15:04"), dir, ready.Time, busPath)
+		}
 	}
 	notes, next, err := readyFields(ready)
 	if err != nil {
@@ -147,7 +174,11 @@ func BuildFromReady(d FromReadyDeps, role string) (ReadyBrief, error) {
 	if len(later) > 0 {
 		var parts []string
 		for _, l := range later {
-			parts = append(parts, l.Time+" "+l.Type+" "+l.Text)
+			who := ""
+			if l.Project != "crius" { // the role's own answer
+				who = "your "
+			}
+			parts = append(parts, l.Time+" "+who+l.Type+" "+l.Text)
 		}
 		since = strings.Join(parts, "; ")
 	}
@@ -160,15 +191,24 @@ func BuildFromReady(d FromReadyDeps, role string) (ReadyBrief, error) {
 		Text: strings.Join(out, "\n")}, nil
 }
 
-// readyLines finds the role's newest READY-RESTART line on a project bus, the crius:lead DECISION and INFO lines to the
-// role after it, and the role's own lines after it, each in bus order.
-func readyLines(busPath, project, name string) (ready *store.Line, later, own []*store.Line, err error) {
+// sinceReady is a role's newest READY-RESTART line on a project bus and what came after it.
+type sinceReady struct {
+	ready *store.Line
+	later []*store.Line // the crius:lead DECISION, INFO and ASK lines to the role and the role's answers to them, in bus order
+	own   int           // the role's own lines after ready
+	block *store.Line   // the role's first line after ready that is no answer to Crius, nil when every one is
+	why   string        // why block is no answer
+}
+
+// readyLines reads the role's newest READY-RESTART line on a project bus and the lines after it (sinceReady).
+func readyLines(busPath, project, name string) (sinceReady, error) {
 	f, err := os.Open(busPath)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("could not read the bus %s: %w", busPath, err)
+		return sinceReady{}, fmt.Errorf("could not read the bus %s: %w", busPath, err)
 	}
 	defer f.Close()
 	role := project + ":" + name
+	var s sinceReady
 	var st store.State
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
@@ -182,26 +222,96 @@ func readyLines(busPath, project, name string) (ready *store.Line, later, own []
 		// the request is the line's type or opens its text: a line that only mentions the word asks nothing
 		if mine && (store.RestartWord(l.Type) == "READY-RESTART" ||
 			strings.HasPrefix(l.Text, "READY-RESTART") && store.RestartWord(l.Text) == "READY-RESTART") {
-			ready, later, own = l, nil, nil
+			s = sinceReady{ready: l}
 			continue
 		}
-		if ready != nil && mine {
-			own = append(own, l)
+		if s.ready == nil {
 			continue
 		}
-		if ready != nil && l.Project == "crius" && l.Role == "lead" && (l.Type == "DECISION" || l.Type == "INFO") &&
-			slices.ContainsFunc(l.Recipients(), func(r string) bool { return strings.EqualFold(r, role) }) {
-			later = append(later, l)
+		if mine {
+			s.own++
+			if s.block != nil {
+				continue
+			}
+			if why := answerWhy(l, project, s.later); why != "" {
+				s.block, s.why = l, why
+			} else {
+				s.later = append(s.later, l)
+			}
+			continue
+		}
+		if l.Project == "crius" && l.Role == "lead" && (l.Type == "DECISION" || l.Type == "INFO" || l.Type == "ASK") &&
+			slices.ContainsFunc(l.Recipients(), func(r string) bool { return toName(r, project) == role }) {
+			s.later = append(s.later, l)
 		}
 	}
 	if err := sc.Err(); err != nil {
-		return nil, nil, nil, fmt.Errorf("could not read the bus %s: %w", busPath, err)
+		return sinceReady{}, fmt.Errorf("could not read the bus %s: %w", busPath, err)
 	}
-	if ready == nil {
-		return nil, nil, nil, fmt.Errorf("no READY-RESTART line from %s in %s", role, busPath)
+	if s.ready == nil {
+		return sinceReady{}, fmt.Errorf("no READY-RESTART line from %s in %s", role, busPath)
 	}
-	return ready, later, own, nil
+	return s, nil
 }
+
+// talkTypes are the bus types a role answers Crius in. By its type alone none reports work or a change of state, which
+// every other type does (DONE, READY, PASS, FAIL, NEED, BLOCKED, LANDED, VERIFIED, START, RESUMED, ...): a role that
+// posts one of those after its READY-RESTART line went on working, or is a fresh session (START), and the line no
+// longer says where it is. INFO also carries work ("CLAIM item 17" after a crius pick), so the type is not enough.
+var talkTypes = map[string]bool{"ANSWER": true, "ACK": true, "ASK": true, "INFO": true}
+
+// answerRe is the mark the teams open an answer with ("Re 20:38: both done already"): the time of the line it answers.
+var answerRe = regexp.MustCompile(`(?i)^re (\d\d:\d\d)\b`)
+
+// answerWhy says why the role's line l after its READY-RESTART line is no answer to Crius, "" when it is one. An answer
+// is one exchange with Crius that leaves the role where its READY-RESTART line says: a talk type (talkTypes), opening
+// with "Re HH:MM" that names a line in crius (the crius:lead lines to the role since the READY-RESTART line, which step
+// 6 shows, so the fresh session sees the question too), and sent to crius:lead and at most that line's own recipients
+// (a reply-all). A line to anyone else is work with the team.
+func answerWhy(l *store.Line, project string, crius []*store.Line) string {
+	if !talkTypes[l.Type] {
+		return fmt.Sprintf("a %s line reports work or a state; an answer is an ANSWER, ACK, ASK or INFO line", l.Type)
+	}
+	var asked *store.Line
+	if m := answerRe.FindStringSubmatch(l.Text); m != nil {
+		for _, c := range slices.Backward(crius) {
+			if c.Project == "crius" && c.Time == m[1] {
+				asked = c
+				break
+			}
+		}
+	}
+	to := l.Recipients()
+	if len(to) == 0 {
+		return "it goes to the whole bus"
+	}
+	may, also := map[string]bool{"crius:lead": true}, ""
+	if asked != nil {
+		for _, r := range asked.Recipients() {
+			may[toName(r, project)] = true
+		}
+		also = " and the " + asked.Time + " crius line it answers"
+	}
+	var others []string
+	for _, r := range to {
+		if !may[toName(r, project)] {
+			others = append(others, r)
+		}
+	}
+	if len(others) > 0 {
+		return fmt.Sprintf("it goes to %s, not only to crius:lead%s", strings.Join(others, ","), also)
+	}
+	if asked == nil {
+		return `it does not open with "Re HH:MM" naming a crius:lead DECISION, INFO or ASK line to it after the READY-RESTART line`
+	}
+	if !slices.ContainsFunc(to, func(r string) bool { return toName(r, project) == "crius:lead" }) {
+		return "it does not go to crius:lead"
+	}
+	return ""
+}
+
+// toName is a recipient as the ingest reads it on a project's bus (busName), in lower case.
+func toName(r, project string) string { return strings.ToLower(busName(project, r)) }
 
 // readyFields gives a READY-RESTART line's notes= and next= values: notes runs up to " next=", next to the line's end.
 func readyFields(l *store.Line) (notes, next string, err error) {
