@@ -487,9 +487,12 @@ func (r *runner) pauseAccounts(tx *sql.Tx, rep *quota.Report, as *quota.Accounts
 
 // limitChecks tells Crius when a Max account its sessions run on reaches quota.Limit of its week (owner 10-28 23:5x):
 // one NEED per account and window, and one more when a later run finds a session on it not named before; each names
-// the sessions open on it (as tabsByLogin counts them) and the account each project moves to by the rule (quota.Pick).
+// the sessions working on it (sessionsByLogin) and the account each project moves to by the rule (quota.Pick).
 // Crius moves each, the same session, with crius-spawn -move at its next turn boundary; nothing is stopped here. An account at the limit with no session
-// open on it is no news. A login no row lists is checked too: its sessions spend a Max week all the same.
+// working on it is no news. A login no row lists is checked too: its sessions spend a Max week all the same.
+// Only a measured share counts (STATUS 11-17 15:09): a top share no measurement showed (SevenAt zero) is a repeat that
+// may be another login's window, so it asks for no move. Shares only rise within a window, so a measured one at the
+// limit holds at any age. Wakewatch's weekly watch reads each login's week on its own and says what is unknown.
 func (r *runner) limitChecks(tx *sql.Tx, rep *quota.Report, as *quota.Accounts) error {
 	open, err := sessionsByLogin(tx, rep.Now)
 	if err != nil {
@@ -497,7 +500,7 @@ func (r *runner) limitChecks(tx *sql.Tx, rep *quota.Report, as *quota.Accounts) 
 	}
 	for _, a := range rep.Accounts {
 		if row := as.Of(a.Login); row != nil && row.Plan != "max" || len(open[a.Login]) == 0 || a.Reset.IsZero() ||
-			!a.Reset.After(rep.Now) || a.SevenPct < quota.Limit {
+			!a.Reset.After(rep.Now) || a.SevenPct < quota.Limit || a.SevenAt.IsZero() {
 			continue
 		}
 		key, err := window(tx, "quota:limit:"+a.Login+":", a.Reset)
@@ -542,10 +545,7 @@ func (r *runner) limitChecks(tx *sql.Tx, rep *quota.Report, as *quota.Accounts) 
 		for _, project := range slices.Sorted(maps.Keys(next)) {
 			moves = append(moves, project+" to "+next[project])
 		}
-		at := "not measured"
-		if !a.SevenAt.IsZero() {
-			at = a.SevenAt.Local().Format("15:04")
-		}
+		at := a.SevenAt.Local().Format("15:04")
 		if err := r.queueLine(tx, key+":need:"+strings.Join(news, ","), "NEED", "crius", "crius:lead", fmt.Sprintf(
 			"quota: account %s at %g%% of its 7d (%s, resets %s) reached the %d%% limit; on it: %s. Next by the rule: "+
 				"%s. Move each, the same session, at its turn boundary: crius-spawn -move <project> <role>", a.Name, a.SevenPct, at,
@@ -559,9 +559,61 @@ func (r *runner) limitChecks(tx *sql.Tx, rep *quota.Report, as *quota.Accounts) 
 // openSession is a session open on a login: its project, role ("unknown" for none) and id.
 type openSession struct{ project, role, id string }
 
-// sessionsByLogin is every project's open sessions by the login they run on, as tabsByLogin reads them: a session's
-// login is that of its newest statusline line, and it is open while that line is within quota.Gap.
+// activeWithin: a session whose last work is older than this is idle; moving it off an account saves nothing.
+const activeWithin = 24 * time.Hour
+
+// sessionsByLogin is every project's working sessions by the login they run on: a session's login is that of its
+// newest statusline line, it is open while that line is within quota.Gap (as tabsByLogin reads it), and it works while
+// its last work (lastWork) is within activeWithin. An idle tab heartbeats, so an open one is not a working one
+// (STATUS 11-17 15:09: two tabs idle for four days were named).
 func sessionsByLogin(tx *sql.Tx, now time.Time) (map[string][]openSession, error) {
+	open, err := openByLogin(tx, now)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string][]openSession{}
+	for login, ss := range open {
+		for _, s := range ss {
+			last, err := lastWork(tx, s.id)
+			if err != nil {
+				return nil, err
+			}
+			if !last.IsZero() && now.Sub(last) <= activeWithin {
+				out[login] = append(out[login], s)
+			}
+		}
+	}
+	return out, nil
+}
+
+// lastWork is when the session last worked: its newest request, or its newest statusline line that is not an idle
+// repeat (a heartbeat with no response since the last render). Zero when neither is known.
+func lastWork(tx *sql.Tx, id string) (time.Time, error) {
+	var req, line sql.NullString
+	if err := tx.QueryRow(`select (select max(ts_last) from request where session = ?),
+		(select max(q.ts) from quota q left join quota_response r using (source_key)
+			where q.session = ? and (q.sample_kind != 'heartbeat' or r.responded = 1))`, id, id).Scan(&req, &line); err != nil {
+		return time.Time{}, err
+	}
+	var last time.Time
+	for _, v := range []sql.NullString{req, line} {
+		if !v.Valid {
+			continue
+		}
+		t, err := time.Parse(time.RFC3339, v.String)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("session %s last work %q: %w", id, v.String, err)
+		}
+		if t.After(last) {
+			last = t
+		}
+	}
+	return last, nil
+}
+
+// openByLogin is every project's open sessions by the login they run on, as tabsByLogin reads them: a session's
+// login is that of its newest statusline line, and it is open while that line is within quota.Gap.
+func openByLogin(tx *sql.Tx, now time.Time) (map[string][]openSession, error) {
 	rows, err := tx.Query(`select coalesce(s.project, 'unknown'), s.role, s.id, a.login, a.ts from session s join account_seen a on a.rowid = (
 		select rowid from account_seen where session = s.id order by ts desc, rowid desc limit 1)
 		where a.login is not null and a.login != '' order by s.project, s.role, s.id`)
