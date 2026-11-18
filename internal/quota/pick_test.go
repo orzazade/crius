@@ -81,14 +81,14 @@ func TestPickTakesALinkedSignedInMaxAccount(t *testing.T) {
 		dir     string
 		err     string
 	}{
-		{"same reset: the first row", report(use(wm, 70), use(m2, 30), use(m3, 50), use(m6, 60)), "max", 90, "max1", wm, ""},
-		{"unmeasured goes after a measured one", report(use(wm, 70), use(m2, 30), use(m3, 50)), "max", 90, "max1", wm, ""},
-		{"ended week goes after a measured one", report(use(wm, 70), use(m2, 30), use(m3, 50), ended), "max", 90, "max1", wm, ""},
-		{"ties go to the first row", report(use(wm, 30), use(m2, 30), use(m3, 50), use(m6, 60)), "max", 90, "max1", wm, ""},
+		{"same reset: the first row but max1 (owner 11-19)", report(use(wm, 70), use(m2, 30), use(m3, 50), use(m6, 60)), "max", 90, "max2", m2, ""},
+		{"unmeasured goes after a measured one", report(use(wm, 70), use(m2, 30), use(m3, 50)), "max", 90, "max2", m2, ""},
+		{"ended week goes after a measured one", report(use(wm, 70), use(m2, 30), use(m3, 50), ended), "max", 90, "max2", m2, ""},
+		{"ties go to the first row", report(use(wm, 30), use(m2, 30), use(m3, 30), use(m6, 60)), "max", 90, "max2", m2, ""},
 		{"at pause_at is passed over", report(use(wm, 92), use(m2, 95), use(m3, 91), use(m6, 90)), "max", 90, "", "",
-			"every Max account is at its limit: max1 7d 92%, max2 7d 95%, max3 7d 91%, max6 7d 90%"},
+			"max1 is held back (owner 11-19) until every other Max account is at its limit: max4 quota not measured, max5 quota not measured"},
 		{"full is passed over without pause_at", report(use(wm, 100), use(m2, 100), use(m3, 100), use(m6, 100)), "max", 0,
-			"", "", "every Max account is at its limit"},
+			"", "", "max1 is held back (owner 11-19)"},
 		{"named row", report(use(wm, 10), use(m2, 30)), "max2", 90, "max2", m2, ""},
 		{"named row at the limit", report(use(wm, 10), use(m2, 95)), "max2", 90, "", "", "max2 is at its limit: 7d 95%"},
 		{"named row with no linked folder", report(), "max5", 90, "", "", "max5 has no folder linked to "},
@@ -204,8 +204,8 @@ func TestPickTakesTheSoonestResetUnder95(t *testing.T) {
 		why     []string // each in why
 		err     string
 	}{
-		{"10-28 23:50 work", r1, as, work, "max", 0, "max3", m3, []string{"max3", "resets Sat 10-31 12:00", "7d 46%", "max1 7d 99%"}, ""},
-		{"10-28 23:50 personal", r1, as, personal, "max", 0, "max2", m2p, []string{"max2", "resets Sun 11-01 07:00", "7d 13%", "max1 7d 99%"}, ""},
+		{"10-28 23:50 work", r1, as, work, "max", 0, "max3", m3, []string{"max3", "resets Sat 10-31 12:00", "7d 46%", "max1 held back"}, ""},
+		{"10-28 23:50 personal", r1, as, personal, "max", 0, "max2", m2p, []string{"max2", "resets Sun 11-01 07:00", "7d 13%", "max1 held back"}, ""},
 		{"at 95% the next soonest", r2, as, work, "max", 0, "max2", m2, []string{"max3 7d 95%"}, ""},
 		{"a lower pause_at is the limit", r1, as, work, "max", 40, "max2", m2, []string{"max3 7d 46%"}, ""},
 		{"pause_at 100 keeps 95", r2, as, work, "max", 100, "max2", m2, nil, ""},

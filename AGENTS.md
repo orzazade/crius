@@ -67,6 +67,7 @@ Rules: [docs/RULES.md](docs/RULES.md) (definition of done, bugs, goals and repor
 - Read the live store with `crius-rec` or `sqlite3 "file:$HOME/.crius/state/record.db?immutable=1" …`, never
   `sqlite3 -readonly`: record.db is in WAL mode with no -shm file when idle, so `-readonly`, `?mode=ro` and `.backup`
   fail with CANTOPEN (14).
-- Max accounts: spend the one whose week resets soonest until 95%, then the next (owner 10-28). `quota.Pick`
-  (crius-spawn) and the ingest 95% NEED enforce it; tests `TestPickTakesTheSoonestResetUnder95`,
-  `TestQuotaAccountAtTheLimitTellsCriusOnce`.
+- Max accounts: spend the one whose week resets soonest until 95%, then the next (owner 10-28); nothing starts on or
+  moves to max1 until every other Max account is at its limit (owner 11-19). `quota.Pick` (crius-spawn, cmux and T3)
+  and the ingest 95% NEED enforce it; tests `TestPickTakesTheSoonestResetUnder95`,
+  `TestPickHoldsMax1UntilMax2AndMax3AreAtTheLimit`, `TestQuotaAccountAtTheLimitTellsCriusOnce`.
