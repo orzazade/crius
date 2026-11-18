@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -380,6 +381,60 @@ func TestARoleNamesItsCurrentSession(t *testing.T) {
 	run(t, w.env(), `{"session_id":"s-3","hook_event_name":"SessionStart","source":"startup","cwd":"/w/quotes"}`)
 	if names, _ := filepath.Glob(filepath.Join(roles, "*")); len(names) != 1 {
 		t.Errorf("role files %q, want quotes.p1.json alone", names)
+	}
+}
+
+// A role's file keeps when its session id took the role (started), for wakewatch restart --from-ready: a new id sets it,
+// a resume or compact of the same id keeps it (a T3 thread resumes on each line sent to it). A file written before
+// started was kept goes by its time, the latest by which that session held the role.
+func TestARoleFileKeepsWhenItsSessionTookTheRole(t *testing.T) {
+	w := newWorld(t)
+	path := filepath.Join(w.crius, "roles", "quotes.p1.json")
+	read := func(after string) (id string, at, started time.Time) {
+		t.Helper()
+		var r struct {
+			ID      string    `json:"session_id"`
+			Time    time.Time `json:"time"`
+			Started time.Time `json:"started"`
+		}
+		b, err := os.ReadFile(path)
+		if err == nil {
+			err = json.Unmarshal(b, &r)
+		}
+		if err != nil {
+			t.Fatalf("after %s: %v", after, err)
+		}
+		return r.ID, r.Time, r.Started
+	}
+	run(t, w.env(), `{"session_id":"s-1","hook_event_name":"SessionStart","source":"startup","cwd":"/w/crius"}`)
+	id, at, first := read("the start of s-1")
+	if id != "s-1" || first.IsZero() || !first.Equal(at) {
+		t.Fatalf("after the start of s-1: %s, time %v, started %v; want started at its time", id, at, first)
+	}
+	for _, src := range []string{"resume", "compact"} {
+		run(t, w.env(), `{"session_id":"s-1","hook_event_name":"SessionStart","source":"`+src+`","cwd":"/w/crius"}`)
+		if id, at, started := read(src); id != "s-1" || !started.Equal(first) || at.Before(first) {
+			t.Errorf("after a %s of s-1: %s, time %v, started %v; want started kept at %v", src, id, at, started, first)
+		}
+	}
+	// the live process now holds id (/clear), so the hook files id's events under the role
+	holds := func(id string) {
+		pid := os.Getpid()
+		testutil.Write(t, filepath.Join(w.claude, "sessions", fmt.Sprintf("%d.json", pid)),
+			fmt.Sprintf(`{"pid":%d,"sessionId":%q,"cwd":"/w/crius","name":"quotes · p1","procStart":%q}`, pid, id, testutil.ProcStart(t, pid)))
+	}
+	holds("s-2")
+	run(t, w.env(), `{"session_id":"s-2","hook_event_name":"SessionStart","source":"clear","cwd":"/w/crius"}`)
+	if id, at, started := read("the start of s-2"); id != "s-2" || !started.Equal(at) || started.Before(first) {
+		t.Errorf("after the start of s-2: %s, time %v, started %v; want started at its time", id, at, started)
+	}
+	old := time.Date(2026, 11, 17, 10, 0, 0, 0, time.UTC)
+	testutil.Write(t, path, `{"session_id":"s-3","event":"SessionStart","detail":"resume","time":"`+old.Format(time.RFC3339)+
+		`","project":"quotes","role":"p1","cwd":"/w/crius"}`)
+	holds("s-3")
+	run(t, w.env(), `{"session_id":"s-3","hook_event_name":"SessionStart","source":"resume","cwd":"/w/crius"}`)
+	if id, _, started := read("a resume of a file with no started"); id != "s-3" || !started.Equal(old) {
+		t.Errorf("after a resume of a file with no started: %s, started %v; want its old time %v", id, started, old)
 	}
 }
 

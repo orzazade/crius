@@ -2,6 +2,7 @@ package wakewatch
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -70,10 +71,11 @@ type FromReadyDeps struct {
 	Save func(host, path, prev string, body []byte) error
 }
 
-// ReadyBrief is a built restart brief: where its template lives and the full text to send.
+// ReadyBrief is a built restart brief: where its template lives, the full text to send, and a check it could not make.
 type ReadyBrief struct {
 	Host, Path, Prev string
 	Text             string
+	Note             string // "" when every check ran
 }
 
 // step6 is the start of the line a restart brief's step 6 holds; it must start exactly one line of the template.
@@ -104,34 +106,39 @@ func BuildFromReady(d FromReadyDeps, role string) (ReadyBrief, error) {
 	}
 	ready, later := s.ready, s.later
 	if s.block != nil { // the role went on working (or a fresh session of it started): its line no longer says where it is
-		return ReadyBrief{}, fmt.Errorf("%s posted %d line(s) after its %s READY-RESTART line in %s, and its %s %s line is no "+
-			"answer to Crius (%s): no READY-RESTART line newer than the last restart or work",
-			role, s.own, ready.Time, busPath, s.block.Time, s.block.Type, s.why)
+		return ReadyBrief{}, fmt.Errorf("%s posted %d line(s) after its %s READY-RESTART line in %s, and its %s %s %s line is "+
+			"no answer to Crius (%s): no READY-RESTART line newer than the last restart or work",
+			role, s.own, ready.Time, busPath, s.block.Date, s.block.Time, s.block.Type, s.why)
 	}
-	if s.own > 0 {
-		// Only answers came after the line, but a session that started since may have posted them: a restart typed by
-		// hand changes neither the template nor the bus. crius-hook's record of the role's current session is rewritten
-		// when a session takes the role, so one written at or after the line's minute refuses (a /clear, resume or
-		// compact of the same session too: the safe side). A role with no record here (a box's hook files its own) has
-		// only the template check below and the START line a fresh session posts, which is no answer.
-		at := ready.At // a Z stamp's instant, else its wall time
-		if at.IsZero() {
-			if at, err = lineTime(ready.Date+"T"+ready.Time, d.Now); err != nil {
-				return ReadyBrief{}, fmt.Errorf("the newest READY-RESTART line of %s in %s has no readable time: %w", role, busPath, err)
-			}
+	// A session that took the role since the line (a restart typed by hand changes neither the template nor the bus) is
+	// not the one the line speaks for, and any answer since may be its own. crius-hook's record of the role names the
+	// session that holds it and when that id took it (StartedAt), kept through a resume or compact of the same id.
+	// Asked every time, answers or not.
+	var note string
+	readyAt := ready.At // a Z stamp's instant
+	if readyAt.IsZero() {
+		// a wall time the clock showed twice (summer time's end) is the earlier of the two: more sessions count as newer
+		if readyAt, err = StampAt(ready.Date+"T"+ready.Time, time.Local, time.Time{}); err != nil {
+			return ReadyBrief{}, fmt.Errorf("the newest READY-RESTART line of %s in %s has no readable time: %w", role, busPath, err)
 		}
-		dir := filepath.Join(d.Home, "roles")
-		cur, err := sessionstate.ReadRole(dir, project, name)
-		switch {
-		case errors.Is(err, fs.ErrNotExist):
-		case err != nil:
-			return ReadyBrief{}, fmt.Errorf("could not read crius-hook's record of the session of %s, to check that no session "+
-				"started after its %s READY-RESTART line: %w", role, ready.Time, err)
-		case !cur.Time.Before(at):
-			return ReadyBrief{}, fmt.Errorf("a session of %s started at %s (crius-hook's record in %s), after its %s READY-RESTART "+
-				"line in %s, so the answers since may be the new session's: no READY-RESTART line newer than the last restart",
-				role, cur.Time.In(time.Local).Format("2006-01-02 15:04"), dir, ready.Time, busPath)
-		}
+	}
+	cur, where, err := d.roleRecord(place.Host, project, name)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		note = fmt.Sprintf("no record of the role's session at %s on %s: could not check that no newer session took the role "+
+			"after its %s READY-RESTART line", where, place.Host, ready.Time)
+	case err != nil:
+		return ReadyBrief{}, fmt.Errorf("could not read crius-hook's record %s on %s, to check that no newer session of %s took the "+
+			"role after its %s READY-RESTART line: %w", where, place.Host, role, ready.Time, err)
+	case cur.Started.IsZero() && !cur.Time.Before(readyAt):
+		return ReadyBrief{}, fmt.Errorf("the session of %s that holds the role (%s) took the role at %s or before, and the "+
+			"READY-RESTART line is %s: crius-hook's record %s on %s keeps no start time (written before it kept one), so its "+
+			"last write stands for it and a newer session cannot be ruled out: no READY-RESTART line newer than the last restart",
+			role, cur.SessionID, cur.Time.In(time.Local).Format("2006-01-02 15:04"), ready.Time, where, place.Host)
+	case !cur.StartedAt().Before(readyAt):
+		return ReadyBrief{}, fmt.Errorf("a new session of %s (%s) took the role at %s (crius-hook's record %s on %s), after its %s "+
+			"READY-RESTART line in %s: no READY-RESTART line newer than the last restart", role, cur.SessionID,
+			cur.Started.In(time.Local).Format("2006-01-02 15:04"), where, place.Host, ready.Time, busPath)
 	}
 	notes, next, err := readyFields(ready)
 	if err != nil {
@@ -188,7 +195,7 @@ func BuildFromReady(d FromReadyDeps, role string) (ReadyBrief, error) {
 	}
 	out := slices.Concat(lines[:start], repl, lines[end:])
 	return ReadyBrief{Host: place.Host, Path: path, Prev: prev,
-		Text: strings.Join(out, "\n")}, nil
+		Text: strings.Join(out, "\n"), Note: note}, nil
 }
 
 // sinceReady is a role's newest READY-RESTART line on a project bus and what came after it.
@@ -268,6 +275,8 @@ var answerRe = regexp.MustCompile(`(?i)^re (\d\d:\d\d)\b`)
 // with "Re HH:MM" that names a line in crius (the crius:lead lines to the role since the READY-RESTART line, which step
 // 6 shows, so the fresh session sees the question too), and sent to crius:lead and at most that line's own recipients
 // (a reply-all). A line to anyone else is work with the team.
+// Known gap: the text after "Re HH:MM" is not read, so an INFO "Re 20:41: CLAIM item 17" passes as an answer though the
+// role took work. It stays visible: step 6 shows it after the crius line it answers, so the fresh session sees the claim.
 func answerWhy(l *store.Line, project string, crius []*store.Line) string {
 	if !talkTypes[l.Type] {
 		return fmt.Sprintf("a %s line reports work or a state; an answer is an ANSWER, ACK, ASK or INFO line", l.Type)
@@ -313,6 +322,25 @@ func answerWhy(l *store.Line, project string, crius []*store.Line) string {
 // toName is a recipient as the ingest reads it on a project's bus (busName), in lower case.
 func toName(r, project string) string { return strings.ToLower(busName(project, r)) }
 
+// roleRecord reads crius-hook's record of the role's current session where the role runs: under Home on this machine,
+// ~/.crius/roles on a box, read like the template. where names the file read.
+func (d FromReadyDeps) roleRecord(host, project, name string) (st sessionstate.State, where string, err error) {
+	if host == "mac" {
+		dir := filepath.Join(d.Home, "roles")
+		st, err = sessionstate.ReadRole(dir, project, name)
+		return st, filepath.Join(dir, project+"."+name+".json"), err
+	}
+	where = "~/.crius/roles/" + project + "." + name + ".json"
+	b, err := d.Read(host, where)
+	if err != nil {
+		return st, where, err
+	}
+	if err := json.Unmarshal(b, &st); err != nil {
+		return st, where, fmt.Errorf("%w: %w", sessionstate.ErrDamaged, err)
+	}
+	return st, where, nil
+}
+
 // readyFields gives a READY-RESTART line's notes= and next= values: notes runs up to " next=", next to the line's end.
 func readyFields(l *store.Line) (notes, next string, err error) {
 	text := l.Text
@@ -342,6 +370,9 @@ func RestartFromReady(d FromReadyDeps, role string, dry bool) int {
 	if err != nil {
 		fmt.Fprintf(d.Out, "NO BRIEF %s: %v. Nothing was sent or saved.\n", role, err)
 		return RestartNoBrief
+	}
+	if b.Note != "" {
+		fmt.Fprintf(d.Out, "NOTE %s: %s.\n", role, b.Note)
 	}
 	if dry {
 		fmt.Fprintf(d.Out, "DRY RUN %s: would save the brief below over %s on %s (old copy %s), then restart the role with it. "+

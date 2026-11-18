@@ -71,6 +71,36 @@ func newFRFake(t *testing.T, bus, template string) (*frFake, string) {
 	if template != "" {
 		f.files["box1:"+frPath] = template
 	}
+	f.files["box1:"+frRecPath] = frRec("s-qa-1", "startup", "09:30", "09:30") // the session that posted the 10:00 line
+	return f, home
+}
+
+// frRecPath is where crius-hook keeps acme:qa's current session on its box.
+const frRecPath = "~/.crius/roles/acme.qa.json"
+
+// frRec is crius-hook's record of acme:qa's session id, its last start's source and time (hh:mm on 11-17) and, unless
+// "", when the id took the role (started; a record written before crius-hook kept it has none).
+func frRec(id, detail, at, started string) string {
+	ts := func(hm string) string {
+		t, _ := time.ParseInLocation("2006-01-02 15:04", "2026-11-17 "+hm, time.Local)
+		return t.Format(time.RFC3339)
+	}
+	s := `{"session_id":"` + id + `","project":"acme","role":"qa","event":"SessionStart","detail":"` + detail + `","time":"` + ts(at) + `"`
+	if started != "" {
+		s += `,"started":"` + ts(started) + `"`
+	}
+	return s + "}"
+}
+
+// newFRMac is newFRFake with acme's templates on this machine, where the role record is the one under CRIUS_HOME.
+func newFRMac(t *testing.T, bus, template, record string) (*frFake, string) {
+	f, home := newFRFake(t, bus, "")
+	testutil.Write(t, RestartBriefsFile(home), "acme mac ~/briefs/acme/RESTART-{role}.md\n")
+	delete(f.files, "box1:"+frRecPath)
+	f.files["mac:"+frPath] = template
+	if record != "" {
+		testutil.Write(t, filepath.Join(home, "roles", "acme.qa.json"), record)
+	}
 	return f, home
 }
 
@@ -140,7 +170,7 @@ func TestFromReadyRefusesLoudly(t *testing.T) {
 			"no READY-RESTART line newer than the last restart"}},
 		"posted since": {frBus + "\n2026-11-17T10:30 ACK acme:qa -> acme:dev — item 44 criteria read", frTemplate, "acme:qa",
 			[]string{"acme:qa posted 1 line(s) after its 10:00 READY-RESTART line", "acme.log",
-				"its 10:30 ACK line is no answer to Crius", "it goes to acme:dev",
+				"its 2026-11-17 10:30 ACK line is no answer to Crius", "it goes to acme:dev",
 				"no READY-RESTART line newer than the last restart"}},
 		"no next": {"2026-11-17T10:00 INFO acme:qa -> crius:lead — READY-RESTART notes=n.md, back soon", frTemplate, "acme:qa",
 			[]string{"10:00", "has no notes=<path> followed by next=<text>"}},
@@ -286,20 +316,13 @@ func TestFromReadyReadsBareSendersAndOnlyRealRequests(t *testing.T) {
 	f, home = newFRFake(t, frBus+"\n2026-11-17T11:00 INFO acme:qa -> crius:lead — resumed per READY-RESTART notes=x next=y", frTemplate)
 	_, err = BuildFromReady(f.deps(home), "acme:qa")
 	if err == nil || !strings.Contains(err.Error(), "posted 1 line(s) after its 10:00 READY-RESTART line") ||
-		!strings.Contains(err.Error(), `its 11:00 INFO line is no answer to Crius (it does not open with "Re HH:MM"`) {
+		!strings.Contains(err.Error(), `its 2026-11-17 11:00 INFO line is no answer to Crius (it does not open with "Re HH:MM"`) {
 		t.Errorf("a mention: %v", err)
 	}
 }
 
 // frAsked is frBus with a crius:lead ASK to acme:qa after its 10:00 READY-RESTART line.
 const frAsked = frBus + "\n2026-11-17T10:20 ASK crius:lead -> acme:qa — is the item 42 gate green?"
-
-// frStarted writes crius-hook's record of acme:qa's current session as one that started at hh:mm on 11-17.
-func frStarted(t *testing.T, home string, hh, mm int) {
-	at := time.Date(2026, 11, 17, hh, mm, 0, 0, time.Local).Format(time.RFC3339)
-	testutil.Write(t, filepath.Join(home, "roles", "acme.qa.json"),
-		`{"session_id":"s-acme-qa","project":"acme","role":"qa","event":"SessionStart","detail":"clear","time":"`+at+`"}`)
-}
 
 // An answer to Crius after the READY-RESTART line does not block it (11-18: refused twice for a role's answer to a
 // question Crius asked after the line). The answer goes into step 6 after the line it answers, so the fresh session sees
@@ -308,7 +331,6 @@ func TestFromReadyLetsAnAnswerToCriusThrough(t *testing.T) {
 	bus := frAsked + "\n2026-11-17T10:22 ANSWER acme:qa -> crius:lead — Re 10:20: green, run 12 (40/40)" +
 		"\n2026-11-17T10:24 INFO acme:qa -> crius:lead,acme:dev — re 10:05: noted, nothing of mine runs on box1"
 	f, home := newFRFake(t, bus, frTemplate)
-	frStarted(t, home, 9, 30) // the session that posted the line started before it
 	b, err := BuildFromReady(f.deps(home), "acme:qa")
 	if err != nil {
 		t.Fatal(err)
@@ -331,35 +353,44 @@ func TestFromReadyRefusesWorkAndRestartsAfterTheLine(t *testing.T) {
 	none := "no READY-RESTART line newer than the last restart"
 	for name, c := range map[string]struct {
 		bus, template string
-		started       int // hh*60+mm of the role's recorded session start, 0 for no record
+		record        string // crius-hook's record of the role on box1, "" for the one of the session that posted the line
 		has           []string
 	}{
 		"done after an ask": {frAsked + "\n2026-11-17T10:22 DONE acme:qa -> crius:lead — Re 10:20: item 42 done, gate green",
-			frTemplate, 0, []string{"acme:qa posted 1 line(s) after its 10:00 READY-RESTART line",
-				"its 10:22 DONE line is no answer to Crius", "a DONE line reports work or a state", none}},
+			frTemplate, "", []string{"acme:qa posted 1 line(s) after its 10:00 READY-RESTART line",
+				"its 2026-11-17 10:22 DONE line is no answer to Crius", "a DONE line reports work or a state", none}},
 		"work after an answer": {frAsked + answer + "\n2026-11-17T10:30 READY acme:qa -> crius:lead — item 43 ready",
-			frTemplate, 0, []string{"acme:qa posted 2 line(s) after its 10:00 READY-RESTART line",
-				"its 10:30 READY line is no answer to Crius", none}},
+			frTemplate, "", []string{"acme:qa posted 2 line(s) after its 10:00 READY-RESTART line",
+				"its 2026-11-17 10:30 READY line is no answer to Crius", none}},
 		"to another role": {frAsked + "\n2026-11-17T10:22 ANSWER acme:qa -> crius:lead,acme:ops — Re 10:20: green",
-			frTemplate, 0, []string{"its 10:22 ANSWER line is no answer to Crius", "it goes to acme:ops", none}},
-		"to the whole bus": {frAsked + "\n2026-11-17T10:22 INFO acme:qa — Re 10:20: green", frTemplate, 0,
-			[]string{"its 10:22 INFO line is no answer to Crius", "it goes to the whole bus", none}},
-		"names no crius line": {frAsked + "\n2026-11-17T10:22 ANSWER acme:qa -> crius:lead — green, run 12", frTemplate, 0,
-			[]string{"its 10:22 ANSWER line is no answer to Crius", `it does not open with "Re HH:MM"`, none}},
-		"answers a line before it": {frAsked + "\n2026-11-17T10:22 ANSWER acme:qa -> crius:lead — Re 09:20: done", frTemplate, 0,
-			[]string{"its 10:22 ANSWER line is no answer to Crius", `it does not open with "Re HH:MM"`, none}},
-		"answers a line not in step 6": {frAsked + "\n2026-11-17T10:22 ACK acme:qa -> crius:lead — Re 10:04: seen", frTemplate, 0,
-			[]string{"its 10:22 ACK line is no answer to Crius", `it does not open with "Re HH:MM"`, none}},
+			frTemplate, "", []string{"its 2026-11-17 10:22 ANSWER line is no answer to Crius", "it goes to acme:ops", none}},
+		"to the whole bus": {frAsked + "\n2026-11-17T10:22 INFO acme:qa — Re 10:20: green", frTemplate, "",
+			[]string{"its 2026-11-17 10:22 INFO line is no answer to Crius", "it goes to the whole bus", none}},
+		"names no crius line": {frAsked + "\n2026-11-17T10:22 ANSWER acme:qa -> crius:lead — green, run 12", frTemplate, "",
+			[]string{"its 2026-11-17 10:22 ANSWER line is no answer to Crius", `it does not open with "Re HH:MM"`, none}},
+		"answers a line before it": {frAsked + "\n2026-11-17T10:22 ANSWER acme:qa -> crius:lead — Re 09:20: done", frTemplate, "",
+			[]string{"its 2026-11-17 10:22 ANSWER line is no answer to Crius", `it does not open with "Re HH:MM"`, none}},
+		"answers a line not in step 6": {frAsked + "\n2026-11-17T10:22 ACK acme:qa -> crius:lead — Re 10:04: seen", frTemplate, "",
+			[]string{"its 2026-11-17 10:22 ACK line is no answer to Crius", `it does not open with "Re HH:MM"`, none}},
 		"restarted: a START line": {frAsked + "\n2026-11-17T10:12 START acme:qa -> crius:lead — fresh session, brief read" + answer,
-			frTemplate, 0, []string{"acme:qa posted 2 line(s)", "its 10:12 START line is no answer to Crius", none}},
-		"restarted: a session record": {frAsked + answer, frTemplate, 10*60 + 15,
-			[]string{"a session of acme:qa started at 2026-11-17 10:15", "after its 10:00 READY-RESTART line", none}},
-		"restarted: the template": {frAsked + answer, used, 0,
+			frTemplate, "", []string{"acme:qa posted 2 line(s)", "its 2026-11-17 10:12 START line is no answer to Crius", none}},
+		"restarted: a new session on the box": {frAsked + answer, frTemplate, frRec("s-qa-2", "startup", "10:15", "10:15"),
+			[]string{"a new session of acme:qa (s-qa-2) took the role at 2026-11-17 10:15", frRecPath + " on box1",
+				"after its 10:00 READY-RESTART line", none}},
+		"restarted by hand, nothing posted since": {frBus, frTemplate, frRec("s-qa-2", "clear", "10:15", "10:15"),
+			[]string{"a new session of acme:qa (s-qa-2) took the role at 2026-11-17 10:15", none}},
+		"a new session in the line's minute": {frAsked + answer, frTemplate, frRec("s-qa-2", "startup", "10:00", "10:00"),
+			[]string{"a new session of acme:qa (s-qa-2) took the role at 2026-11-17 10:00", none}},
+		"an old record rewritten after the line": {frAsked + answer, frTemplate, frRec("s-qa-1", "resume", "10:21", ""),
+			[]string{"(s-qa-1) took the role at 2026-11-17 10:21", "keeps no start time", none}},
+		"a damaged record": {frAsked + answer, frTemplate, "{not json",
+			[]string{"could not read crius-hook's record " + frRecPath + " on box1"}},
+		"restarted: the template": {frAsked + answer, used, "",
 			[]string{"already continues from the 10:00 READY-RESTART line", none}},
 	} {
 		f, home := newFRFake(t, c.bus, c.template)
-		if c.started > 0 {
-			frStarted(t, home, c.started/60, c.started%60)
+		if c.record != "" {
+			f.files["box1:"+frRecPath] = c.record
 		}
 		code := RestartFromReady(f.deps(home), "acme:qa", false)
 		if code != RestartNoBrief {
@@ -374,4 +405,46 @@ func TestFromReadyRefusesWorkAndRestartsAfterTheLine(t *testing.T) {
 			t.Errorf("%s: typed %q, saved %q", name, f.typed, f.saved)
 		}
 	}
+}
+
+// The record check asks whether a different session holds the role than the one that posted the line, not whether the
+// record was written since: a T3 thread's session is resumed by each line to it, and a long turn compacts, and both
+// rewrite the record's time while keeping the session id and its start. Here on this machine, where the record is the
+// one under CRIUS_HOME.
+func TestFromReadyLetsTheSameSessionResumeOrCompact(t *testing.T) {
+	bus := frAsked + "\n2026-11-17T10:22 ANSWER acme:qa -> crius:lead — Re 10:20: green, run 12 (40/40)"
+	for name, record := range map[string]string{
+		"resumed after the line":          frRec("s-qa-1", "resume", "10:21", "09:30"),
+		"compacted after the line":        frRec("s-qa-1", "compact", "10:21", "09:30"),
+		"took the role a minute before":   frRec("s-qa-1", "startup", "09:59", "09:59"),
+		"old record, last written before": frRec("s-qa-1", "resume", "09:50", ""),
+	} {
+		f, home := newFRMac(t, bus, frTemplate, record)
+		code, out := RestartFromReady(f.deps(home), "acme:qa", true), f.out.String()
+		if code != RestartReady || !strings.Contains(out, "10:20 ASK is the item 42 gate green?; 10:22 your ANSWER Re 10:20: green") ||
+			strings.Contains(out, "NOTE acme:qa") {
+			t.Errorf("%s: exit %d, said %q", name, code, out)
+		}
+	}
+	f, home := newFRMac(t, bus, frTemplate, frRec("s-qa-2", "clear", "10:15", "10:15"))
+	if _, err := BuildFromReady(f.deps(home), "acme:qa"); err == nil ||
+		!strings.Contains(err.Error(), "a new session of acme:qa (s-qa-2) took the role at 2026-11-17 10:15") {
+		t.Errorf("a new session on this machine: %v", err)
+	}
+}
+
+// With no record of the role's session, the brief is built but the run says it could not check for a newer session, in
+// the dry run and in a real run alike.
+func TestFromReadySaysWhenNoRecordCouldBeChecked(t *testing.T) {
+	note := "NOTE acme:qa: no record of the role's session at " + frRecPath + " on box1: could not check that no newer " +
+		"session took the role after its 10:00 READY-RESTART line"
+	for _, dry := range []bool{true, false} {
+		f, home := newFRFake(t, frBus, frTemplate)
+		delete(f.files, "box1:"+frRecPath)
+		code := RestartFromReady(f.deps(home), "acme:qa", dry)
+		wantOut(t, f.restartFake, code, RestartReady, note)
+	}
+	f, home := newFRMac(t, frBus, frTemplate, "")
+	wantOut(t, f.restartFake, RestartFromReady(f.deps(home), "acme:qa", true), RestartReady,
+		"NOTE acme:qa: no record of the role's session at "+filepath.Join(home, "roles", "acme.qa.json")+" on mac")
 }
