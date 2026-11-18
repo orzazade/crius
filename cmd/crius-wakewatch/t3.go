@@ -16,8 +16,19 @@ import (
 	"github.com/orzazade/crius/internal/wakewatch"
 )
 
-// t3Timeout bounds one t3 call: it takes about 1 s; a hung server must not hold the run.
-const t3Timeout = 10 * time.Second
+// t3Timeout bounds one t3 call. A call takes about 1 s, 2-4 s under heavy load, and at a load of ~170 on 14 cores some
+// took over the old 10 s while every thread was idle on purpose, so each run said a failed look. A t3 that answers late
+// is alive and its answer is read; one that says nothing in t3Timeout hangs (ErrT3NoAnswer), and the checks then stop
+// reading threads for the run.
+var t3Timeout = 30 * time.Second
+
+// t3Budget bounds all t3 calls of one run (the process is one run, every 300 s from launchd), so slow answers for many
+// threads cannot hold the run past its next start: a call gets what is left of it when that is less than t3Timeout, and
+// once it is spent a read is a hang without asking t3.
+var t3Budget = 2 * time.Minute
+
+// t3Until is when this run's t3Budget ends, set by its first call.
+var t3Until time.Time
 
 // t3Messages is how many of a thread's latest messages are read to find its last reply: a reply comes as several
 // assistant messages, and a message sent to the thread may follow it.
@@ -30,7 +41,15 @@ func thread(id string) (wakewatch.T3Thread, error) {
 	if p := filepath.Join(store.Home(), "bin", "t3"); fileThere(p) {
 		t3 = p
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), t3Timeout)
+	now := time.Now()
+	if t3Until.IsZero() {
+		t3Until = now.Add(t3Budget)
+	}
+	limit := min(t3Timeout, t3Until.Sub(now))
+	if limit <= 0 {
+		return wakewatch.T3Thread{}, fmt.Errorf("t3 thread show: %w (this run's %s for t3 calls is used up)", wakewatch.ErrT3NoAnswer, t3Budget)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), limit)
 	defer cancel()
 	var out, errOut bytes.Buffer
 	cmd := exec.CommandContext(ctx, t3, "thread", "show", "--json", "--messages", t3Messages, id)
@@ -39,9 +58,10 @@ func thread(id string) (wakewatch.T3Thread, error) {
 	if err := cmd.Run(); err != nil && !(errors.Is(err, exec.ErrWaitDelay) && ctx.Err() == nil) {
 		said, _, _ := strings.Cut(strings.TrimSpace(errOut.String()+"\n"+out.String()), "\n") // a stack trace after it says no more
 		if ctx.Err() != nil {
-			err = fmt.Errorf("%w (%s)", wakewatch.ErrT3NoAnswer, t3Timeout)
+			err = fmt.Errorf("%w (%s)", wakewatch.ErrT3NoAnswer, limit.Round(time.Millisecond))
 		}
-		return wakewatch.T3Thread{}, fmt.Errorf("t3 thread show: %v: %s", err, said)
+		// %w: the checks find ErrT3NoAnswer with errors.Is to stop reading threads for the run
+		return wakewatch.T3Thread{}, fmt.Errorf("t3 thread show: %w: %s", err, said)
 	}
 	return parseThread(out.Bytes())
 }

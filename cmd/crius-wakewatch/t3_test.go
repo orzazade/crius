@@ -1,22 +1,27 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/orzazade/crius/internal/wakewatch"
 )
 
-// fakeT3 puts a t3 in $CRIUS_HOME/bin, where thread looks first, that keeps its arguments in dir/calls, prints dir/out
-// and dir/err, and exits with the code in dir/rc (0 when there is none).
+// fakeT3 puts a t3 in $CRIUS_HOME/bin, where thread looks first, that keeps its arguments in dir/calls, sleeps the
+// seconds in dir/delay (none when there is no such file), prints dir/out and dir/err, and exits with the code in dir/rc
+// (0 when there is none).
 func fakeT3(t *testing.T) (dir string) {
 	t.Helper()
 	dir, home := t.TempDir(), t.TempDir()
+	t3Until = time.Time{} // each test is a run of its own
 	t.Setenv("CRIUS_HOME", home)
 	os.MkdirAll(filepath.Join(home, "bin"), 0o755)
-	script := "#!/bin/sh\nd=" + dir + "\necho \"$*\" >> $d/calls\ncat $d/out 2>/dev/null\ncat $d/err >&2 2>/dev/null\n" +
-		"[ -f $d/rc ] && exit $(cat $d/rc)\nexit 0\n"
+	script := "#!/bin/sh\nd=" + dir + "\necho \"$*\" >> $d/calls\n[ -f $d/delay ] && sleep $(cat $d/delay)\n" +
+		"cat $d/out 2>/dev/null\ncat $d/err >&2 2>/dev/null\n[ -f $d/rc ] && exit $(cat $d/rc)\nexit 0\n"
 	if err := os.WriteFile(filepath.Join(home, "bin", "t3"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -99,5 +104,64 @@ func TestThreadReadsSettledOrArchived(t *testing.T) {
 		if err != nil || th.Settled != want {
 			t.Errorf("%q: want Settled %v, got %+v %v", field, want, th, err)
 		}
+	}
+}
+
+// scaleT3 divides the t3 call limit by n for one test, so a fake t3 can be "slower than 10 s" in a fraction of that.
+func scaleT3(t *testing.T, n time.Duration) {
+	t.Helper()
+	was := t3Timeout
+	t3Timeout /= n
+	t.Cleanup(func() { t3Timeout = was })
+}
+
+// Under heavy load (load ~170 on 14 cores) t3 answered after more than the old 10 s limit while every thread was idle
+// on purpose, and each run said a failed look. A t3 that answers late is an answer: the thread is read. Times are
+// scaled by 10: the fake answers after 1.2 s, which is 12 s.
+func TestThreadSlowAnswerIsRead(t *testing.T) {
+	scaleT3(t, 10)
+	dir := fakeT3(t)
+	put(t, dir, "out", showJSON)
+	put(t, dir, "delay", "1.2")
+	th, err := thread("mcp:launch:5a5f")
+	if err != nil {
+		t.Fatalf("a t3 that answers after 12 s (scaled) is not a failed look: %v", err)
+	}
+	if th.Status != "completed" || th.LastReply == "" {
+		t.Fatalf("got %+v", th)
+	}
+	t.Logf("read after 12 s (scaled): status %s, last reply read", th.Status)
+}
+
+// A t3 that never answers is still a hang: ErrT3NoAnswer, which stops the other threads' reads for the run.
+func TestThreadNoAnswerIsAHang(t *testing.T) {
+	was := t3Timeout
+	t3Timeout = 300 * time.Millisecond
+	t.Cleanup(func() { t3Timeout = was })
+	dir := fakeT3(t)
+	put(t, dir, "out", showJSON)
+	put(t, dir, "delay", "5")
+	_, err := thread("x")
+	if !errors.Is(err, wakewatch.ErrT3NoAnswer) || !strings.Contains(err.Error(), "(300ms)") {
+		t.Fatalf("a t3 that never answers: %v", err)
+	}
+	t.Logf("the failed-look text: %v", err)
+}
+
+// All t3 calls of one run share t3Budget, so slow answers for many threads cannot hold the run past its launchd
+// interval: once it is spent, a read is a hang without asking t3.
+func TestThreadRunBudgetSpentIsAHang(t *testing.T) {
+	dir := fakeT3(t)
+	put(t, dir, "out", showJSON)
+	if _, err := thread("first"); err != nil {
+		t.Fatal(err)
+	}
+	t3Until = time.Now().Add(-time.Second)
+	_, err := thread("second")
+	if !errors.Is(err, wakewatch.ErrT3NoAnswer) || !strings.Contains(err.Error(), "used up") {
+		t.Fatalf("a read after the run's t3 time is spent: %v", err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "calls")); strings.Contains(string(b), "second") {
+		t.Fatalf("t3 was asked after the budget was spent: %q", b)
 	}
 }
