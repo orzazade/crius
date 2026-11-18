@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"os/exec"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -21,6 +22,9 @@ func TestHelperSleeps(t *testing.T) {
 // P1), with an API key and a value holding spaces and "=", are listed with exactly that environment; one not named so is
 // not listed.
 func TestClaudesReadsEachClaudeProcessEnvironment(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("reads processes through sysctl kern.procargs2, macOS only; on Linux procArgs says it is not supported")
+	}
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -116,6 +120,9 @@ func TestParseProcArgsRefusesACutBuffer(t *testing.T) {
 // check (review of the check P2-1: the zombie test alone failed 1 run in 300, in the exiting window). ps shows a
 // zombie as "(claude)", so the race is the only way in.
 func TestAnExitingClaudeHasEnded(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("reads processes through sysctl kern.procargs2, macOS only; on Linux procArgs says it is not supported")
+	}
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
