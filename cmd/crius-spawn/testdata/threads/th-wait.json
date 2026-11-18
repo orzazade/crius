@@ -1,0 +1,2 @@
+{"thread":{"threadId":"th-wait","status":"completed","activeRunId":null,"pendingRequestCount":0,"updatedAt":"2026-11-18T20:30:00.000Z"},
+"messages":[{"role":"assistant","text":"Earlier batch passed ✅"},{"role":"assistant","text":"The long test run goes on in the background (shell b3), about 35 min. ⏳"}]}
