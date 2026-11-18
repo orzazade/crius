@@ -5,6 +5,9 @@
 // Grey text in the box (Claude's placeholder or a prompt suggestion) is not a draft. read-screen gives plain text, so
 // it cannot tell; cmux send without --force asks the app for the prompt's state, which skips faint text, and refuses
 // only over text someone typed or an open dialog (cmux Sources/TerminalController+SurfaceInputState.swift).
+//
+// A team role that runs as a T3 Code thread, named project:role (T3Role), has no tab: its messages go through the same
+// outbox to its thread with t3cli.Deliver, which proves each arrived; one sent but not proved is set aside, not sent again.
 package outbox
 
 import (
@@ -14,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,6 +27,8 @@ import (
 	"time"
 
 	"github.com/orzazade/crius/internal/redact"
+	"github.com/orzazade/crius/internal/sessionstate"
+	"github.com/orzazade/crius/internal/t3cli"
 	"github.com/orzazade/crius/internal/wakewatch"
 )
 
@@ -100,14 +106,21 @@ type stored struct {
 // again. Damaged and old files of other messages are left to Flush: an error about them would tell the caller this text
 // failed.
 func Send(home, to, text string) error {
+	_, err := SendSaid(home, to, text)
+	return err
+}
+
+// SendSaid is Send, and on success says where a message to a role in a T3 Code thread went: in the thread, or queued as
+// its next turn because the thread is busy; "" for a cmux tab.
+func SendSaid(home, to, text string) (said string, err error) {
 	unlock, err := lock(home)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer unlock()
 	m, err := add(home, to, text)
 	if err != nil {
-		return err
+		return "", err
 	}
 	all, err := list(home)
 	// passed says this text passed MaxAge before it was listed for typing: no other message's error is about it.
@@ -115,9 +128,15 @@ func Send(home, to, text string) error {
 	for _, s := range all {
 		passed = passed && s.path != m.path
 	}
+	notes := map[string]string{}
 	if err == nil {
-		err = typeOut(home, to, all)
+		err = typeOut(home, to, all, notes)
 	}
+	return notes[m.path], sendResult(m, err, passed)
+}
+
+// sendResult is what Send says of message m after typeOut gave err (see Send).
+func sendResult(m stored, err error, passed bool) error {
 	name := filepath.Base(m.path)
 	// aside says this text was set aside untyped; after an earlier Enter on it, it may have gone all the same.
 	aside := func(why string) error {
@@ -332,13 +351,42 @@ func flush(home, to string) error {
 	if err != nil {
 		return err
 	}
-	return typeOut(home, to, all)
+	return typeOut(home, to, all, nil)
+}
+
+// T3Role gives the T3 Code thread of the team role that to names as project:role, when crius-hook filed that role with
+// no cmux tab and a thread (wakewatch.RoleThread); "" when to names no such role, so it is a cmux tab title as before. A
+// role file that cannot be read, or a thread id t3 would read as a flag, is an error: the role may have left its tab.
+func T3Role(home, to string) (string, error) {
+	p, r, ok := strings.Cut(to, ":")
+	dir := filepath.Join(home, "roles")
+	if _, err := sessionstate.RolePath(dir, p, r); !ok || err != nil {
+		return "", nil
+	}
+	s, err := sessionstate.ReadRole(dir, p, r)
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("role %s: %w: nothing sent", to, err)
+	}
+	if s.Workspace != "" || s.Surface != "" {
+		return "", nil
+	}
+	id := wakewatch.RoleThread(home, s)
+	if strings.HasPrefix(id, "-") {
+		return "", fmt.Errorf("role %s: its filed T3 Code thread id %q is no thread id: nothing sent", to, id)
+	}
+	return id, nil
 }
 
 // typeOut types the listed messages for the tab titled to, as flush does. While wakewatch.CriusThreadFile exists,
-// Crius's messages go to its T3 Code thread instead (sendT3), never to a cmux tab; a file with no id holds them.
-func typeOut(home, to string, all []stored) error {
+// Crius's messages go to its T3 Code thread instead (sendT3), never to a cmux tab; a file with no id holds them. A role
+// in a T3 Code thread (T3Role) gets its messages through t3cli.Deliver, which proves each arrived; notes, when given,
+// gets where each went by its file. One sent but not proved is set aside (ErrMaybeSent), never sent again.
+func typeOut(home, to string, all []stored, notes map[string]string) error {
 	deliver := deliver
+	note, thread := "", ""
 	if to == wakewatch.CriusTitle {
 		switch id, err := wakewatch.CriusThread(home); {
 		case err != nil:
@@ -346,11 +394,24 @@ func typeOut(home, to string, all []stored) error {
 		case id != "":
 			deliver = func(_, text string, _ bool, _ func(bool) error) error { return sendT3(home, id, text) }
 		}
+	} else {
+		switch id, err := T3Role(home, to); {
+		case err != nil:
+			deliver = func(string, string, bool, func(bool) error) error { return err }
+		case id != "":
+			thread = id
+			deliver = func(_, text string, _ bool, _ func(bool) error) error {
+				d, err := t3cli.Deliver(t3cli.Bin(home, T3), id, text, CmuxTimeout)
+				note = Said(id, d)
+				return err
+			}
+		}
 	}
 	for i, m := range all {
 		if m.To != to {
 			continue
 		}
+		note = ""
 		// An Enter that surely did not go is unmarked even when its file cannot be written, so the write after keeps it
 		// unmarked: a marked message in an empty box counts as sent.
 		mark := func(entered bool) error {
@@ -371,6 +432,9 @@ func typeOut(home, to string, all []stored) error {
 				}
 				return err
 			}
+			if errors.Is(err, t3cli.ErrUnproved) { // it may be in the thread: set aside now, never sent again
+				return asideNow{setAside(m.path, "dropped", fmt.Errorf("to %q (T3 Code thread %s): %q: %v: %w, so it is not sent again", to, thread, shown(m.Text), err, ErrMaybeSent))}
+			}
 			m.Tries++
 			m.LastError = err.Error()
 			if werr := write(m.path, m.Message); werr != nil { // still stored as before: held all the same
@@ -384,6 +448,9 @@ func typeOut(home, to string, all []stored) error {
 			}
 			return fmt.Errorf("%v: %w, %d message(s) for %q stored and typed once its box is empty", err, ErrHeld, n, to)
 		}
+		if notes != nil {
+			notes[m.path] = note
+		}
 		if err := os.Remove(m.path); err != nil {
 			return fmt.Errorf("%q took the message, but its file could not be removed: %v: it is still %w in the outbox, and the next run drops it as its box no longer holds it", to, err, ErrHeld)
 		}
@@ -391,30 +458,24 @@ func typeOut(home, to string, all []stored) error {
 	return nil
 }
 
+// Said tells where t3cli.Deliver proved a message to thread went.
+func Said(thread string, d t3cli.Delivery) string {
+	if d.Queued {
+		return fmt.Sprintf("queued in T3 Code thread %s as its next turn (run %s): the thread is busy, and T3 does not interrupt a run", thread, d.RunID)
+	}
+	return fmt.Sprintf("in the thread: T3 Code thread %s lists it (run %s)", thread, d.RunID)
+}
+
 // sendT3 hands text to a T3 Code thread: `t3 thread send <id> -` with the text on stdin, which a busy thread takes as
 // its next turn. A failure is the error, so the message stays stored as after a failed cmux send. A t3 killed at
 // CmuxTimeout may have taken it: it is sent again, as a lost wake costs more than a second one. t3 is the link in the
 // Crius bin folder when there is one: nvm keeps t3 off the PATH of launchd jobs and of other shells.
 func sendT3(home, id, text string) error {
-	t3 := T3
-	if p := filepath.Join(home, "bin", "t3"); fileExists(p) {
-		t3 = p
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), CmuxTimeout)
-	defer cancel()
-	var out bytes.Buffer
-	cmd := exec.CommandContext(ctx, t3, "thread", "send", id, "-")
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = strings.NewReader(text), &out, &out
-	cmd.WaitDelay = time.Second
-	if err := cmd.Run(); err != nil && !(errors.Is(err, exec.ErrWaitDelay) && ctx.Err() == nil) {
-		said, _, _ := strings.Cut(strings.TrimSpace(out.String()), "\n") // a Node stack trace after it says no more
-		return fmt.Errorf("t3 thread send %s: %v: %s", id, err, said)
+	if out, errOut, err := t3cli.Run(t3cli.Bin(home, T3), CmuxTimeout, text, "thread", "send", id, "-"); err != nil {
+		return fmt.Errorf("t3 thread send %s: %v: %s", id, err, t3cli.FirstLine(out, errOut))
 	}
 	return nil
 }
-
-// fileExists says p is there, a link that points nowhere too: running it then fails under its own name.
-func fileExists(p string) bool { _, err := os.Lstat(p); return err == nil }
 
 // Held gives, for the tab titled to, when the oldest stored message that a send already tried and failed was stored,
 // and its last error; a zero time when none is. It only reads: a file that does not parse is left to sweep.

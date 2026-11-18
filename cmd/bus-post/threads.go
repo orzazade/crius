@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/orzazade/crius/internal/sessionstate"
+	"github.com/orzazade/crius/internal/t3cli"
 	"github.com/orzazade/crius/internal/wakewatch"
 )
 
@@ -354,25 +355,8 @@ func t3Resumes(thread string) (string, error) {
 // thread). t3 is the link in the Crius bin folder when there is one: nvm keeps t3 off the PATH of launchd jobs and of
 // other shells.
 func sendT3(home, id, text string) error {
-	t3 := t3CLI
-	if p := filepath.Join(home, "bin", "t3"); fileThere(p) {
-		t3 = p
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), t3Timeout)
-	defer cancel()
-	var out bytes.Buffer
-	cmd := exec.CommandContext(ctx, t3, "thread", "send", id, "-")
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = strings.NewReader(text), &out, &out
-	cmd.WaitDelay = time.Second
-	if err := cmd.Run(); err != nil && !(errors.Is(err, exec.ErrWaitDelay) && ctx.Err() == nil) {
-		said, _, _ := strings.Cut(strings.TrimSpace(out.String()), "\n") // a Node stack trace after it says no more
-		if ctx.Err() != nil {
-			err = fmt.Errorf("no answer in %s", t3Timeout)
-		}
-		return fmt.Errorf("t3 thread send: %v: %s", err, said)
+	if out, errOut, err := t3cli.Run(t3cli.Bin(home, t3CLI), t3Timeout, text, "thread", "send", id, "-"); err != nil {
+		return fmt.Errorf("t3 thread send: %v: %s", err, t3cli.FirstLine(out, errOut))
 	}
 	return nil
 }
-
-// fileThere says p is there, a link that points nowhere too: running it then fails under its own name.
-func fileThere(p string) bool { _, err := os.Lstat(p); return err == nil }

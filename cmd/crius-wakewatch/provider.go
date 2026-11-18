@@ -16,6 +16,7 @@ import (
 
 	"github.com/orzazade/crius/internal/playbook"
 	"github.com/orzazade/crius/internal/store"
+	"github.com/orzazade/crius/internal/t3cli"
 	"github.com/orzazade/crius/internal/tabsend"
 	"github.com/orzazade/crius/internal/wakewatch"
 	"github.com/orzazade/crius/internal/watchdog"
@@ -99,12 +100,7 @@ func sendThread(id, text string) error {
 	return err
 }
 
-func t3Bin() string {
-	if p := filepath.Join(store.Home(), "bin", "t3"); fileThere(p) {
-		return p
-	}
-	return "t3"
-}
+func t3Bin() string { return t3cli.Bin(store.Home(), "t3") }
 
 // tabTarget: tmux session:window names only, as crius-tsend takes them, so a line in the tab list is never shell code.
 var tabTarget = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_@+-]*:[A-Za-z0-9_][A-Za-z0-9_@+-]*$`)

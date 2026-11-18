@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/orzazade/crius/internal/outbox"
+	"github.com/orzazade/crius/internal/t3cli"
+	"github.com/orzazade/crius/internal/testutil"
 	"github.com/orzazade/crius/internal/wakewatch"
 )
 
@@ -43,7 +45,7 @@ func TestSayTypesOneLineIntoATabByTitle(t *testing.T) {
 		}
 		return nil, nil
 	}
-	if err := say(t.TempDir(), "quotes · lead", "check the build\nthen post DONE"); err != nil {
+	if _, err := say(t.TempDir(), "quotes · lead", "check the build\nthen post DONE"); err != nil {
 		t.Fatal(err)
 	}
 	if len(typed) != 1 || typed[0] != "check the build then post DONE" {
@@ -67,7 +69,7 @@ func TestSayRefusesTextItWouldChange(t *testing.T) {
 		"too long once masked": strings.Repeat("x", wakewatch.MaxLine-12) + " pg://u:p@db",
 	} {
 		home := t.TempDir()
-		err := say(home, "quotes · lead", text)
+		_, err := say(home, "quotes · lead", text)
 		if err == nil || !strings.Contains(err.Error(), "not sent") {
 			t.Errorf("%s: err %v, want refused", name, err)
 		}
@@ -93,5 +95,50 @@ func TestExitCodeTellsHeldFromLost(t *testing.T) {
 		if got := exitCode(c.err); got != c.want {
 			t.Errorf("exitCode(%v) = %d, want %d", c.err, got, c.want)
 		}
+	}
+}
+
+// fakeT3 points outbox at testutil.FakeT3 and shortens the pause between looks for the proof.
+func fakeT3(t *testing.T) (dir string) {
+	t.Helper()
+	bin, dir := testutil.FakeT3(t)
+	old, oldWait, oldCmux := outbox.T3, t3cli.ProveWait, outbox.Cmux
+	t.Cleanup(func() { outbox.T3, t3cli.ProveWait, outbox.Cmux = old, oldWait, oldCmux })
+	outbox.T3, t3cli.ProveWait = bin, time.Millisecond
+	outbox.Cmux = func(args ...string) ([]byte, error) {
+		t.Errorf("cmux called for a role in a T3 thread: %q", args)
+		return nil, errors.New("no cmux")
+	}
+	return dir
+}
+
+// A team role that runs as a T3 Code thread is named project:role: crius-say hands the line to its thread and says where
+// it went, here queued as the busy thread's next turn (T3 never interrupts a run).
+func TestSayToARoleInAT3ThreadSaysWhereItWent(t *testing.T) {
+	dir := fakeT3(t)
+	home := t.TempDir()
+	testutil.Put(t, filepath.Join(home, "roles", "axi.qa.json"), `{"project":"axi","role":"qa","session_id":"s1","t3_thread":"mcp:qa"}`)
+	testutil.Put(t, filepath.Join(dir, "send.out"), testutil.T3Sent("qa", 3))
+	testutil.Put(t, filepath.Join(dir, "show"), testutil.T3Shown("qa", 2, 3))
+	said, err := say(home, "axi:qa", "check the build\nthen post DONE")
+	if code := exitCode(err); code != 0 {
+		t.Fatalf("exit %d: %v", code, err)
+	}
+	if !strings.Contains(said, "mcp:qa") || !strings.Contains(said, "next turn") || !strings.Contains(said, "busy") {
+		t.Errorf("said %q, want the thread, busy and next turn", said)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "stdin")); string(got) != "check the build then post DONE" {
+		t.Errorf("t3 got %q, want one line", got)
+	}
+}
+
+// Sent to a thread, but no look proved it: exit 3 (do not send again), never 0.
+func TestSayToAT3ThreadWithNoProofExits3(t *testing.T) {
+	dir := fakeT3(t)
+	home := t.TempDir()
+	testutil.Put(t, filepath.Join(home, "roles", "axi.qa.json"), `{"project":"axi","role":"qa","session_id":"s1","t3_thread":"mcp:qa"}`)
+	testutil.Put(t, filepath.Join(dir, "send.out"), testutil.T3Sent("qa", 3))
+	if _, err := say(home, "axi:qa", "check the build"); exitCode(err) != 3 {
+		t.Errorf("exit %d (%v), want 3", exitCode(err), err)
 	}
 }

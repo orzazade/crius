@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/orzazade/crius/internal/outbox"
+	"github.com/orzazade/crius/internal/t3cli"
+	"github.com/orzazade/crius/internal/testutil"
 )
 
 // fakeTab replaces cmux with one Claude tab, surface:4 in workspace:2, and gives what was typed and pressed.
@@ -110,5 +112,86 @@ func TestSendRefusesWhatCouldGoWrong(t *testing.T) {
 		if code := run(args, &out, &errs); code != 2 || len(*done) != 0 || errs.Len() == 0 {
 			t.Errorf("%s: exit %d, did %q, said %q", name, code, *done, errs.String())
 		}
+	}
+}
+
+// threadRole files axi:qa as a role that runs in T3 Code thread mcp:qa (no tab), points outbox at testutil.FakeT3, and
+// fails the test on any cmux call.
+func threadRole(t *testing.T) (dir string) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("CRIUS_HOME", home)
+	testutil.Put(t, filepath.Join(home, "roles", "axi.qa.json"), `{"project":"axi","role":"qa","session_id":"s1","t3_thread":"mcp:qa"}`)
+	bin, dir := testutil.FakeT3(t)
+	old, oldWait, oldCmux := outbox.T3, t3cli.ProveWait, outbox.Cmux
+	t.Cleanup(func() { outbox.T3, t3cli.ProveWait, outbox.Cmux = old, oldWait, oldCmux })
+	outbox.T3, t3cli.ProveWait = bin, time.Millisecond
+	outbox.Cmux = func(args ...string) ([]byte, error) {
+		t.Errorf("cmux called for a role in a T3 thread: %q", args)
+		return nil, nil
+	}
+	return dir
+}
+
+// A team role that runs as a T3 Code thread is named project:role: crius-send hands the line to its thread and exits 0
+// only on proof, saying when the busy thread takes it as its next turn. t3 refused: 1. Sent, not proved: 3.
+func TestSendToARoleInAT3ThreadKeepsTheExitContract(t *testing.T) {
+	for name, c := range map[string]struct {
+		files map[string]string
+		code  int
+		said  []string
+	}{
+		"in the thread": {map[string]string{"send.out": testutil.T3Sent("qa", 3),
+			"show": testutil.T3Shown("qa", 3, 3, "user", "3", "check the build")}, 0, []string{"SENT axi:qa", "mcp:qa", "in the thread"}},
+		"busy": {map[string]string{"send.out": testutil.T3Sent("qa", 3), "show": testutil.T3Shown("qa", 2, 3)}, 0,
+			[]string{"SENT axi:qa", "next turn", "busy"}},
+		"t3 refused": {map[string]string{"send.out": "Thread mcp:qa was not found.", "send.rc": "1"}, 1,
+			[]string{"NOT SENT axi:qa", "Thread mcp:qa was not found."}},
+		"not proved": {map[string]string{"send.out": testutil.T3Sent("qa", 3)}, 3, []string{"MAYBE SENT axi:qa", "do not send again"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := threadRole(t)
+			for f, body := range c.files {
+				testutil.Put(t, filepath.Join(dir, f), body)
+			}
+			var out, errs strings.Builder
+			code := run([]string{"axi:qa", "check", "the build"}, &out, &errs)
+			said := out.String() + errs.String()
+			if code != c.code {
+				t.Errorf("exit %d, want %d: %s", code, c.code, said)
+			}
+			for _, w := range c.said {
+				if !strings.Contains(said, w) {
+					t.Errorf("said %q, want %q in it", said, w)
+				}
+			}
+			if got, _ := os.ReadFile(filepath.Join(dir, "stdin")); string(got) != "check the build" {
+				t.Errorf("t3 got %q", got)
+			}
+		})
+	}
+}
+
+// A role that is not in a T3 thread (no role file, or one with a tab) is refused before anything is sent: exit 2, and
+// the tab form is named.
+func TestSendToARoleWithNoThreadIsRefused(t *testing.T) {
+	for name, role := range map[string]string{
+		"no role file":    "",
+		"role with a tab": `{"project":"axi","role":"qa","session_id":"s1","workspace":"workspace:2","surface":"surface:4"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := threadRole(t)
+			os.Remove(filepath.Join(os.Getenv("CRIUS_HOME"), "roles", "axi.qa.json"))
+			if role != "" {
+				testutil.Put(t, filepath.Join(os.Getenv("CRIUS_HOME"), "roles", "axi.qa.json"), role)
+			}
+			var out, errs strings.Builder
+			if code := run([]string{"axi:qa", "check the build"}, &out, &errs); code != 2 || !strings.Contains(errs.String(), "workspace:N surface:N") {
+				t.Errorf("exit %d, said %q; want 2 naming the tab form", code, errs.String())
+			}
+			if _, err := os.Stat(filepath.Join(dir, "calls")); err == nil {
+				t.Errorf("t3 was run")
+			}
+		})
 	}
 }

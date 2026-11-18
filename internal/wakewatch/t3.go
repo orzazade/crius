@@ -60,6 +60,9 @@ const (
 	t3Tail      = 80               // how much of the last reply the alert quotes, in characters
 )
 
+// RoleThread is roleThread, for outbox: crius-say and crius-send find a role's thread as this watch does.
+func RoleThread(home string, r sessionstate.State) string { return roleThread(home, r) }
+
 // roleThread gives the T3 Code thread the role's current session runs in: from that session's own file, which crius-hook
 // rewrites on every event, else from the role's file (as bus-post reads it); "" when it runs in none.
 func roleThread(home string, r sessionstate.State) string {

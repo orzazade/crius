@@ -1,18 +1,13 @@
 package main
 
 import (
-	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/orzazade/crius/internal/store"
+	"github.com/orzazade/crius/internal/t3cli"
 	"github.com/orzazade/crius/internal/wakewatch"
 )
 
@@ -26,43 +21,20 @@ const t3Messages = "10"
 // thread reads a T3 Code thread with `t3 thread show --json`: the t3 in the Crius bin folder when there is one (nvm keeps
 // t3 off launchd's PATH), else t3 on the PATH.
 func thread(id string) (wakewatch.T3Thread, error) {
-	t3 := "t3"
-	if p := filepath.Join(store.Home(), "bin", "t3"); fileThere(p) {
-		t3 = p
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), t3Timeout)
-	defer cancel()
-	var out, errOut bytes.Buffer
-	cmd := exec.CommandContext(ctx, t3, "thread", "show", "--json", "--messages", t3Messages, id)
-	cmd.Stdout, cmd.Stderr = &out, &errOut
-	cmd.WaitDelay = time.Second
-	if err := cmd.Run(); err != nil && !(errors.Is(err, exec.ErrWaitDelay) && ctx.Err() == nil) {
-		said, _, _ := strings.Cut(strings.TrimSpace(errOut.String()+"\n"+out.String()), "\n") // a stack trace after it says no more
-		if ctx.Err() != nil {
+	out, errOut, err := t3cli.Run(t3cli.Bin(store.Home(), "t3"), t3Timeout, "", "thread", "show", "--json", "--messages", t3Messages, id)
+	if err != nil {
+		if errors.Is(err, t3cli.ErrNoAnswer) {
 			err = fmt.Errorf("%w (%s)", wakewatch.ErrT3NoAnswer, t3Timeout)
 		}
-		return wakewatch.T3Thread{}, fmt.Errorf("t3 thread show: %v: %s", err, said)
+		return wakewatch.T3Thread{}, fmt.Errorf("t3 thread show: %v: %s", err, t3cli.FirstLine(errOut, out)) // a stack trace after it says no more
 	}
-	return parseThread(out.Bytes())
+	return parseThread(out)
 }
 
 // parseThread reads what `t3 thread show --json` prints. JSON that has no thread or no update time is an error: the
 // check would read it as a thread idle since 0001.
 func parseThread(b []byte) (wakewatch.T3Thread, error) {
-	var v struct {
-		Thread *struct {
-			Status      string  `json:"status"`
-			ActiveRunID *string `json:"activeRunId"`
-			Pending     int     `json:"pendingRequestCount"`
-			UpdatedAt   string  `json:"updatedAt"`
-			Settled     bool    `json:"settled"`
-			Archived    bool    `json:"archived"`
-		} `json:"thread"`
-		Messages []struct {
-			Role string `json:"role"`
-			Text string `json:"text"`
-		} `json:"messages"`
-	}
+	var v t3cli.Show
 	if err := json.Unmarshal(b, &v); err != nil {
 		return wakewatch.T3Thread{}, fmt.Errorf("t3 thread show printed no thread JSON (%v): %.80q", err, b)
 	}
@@ -84,6 +56,3 @@ func parseThread(b []byte) (wakewatch.T3Thread, error) {
 	}
 	return th, nil
 }
-
-// fileThere says p is there, a link that points nowhere too: running it then fails under its own name.
-func fileThere(p string) bool { _, err := os.Lstat(p); return err == nil }
