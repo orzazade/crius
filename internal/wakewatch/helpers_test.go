@@ -3,10 +3,10 @@ package wakewatch
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -185,13 +185,18 @@ func TestAfterBootTriesEveryLineWhenOneIsHeld(t *testing.T) {
 	}
 }
 
-// Review of 41b6d82: a pid written in place after its file's time was read looked younger than its process. A fifo
-// shows it: its time moves when the pid is written, after the open.
+// Review of 41b6d82: a pid written in place after its file's time was read looked younger than its process. Here the
+// file's time moves while the pid is read, after the open: a time read before the pid is the old one.
+//
+// 11-19: this test used a FIFO, written by a goroutine whose close ended AfterBoot's read. On macOS a signal that
+// reaches a reader blocked on a FIFO near the writer's close can lose the end-of-file (a probe of that unblock hung 1-5
+// of 400 runs with signals or child starts, 0 of 400 without), so the test could hang until go test's 10 min limit.
+// The read now goes through readPid, which the test wraps to move the file's time; nothing blocks.
 func TestAfterBootReadsThePidFileTimeAfterThePid(t *testing.T) {
 	d, sent := boot(t, "[[pid]]\nname = \"fresh\"\nfile = \"~/fresh.pid\"\n")
 	t.Setenv("HOME", d.Home)
 	p := filepath.Join(d.Home, "fresh.pid")
-	if err := syscall.Mkfifo(p, 0o600); err != nil {
+	if err := os.WriteFile(p, []byte("400\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	old := time.Now().Add(-time.Hour)
@@ -200,21 +205,23 @@ func TestAfterBootReadsThePidFileTimeAfterThePid(t *testing.T) {
 	}
 	started := time.Now()
 	d.Process = func(pid int) (time.Time, bool, error) { return started, pid == 400, nil }
-	go func() {
-		w, err := os.OpenFile(p, os.O_WRONLY, 0)
-		if err != nil { // a reader-writer open does not wait, and its close ends the reader's wait
+	read := readPid
+	t.Cleanup(func() { readPid = read })
+	reads := 0
+	readPid = func(r io.Reader) ([]byte, error) {
+		reads++
+		b, err := read(r)
+		now := time.Now()
+		if err := os.Chtimes(p, now, now); err != nil { // the pid was written in place: its time moves
 			t.Error(err)
-			if w, err = os.OpenFile(p, os.O_RDWR, 0); err == nil {
-				w.Close()
-			}
-			return
 		}
-		defer w.Close()
-		time.Sleep(50 * time.Millisecond)
-		w.WriteString("400\n")
-	}()
+		return b, err
+	}
 	if err := AfterBoot(d); err != nil {
 		t.Fatal(err)
+	}
+	if reads != 1 {
+		t.Fatalf("the pid file was read %d times through readPid, want 1", reads)
 	}
 	if len(*sent) != 0 {
 		t.Errorf("a pid written after the open is reported: %q", *sent)
