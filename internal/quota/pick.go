@@ -42,20 +42,29 @@ func Pick(r *Report, as *Accounts, root, want string, pauseAt int) (name, dir, w
 		return pick(r, as, root, want, pauseAt)
 	}
 	rest := &Accounts{}
+	var reserve Acct
 	for _, a := range as.Rows {
 		if a.Name != Reserve {
 			rest.Rows = append(rest.Rows, a)
+		} else {
+			reserve = a
 		}
 	}
 	name, dir, why, err = pick(r, rest, root, want, pauseAt)
-	if name == "" || err != nil {
-		// every other row of this persona is full, or none has a folder in it: aitch's own route must not take max1
-		if err != nil {
-			return "", "", "", fmt.Errorf("%s; %s", held, strings.Replace(err.Error(), "every Max account is at its limit", "every other one with a folder here is at its limit", 1))
-		}
+	switch {
+	case err != nil: // every other row with a folder in this persona is full
+		return "", "", "", fmt.Errorf("%s; %s", held, strings.Replace(err.Error(), "every Max account is at its limit", "every other one with a folder here is at its limit", 1))
+	case name != "":
+		return name, dir, why + "; " + Reserve + " held back (owner 11-19) until every other Max account is at its limit", nil
+	}
+	// No other row has a folder in this persona: refused while max1 has one; with none, no pick as before (launch.Run
+	// refuses it).
+	if d, err := linked(reserve, root); err != nil {
+		return "", "", "", err
+	} else if d != "" {
 		return "", "", "", errors.New(held)
 	}
-	return name, dir, why + "; " + Reserve + " held back (owner 11-19) until every other Max account is at its limit", nil
+	return "", "", "", nil
 }
 
 // Reserve is the Max account used last (owner 11-19: "nothing moves to or starts on account max1 until max2 and max3

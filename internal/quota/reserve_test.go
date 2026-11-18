@@ -103,4 +103,14 @@ func TestPickHoldsMax1UntilMax2AndMax3AreAtTheLimit(t *testing.T) {
 			}
 		}
 	}
+	// No row has a folder in this persona: no pick and no error, as before (launch.Run refuses it); only max1 has one:
+	// refused, saying why.
+	if name, dir, _, err := Pick(r(10, 50, 20), as, filepath.Join(root, "none", "projects"), "max", 0); name != "" || dir != "" || err != nil {
+		t.Errorf("no folder here: %q %q %v", name, dir, err)
+	}
+	only := &Accounts{Rows: []Acct{as.Rows[0], {Name: "max2", Plan: "max", Login: l2, Dirs: []string{m2}}, as.Rows[2]}}
+	if _, _, _, err := Pick(r(10, 50, 20), only, personal, "max", 0); err == nil ||
+		!strings.Contains(err.Error(), "max1 is held back (owner 11-19) until every other Max account is at its limit: max2 7d 50%, max3 7d 20%") {
+		t.Errorf("only max1 has a folder here: err %v", err)
+	}
 }
