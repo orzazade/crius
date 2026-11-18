@@ -243,10 +243,8 @@ func (r *runner) flushAlerts() {
 			// That bus lives on another machine: the line can never go out from here, so retrying it would keep every
 			// run partial. Crius is told once on its own bus, the wrapper before the text (fit cuts the end), and the
 			// row is done.
-			use, _, _ := store.RemoteCopy(filepath.Join(r.home, "bus", a[3]+".log"))
-			line, err = store.FormatLine("ALERT", "crius", "ingest", fit(fmt.Sprintf(
-				"%s to %s not delivered: %s.log here is a copy of a bus on another machine (%s); its text: %s", a[2], a[4],
-				a[3], use, text)), "crius:lead", time.Now())
+			line, err = store.FormatLine("ALERT", "crius", "ingest", fit(fmt.Sprintf("%s to %s not delivered (%v); its text: %s",
+				a[2], a[4], err, text)), "crius:lead", time.Now())
 			if err == nil {
 				err = store.AppendLine(r.home, "crius", line)
 			}

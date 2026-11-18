@@ -264,8 +264,9 @@ func post(d deps, now time.Time, cwd, text string) (sent bool, err error) {
 			if !errors.Is(err, store.ErrRemoteCopy) {
 				return err == nil, err
 			}
-			// its bus lives on another machine: Crius is told instead, first whom it was for (PostOn cuts the end)
-			text = "for " + strings.Join(leads, ", ") + ", whose bus is on another machine: " + text
+			// its bus lives on another machine: Crius is told instead, whom it was for first and the wrapper last, so the
+			// job's last output stays inside PostOn's 300-rune cut; a long line loses the wrapper's end before it
+			text = "for " + strings.Join(leads, ", ") + ": " + text + "; its bus is elsewhere: " + store.CopyWrapper(err)
 		} else if !errors.Is(serr, fs.ErrNotExist) {
 			lerr = serr
 		}

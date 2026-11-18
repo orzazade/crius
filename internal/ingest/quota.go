@@ -434,6 +434,20 @@ func (r *runner) pauseAccounts(tx *sql.Tx, rep *quota.Report, as *quota.Accounts
 			}
 			roles = append(roles, role)
 			if copyOf != "" {
+				// No PAUSE on a copied bus: a row marked sent stands for it, so a new role is news as a posted one is.
+				// Known gaps: a bus local again posts the PAUSE but its follow-up NEED key may be taken, so Crius's last
+				// word stays "not posted"; a PAUSE queued while local and refused at flush follows a NEED saying "posted".
+				res, err := tx.Exec(`insert or ignore into alert (key, ts, text, line_type, log, recipient, sent)
+					values (?,?,?,?,?,?,?)`, key+":"+role+":copy", utcNow(), r.text(notPosted(copyOf, p.slug+":"+role)),
+					"PAUSE", p.slug, p.slug+":"+role, utcNow())
+				if err != nil {
+					return err
+				}
+				n, err := res.RowsAffected()
+				if err != nil {
+					return err
+				}
+				news = news || n > 0
 				continue
 			}
 			added, err := r.queueNew(tx, key+":"+role, "PAUSE", p.slug, p.slug+":"+role, fmt.Sprintf(

@@ -138,3 +138,37 @@ func TestTheQuotaGuardWithAccountsSaysAPauseOnACopiedBusWasNotPosted(t *testing.
 		t.Fatalf("want a NEED for far:p1 and one for far:all, each saying not posted: %q", x.alerts())
 	}
 }
+
+// Round-2 review: a role that starts later on a full account is news on a copied bus as on a local one: Crius gets a
+// second NEED naming it, saying its PAUSE was not posted either.
+func TestALaterRoleOnAFullAccountOfACopiedBusTellsCriusAgain(t *testing.T) {
+	now := qNow
+	clock = func() time.Time { return now }
+	t.Cleanup(func() { clock = time.Now })
+	x := newIC(t, cfg{extra: strings.Replace(farProject, "pause_at = 70", "pause_at = 90", 1)})
+	farCopy(t, x.home)
+	d1, d2 := filepath.Join(x.home, "cfg1"), filepath.Join(x.home, "cfg2")
+	l1, l2 := x.signIn(d1, "u-1"), x.signIn(d2, "u-2")
+	testutil.Write(t, filepath.Join(x.home, "accounts.toml"), "[[account]]\nname = \"max1\"\nplan = \"max\"\ndirs = [\""+
+		d1+"\"]\n[[account]]\nname = \"max2\"\nplan = \"max\"\ndirs = [\""+d2+"\"]\n")
+	r1 := qNow.Add(4 * 24 * time.Hour)
+	s1, s2, s3 := "aaaaaaaa-0000-0000-0000-000000000001", "aaaaaaaa-0000-0000-0000-000000000002", "aaaaaaaa-0000-0000-0000-000000000003"
+	x.session("work", s1, "/work/far", "[crius account=max project=far role=p1]", qNow.Add(-20*time.Minute))
+	x.session("work", s2, "/work/far", "[crius account=max project=far role=p2]", qNow.Add(-20*time.Minute))
+	on := func(l quota.Line, login, dir string) quota.Line {
+		l.Login, l.Dir, l.Persona = login, dir, "work"
+		return l
+	}
+	x.spool(on(sampleAt(s1, qNow.Add(-10*time.Minute), 91, r1), l1, d1), on(sampleAt(s2, qNow.Add(-8*time.Minute), 40, r1), l2, d2))
+	x.run()
+	now = qNow.Add(50 * time.Minute)
+	x.session("work", s3, "/work/far", "[crius account=max project=far role=p3]", now.Add(-10*time.Minute))
+	x.spool(on(sampleAt(s3, now.Add(-5*time.Minute), 92, r1), l1, d1))
+	x.run()
+	need := grepAlerts(x.alerts(), "account max1 at ")
+	if len(need) != 2 || !strings.Contains(need[1], "pause far:") || !strings.Contains(need[1], "far:p3") ||
+		!strings.Contains(need[1], "PAUSE not posted") {
+		t.Fatalf("want a second NEED naming far:p3 as not posted, got %q", x.alerts())
+	}
+	t.Logf("crius.log: %s", need[1])
+}

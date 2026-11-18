@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"strings"
 	"unicode"
 )
@@ -56,7 +57,10 @@ func OpenBus(path string, flag int, perm os.FileMode) (*os.File, error) {
 // says it there.
 var ErrRemoteCopy = errors.New("the log is a copy of a bus on another machine")
 
-type remoteCopyError struct{ r *Refused }
+type remoteCopyError struct {
+	r   *Refused
+	use string // the marker's first line
+}
 
 func (e *remoteCopyError) Error() string   { return e.r.msg }
 func (e *remoteCopyError) Unwrap() []error { return []error{ErrRemoteCopy, e.r} }
@@ -68,8 +72,19 @@ func notACopy(log, done string) error {
 		return fmt.Errorf("could not read the remote-copy marker of %s: %w", log, err)
 	}
 	if ok {
-		return &remoteCopyError{&Refused{fmt.Sprintf("%s is a copy of a bus on another machine, nothing %s: %s", log, done,
-			use)}}
+		// the base name: every bus log is in <home>/bus, and a bus line has 300 runes for the rest
+		return &remoteCopyError{&Refused{fmt.Sprintf("%s is a copy of a bus on another machine, nothing %s: %s",
+			filepath.Base(log), done, use)}, use}
 	}
 	return nil
+}
+
+// CopyWrapper gives the marker line an ErrRemoteCopy refusal names, the wrapper that posts on the live bus; "" for any
+// other error.
+func CopyWrapper(err error) string {
+	var e *remoteCopyError
+	if errors.As(err, &e) {
+		return e.use
+	}
+	return ""
 }
