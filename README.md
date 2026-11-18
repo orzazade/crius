@@ -56,3 +56,15 @@ of each config folder whose sessions call the tool. The hook timeout (45 s) is l
 ```
 
 Demo, with a fake t3 (one deny, one allow): `sh cmd/crius-spawn/testdata/demo-move-check.sh`.
+
+## Installing on the Linux boxes
+
+The Legion and the ThinkPad run a few tools from `~/.crius/bin` (the list is `internal/boxtools`). After a change to one
+of them, from a clean checkout of the commit to install:
+
+    bin/crius-install-box legion --dry-run   # builds, shows the box's current files, copies nothing
+    bin/crius-install-box legion             # copies; prints old and new revision and sha256 per tool, OK or FAILED
+
+The box name is a host in `~/.crius/state/playbook/hosts.json` (its ssh command is used). The old binary stays as
+`<tool>.prev-<old rev>-<old sha256>`, and the output prints the ssh line that puts each changed tool back. A failed
+copy leaves the old binary in place and exits non-zero. Nothing needs a restart.

@@ -1,0 +1,10 @@
+#!/bin/sh
+# Builds crius-install-box from this checkout and runs it: it cross-builds the tools a Linux box runs (Legion,
+# ThinkPad) and copies them to that box's ~/.crius/bin. Usage: bin/crius-install-box <box> [--dry-run] [--allow-dirty]
+# Exit codes pass through unchanged.
+set -e
+repo=$(cd "$(dirname "$(realpath "$0")")/.." && pwd -P)
+# One binary per checkout, so a worktree never runs another checkout's build.
+bin="$HOME/Library/Caches/crius/$(printf %s "$repo" | shasum | cut -c1-12)/crius-install-box"
+GOTOOLCHAIN=local go -C "$repo" build -o "$bin" ./cmd/crius-install-box
+CRIUS_REPO="$repo" exec "$bin" "$@"
