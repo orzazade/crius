@@ -29,10 +29,10 @@ const moveCheckT3Timeout = 30 * time.Second
 // runMoveCheck is the PreToolUse hook for configureTool (crius-spawn -move-check, hook input on in). It prints nothing,
 // which lets the call go on, for another tool, for a call with no modelSelection (it only reads), and for a move of a
 // thread that is idle. It prints a deny with its reason for a move of a thread that is busy (an open run, an open
-// request, or a last reply whose newest status emoji is ⏳: RULES §3.5, its own background job runs), of the caller's
-// own thread (no threadId: that thread is mid-turn while it makes the call, and its own jobs would die too), or of a
-// thread whose state cannot be read (failed to look is never found nothing; the local t3 cannot read a thread on
-// another machine either). A file move-ok/<threadId> (move-ok/self for the caller's own thread) under the Crius state
+// request, a message after its last reply that waits for a turn, or a last reply whose newest status emoji is ⏳: RULES
+// §3.5, its own background job runs), of the caller's own thread (no threadId: that thread is mid-turn while it makes
+// the call, and its own jobs would die too), or of a thread whose state cannot be read (failed to look is never found
+// nothing; the local t3 cannot read a thread on another machine either). A file move-ok/<threadId> (move-ok/self for the caller's own thread) under the Crius state
 // folder lets one move go on regardless, on purpose: the check deletes it.
 func runMoveCheck(home string, in io.Reader, out io.Writer) {
 	if reason := moveCheck(home, in); reason != "" {
@@ -91,6 +91,9 @@ func moveCheck(home string, in io.Reader) string {
 	if th.Pending > 0 {
 		busy = append(busy, fmt.Sprintf("%d open request(s) wait on someone", th.Pending))
 	}
+	if th.Unanswered && !th.Active {
+		busy = append(busy, "a message after its last reply waits for a turn")
+	}
 	if newestMark(th.LastReply) == "⏳" {
 		busy = append(busy, "its last reply ends on ⏳ (its own background job runs)")
 	}
@@ -147,6 +150,7 @@ func showThread(home, id string) (wakewatch.T3Thread, error) {
 			th.LastReply = v.Messages[i].Text
 			break
 		}
+		th.Unanswered = th.Unanswered || v.Messages[i].Role == "user"
 	}
 	return th, nil
 }

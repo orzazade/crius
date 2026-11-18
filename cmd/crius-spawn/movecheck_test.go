@@ -88,6 +88,13 @@ func TestMoveCheckDeniesAThreadWithAnOpenRequest(t *testing.T) {
 	wantIn(t, decide(t, home, moveInput("th-ask")), "th-ask", "1 open request")
 }
 
+// A message sent after the last reply, with no run open yet, starts a turn any moment: moving the thread then cuts it.
+func TestMoveCheckDeniesAThreadWithAMessageQueuedAfterItsLastReply(t *testing.T) {
+	home := checkRig(t)
+	wantIn(t, decide(t, home, moveInput("th-queued")), "th-queued", "a message after its last reply waits for a turn",
+		"Batch two merged. ✅")
+}
+
 // The newest status emoji counts: an ⏳ earlier in a reply that ends on ✅ names a job that is over.
 func TestMoveCheckAllowsAnIdleThreadThatEndsOnACheckMark(t *testing.T) {
 	home := checkRig(t)
