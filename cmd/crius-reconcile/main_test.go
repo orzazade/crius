@@ -59,11 +59,11 @@ func runCLI(t *testing.T, args ...string) (int, string, string) {
 func TestStaleAndUnlandedRowsExit4(t *testing.T) {
 	root, repo, landed, unlanded := setup(t)
 	board := filepath.Join(root, "board.tsv")
-	testutil.Write(t, board, "row\tstate\tsha\tnote\n"+
-		"R1\treview\t"+landed+"\t\n"+ // landed but not done
-		"R2\treview\t\tPR 101\n"+ // its PR merged but not done
-		"R3\tmerged\t"+landed+"\t\n"+ // fine
-		"R4\tmerged\t"+unlanded+"\t\n") // says merged, not on the branch
+	testutil.Write(t, board, "row\tstate\tsha\tpr\tnote\n"+
+		"R1\treview\t"+landed+"\t\t\n"+ // landed but not done
+		"R2\treview\t\t101\t\n"+ // its PR merged but not done
+		"R3\tmerged\t"+landed+"\t\tafter PR 101\n"+ // fine: a PR in the notes is no claim
+		"R4\tmerged\t"+unlanded+"\t\t\n") // says merged, not on the branch
 	code, out, errw := runCLI(t, "--board", board, "--format", "tsv", "--git", repo+":integ")
 	if code != 4 {
 		t.Fatalf("exit %d, want 4\nout:\n%s\nerr:\n%s", code, out, errw)
@@ -159,5 +159,29 @@ func TestNotReadAndUnknownStateShown(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)
 		}
+	}
+}
+
+// A PR merged in two repos leaves a done row ambiguous: its own kind, never worded as "not on the branch".
+func TestAmbiguousDoneRow(t *testing.T) {
+	root, repo, _, _ := setup(t)
+	other := testutil.GitRepo(t, filepath.Join(root, "other"))
+	git(t, other, "commit", "-q", "--allow-empty", "-m", "Merged PR 101: elsewhere")
+	board := filepath.Join(root, "board.md")
+	testutil.Write(t, board, "## ROWS\n- ✅ X9 merged as PR 101\n")
+	code, out, errw := runCLI(t, "--board", board, "--format", "md", "--section", "ROWS", "--git", repo+":integ", "--git", other+":main")
+	if code != 4 || !strings.Contains(out, "AMBIGUOUS X9") || strings.Contains(out, "not on the branch") || !strings.Contains(out, "1 ambiguous") {
+		t.Fatalf("exit %d, want 4 with AMBIGUOUS X9 and no 'not on the branch'\nout:\n%s\nerr:\n%s", code, out, errw)
+	}
+}
+
+// A board where every row is in a state no list names judged nothing: exit 1, not a clean 0.
+func TestNothingJudgedExit1(t *testing.T) {
+	root, repo, _, _ := setup(t)
+	board := filepath.Join(root, "board.md")
+	testutil.Write(t, board, "## ROWS\n- ✔ R1 x\n- ✔ R2 y\n")
+	code, out, errw := runCLI(t, "--board", board, "--format", "md", "--section", "ROWS", "--git", repo+":integ")
+	if code != 1 || !strings.Contains(errw, "no row was judged") {
+		t.Fatalf("exit %d err %q, want 1 and 'no row was judged'\nout:\n%s", code, errw, out)
 	}
 }

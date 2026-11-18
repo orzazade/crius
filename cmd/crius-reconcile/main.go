@@ -113,20 +113,17 @@ func run(args []string, out, errw io.Writer) int {
 	if err != nil {
 		return fail(err)
 	}
-	stale, unlanded := 0, 0
+	count := map[string]int{}
 	for _, fd := range rep.Findings {
 		fmt.Fprintln(out, line(fd))
-		if fd.Kind == "stale" {
-			stale++
-		} else {
-			unlanded++
-		}
+		count[fd.Kind]++
 	}
 	for _, n := range notRead {
 		fmt.Fprintf(out, "NOT-READ line %d: %s\n", n.Line, n.Text)
 	}
-	fmt.Fprintf(out, "SUMMARY %s: %d rows (%d done, %d open, %d partial, %d skipped, %d unknown) · %d stale · %d unlanded · %d not read\n",
-		*board, rep.Rows, rep.Done, rep.Open, rep.Partial, rep.Skipped, len(rep.Unknown), stale, unlanded, len(notRead))
+	fmt.Fprintf(out, "SUMMARY %s: %d rows (%d done, %d open, %d partial, %d skipped, %d unknown) · %d stale · %d unlanded · %d ambiguous · %d not read\n",
+		*board, rep.Rows, rep.Done, rep.Open, rep.Partial, rep.Skipped, len(rep.Unknown), count["stale"], count["unlanded"],
+		count["ambiguous"], len(notRead))
 	if len(rep.Unknown) > 0 {
 		fmt.Fprintf(out, "  unknown state: %s (not judged; name the state with --done/--open/--partial/--skip)\n", strings.Join(rep.Unknown, " "))
 	}
@@ -149,11 +146,15 @@ func run(args []string, out, errw io.Writer) int {
 	return 0
 }
 
-// line is one mismatch: kind, row id, state and board line, then the evidence (stale) or what was missing (unlanded).
+// line is one mismatch: kind, row id, state and board line, then the evidence (stale), what was missing (unlanded)
+// or which PR merged in several repos (ambiguous).
 func line(fd reconcile.Finding) string {
 	head := fmt.Sprintf("%s %s state=%s (line %d)", strings.ToUpper(fd.Kind), fd.Row.ID, fd.Row.State, fd.Row.Line)
-	if fd.Kind != "stale" {
+	switch fd.Kind {
+	case "unlanded":
 		return head + " but not on the branch: " + strings.Join(fd.Misses, "; ")
+	case "ambiguous":
+		return head + ", cannot tell which repo's PR is this row's: " + strings.Join(fd.Misses, "; ")
 	}
 	var ev []string
 	for _, e := range fd.Evidence {

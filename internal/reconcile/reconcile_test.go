@@ -12,13 +12,14 @@ import (
 )
 
 // A TSV board: columns found by name in any order; shas come from the sha column (the row's own), PR numbers from
-// any cell, but only in the PR forms ("PR 12", "PR#12", "!12"): "#104" is not a PR.
+// the pr column when there is one (any number in it), else from the row, state and sha cells in the PR forms ("PR 12",
+// "PR#12", "!12"), never from notes ("blocked by PR 41" is another row's PR).
 func TestParseTSV(t *testing.T) {
-	board := "flow\trow\towner\tstate\tqa\tsha\tnote\n" +
-		"f1\tR1\tb1\treview\tpass\tabc1234\tlanded as PR 101\n" +
-		"f1\tR2\tb2\tmerged\tfail\tabc1234 9f8e7d6c\tsee !102 and PR#103, attempt #104 failed\n" +
+	board := "flow\trow\towner\tstate\tqa\tsha\tpr\tnote\n" +
+		"f1\tR1\tb1\treview\tpass\tabc1234\tPR 101\tlanded as PR 999\n" +
+		"f1\tR2\tb2\tmerged\tfail\tabc1234 9f8e7d6c\t102, PR#103\tattempt #104 failed, blocked by PR 105\n" +
 		"\n" +
-		"f2\tR3\tb1\tproven\t\t\tnone; baseline deadbee0 is not a row sha\n"
+		"f2\tR3\tb1\tproven\t\t\t\tnone; baseline deadbee0 is not a row sha\n"
 	rows, err := ParseTSV(strings.NewReader(board))
 	if err != nil {
 		t.Fatal(err)
@@ -30,6 +31,10 @@ func TestParseTSV(t *testing.T) {
 	}
 	if !reflect.DeepEqual(rows, want) {
 		t.Fatalf("rows:\n got %+v\nwant %+v", rows, want)
+	}
+	rows, err = ParseTSV(strings.NewReader("id\tstate\tsha\tnotes\nR5\topen\t\tblocked by PR 41\n"))
+	if err != nil || len(rows) != 1 || rows[0].PRs != nil {
+		t.Fatalf("no pr column: a PR in the notes is not the row's own, got %+v err %v", rows, err)
 	}
 }
 
@@ -80,8 +85,9 @@ func TestParseMarkdown(t *testing.T) {
 		"| T5 | done | — | |\n" + //24
 		"| T6 | — | ✅ | |\n" + //25
 		"| note | — | | |\n" + //26
-		"## NEXT\n" + //27
-		"- ⬜ Z2 after the section\n" //28
+		"- **B8** ✅ mark after a bold id\n" + //27
+		"## NEXT\n" + //28
+		"- ⬜ Z2 after the section\n" //29
 	rows, notRead, err := ParseMarkdown(strings.NewReader(board), "READINESS")
 	if err != nil {
 		t.Fatal(err)
@@ -98,6 +104,7 @@ func TestParseMarkdown(t *testing.T) {
 		{ID: "X5", State: "review", Line: 23, SHAs: []string{"abc1234"}, Cited: true},
 		{ID: "T5", State: "done", Line: 24, Cited: true},
 		{ID: "T6", State: "", Line: 25, Cited: true},
+		{ID: "B8", State: "✅", Line: 27, Cited: true},
 	}
 	if !reflect.DeepEqual(rows, want) {
 		t.Fatalf("rows:\n got %+v\nwant %+v", rows, want)
@@ -279,8 +286,8 @@ func TestSubjectNamesRowOnlyAsATag(t *testing.T) {
 	}
 }
 
-// Shas cited in markdown text may be baselines ("today header.tsx:66 (web <sha>)"): for an open row such a sha
-// proves landing only when it is the right side of "A -> B" or its commit subject names the row.
+// Shas cited in markdown text may be baselines ("today header.tsx:66 (web <sha>)", "rebased on A -> B"): for an open
+// row such a sha proves landing only when its commit subject names the row, arrow or not.
 func TestCitedShaOnOpenRow(t *testing.T) {
 	d := demoRepo(t)
 	board := "## ROWS\n" +
@@ -295,8 +302,8 @@ func TestCitedShaOnOpenRow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if k := kinds(rep); !reflect.DeepEqual(k, map[string]string{"Z2": "stale", "Z3": "stale"}) {
-		t.Fatalf("findings %v, want Z2 and Z3 stale, Z1 clean\nrows %+v", k, rows)
+	if k := kinds(rep); !reflect.DeepEqual(k, map[string]string{"Z3": "stale"}) {
+		t.Fatalf("findings %v, want Z3 stale, Z1 and Z2 clean\nrows %+v", k, rows)
 	}
 }
 
@@ -334,8 +341,8 @@ func TestPRInTwoReposIsAmbiguous(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if k := kinds(rep); !reflect.DeepEqual(k, map[string]string{"R2": "unlanded"}) {
-		t.Fatalf("findings %v, want only R2 unlanded", k)
+	if k := kinds(rep); !reflect.DeepEqual(k, map[string]string{"R2": "ambiguous"}) {
+		t.Fatalf("findings %v, want only R2 ambiguous", k)
 	}
 	if m := strings.Join(byID(rep)["R2"].Misses, ";"); !strings.Contains(m, "ambiguous") {
 		t.Errorf("R2 misses %q, want 'ambiguous'", m)
@@ -387,26 +394,111 @@ func TestCheckFailsLoud(t *testing.T) {
 }
 
 // Two more tag forms: a trailing "(ID)" or "(ID, ID2)" at the very end of the subject (case-sensitive), and a scope
-// that differs only in case, but only for an id of 3+ characters with a letter and a digit (a12b names A12b; s3 does
+// that differs only in case, but only for an id of 3+ characters with a letter and a digit (x12b names X12b; s3 does
 // not name S3, p1 not P1). "(#12)" names no row 12, and a Revert still names nothing.
 func TestSubjectTagForms(t *testing.T) {
 	root, _ := testutil.Temp(t)
 	dir := testutil.GitRepo(t, filepath.Join(root, "repo"))
-	for _, s := range []string{"init", "fix(a12b): leave out deleted jobs", "fix(web): the header shows the account (A20)",
+	for _, s := range []string{"init", "fix(x12b): leave out deleted jobs", "fix(web): the header shows the account (X20)",
 		"test: two rows at once (B30, B31)", "feat(s3): upload", "fix(p1): parser", "chore: x (#12)",
-		"docs: the header (A21) and more", `Revert "fix(c40d): thing"`, "fix: lower trailing (a22)"} {
+		"docs: the header (X21) and more", `Revert "fix(c40d): thing"`, "fix: lower trailing (x22)"} {
 		commit(t, dir, date1, s)
 	}
 	var rows []Row
-	for _, id := range []string{"A12b", "A20", "B30", "B31", "S3", "P1", "12", "A21", "C40d", "A22"} {
+	for _, id := range []string{"X12b", "X20", "B30", "B31", "S3", "P1", "12", "X21", "C40d", "X22"} {
 		rows = append(rows, Row{ID: id, State: "⬜"})
 	}
 	rep, err := Check(rows, []Repo{{Path: dir, Branch: "main"}}, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]string{"A12b": "stale", "A20": "stale", "B30": "stale", "B31": "stale"}
+	want := map[string]string{"X12b": "stale", "X20": "stale", "B30": "stale", "B31": "stale"}
 	if k := kinds(rep); !reflect.DeepEqual(k, want) {
 		t.Fatalf("findings:\n got %v\nwant %v", k, want)
+	}
+}
+
+// repoWith makes a repo whose main branch holds the given subjects (at date1).
+func repoWith(t *testing.T, name string, subjects ...string) string {
+	t.Helper()
+	root, _ := testutil.Temp(t)
+	dir := testutil.GitRepo(t, filepath.Join(root, name))
+	for _, s := range append([]string{"init " + name}, subjects...) {
+		commit(t, dir, date1, s)
+	}
+	return dir
+}
+
+// With several repos PR numbers repeat (GitHub numbers them per repo): a PR merged in one repo proves an open row
+// landed only when its merge subject also names the row; otherwise it is a note, not a finding. One repo: as before.
+func TestPRAcrossRepos(t *testing.T) {
+	r1 := repoWith(t, "one", "fix: something else (#12)", "fix(R8): the thing (#13)")
+	r2 := repoWith(t, "two", "feat: b")
+	rows := []Row{{ID: "R7", State: "review", PRs: []string{"12"}}, {ID: "R8", State: "review", PRs: []string{"13"}}}
+	rep, err := Check(rows, []Repo{{Path: r1, Branch: "main"}, {Path: r2, Branch: "main"}}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if k := kinds(rep); !reflect.DeepEqual(k, map[string]string{"R8": "stale"}) {
+		t.Fatalf("two repos: findings %v, want only R8 stale", k)
+	}
+	if n := strings.Join(rep.Notes, ";"); !strings.Contains(n, "R7: PR 12 merged in main (one), not tied to this row") {
+		t.Errorf("notes %q, want R7's PR 12 named as not tied", n)
+	}
+	rep, err = Check(rows[:1], []Repo{{Path: r1, Branch: "main"}}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if k := kinds(rep); !reflect.DeepEqual(k, map[string]string{"R7": "stale"}) {
+		t.Fatalf("one repo: findings %v, want R7 stale", k)
+	}
+}
+
+// A PR cited in markdown text may be another row's ("starts after PR 41 merged"): for an open row it proves landing
+// only when its merge subject names the row. A done row that cites a PR never merged, next to a landed sha, is fine.
+func TestCitedPROnMarkdownRow(t *testing.T) {
+	dir := repoWith(t, "one", "feat: dependency thing (#41)", "fix(R6): done (#42)")
+	landed := git(t, dir, "rev-parse", "--short=8", "HEAD~1")
+	board := "## ROWS\n" +
+		"- ⬜ R5 export UI (starts after PR 41 merged)\n" +
+		"- ⬜ R6 in review as PR 42\n" +
+		"- ✅ R10 landed " + landed + " PR 777\n"
+	rows, _, err := ParseMarkdown(strings.NewReader(board), "ROWS")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep, err := Check(rows, []Repo{{Path: dir, Branch: "main"}}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if k := kinds(rep); !reflect.DeepEqual(k, map[string]string{"R6": "stale"}) {
+		t.Fatalf("findings %v, want only R6 stale", k)
+	}
+}
+
+// Reverted work: for each row the newest commit that tags it decides; a revert ("Revert \"fix(R3): …\"", or a
+// lower-case "revert(R13): …") cancels the commits before it, and a later redo counts again.
+func TestRevertedRow(t *testing.T) {
+	dir := repoWith(t, "one", "fix(R3): thing", `Revert "fix(R3): thing"`, "fix(R13): thing", "revert(R13): undo thing",
+		"fix(R14): a", `Revert "fix(R14): a"`, "fix(R14): redo", "revert: drop the R15 tidy (R15)")
+	var rows []Row
+	for _, id := range []string{"R3", "R13", "R14", "R15"} {
+		rows = append(rows, Row{ID: id, State: "⬜"})
+	}
+	rep, err := Check(rows, []Repo{{Path: dir, Branch: "main"}}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if k := kinds(rep); !reflect.DeepEqual(k, map[string]string{"R14": "stale"}) {
+		t.Fatalf("findings %v, want only R14 stale", k)
+	}
+}
+
+// A board whose rows are all skipped or in unknown states judged nothing: a failed look, not a clean one.
+func TestNoRowJudgedFails(t *testing.T) {
+	dir := repoWith(t, "one")
+	rows := []Row{{ID: "R1", State: "✔"}, {ID: "R2", State: "✖"}}
+	if _, err := Check(rows, []Repo{{Path: dir, Branch: "main"}}, cfg); err == nil || !strings.Contains(err.Error(), "no row was judged") {
+		t.Fatalf("want a 'no row was judged' error, got %v", err)
 	}
 }
