@@ -247,7 +247,7 @@ func postLine(args []string, now time.Time, stderr io.Writer) int {
 		}
 	}
 	// No O_CREATE: a typo in the path would start a bus nobody reads.
-	f, err := os.OpenFile(log, os.O_RDWR|os.O_APPEND, 0)
+	f, err := store.OpenBus(log, os.O_RDWR, 0)
 	if errors.Is(err, os.ErrNotExist) {
 		return refuse(stderr, "no bus log at %s", log)
 	}

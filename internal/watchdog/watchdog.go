@@ -21,6 +21,7 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"github.com/orzazade/crius/internal/redact"
+	"github.com/orzazade/crius/internal/store"
 )
 
 // The ingest's defaults when projects.toml has no [transcripts] table.
@@ -203,7 +204,7 @@ func PostOn(home, log, typ, from, to string, now time.Time, text string) error {
 	if b, err := os.ReadFile(path); err == nil && len(b) > 0 && b[len(b)-1] != '\n' {
 		lead = "\n"
 	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+	f, err := store.OpenBus(path, os.O_WRONLY|os.O_CREATE, 0o600)
 	if err != nil {
 		return err
 	}
