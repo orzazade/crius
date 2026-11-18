@@ -309,3 +309,24 @@ func TestOnlyTheNewestSessionsThreadOfARoleCounts(t *testing.T) {
 		}
 	}
 }
+
+// Slow t3 answers that use up the run's time for t3 are no hang: the reads stop for the run (the time is gone), and
+// what each role says blames the slow answers, never a hang.
+func TestASpentT3BudgetStopsTheReadsWithoutBlamingAHang(t *testing.T) {
+	home := threadHome(t, "api", "ms")
+	f := &fake{threadErr: fmt.Errorf("t3 thread show: %w (4m0s)", ErrT3BudgetSpent)}
+	runLooked(t, f, f.deps(home, t0))
+	if len(f.read) != lookMisses { // one thread a run
+		t.Errorf("read %d threads in %d runs after the budget was spent: %q", len(f.read), lookMisses, f.read)
+	}
+	var hit []string
+	for _, s := range f.sent {
+		if strings.Contains(s, "T3 thread idle check failed to look at") {
+			hit = append(hit, s)
+		}
+	}
+	all := strings.Join(hit, "\n")
+	if len(hit) != 2 || strings.Count(all, "slow t3 answers") != 2 || strings.Contains(all, "no answer") {
+		t.Fatalf("want one failure per role, each blaming slow answers, none a hang: %q", hit)
+	}
+}

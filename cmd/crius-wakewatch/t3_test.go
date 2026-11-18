@@ -2,8 +2,11 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -117,12 +120,12 @@ func scaleT3(t *testing.T, n time.Duration) {
 
 // Under heavy load (load ~170 on 14 cores) t3 answered after more than the old 10 s limit while every thread was idle
 // on purpose, and each run said a failed look. A t3 that answers late is an answer: the thread is read. Times are
-// scaled by 10: the fake answers after 1.2 s, which is 12 s.
+// scaled by 4: the fake answers after 3 s, which is 12 s, so the 7.5 s limit leaves 4.5 s for process start under load.
 func TestThreadSlowAnswerIsRead(t *testing.T) {
-	scaleT3(t, 10)
+	scaleT3(t, 4)
 	dir := fakeT3(t)
 	put(t, dir, "out", showJSON)
-	put(t, dir, "delay", "1.2")
+	put(t, dir, "delay", "3")
 	th, err := thread("mcp:launch:5a5f")
 	if err != nil {
 		t.Fatalf("a t3 that answers after 12 s (scaled) is not a failed look: %v", err)
@@ -133,7 +136,8 @@ func TestThreadSlowAnswerIsRead(t *testing.T) {
 	t.Logf("read after 12 s (scaled): status %s, last reply read", th.Status)
 }
 
-// A t3 that never answers is still a hang: ErrT3NoAnswer, which stops the other threads' reads for the run.
+// A t3 that never answers in the whole per-call limit is still a hang: ErrT3NoAnswer, which stops the check's other
+// reads for the run.
 func TestThreadNoAnswerIsAHang(t *testing.T) {
 	was := t3Timeout
 	t3Timeout = 300 * time.Millisecond
@@ -148,9 +152,9 @@ func TestThreadNoAnswerIsAHang(t *testing.T) {
 	t.Logf("the failed-look text: %v", err)
 }
 
-// All t3 calls of one run share t3Budget, so slow answers for many threads cannot hold the run past its launchd
-// interval: once it is spent, a read is a hang without asking t3.
-func TestThreadRunBudgetSpentIsAHang(t *testing.T) {
+// All t3 calls of one run share t3Budget, so slow answers for many threads cannot hold the run for long: once it is
+// spent, a read is not tried, and the error says the slow answers used the time, never that t3 hangs.
+func TestThreadRunBudgetSpentIsNoHang(t *testing.T) {
 	dir := fakeT3(t)
 	put(t, dir, "out", showJSON)
 	if _, err := thread("first"); err != nil {
@@ -158,10 +162,32 @@ func TestThreadRunBudgetSpentIsAHang(t *testing.T) {
 	}
 	t3Until = time.Now().Add(-time.Second)
 	_, err := thread("second")
-	if !errors.Is(err, wakewatch.ErrT3NoAnswer) || !strings.Contains(err.Error(), "used up") {
+	if !errors.Is(err, wakewatch.ErrT3BudgetSpent) || errors.Is(err, wakewatch.ErrT3NoAnswer) ||
+		strings.Contains(err.Error(), "no answer") {
 		t.Fatalf("a read after the run's t3 time is spent: %v", err)
 	}
 	if b, _ := os.ReadFile(filepath.Join(dir, "calls")); strings.Contains(string(b), "second") {
 		t.Fatalf("t3 was asked after the budget was spent: %q", b)
+	}
+	t.Logf("the not-read text: %v", err)
+}
+
+// A call made with less than the per-call limit left of the run's budget gets only what is left; if t3 says nothing in
+// that time, that is the spent budget, not a hang (t3 never had its full limit).
+func TestThreadShortOfBudgetGetsWhatIsLeft(t *testing.T) {
+	dir := fakeT3(t)
+	put(t, dir, "out", showJSON)
+	if _, err := thread("first"); err != nil {
+		t.Fatal(err)
+	}
+	t3Until = time.Now().Add(300 * time.Millisecond)
+	put(t, dir, "delay", "5")
+	_, err := thread("second")
+	m := regexp.MustCompile(`it had ([0-9.]+)ms left`).FindStringSubmatch(fmt.Sprint(err))
+	if !errors.Is(err, wakewatch.ErrT3BudgetSpent) || errors.Is(err, wakewatch.ErrT3NoAnswer) || m == nil {
+		t.Fatalf("a call with 300ms of the run's t3 time left: %v", err)
+	}
+	if left, _ := strconv.ParseFloat(m[1], 64); left > 300 {
+		t.Fatalf("the call had %sms, more than was left: %v", m[1], err)
 	}
 }
