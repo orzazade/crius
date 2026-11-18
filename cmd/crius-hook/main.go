@@ -4,7 +4,8 @@
 // session is doing instead of guessing from its screen (docs/notes/OPENRIG-LESSONS.md, row A).
 //
 // It must never get in the session's way: it prints nothing on stdout (Claude Code would put it in the model's
-// context), and it exits 0 on its own errors (exit 2 would block the prompt or the tool). Its errors go to
+// context), and it exits 0 on its own errors (exit 2 would block the prompt or the tool). The one exception is a
+// PreToolUse write into the bus folder itself: it prints Claude Code's deny JSON naming bus-post (busguard.go). Its errors go to
 // ~/.crius/logs/crius-hook.log, which wakewatch reads, or to stderr when that log cannot be written.
 package main
 
@@ -34,12 +35,23 @@ func main() {
 		os.Exit(0)
 	}()
 	var in sessionstate.Input
-	if err := json.NewDecoder(os.Stdin).Decode(&in); err != nil {
+	raw, err := io.ReadAll(os.Stdin)
+	if err == nil {
+		err = json.Unmarshal(raw, &in)
+	}
+	if err != nil {
 		fail(fmt.Errorf("unreadable hook input: %w", err))
 		return
 	}
 	if strings.HasPrefix(in.SessionID, "served:") {
 		return // Claude Code serving a remote caller's call: not a session of ours
+	}
+	// The one refusal: a write into the bus folder itself, which must go through bus-post (busguard.go). The event is
+	// still recorded below; the session's next event moves its state on.
+	if in.Event == "PreToolUse" {
+		if _, err := denyBusWrite(raw, in.ToolName, in.Cwd); err != nil {
+			fail(err)
+		}
 	}
 	if err := record(in, at); err != nil {
 		fail(err) // each error names its event: this process may apply others' events too
