@@ -260,6 +260,9 @@ var waiterHelpers = map[string]bool{"sleep": true, "tail": true, "grep": true, "
 	"mv": true, "cp": true, "touch": true, "rm": true, "mkdir": true, "jq": true, "ps": true, "printf": true, "kill": true,
 	"perl": true, "stat": true, "pgrep": true, "crius-wakewatch": true, "cmux": true}
 
+// loaderVarRe is a setting that makes a program load and run other code before its own.
+var loaderVarRe = regexp.MustCompile(`^(BASH_ENV|ENV|ZDOTDIR|LD_[A-Z_]*|DYLD_[A-Z_]*)=`)
+
 // assignRe is a leading VAR=value of a simple command.
 var assignRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
 
@@ -280,6 +283,14 @@ func progOf(w []string) string {
 // isWaiter says whether a command's words run a bus waiter, by its program, never by a word in its arguments (a test
 // of bin/crius-wait is a job). A tail is one only when every file it reads is a bus log.
 func isWaiter(w []string) bool {
+	for _, a := range w {
+		if !assignRe.MatchString(a) {
+			break
+		}
+		if loaderVarRe.MatchString(a) {
+			return false // BASH_ENV=./x bash waitbus.sh runs ./x first (review r3 P2)
+		}
+	}
 	switch prog := progOf(w); {
 	case waiterProgRe.MatchString(prog):
 		return true
@@ -356,59 +367,196 @@ func shellCommand(argv []string) string {
 	}
 	cmd := argv[i+1]
 	if j := strings.Index(cmd, "eval '"); j >= 0 {
-		cmd, _, _ = strings.Cut(cmd[j+len("eval '"):], "' < /dev/null")
+		cmd = cmd[j+len("eval '"):]
+		if k := strings.LastIndex(cmd, "' < /dev/null"); k >= 0 { // the last: the command may hold the text too (review r4)
+			cmd = cmd[:k]
+		}
 		cmd = strings.NewReplacer(`'"'"'`, "'", `'\''`, "'").Replace(cmd)
 	}
 	return cmd
 }
 
-// waiterCommand says whether a shell command only waits on the bus: each of its simple commands (split at ; & | && ||
-// and newlines outside quotes, # comments left out) is a waiter, one of waiterSteps or a stdinTail, and one is a
-// waiter. "crius-wait && go test" is a job even while it waits: its test starts later, under no session.
-func waiterCommand(cmd string) bool {
-	var steps []string
+// finishedProgs are the programs a waiter shell runs before its waiter (11-18: bus-post …; waitbus.sh) that end with
+// nothing left behind and never run a waiter or another command themselves. An allow list: a deny list of what can
+// detach or defer work (bash -c, eval, trap, setsid, python -c, awk system, tmux -d, a shell function) is never whole.
+// No printf or export: printf -v and export take a name whose array index the shell evaluates as arithmetic, which can
+// run a command stored in a variable (review r3).
+var finishedProgs = map[string]bool{"bus-post": true, "echo": true, "cd": true, "pwd": true, "date": true, "true": true,
+	"false": true, ":": true, "sleep": true, "mkdir": true, "touch": true, "head": true, "cat": true, "ls": true,
+	"wc": true, "git": true}
+
+// gitReads are the git commands that run no other program, given no -c setting and no --ext-diff or --textconv (an
+// alias can be "!cmd &", diff.external a script).
+var gitReads = map[string]bool{"log": true, "status": true, "show": true, "diff": true, "rev-parse": true,
+	"branch": true, "describe": true}
+
+// finishedStep says whether a step that ran in sequence before a waiter now running has finished with nothing left
+// behind, so the waiter running now cannot be this step nor anything it started. It is only assignments, or one of
+// finishedProgs run by its name (bus-post by any path) with no setting before it (GIT_EXTERNAL_DIFF=… git diff); git
+// only with -C and one of gitReads. It holds no $ or ` at all, quoted or not: a variable can hold code the shell runs
+// as it expands ($[x], ${y:x}, zsh ${~x}), and no subshell or command substitution (odd).
+func finishedStep(step string, odd bool) bool {
+	if odd || strings.ContainsAny(step, "$`") {
+		return false
+	}
+	w := strings.Fields(step)
+	k := 0
+	for k < len(w) && assignRe.MatchString(w[k]) {
+		k++
+	}
+	switch prog := ""; {
+	case k == len(w):
+		return true // S=/tmp/s
+	case k > 0:
+		return false
+	case !finishedProgs[filepath.Base(w[0])] || strings.Contains(w[0], "/") && filepath.Base(w[0]) != "bus-post":
+		return false // ./scripts/date is no date
+	case filepath.Base(w[0]) != "git":
+		return true
+	default:
+		i := 1
+		for i+1 < len(w) && w[i] == "-C" {
+			i += 2
+		}
+		if i < len(w) {
+			prog = w[i]
+		}
+		return gitReads[prog] && !slices.ContainsFunc(w[i:], func(a string) bool {
+			return strings.HasPrefix(a, "--ext-diff") || strings.HasPrefix(a, "--textconv")
+		})
+	}
+}
+
+// plainParam says whether text after a $ makes a plain parameter expansion that runs nothing: $name, ${name}, $1,
+// ${10}, a special one ($?, $$ …), or the opening of a $'…' or $"…" quote. Anything else ($[x], ${y:x}, ${!x}, $~x)
+// can run a command a variable holds.
+func plainParam(rest string) bool {
+	if rest == "" {
+		return true
+	}
+	if c := rest[0]; c == '_' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.IndexByte(`$?#!@*-'"`, c) >= 0 {
+		return true
+	}
+	inner, _, ok := strings.Cut(strings.TrimPrefix(rest, "{"), "}")
+	return rest[0] == '{' && ok && paramNameRe.MatchString(inner)
+}
+
+// paramNameRe is the name inside a plain ${…}.
+var paramNameRe = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*|[0-9]+|[?#!@*$-])$`)
+
+// waiterCommand says whether a shell command only waits on the bus: it has a waiter, and each of its simple commands
+// (split at ; & | && || and newlines outside quotes, # comments left out) that can still run is a waiter, one of
+// waiterSteps or a stdinTail. "crius-wait && go test" is a job even while it waits: its test starts later, under no
+// session. atWaiter says a waiter runs under the shell now: then the shell has passed every step chained in sequence
+// (; && || newline) before the first waiter, so they have finished and do not count (bus-post …; waitbus.sh, 11-18).
+// That finished part ends early at a step that could itself be the waiter running now, or could leave work behind
+// (finishedStep). A step joined to the waiter by a pipe, or in a list run with &, runs beside it and still counts. A
+// step that counts and runs a subshell or command substitution (crius-wait; cat <(go test)) is a job.
+func waiterCommand(cmd string, atWaiter bool) bool {
+	const ansi = 1           // quote: inside $'…', where a backslash escapes the next byte
+	var steps, seps []string // seps[i] is the operator after steps[i]
+	var odd []bool           // odd[i]: step i has a (, ), ` or $ other than plainParam that the shell runs
 	var cur strings.Builder
-	quote := byte(0)
+	quote, curOdd, escaped := byte(0), false, -1 // escaped: the index of the last byte a backslash escaped
 	for i := 0; i < len(cmd); i++ {
 		c := cmd[i]
 		switch {
-		case quote == '"' && c == '\\' && i+1 < len(cmd):
+		case (quote == '"' || quote == ansi) && c == '\\' && i+1 < len(cmd):
 			cur.WriteByte(c)
 			i++
 			c = cmd[i]
 		case quote != 0:
-			if c == quote {
+			if c == quote || quote == ansi && c == '\'' {
 				quote = 0
 			}
-		case c == '#' && (cur.Len() == 0 || strings.ContainsRune(" \t", rune(cmd[i-1]))):
+			if quote == '"' && (c == '`' || c == '$' && !plainParam(cmd[i+1:])) {
+				curOdd = true // a substitution or expansion runs inside double quotes too
+			}
+		case c == '#' && (cur.Len() == 0 || strings.ContainsRune(" \t", rune(cmd[i-1])) && escaped != i-1): // "\ #" is a word
 			for i+1 < len(cmd) && cmd[i+1] != '\n' {
 				i++
 			}
 			continue
+		case c == '\'' && ansiQuote(cur.String()):
+			quote = ansi
 		case c == '\'' || c == '"':
 			quote = c
 		case c == '\\' && i+1 < len(cmd):
 			cur.WriteByte(c)
 			i++
-			c = cmd[i]
-		case c == ';' || c == '\n' || (c == '|' || c == '&') && (i == 0 || cmd[i-1] != '>') && (i+1 == len(cmd) || cmd[i+1] != '>'):
-			steps, cur = append(steps, cur.String()), strings.Builder{}
+			c, escaped = cmd[i], i
+		case c == '(' || c == ')' || c == '`' || c == '$' && !plainParam(cmd[i+1:]):
+			curOdd = true
+		case c == '\n' && strings.TrimSpace(cur.String()) == "" && len(seps) > 0 && slices.Contains([]string{"&&", "||", "|"}, seps[len(seps)-1]):
+			continue // a list or pipe goes on past a newline after its operator
+		// a | is a pipe unless after > (>| is a redirect; |> is a pipe into a redirect, review r4); a & beside a > is a
+		// redirect (2>&1, &>)
+		case c == ';' || c == '\n' || c == '|' && (i == 0 || cmd[i-1] != '>') ||
+			c == '&' && (i == 0 || cmd[i-1] != '>') && (i+1 == len(cmd) || cmd[i+1] != '>'):
+			op := string(c)
+			if i+1 < len(cmd) && (c == '&' && cmd[i+1] == '&' || c == '|' && strings.ContainsRune("|&", rune(cmd[i+1])) || c == ';' && cmd[i+1] == ';') {
+				i++
+				op += string(cmd[i])
+			}
+			if op == "|&" { // a pipe of stdout and stderr
+				op = "|"
+			}
+			steps, seps, odd, cur, curOdd = append(steps, cur.String()), append(seps, op), append(odd, curOdd), strings.Builder{}, false
 			continue
 		}
 		cur.WriteByte(c)
 	}
-	waiters := 0
-	for _, st := range append(steps, cur.String()) {
-		w := strings.Fields(st)
-		switch prog := progOf(w); {
-		case prog == "":
-		case isWaiter(w):
-			waiters++
-		case !waiterSteps[prog] && !stdinTail(w):
-			return false
+	steps, seps, odd = append(steps, cur.String()), append(seps, ""), append(odd, curOdd)
+	// pipe[i] numbers the pipeline of step i, list[i] its and-or list (pipelines joined by && or ||); bg marks a list
+	// run with &, all of whose steps run beside what follows
+	pipe, list := make([]int, len(steps)), make([]int, len(steps))
+	bg := map[int]bool{}
+	first := -1 // the pipeline of the first waiter
+	for i, p, l := 0, 0, 0; i < len(steps); i++ {
+		pipe[i], list[i] = p, l
+		if first < 0 && isWaiter(strings.Fields(steps[i])) {
+			first = p
+		}
+		switch seps[i] {
+		case "|":
+		case "&&", "||":
+			p++
+		case "&":
+			bg[l] = true
+			p, l = p+1, l+1
+		default:
+			p, l = p+1, l+1
 		}
 	}
-	return waiters > 0
+	if first < 0 {
+		return false
+	}
+	cut := first // the steps before cut, in sequence, have finished once a waiter runs
+	for i := 0; i < len(steps) && pipe[i] < cut; i++ {
+		if !finishedStep(steps[i], odd[i]) {
+			cut = pipe[i]
+		}
+	}
+	for i, st := range steps {
+		if atWaiter && pipe[i] < cut && !bg[list[i]] {
+			continue // run before the waiter that runs now: finished
+		}
+		w := strings.Fields(st)
+		if prog := progOf(w); odd[i] || prog != "" && !isWaiter(w) && !waiterSteps[prog] && !stdinTail(w) {
+			return false // a subshell or command substitution can run anything
+		}
+	}
+	return true
+}
+
+// ansiQuote says whether a ' after text opens a $'…' quote: the text ends in a $ the shell reads as a $, an odd number
+// of them unescaped ($$ is the shell's pid, \$ a plain $).
+func ansiQuote(text string) bool {
+	n := len(text) - len(strings.TrimRight(text, "$"))
+	if n > 0 && n < len(text) && text[len(text)-n-1] == '\\' {
+		n--
+	}
+	return n%2 == 1
 }
 
 // tabJobs reads Procs' answer (the pane pid, then ps lines) and gives the number of tool shells of the claude in that
@@ -490,7 +638,8 @@ func tabJobs(out string) (shells int, jobs []string, err error) {
 				jobs = append(jobs, fmt.Sprintf("pid %d: %.100s (its command line could not be read)", k.pid, k.args))
 				continue
 			}
-			if cmd := shellCommand(a); !waiterCommand(cmd) || !quiet(k.pid, waiterSteps) {
+			atWaiter := slices.ContainsFunc(kids[k.pid], proc.waiter)
+			if cmd := shellCommand(a); !waiterCommand(cmd, atWaiter) || !quiet(k.pid, waiterSteps) {
 				jobs = append(jobs, fmt.Sprintf("pid %d: %.100s", k.pid, strings.ReplaceAll(cmd, "\n", "; ")))
 			}
 		}
