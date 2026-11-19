@@ -151,7 +151,7 @@ func stuckPrompts(d Deps) (out [][2]string, prompted map[string]bool) {
 		}
 		if s.Thread == "" || d.Thread == nil {
 			out = append(out, [2]string{"prompt:" + key(), fmt.Sprintf("permission prompt unanswered for %d min in %s, waiting call %s; asked at %s, %q (%s); crius-hook's state still shows the dialog open (a long tool run after approval looks the same)",
-				int(waited().Minutes()), name, waitingCall(s.Config, s.SessionID, dialogAgent(s), asked, slack), asked.Format("15:04"), text, strings.Join(about, ", "))})
+				int(waited().Minutes()), name, waitingCall(s.Config, s.SessionID, dialogAgent(s, asked, slack), asked, slack), asked.Format("15:04"), text, strings.Join(about, ", "))})
 			continue
 		}
 		about = append(about, "T3 thread "+s.Thread)
@@ -171,23 +171,28 @@ func stuckPrompts(d Deps) (out [][2]string, prompted map[string]bool) {
 		// The waiting call and T3's count go before the long parts (a T3 thread id runs to 150 characters), so the cut at
 		// MaxLine takes those last.
 		out = append(out, [2]string{"prompt:" + key(), fmt.Sprintf("permission prompt unanswered for %d min in %s, waiting call %s; T3 holds %d open request(s); asked at %s, %q (%s)",
-			int(waited().Minutes()), name, waitingCall(s.Config, s.SessionID, dialogAgent(s), asked, slack), th.Pending, asked.Format("15:04"), text, strings.Join(about, ", "))})
+			int(waited().Minutes()), name, waitingCall(s.Config, s.SessionID, dialogAgent(s, asked, slack), asked, slack), th.Pending, asked.Format("15:04"), text, strings.Join(about, ", "))})
 	}
 	return out, prompted
 }
 
-// dialogAgent names who holds the dialog in question, as crius-hook's state has it: the one whose dialog opened first
-// ("main" or a subagent's id; the line's dialog is the oldest open, else stuckPrompts moved on to that oldest one). ""
-// when it cannot tell: none named, a dialog only a notification opened ("notify", no agent named), or no open times.
-func dialogAgent(s sessionstate.State) string {
-	who, first := "", time.Time{}
+// dialogAgent names who holds the dialog in question, as crius-hook's state has it: the one whose dialog opened last by
+// asked+slack ("main" or a subagent's id), as the dialog in question opened just before its notification line (or is the
+// one opened at asked). A dialog left open from earlier is another one (deep review, 11-20). "" when it cannot tell: none
+// open by then, a dialog only a notification opened ("notify", no agent named), or two open and one with no time.
+func dialogAgent(s sessionstate.State, asked time.Time, slack time.Duration) string {
+	who, last := "", time.Time{}
 	for _, w := range s.Waits {
 		t, ok := s.Opened[w]
-		if !ok && len(s.Waits) > 1 {
-			return ""
+		if !ok {
+			if len(s.Waits) > 1 {
+				return ""
+			}
+			who = w // a file from before crius-hook kept open times: its one dialog
+			break
 		}
-		if who == "" || t.Before(first) {
-			who, first = w, t
+		if !t.After(asked.Add(slack)) && (who == "" || t.After(last)) {
+			who, last = w, t
 		}
 	}
 	if who == "notify" {

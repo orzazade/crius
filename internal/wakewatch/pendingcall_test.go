@@ -69,7 +69,8 @@ func stuckCortex(t *testing.T, at time.Time, config string) (string, *fake) {
 	t.Helper()
 	home := setup(t, map[string]string{"waits.log": permWait(at, cortexSID)})
 	writeState(t, home, cortexSID, `"state":"waiting","event":"Notification","detail":"permission_prompt","time":"`+
-		at.Format(time.RFC3339Nano)+`","cwd":"/Users/me/Projects/cortex","project":"cortex","role":"unknown","t3_thread":"th-cortex","config":"`+config+`"`)
+		at.Format(time.RFC3339Nano)+`","cwd":"/Users/me/Projects/cortex","project":"cortex","role":"unknown","t3_thread":"th-cortex","config":"`+config+`",`+
+		`"waits":["main"],"opened":{"main":"`+at.Add(-6*time.Second).Format(time.RFC3339Nano)+`"}`)
 	return home, &fake{threads: map[string]T3Thread{"th-cortex": {Status: "running", Active: true, Pending: 1, Updated: at}}}
 }
 
@@ -188,7 +189,7 @@ func TestAStuckPromptMasksATokenInTheCommand(t *testing.T) {
 // A long command is cut to one short line, so the rest of the alert still fits.
 func TestAWaitingCallIsCutToOneShortLine(t *testing.T) {
 	at := t0.Add(9 * time.Second)
-	got := waitingCall(cortexTranscript(t, at, "echo start\n"+strings.Repeat("echo y; ", 200)), cortexSID, "", at, 2*time.Second)
+	got := waitingCall(cortexTranscript(t, at, "echo start\n"+strings.Repeat("echo y; ", 200)), cortexSID, "main", at, 2*time.Second)
 	if strings.ContainsAny(got, "\n\r") || len([]rune(got)) > len("Bash: ")+callMax+1 || !strings.HasSuffix(got, "…") {
 		t.Errorf("not one cut line (%d runes): %q", len([]rune(got)), got)
 	}
@@ -244,7 +245,7 @@ func TestAWaitingWriteShowsItsFileNotItsContent(t *testing.T) {
 		transcriptLine(t, "user", at.Add(-time.Second), toolResult("toolu_011ZcffThXYBtu7m2VoLU6sC", false))+
 		transcriptLine(t, "assistant", at, map[string]any{"type": "tool_use", "id": "toolu_w", "name": "Write",
 			"input": map[string]any{"file_path": "/Users/me/.secrets", "content": "TELEGRAM_BOT=8123:AAHplainbutsecret\nother"}}))
-	got := waitingCall(config, cortexSID, "", at, 2*time.Second)
+	got := waitingCall(config, cortexSID, "main", at, 2*time.Second)
 	if got != "Write: content=… file_path=/Users/me/.secrets" {
 		t.Errorf("got %q", got)
 	}
@@ -290,7 +291,7 @@ func TestALongTranscriptIsReadFromItsEnd(t *testing.T) {
 	after := filler(callTail - len(call)) // the call line is the first byte of the last callTail bytes
 	testutil.Write(t, path, filler(1000)+filler(1000)+call+after)
 	config := filepath.Dir(filepath.Dir(dir))
-	if got := waitingCall(config, cortexSID, "", at, 2*time.Second); got != "Bash: git branch -D x" {
+	if got := waitingCall(config, cortexSID, "main", at, 2*time.Second); got != "Bash: git branch -D x" {
 		t.Errorf("a call on the first byte of the part read: %q", got)
 	}
 	// one more byte at the end: the call line now starts one byte before the part read, so it is cut and not seen
@@ -400,7 +401,7 @@ func TestAPromptKnownToTheMinuteLooksAMinuteOn(t *testing.T) {
 	appendTranscript(t, config, filepath.Join(cortexSID, "subagents", "agent-b77.jsonl"),
 		msgUse(t, opened.Add(30*time.Second), "msg_B", bashUse("toolu_b1", "go test ./...")))
 	wake := stuckPlain(t, line, config, `,"waits":["notify"],"opened":{"notify":"`+opened.Format(time.RFC3339Nano)+`"}`, t0.Add(20*time.Minute))
-	if !strings.Contains(wake, "waiting call Bash: git reset --hard;") {
+	if !strings.Contains(wake, "waiting call Bash: git reset --hard (picked by time: crius-hook named no agent);") {
 		t.Errorf("a later dialog: %q", wake)
 	}
 }
@@ -426,5 +427,24 @@ func TestOnlyBashShowsItsCommand(t *testing.T) {
 				"input": map[string]any{"command": "deploy prodsecretvalue", "env": "prod"}}))
 	if got := waitingCall(config, cortexSID, "main", at, 2*time.Second); got != "mcp__ops__run: command=… env=…" {
 		t.Errorf("got %q", got)
+	}
+}
+
+// Two dialogs open: a subagent's left from 09:50 and the main agent's opened just before the 10:00 line. The line's is
+// the main agent's, so its call is named, not the older dialog's (deep review, 11-20). A dialog that opened after the
+// line (the line's was answered, a new one opened within the minute) is not the line's: picked by time, and said.
+func TestTheLinesDialogIsTheOneOpenedJustBeforeIt(t *testing.T) {
+	at := t0.Add(9 * time.Second)
+	config := cortexTranscript(t, at, "git branch -D mine")
+	appendTranscript(t, config, filepath.Join(cortexSID, "subagents", "agent-a01ec.jsonl"),
+		msgUse(t, at.Add(-10*time.Minute), "msg_S", bashUse("toolu_s1", "rm -rf /tmp/old")))
+	opened := func(sub, main time.Duration) string {
+		return `,"waits":["a01ec","main"],"opened":{"a01ec":"` + at.Add(sub).Format(time.RFC3339Nano) + `","main":"` + at.Add(main).Format(time.RFC3339Nano) + `"}`
+	}
+	if wake := stuckPlain(t, permWait(at, cortexSID), config, opened(-10*time.Minute, -6*time.Second), t0.Add(12*time.Minute)); !strings.Contains(wake, "waiting call Bash: git branch -D mine;") {
+		t.Errorf("want the main agent's call: %q", wake)
+	}
+	if wake := stuckPlain(t, permWait(at, cortexSID), config, `,"waits":["main"],"opened":{"main":"`+at.Add(30*time.Second).Format(time.RFC3339Nano)+`"}`, t0.Add(12*time.Minute)); !strings.Contains(wake, "picked by time") {
+		t.Errorf("a dialog opened after the line: %q", wake)
 	}
 }

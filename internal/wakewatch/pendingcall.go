@@ -103,6 +103,8 @@ func openCall(config, sid, agent string, asked time.Time, slack time.Duration) (
 		}
 	}
 	if len(files) == 0 {
+		// picked by time: said, so a guess never reads as sure (deep review, 11-20)
+		note = " (picked by time: crius-hook named no agent)"
 		if agent != "" {
 			note = fmt.Sprintf(" (picked by time: no transcript for agent %s)", agent)
 		}
