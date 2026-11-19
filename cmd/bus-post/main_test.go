@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/orzazade/crius/internal/ownerqueue"
+	"github.com/orzazade/crius/internal/runlog"
 	"github.com/orzazade/crius/internal/testutil"
 )
 
@@ -596,5 +597,22 @@ func TestABareNameLinkedOutOfRunsIsRefused(t *testing.T) {
 	rc, errs := post(t, at("2026-11-10T16:39"), log, "VERIFIED", "crius:lead", "crius:build", "abc1234 · run log link.log")
 	if rc != 2 || !strings.Contains(errs, "is not under") {
 		t.Fatalf("want refused, got rc %d: %s", rc, errs)
+	}
+}
+
+// 11-19: four of Crius's hand-written run logs were refused for header form. A log written by runlog.Write (what
+// crius-runlog runs) is one a VERIFIED line can name, by path, and the line posts.
+func TestARunLogWrittenByRunlogWriteIsTaken(t *testing.T) {
+	home, log := setup(t)
+	p, _, err := runlog.Write(filepath.Join(home, "runs"), "crius-verify-axi-8448-ca96b1d6", "ca96b1d6", "7348",
+		"Crius check of tip tree = QA land tree 8367756a", []string{"gate 7348/0 is ms-flow's run"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rc, errs := post(t, at("2026-11-19T19:02"), log, "VERIFIED", "crius:lead", "axi:lead", "8448 ca96b1d6 · tree compare "+p); rc != 0 {
+		t.Fatalf("rc %d: %s", rc, errs)
+	}
+	if !strings.Contains(busText(t, log), "VERIFIED") {
+		t.Fatal("no VERIFIED line on the bus")
 	}
 }

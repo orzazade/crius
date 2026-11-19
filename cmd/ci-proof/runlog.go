@@ -33,6 +33,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/orzazade/crius/internal/runlog"
 	"github.com/orzazade/crius/internal/store"
 )
 
@@ -183,9 +184,9 @@ func ghRunLog(user, repo string, id int64, out io.Writer) int {
 		others++
 		switch {
 		case o.Status != "completed": // review r2 P2-a: it may still fail; a log written now would stand
-			red = append(red, fmt.Sprintf("run %d (%s) still %s", o.DatabaseID, oneLine(o.WorkflowName), o.Status))
+			red = append(red, fmt.Sprintf("run %d (%s) still %s", o.DatabaseID, runlog.OneLine(o.WorkflowName), o.Status))
 		case slices.Contains([]string{"failure", "timed_out", "startup_failure"}, o.Conclusion):
-			red = append(red, fmt.Sprintf("run %d (%s) %s", o.DatabaseID, oneLine(o.WorkflowName), o.Conclusion))
+			red = append(red, fmt.Sprintf("run %d (%s) %s", o.DatabaseID, runlog.OneLine(o.WorkflowName), o.Conclusion))
 		}
 	}
 	if len(red) > 0 {
@@ -260,9 +261,9 @@ func adoRunLog(org, project string, id int64, out io.Writer) int {
 		}
 		others++
 		if o.Status != "completed" {
-			red = append(red, fmt.Sprintf("build %d (%s) still %s", o.ID, oneLine(o.Definition.Name), o.Status))
+			red = append(red, fmt.Sprintf("build %d (%s) still %s", o.ID, runlog.OneLine(o.Definition.Name), o.Status))
 		} else if o.Result == "failed" || o.Result == "partiallySucceeded" {
-			red = append(red, fmt.Sprintf("build %d (%s) %s", o.ID, oneLine(o.Definition.Name), o.Result))
+			red = append(red, fmt.Sprintf("build %d (%s) %s", o.ID, runlog.OneLine(o.Definition.Name), o.Result))
 		}
 	}
 	if len(red) > 0 {
@@ -302,17 +303,6 @@ func nopass(out io.Writer, file, why string) int {
 // safe makes a name part fit a run log's bare name, which bus-post finds as [A-Za-z0-9][A-Za-z0-9._-]*\.log.
 func safe(s string) string { return strings.Trim(unsafeRe.ReplaceAllString(s, "_"), "_.-") }
 
-// oneLine keeps a CI-given value on its own header line: a title with a newline must not start a `pass:` or `sha:`
-// line of its own.
-func oneLine(s string) string {
-	return strings.Join(strings.Fields(strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f || r == ' ' || r == ' ' || r == '\u0085' {
-			return ' '
-		}
-		return r
-	}, s)), " ")
-}
-
 // writeRunLog writes the run log under ~/.crius/runs through a temp file and a rename, so a reader never sees half
 // a header; the first two lines are the `sha:` and `pass:` bus-post checks.
 func writeRunLog(out io.Writer, name, sha string, fields []string) int {
@@ -322,9 +312,9 @@ func writeRunLog(out io.Writer, name, sha string, fields []string) int {
 		return 2
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "sha: %s\npass: 1\n", sha)
+	b.WriteString(runlog.Header(sha, 1))
 	for _, f := range fields {
-		b.WriteString(oneLine(f) + "\n")
+		b.WriteString(runlog.OneLine(f) + "\n")
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fail(err)
