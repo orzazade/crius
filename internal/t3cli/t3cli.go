@@ -80,6 +80,8 @@ type Show struct {
 		UpdatedAt   string  `json:"updatedAt"`
 		Settled     bool    `json:"settled"`
 		Archived    bool    `json:"archived"`
+		// "subagent" for a thread T3 started with delegate_task, "fork" for a fork, null for a top-level thread
+		RelationshipToParent string `json:"relationshipToParent"`
 	} `json:"thread"`
 	Messages []struct {
 		Role  string `json:"role"`

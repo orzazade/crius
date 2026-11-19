@@ -191,3 +191,25 @@ func TestThreadShortOfBudgetGetsWhatIsLeft(t *testing.T) {
 		t.Fatalf("the call had %sms, more than was left: %v", m[1], err)
 	}
 }
+
+// The shape `t3 thread show --json` printed on 11-20 for crius-runlog, a child Crius started with delegate_task (fields cut
+// to the ones read, plus the lineage ones T3 adds): relationshipToParent "subagent" marks it. A top-level thread has null.
+const childJSON = `{"thread":{"threadId":"thread:delegated-task:command%3Amcp%3Ac9bc86ee%3Adelegate-task%3Ae2cdb650",
+"title":"night: crius-runlog","createdBy":"agent","creationSource":"mcp","status":"completed","activeRunId":null,
+"parentThreadId":"mcp:337dfff5","relationshipToParent":"subagent","runCount":1,"pendingRequestCount":0,"archived":false,
+"settled":false,"updatedAt":"2026-11-19T20:01:36.902Z"},
+"messages":[{"role":"assistant","runId":"r1","text":"commit attribution line was dropped because your no-AI-credit hook blocks it. ✅"}]}`
+
+func TestThreadReadsADelegateChild(t *testing.T) {
+	dir := fakeT3(t)
+	put(t, dir, "out", childJSON)
+	if th, err := thread("x"); err != nil || !th.Child || th.Status != "completed" {
+		t.Fatalf("a delegate child: %+v %v", th, err)
+	}
+	for _, rel := range []string{`null`, `"fork"`} {
+		put(t, dir, "out", strings.Replace(childJSON, `"subagent"`, rel, 1))
+		if th, err := thread("x"); err != nil || th.Child {
+			t.Fatalf("relationshipToParent %s read as a child: %+v %v", rel, th, err)
+		}
+	}
+}

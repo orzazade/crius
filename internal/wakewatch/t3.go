@@ -40,7 +40,8 @@ func CriusThread(home string) (string, error) {
 // T3Thread is what `t3 thread show --json` tells of a thread: its status ("running", "completed", …), whether a run is
 // open (activeRunId), how many requests (an approval or a question) wait on someone, when it last changed, its newest
 // assistant message ("" when the messages read hold none), whether a user message came after that reply, and whether
-// the owner or Crius settled or archived it (T3's sign that nobody wants more from the thread).
+// the owner or Crius settled or archived it (T3's sign that nobody wants more from the thread). Child says T3 started it
+// for a parent thread with delegate_task (relationshipToParent "subagent"): T3 hands its result to that parent.
 type T3Thread struct {
 	Status     string
 	Active     bool
@@ -49,6 +50,7 @@ type T3Thread struct {
 	LastReply  string
 	Unanswered bool
 	Settled    bool
+	Child      bool
 }
 
 // ErrT3NoAnswer marks a t3 call that said nothing in its whole per-call limit: the T3 server hangs, so the check that
@@ -71,7 +73,7 @@ func t3Stop(err error) string {
 }
 
 const (
-	t3IdleAfter = 10 * time.Minute // a thread whose last reply ends on neither ⏳ nor ❓, or that waits on a request
+	t3IdleAfter = 10 * time.Minute // a thread whose last reply ends on neither ⏳ nor ❓ (✅ or none), or that waits on a request
 	t3WaitAfter = 45 * time.Minute // a thread whose last reply ends on ⏳, with no bus line from its role in that time
 	t3Tail      = 80               // how much of the last reply the alert quotes, in characters
 )
@@ -228,7 +230,7 @@ func t3Idle(d Deps, ss []Session, sesErr error, watch projects, park parked, pro
 			}
 			continue
 		}
-		if th.Settled {
+		if th.Settled || finishedChild(th) {
 			continue
 		}
 		name := fmt.Sprintf("%s · %s (T3 thread %s)", project, role, id)
@@ -293,10 +295,30 @@ func t3Idle(d Deps, ss []Session, sesErr error, watch projects, park parked, pro
 					name, idle, int(quiet.Minutes()), why, tail)})
 			}
 		default:
-			out = append(out, [2]string{key, fmt.Sprintf("%s is idle %d min: not running, and its last reply ends on neither ⏳ nor ❓. %s", name, idle, tail)})
+			out = append(out, [2]string{key, fmt.Sprintf("%s is idle %d min: not running, and its last reply ends on %s, not ⏳ or ❓. %s", name, idle, markName(mark), tail)})
 		}
 	}
 	return out
+}
+
+// finishedChild says th is a child T3 started for a parent thread with delegate_task, whose run completed and that asks
+// nothing: T3 handed its result to the parent, which follows it up, so the child is done, not idle (11-20 00:1x: the
+// night delegate crius-runlog woke Crius as idle 13 min on its closing ✅). A child still running, one whose run failed,
+// was interrupted or cancelled, one with an open request or an unanswered message, one with no reply in the messages
+// read, and one that ends on ❓ or ⏳ is checked as any thread. A parent that is gone or settled no longer follows the
+// result up; that is the parent's own idle check, not the child's.
+func finishedChild(th T3Thread) bool {
+	mark := statusMark(th.LastReply)
+	return th.Child && th.Status == "completed" && !th.Active && th.Pending == 0 && !th.Unanswered &&
+		strings.TrimSpace(th.LastReply) != "" && mark != "❓" && mark != "⏳"
+}
+
+// markName names the status mark a reply ends on for an alert: the mark, or "no status mark".
+func markName(mark string) string {
+	if mark == "" {
+		return "no status mark"
+	}
+	return mark
 }
 
 // statusMark gives the newest of ❓, ✅ and ⏳ in text, "" when it has none.

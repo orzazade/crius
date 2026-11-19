@@ -330,3 +330,93 @@ func TestASpentT3BudgetStopsTheReadsWithoutBlamingAHang(t *testing.T) {
 		t.Fatalf("want one failure per role, each blaming slow answers, none a hang: %q", hit)
 	}
 }
+
+// 11-20 00:1x live: "WAKEWATCH: crius · crius-runlog (T3 thread thread:delegated-task:…) is idle 13 min: not running, and
+// its last reply ends on neither ⏳ nor ❓. Last reply: … ✅". That thread was a child Crius started with T3's delegate_task
+// (relationshipToParent "subagent"); its run completed on ✅ and T3 handed the result to Crius. A finished child is done,
+// not idle. A child whose run failed, one with an open request or an unanswered message, and one past 45 min on ⏳ still
+// wake Crius as any thread does; a running child and one that asks the owner (❓) stay quiet, as any thread does.
+func TestAFinishedDelegateChildStaysQuietAndOthersStillWake(t *testing.T) {
+	const runlog = "commit attribution line was dropped because your no-AI-credit hook blocks it. ✅"
+	home := threadHome(t, "done", "nomark", "run", "fail", "ask", "req", "msg", "plain", "job")
+	idle := t0.Add(-13 * time.Minute)
+	f := &fake{threads: map[string]T3Thread{
+		"th-done":   {Status: "completed", Child: true, Updated: idle, LastReply: runlog},
+		"th-nomark": {Status: "completed", Child: true, Updated: idle, LastReply: "built it, committed on night/x."},
+		"th-run":    {Status: "running", Child: true, Updated: idle, LastReply: runlog},
+		"th-fail":   {Status: "failed", Child: true, Updated: idle, LastReply: runlog},
+		"th-ask":    {Status: "completed", Child: true, Updated: idle, LastReply: "Which branch do I build on? ❓"},
+		"th-req":    {Status: "waiting", Child: true, Pending: 1, Updated: idle, LastReply: runlog},
+		"th-msg":    {Status: "completed", Child: true, Unanswered: true, Updated: idle, LastReply: runlog},
+		"th-plain":  {Status: "completed", Updated: idle, LastReply: runlog},
+		"th-job":    {Status: "completed", Child: true, Updated: t0.Add(-46 * time.Minute), LastReply: "CI runs as job b7. ⏳"},
+	}}
+	runOnce(t, home, f, t0)
+	for _, id := range []string{"th-done", "th-nomark", "th-run", "th-fail", "th-ask", "th-req", "th-msg", "th-plain", "th-job"} {
+		verdict := "quiet"
+		if w := t3Wakes(f, "T3 thread "+id+")"); len(w) > 0 {
+			verdict = "WAKES: " + w[0]
+		}
+		th := f.threads[id]
+		t.Logf("%-9s child=%-5v status=%-9s → %s", id, th.Child, th.Status, verdict) // the morning demo reads these with -v
+	}
+	for _, quiet := range []string{"th-done", "th-nomark", "th-ask"} {
+		if w := t3Wakes(f, "T3 thread "+quiet+")"); len(w) != 0 {
+			t.Errorf("%s woke Crius: %q", quiet, w)
+		}
+	}
+	// th-run is not idle: a running thread never wakes Crius, child or not (it alerts later, once it stops)
+	for _, loud := range []string{"th-fail", "th-req", "th-msg", "th-plain", "th-job"} {
+		if w := t3Wakes(f, "T3 thread "+loud+")"); len(w) != 1 {
+			t.Errorf("%s: want one wake, got %q", loud, w)
+		}
+	}
+	if w := t3Wakes(f, "T3 thread th-run)"); len(w) != 0 {
+		t.Errorf("a running child woke Crius: %q", w)
+	}
+}
+
+// The same 00:1x alert said the reply "ends on neither ⏳ nor ❓" while it ended on ✅: true, but it hid the mark it did end
+// on. The alert names the mark the reply ends on, or says it has none.
+func TestAnIdleT3AlertNamesTheMarkTheReplyEndsOn(t *testing.T) {
+	home := threadHome(t, "api", "ms")
+	f := &fake{threads: map[string]T3Thread{
+		"th-api": {Status: "completed", Updated: t0.Add(-13 * time.Minute), LastReply: "all done ✅"},
+		"th-ms":  {Status: "failed", Updated: t0.Add(-13 * time.Minute), LastReply: "the build broke"},
+	}}
+	runOnce(t, home, f, t0)
+	if w := t3Wakes(f, "th-api"); len(w) != 1 || !strings.Contains(w[0], "its last reply ends on ✅") {
+		t.Errorf("a ✅ reply: %q", w)
+	}
+	if w := t3Wakes(f, "th-ms"); len(w) != 1 || !strings.Contains(w[0], "its last reply ends on no status mark") {
+		t.Errorf("a reply with no mark: %q", w)
+	}
+}
+
+// finishedChild alone: only a child whose run completed and that asks nothing and waits on no job of its own is done.
+func TestFinishedChildIsOnlyACompletedChildThatAsksNothing(t *testing.T) {
+	done := T3Thread{Status: "completed", Child: true, LastReply: "built it ✅"}
+	for name, c := range map[string]struct {
+		th   T3Thread
+		want bool
+	}{
+		"completed on ✅":        {done, true},
+		"completed, no mark":    {T3Thread{Status: "completed", Child: true, LastReply: "built it"}, true},
+		"✅ then ❓ last":         {T3Thread{Status: "completed", Child: true, LastReply: "built ✅. Which branch? ❓"}, false},
+		"❓ then ✅ last":         {T3Thread{Status: "completed", Child: true, LastReply: "Asked? ❓ Settled, built ✅"}, true},
+		"ends on ⏳":             {T3Thread{Status: "completed", Child: true, LastReply: "CI runs ⏳"}, false},
+		"not a child":           {T3Thread{Status: "completed", LastReply: "built it ✅"}, false},
+		"failed":                {T3Thread{Status: "failed", Child: true, LastReply: "built it ✅"}, false},
+		"interrupted":           {T3Thread{Status: "interrupted", Child: true, LastReply: "built it ✅"}, false},
+		"cancelled":             {T3Thread{Status: "cancelled", Child: true, LastReply: "built it ✅"}, false},
+		"idle":                  {T3Thread{Status: "idle", Child: true, LastReply: "built it ✅"}, false},
+		"open run":              {T3Thread{Status: "completed", Child: true, Active: true, LastReply: "built it ✅"}, false},
+		"open request":          {T3Thread{Status: "completed", Child: true, Pending: 1, LastReply: "built it ✅"}, false},
+		"message after its end": {T3Thread{Status: "completed", Child: true, Unanswered: true, LastReply: "built it ✅"}, false},
+		"no reply read":         {T3Thread{Status: "completed", Child: true}, false},
+	} {
+		if got := finishedChild(c.th); got != c.want {
+			t.Errorf("%s: finishedChild = %v, want %v", name, got, c.want)
+		}
+	}
+}
