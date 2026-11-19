@@ -31,6 +31,7 @@ var sidRe = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 // permPrompt is one permission prompt the hook logged.
 type permPrompt struct {
 	at                    time.Time
+	exact                 bool // at holds the second the hook named (else only its minute is known)
 	title, cwd, sid, text string
 }
 
@@ -47,6 +48,9 @@ type permPrompt struct {
 //
 // While "waiting", the dialog in question is the line's, unless the state shows the open dialog started over a minute
 // after it: then it is a later one that logged no line (a subagent's), timed and keyed from its own start (Opened).
+//
+// A stuck-prompt wake names the call the dialog waits on, read from the session's transcript (waitingCall, pendingcall.go),
+// so Crius can tell a lead to redo it another way or ask the owner (11-19: "use Bash" alone named no command).
 //
 // Crius's own thread is left out; parked teams are not, as a prompt blocks a parked role too. A state that cannot be
 // read, or a thread T3 cannot show, is a loud "could not tell" wake of its own (key prompt-unread:, held a run as every
@@ -90,6 +94,12 @@ func stuckPrompts(d Deps) (out [][2]string, prompted map[string]bool) {
 		}
 		// the dialog in question: the line's, until the state shows a later one open
 		asked, text := p.at, p.text
+		// how long after asked the waiting call may have started: the dialog opens after its call is written, and the
+		// hook's time is to the second (to the minute when it named no second of that minute)
+		slack := 2 * time.Second
+		if !p.exact {
+			slack = time.Minute
+		}
 		key := func() string { return p.sid + ":" + asked.UTC().Format(time.RFC3339) }
 		waited := func() time.Duration { return d.Now.Sub(asked) }
 		name, about := fmt.Sprintf("%q", p.title), []string{"cwd " + p.cwd, "session " + p.sid}
@@ -134,14 +144,14 @@ func stuckPrompts(d Deps) (out [][2]string, prompted map[string]bool) {
 		// the line's was answered and this is a later one that logged no line of its own (a subagent's). It is timed
 		// and keyed from its own start. A file from before crius-hook kept Opened has no start: the line's time stands.
 		if o, ok := s.OldestOpen(); ok && o.After(p.at.Add(time.Minute)) {
-			asked, text = o, "a later dialog that logged no notification line of its own"
+			asked, text, slack = o, "a later dialog that logged no notification line of its own", 2*time.Second
 		}
 		if waited() < promptAfter {
 			continue
 		}
 		if s.Thread == "" || d.Thread == nil {
-			out = append(out, [2]string{"prompt:" + key(), fmt.Sprintf("permission prompt unanswered for %d min in %s: asked at %s, %q; crius-hook's state still shows the dialog open (a long tool run after approval looks the same)",
-				int(waited().Minutes()), where(), asked.Format("15:04"), text)})
+			out = append(out, [2]string{"prompt:" + key(), fmt.Sprintf("permission prompt unanswered for %d min in %s, waiting call %s; asked at %s, %q (%s); crius-hook's state still shows the dialog open (a long tool run after approval looks the same)",
+				int(waited().Minutes()), name, waitingCall(s.Config, s.SessionID, dialogAgent(s), asked, slack), asked.Format("15:04"), text, strings.Join(about, ", "))})
 			continue
 		}
 		about = append(about, "T3 thread "+s.Thread)
@@ -158,10 +168,32 @@ func stuckPrompts(d Deps) (out [][2]string, prompted map[string]bool) {
 		if th.Pending == 0 {
 			continue // no open request: answered, or the approved tool still runs
 		}
-		out = append(out, [2]string{"prompt:" + key(), fmt.Sprintf("permission prompt unanswered for %d min in %s: asked at %s, %q; T3 holds %d open request(s)",
-			int(waited().Minutes()), where(), asked.Format("15:04"), text, th.Pending)})
+		// The waiting call and T3's count go before the long parts (a T3 thread id runs to 150 characters), so the cut at
+		// MaxLine takes those last.
+		out = append(out, [2]string{"prompt:" + key(), fmt.Sprintf("permission prompt unanswered for %d min in %s, waiting call %s; T3 holds %d open request(s); asked at %s, %q (%s)",
+			int(waited().Minutes()), name, waitingCall(s.Config, s.SessionID, dialogAgent(s), asked, slack), th.Pending, asked.Format("15:04"), text, strings.Join(about, ", "))})
 	}
 	return out, prompted
+}
+
+// dialogAgent names who holds the dialog in question, as crius-hook's state has it: the one whose dialog opened first
+// ("main" or a subagent's id; the line's dialog is the oldest open, else stuckPrompts moved on to that oldest one). ""
+// when it cannot tell: none named, a dialog only a notification opened ("notify", no agent named), or no open times.
+func dialogAgent(s sessionstate.State) string {
+	who, first := "", time.Time{}
+	for _, w := range s.Waits {
+		t, ok := s.Opened[w]
+		if !ok && len(s.Waits) > 1 {
+			return ""
+		}
+		if who == "" || t.Before(first) {
+			who, first = w, t
+		}
+	}
+	if who == "notify" {
+		return ""
+	}
+	return who
 }
 
 // promptSession finds crius-hook's state file of the session the prompt names by its first 8 characters; when several
@@ -202,11 +234,12 @@ func parsePrompt(line string, now time.Time) (permPrompt, bool) {
 	if err != nil {
 		return permPrompt{}, false
 	}
-	if m[5] == m[1][len(m[1])-5:] { // at= names the same minute as the stamp (the hook takes both from one clock read)
+	exact := m[5] == m[1][len(m[1])-5:] // at= names the same minute as the stamp (the hook takes both from one clock read)
+	if exact {
 		sec, _ := strconv.Atoi(m[6])
 		t = t.Add(time.Duration(sec) * time.Second)
 	}
-	return permPrompt{at: t, title: m[2], cwd: m[3], sid: m[4], text: m[7]}, true
+	return permPrompt{at: t, exact: exact, title: m[2], cwd: m[3], sid: m[4], text: m[7]}, true
 }
 
 // tailSince gives the lines at the end of the file from about since on: it reads back from the end, more each time,
