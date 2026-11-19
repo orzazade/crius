@@ -97,14 +97,13 @@ func TestAWaitingRoleCountsANewerBusLineFromAnotherRole(t *testing.T) {
 	}
 }
 
-// A waiter, but nothing it named is in flight: today's alert, with why it is not held.
-func TestAWaiterWithNoItemInFlightStillAlerts(t *testing.T) {
+// A waiter, but nothing it named is in flight (11-19): its live waiter still holds it, on its bus, until 2 h quiet.
+func TestAWaiterWithNoItemInFlightHoldsItOnItsBus(t *testing.T) {
 	home := threadHome(t, "qa")
 	f := waitingFake(50 * time.Minute)
 	runOnce(t, home, f, t0)
-	w := t3Wakes(f)
-	if len(w) != 1 || !strings.Contains(w[0], "its job may be gone") || !strings.Contains(w[0], "Not held as waiting: none of R3.C4, 5521 is in flight") {
-		t.Fatalf("want today's alert, naming the items it looked for: %q", w)
+	if w := t3Wakes(f); len(w) != 0 {
+		t.Fatalf("a role with a live waiter was alerted: %q", w)
 	}
 }
 
@@ -230,9 +229,9 @@ func TestAStaleLineAboutTheItemDoesNotHold(t *testing.T) {
 	home := threadHome(t, "qa")
 	f := waitingFake(50 * time.Minute)
 	testutil.Write(t, filepath.Join(home, "bus", "quotes.log"), stamp(t0.Add(-72*time.Hour))+" INFO quotes:build -> quotes:lead — 5521 record run started\n")
-	runOnce(t, home, f, t0)
-	if w := t3Wakes(f); len(w) != 1 || !strings.Contains(w[0], "Not held as waiting") {
-		t.Fatalf("a 3-day-old line held the alert: %q", w)
+	runOnce(t, home, f, t0.Add(71*time.Minute))
+	if w := t3Wakes(f); len(w) != 1 || !strings.Contains(w[0], "WAITING ON ITS BUS") {
+		t.Fatalf("a 3-day-old line made it wait on 5521: %q", w)
 	}
 }
 

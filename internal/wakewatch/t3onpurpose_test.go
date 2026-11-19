@@ -156,8 +156,9 @@ func TestAPassedNamedTimeIsNoPurpose(t *testing.T) {
 	home := leadHome(t)
 	f := onPurposeFake("lead", "Files re-read.\n\n⏳ The 21:00 check of the history count is scheduled; the bus listener is running.", 50*time.Minute)
 	runOnce(t, home, f, t0)
-	if w := t3Wakes(f); len(w) != 1 || !strings.Contains(w[0], "its job may be gone") || !strings.Contains(w[0], "none of 1306 is in flight") {
-		t.Fatalf("a check named for 21:00, at 22:00 not run: want today's alert: %q", w)
+	if w := t3Wakes(f); len(w) != 1 || !strings.Contains(w[0], "its job may be gone") || !strings.Contains(w[0], "the time it named passed") ||
+		!strings.Contains(w[0], "The 21:00 check of the history count is scheduled") {
+		t.Fatalf("a check named for 21:00, at 22:00 not run: want the alert naming it: %q", w)
 	}
 }
 
@@ -178,20 +179,24 @@ func TestAnItemInFlightComesBeforePurposeWords(t *testing.T) {
 }
 
 // An older "Idle" bus line does not speak for a later reply that took up an item (review P2-1), and one days old says
-// nothing of now (review P3-1): today's alert in both.
+// nothing of now (review P3-1): no IDLE line in both; its live waiter holds it on its bus (11-19), until 2 h quiet.
 func TestAnOldIdleBusLineIsNoPurpose(t *testing.T) {
 	for _, c := range []struct {
-		name, line, reply, want string
+		name, line, reply string
 	}{
-		{"older than a reply that names an item", stamp(t0.Add(-100 * time.Minute)), "Took 5521 from build. ⏳ Suite for 5521 running in the background.", "none of 5521 is in flight"},
-		{"days old", stamp(t0.Add(-72 * time.Hour)), "Resumed fresh. Next is the partners fix, once build posts it. ⏳", "name no item"},
+		{"older than a reply that names an item", stamp(t0.Add(-100 * time.Minute)), "Took 5521 from build. ⏳ Suite for 5521 running in the background."},
+		{"days old", stamp(t0.Add(-72 * time.Hour)), "Resumed fresh. Next is the partners fix, once build posts it. ⏳"},
 	} {
 		home := threadHome(t, "qa")
 		f := onPurposeFake("qa", c.reply, 50*time.Minute)
 		testutil.Write(t, filepath.Join(home, "bus", "quotes.log"), c.line+" INFO quotes:qa -> crius:lead — Idle: no build NEED/READY. Bus waiter armed.\n")
 		runOnce(t, home, f, t0)
-		if w := t3Wakes(f); len(w) != 1 || !strings.Contains(w[0], "its job may be gone") || !strings.Contains(w[0], c.want) {
-			t.Errorf("%s: want today's alert naming %q: %q", c.name, c.want, w)
+		if w := t3Wakes(f); len(w) != 0 {
+			t.Errorf("%s: want it held on its bus, no line: %q", c.name, w)
+		}
+		runOnce(t, home, f, t0.Add(71*time.Minute))
+		if w := t3Wakes(f); len(w) != 1 || !strings.Contains(w[0], "WAITING ON ITS BUS") {
+			t.Errorf("%s: quiet 121 min, want the bus alert, not IDLE on purpose: %q", c.name, w)
 		}
 	}
 }
@@ -271,13 +276,17 @@ func TestPurposeWordsDoNotHideALandedItem(t *testing.T) {
 }
 
 // Review r3 P2: an "Idle" bus line from before the turn that ended on ⏳ does not speak for a reply that took up work
-// but names no item.
+// but names no item: no IDLE line; its live waiter holds it on its bus (11-19) until 2 h quiet.
 func TestAnIdleLineFromAnEarlierTurnIsNoPurpose(t *testing.T) {
 	home := threadHome(t, "qa")
 	f := onPurposeFake("qa", "Started the full regression suite in the background; I will report when it ends. ⏳", 50*time.Minute)
 	testutil.Write(t, filepath.Join(home, "bus", "quotes.log"), stamp(t0.Add(-80*time.Minute))+" INFO quotes:qa -> crius:lead — Idle: no build NEED/READY.\n")
 	runOnce(t, home, f, t0)
-	if w := t3Wakes(f); len(w) != 1 || !strings.Contains(w[0], "its job may be gone") {
-		t.Fatalf("an Idle line 30 min before the reply held the alert: %q", w)
+	if w := t3Wakes(f); len(w) != 0 {
+		t.Fatalf("want it held on its bus, no line: %q", w)
+	}
+	runOnce(t, home, f, t0.Add(71*time.Minute))
+	if w := t3Wakes(f); len(w) != 1 || !strings.Contains(w[0], "WAITING ON ITS BUS") {
+		t.Fatalf("an Idle line 30 min before the reply was read as its purpose: %q", w)
 	}
 }

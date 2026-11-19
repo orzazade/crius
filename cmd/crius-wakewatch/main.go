@@ -251,17 +251,19 @@ func restoreFolders(b []byte) ([]string, error) {
 	return out, nil
 }
 
-// procs lists every process with its parent and command line.
+// procs lists every process with its parent, start and command line.
 func procs() ([]wakewatch.Proc, error) {
-	out, err := exec.Command("ps", "-axww", "-o", "pid=,ppid=,command=").Output()
+	now := time.Now()
+	out, err := exec.Command("ps", "-axww", "-o", "pid=,ppid=,etime=,command=").Output()
 	if err != nil {
-		return nil, fmt.Errorf("ps -axww -o pid=,ppid=,command=: %v", err)
+		return nil, fmt.Errorf("ps -axww -o pid=,ppid=,etime=,command=: %v", err)
 	}
-	return parseProcs(string(out))
+	return parseProcs(string(out), now)
 }
 
-// parseProcs reads ps lines of "pid ppid command"; a line that does not read is an error, never a missing process.
-func parseProcs(ps string) ([]wakewatch.Proc, error) {
+// parseProcs reads ps lines of "pid ppid etime command", etime counted back from now; a line that does not read is an
+// error, never a missing process.
+func parseProcs(ps string, now time.Time) ([]wakewatch.Proc, error) {
 	var out []wakewatch.Proc
 	for _, line := range strings.Split(ps, "\n") {
 		f := strings.Fields(line)
@@ -274,15 +276,38 @@ func parseProcs(ps string) ([]wakewatch.Proc, error) {
 		if len(f) > 1 {
 			ppid, err2 = strconv.Atoi(f[1])
 		}
-		if err := errors.Join(err1, err2); err != nil {
+		var age time.Duration
+		var err3 error = errors.New("no etime")
+		if len(f) > 2 {
+			age, err3 = etime(f[2])
+		}
+		if err := errors.Join(err1, err2, err3); err != nil {
 			return nil, fmt.Errorf("ps line %q: %v", line, err)
 		}
-		out = append(out, wakewatch.Proc{PID: pid, PPID: ppid, Command: strings.Join(f[2:], " ")})
+		out = append(out, wakewatch.Proc{PID: pid, PPID: ppid, Start: now.Add(-age).Truncate(time.Second), Command: strings.Join(f[3:], " ")})
 	}
 	if len(out) == 0 {
 		return nil, errors.New("ps listed no process")
 	}
 	return out, nil
+}
+
+// etimeRe is ps's elapsed time, "[[dd-]hh:]mm:ss" (macOS and Linux procps).
+var etimeRe = regexp.MustCompile(`^(?:(?:(\d+)-)?(\d{1,2}):)?([0-5]?\d):([0-5]\d)$`)
+
+// etime reads ps's elapsed time.
+func etime(s string) (time.Duration, error) {
+	m := etimeRe.FindStringSubmatch(s)
+	if m == nil {
+		return 0, fmt.Errorf("etime %q", s)
+	}
+	n := [4]int{}
+	for i, v := range m[1:] {
+		if v != "" {
+			n[i], _ = strconv.Atoi(v) // digits only (etimeRe)
+		}
+	}
+	return time.Duration(((n[0]*24+n[1])*60+n[2])*60+n[3]) * time.Second, nil
 }
 
 // waiters gives the bus logs Crius's live waiters cover (waiterLogs), from every process's command line.

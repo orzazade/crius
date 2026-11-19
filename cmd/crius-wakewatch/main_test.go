@@ -779,12 +779,19 @@ func TestWaiterLogsOfAWatchDirWaiterAreEveryLogThere(t *testing.T) {
 
 // ps lines read into processes; a line that does not read, or an empty list, is an error (never "no waiter").
 func TestParseProcs(t *testing.T) {
-	ps, err := parseProcs("  500     1 claude --resume\n16713 16710 /bin/bash /x/team-wait.sh --role qa-backend-2\n")
+	now := time.Date(2026, 11, 19, 20, 57, 54, 0, time.Local)
+	ps, err := parseProcs("  500     1 2-03:04:05 claude --resume\n16713 16710    47:24 /bin/bash /x/team-wait.sh --role qa-backend-2\n", now)
 	if err != nil || len(ps) != 2 || ps[1].PID != 16713 || ps[1].PPID != 16710 || ps[1].Command != "/bin/bash /x/team-wait.sh --role qa-backend-2" {
 		t.Fatalf("%+v %v", ps, err)
 	}
-	for _, bad := range []string{"", "x 1 cmd\n", "12\n"} {
-		if _, err := parseProcs(bad); err == nil {
+	if want := now.Add(-47*time.Minute - 24*time.Second); !ps[1].Start.Equal(want) {
+		t.Errorf("start %v, want %v", ps[1].Start, want)
+	}
+	if want := now.Add(-(2*24+3)*time.Hour - 4*time.Minute - 5*time.Second); !ps[0].Start.Equal(want) {
+		t.Errorf("start %v, want %v", ps[0].Start, want)
+	}
+	for _, bad := range []string{"", "x 1 00:01 cmd\n", "12\n", "12 1 cmd\n", "12 1 1:60 cmd\n", "12 1 2-05:06 cmd\n", "12 1 +5:00 cmd\n", "12 1 99:00 cmd\n"} {
+		if _, err := parseProcs(bad, now); err == nil {
 			t.Errorf("%q: no error", bad)
 		}
 	}

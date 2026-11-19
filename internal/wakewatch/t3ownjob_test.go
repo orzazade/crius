@@ -77,20 +77,25 @@ func TestARoleWhoseOwnBackgroundJobRunsIsNotIdle(t *testing.T) {
 }
 
 // The job ended or died: only Claude Code's own helpers (the stdin watchdog shell, an MCP server) and the bus waiter are
-// left under the claude. None of them is a job, so the alert stays and says that no job of its own was found.
-func TestARoleWhoseOwnJobDiedStillAlerts(t *testing.T) {
+// left under the claude. None of them is a job, so nothing names one; the live bus waiter still holds the role on its
+// bus (night/t3-waiter-idle, landed with this on 11-20) until t3WaitingFor, and that alert names its bus, not a job.
+func TestARoleWhoseOwnJobDiedIsHeldOnItsBusOnly(t *testing.T) {
 	home, f := ownJobFake(t, 49*time.Minute)
 	runOnce(t, home, f, t0)
+	if w := t3Wakes(f); len(w) != 0 {
+		t.Fatalf("a role with a live bus waiter alerted before t3WaitingFor: %q", w)
+	}
+	home, f = ownJobFake(t, 121*time.Minute)
+	runOnce(t, home, f, t0)
 	w := t3Wakes(f)
-	if len(w) != 1 || !strings.Contains(w[0], "its job may be gone") || !strings.Contains(w[0], "none of 8454, 8452 is in flight") ||
-		!strings.Contains(w[0], "no background job of its own runs under its claude") {
-		t.Fatalf("want today's alert, saying no job of its own runs: %q", w)
+	if len(w) != 1 || !strings.Contains(w[0], "WAITING ON ITS BUS") || strings.Contains(w[0], "its own background job") {
+		t.Fatalf("want one bus alert past 2 h that names no job: %q", w)
 	}
 	// a job left behind by an earlier claude (reparented to launchd) is no job of this one
-	home, f = ownJobFake(t, 49*time.Minute, gateJob...)
+	home, f = ownJobFake(t, 121*time.Minute, gateJob...)
 	f.procs[slices.IndexFunc(f.procs, func(p Proc) bool { return p.PID == 110 })].PPID = 1
 	runOnce(t, home, f, t0)
-	if w := t3Wakes(f); len(w) != 1 || !strings.Contains(w[0], "its job may be gone") {
-		t.Fatalf("an orphaned job held the alert: %q", w)
+	if w := t3Wakes(f); len(w) != 1 || strings.Contains(w[0], "its own background job") {
+		t.Fatalf("an orphaned job was named as its own: %q", w)
 	}
 }

@@ -24,9 +24,18 @@ const purposeTurn = 15 * time.Minute
 
 // waitHold is what a waiting role waits on: the item it named, who has it in flight, and the waiter that will wake it.
 // purpose is set instead of item when it is idle on purpose (purposeIn): the words that say it has no work or name
-// what it waits for.
+// what it waits for. With neither, it waits on its bus: the waiter alone holds it, and named lists the items it named
+// that nothing has in flight.
 type waitHold struct {
-	item, by, waiter, purpose string
+	item, by, waiter, purpose, named string
+}
+
+// onBusText says a hold on the bus, with the items it named: "no item in flight; named 5521".
+func (h waitHold) onBusText() string {
+	if h.named == "" {
+		return "no item in flight"
+	}
+	return "no item in flight; named " + h.named
 }
 
 var (
@@ -60,6 +69,22 @@ func purposeIn(text string, since, now time.Time) string {
 			}
 			return c
 		}
+	}
+	return ""
+}
+
+// passedIn gives the first clause of text, with no item, that names a clock time with a wait or check word, all of
+// whose times are over t3WaitAfter past at now (dueAhead): a step the role set itself that should have moved it.
+func passedIn(text string, since, now time.Time) string {
+	for _, c := range clauseRe.Split(text, -1) {
+		c = strings.TrimSpace(strings.TrimRight(strings.Trim(strings.TrimSpace(c), "⏳❓✅"), " .!?"))
+		if c == "" || len(itemsIn(c)) > 0 || !waitWordRe.MatchString(c) || !clockRe.MatchString(c) || dueAhead(c, since, now) {
+			continue
+		}
+		if r := []rune(c); len(r) > 120 {
+			c = string(r[:120]) + "…"
+		}
+		return c
 	}
 	return ""
 }
@@ -200,12 +225,15 @@ func heavyRunOf(procs []Proc, item string) (by string, ok bool) {
 	return "", false
 }
 
-// waiterOf gives the bus waiter (isWaiter) that runs under one of the claude pids: "buswait.sh (pid N)".
-func waiterOf(procs []Proc, pids map[int]bool) (string, bool) {
+// waiterOf gives the bus waiter (isWaiter) that runs under one of the claude pids, "buswait.sh (pid N)", and when it
+// started (zero when not known); of several, the oldest, and zero when any start is not known (the start floors which
+// lines end the hold: the oldest floors fewest). "" when none runs.
+func waiterOf(procs []Proc, pids map[int]bool) (string, time.Time) {
 	parent := map[int]int{}
 	for _, p := range procs {
 		parent[p.PID] = p.PPID
 	}
+	name, start := "", time.Time{}
 	for _, p := range procs {
 		w := strings.Fields(p.Command)
 		if len(w) == 0 || !isWaiter(w) {
@@ -213,11 +241,14 @@ func waiterOf(procs []Proc, pids map[int]bool) (string, bool) {
 		}
 		for pid, n := p.PPID, 0; pid > 1 && n < 64; pid, n = parent[pid], n+1 {
 			if pids[pid] {
-				return fmt.Sprintf("%s (pid %d)", progOf(w), p.PID), true
+				if name == "" || !start.IsZero() && (p.Start.IsZero() || p.Start.Before(start)) {
+					name, start = fmt.Sprintf("%s (pid %d)", progOf(w), p.PID), p.Start
+				}
+				break
 			}
 		}
 	}
-	return "", false
+	return name, start
 }
 
 // bashTaskMark is in the command of the shell Claude Code's Bash tool starts for each command; it sources the shell
@@ -291,18 +322,21 @@ func targetRe(project, role string) *regexp.Regexp {
 	return regexp.MustCompile(`(?i)(?:->|→|(?:^|[^A-Za-z0-9-])\(?cc:?)\s+(?:[A-Za-z0-9:_-]+,\s*)*(?:` + regexp.QuoteMeta(project) + `:)?` + r + `(?:$|[^A-Za-z0-9_-])`)
 }
 
-// waitingOn says whether who, a role whose last reply ends on ⏳, waits on an item in flight: (a) a bus waiter runs
-// under one of its live claudes (its session sessionID, or one crius-hook files under who), and (b) an item named in
-// lastReply or in its newest bus line is in a heavy run, or a line from another role names it since who's newest line
-// (since, the idle spell's start, when who has none; never more than t3WaitingFor before since), and that line does not
-// say it landed. A line to who since its newest line and its last reply ends the hold: its waiter should have woken it,
-// so a thread that has not moved is what the alert is for. With (a) and no item in flight, it is idle on purpose
-// (h.purpose) when its last reply's status part (statusPart), or (when the reply names no item) its newest bus line from within
-// purposeTurn before since, says it has no work or names what it waits for (purposeIn; 11-18: five "job may be gone" alerts
-// for such roles). With (a), a background job of its own that runs under its claude (ownJobOf) holds it too, whatever it
-// named (11-20: api-split's gate ran 50 min as its own Bash task and drew "its job may be gone").
-// why is "" when it holds (h.item or h.purpose set); otherwise why not. unread is true when a check
-// could not be read: unreadable is never waiting.
+// waitingOn says whether who, a role whose last reply ends on ⏳, is waiting. It is when a bus waiter runs under one of
+// its live claudes (its session sessionID, or one crius-hook files under who): the waiter wakes it (11-19: two roles
+// waiting on a live waiter drew "its job may be gone" because the hold also asked for an item or purpose words). Then
+// h says on what: an item named in lastReply or in its newest bus line that is in a heavy run, or that a line from
+// another role names since who's newest line (since, the idle spell's start, when who has none; never more than
+// t3WaitingFor before since) and does not say it landed (h.item); else words that say it has no work or name what it
+// waits for (h.purpose), in its last reply's status part (statusPart), or (when the reply names no item) in its newest
+// bus line from within purposeTurn before since (purposeIn; 11-18); else its bus alone (neither set). Three things end
+// the hold, each a sign it should have moved: a line to who that its waiter should have woken it for, posted after its
+// last reply and after the minute the waiter started (one before it the waiter read from its cursor, or the turn that
+// started it had; 11-19); a line saying an item it waits on landed, posted after who's own newest line (in log order)
+// and after the minute the waiter started; and a clock time it named to act at that passed (passedIn). why is "" when it holds; otherwise why not. unread is true when a check could not be read:
+// unreadable is never waiting. A background job of its own that runs under its claude (ownJobOf) names what it
+// is at (h.item) ahead of its bus, and holds it even when an item it waits on landed or a time it named passed (11-20:
+// api-split's gate ran 50 min as its own Bash task and drew "its job may be gone").
 func waitingOn(d Deps, procs func() ([]Proc, error), ss []Session, sesErr error, states []sessionstate.State,
 	who, sessionID, lastReply string, since time.Time) (h waitHold, why string, unread bool) {
 	if sesErr != nil {
@@ -327,7 +361,8 @@ func waitingOn(d Deps, procs func() ([]Proc, error), ss []Session, sesErr error,
 	if err != nil {
 		return h, "could not read the process list: " + err.Error(), true
 	}
-	if h.waiter, _ = waiterOf(ps, pids); h.waiter == "" {
+	var started time.Time
+	if h.waiter, started = waiterOf(ps, pids); h.waiter == "" {
 		return h, "no bus waiter runs under its claude", false
 	}
 	lines, _, err := busLines(d.Home, who)
@@ -337,12 +372,13 @@ func waitingOn(d Deps, procs func() ([]Proc, error), ss []Session, sesErr error,
 	project := strings.SplitN(who, ":", 2)[0]
 	var mine time.Time
 	var mineText string
-	for _, m := range lines {
+	mineAt := -1 // its newest line's place in the log: lines are in the order they were posted, stamps only to the minute
+	for i, m := range lines {
 		if busName(project, m[3]) != who {
 			continue
 		}
 		if at, err := lineTime(m[1], d.Now); err == nil && !at.Before(mine) {
-			mine, mineText = at, m[5]
+			mine, mineText, mineAt = at, m[5], i
 		}
 	}
 	floor := mine // lines are stamped to the minute: one in the same minute as who's own counts as after it
@@ -361,6 +397,18 @@ func waitingOn(d Deps, procs func() ([]Proc, error), ss []Session, sesErr error,
 	// newest line: one after the reply comes from a script, not a turn. Lines are stamped to the minute, so one in the
 	// reply's minute counts (an alert too many, never one too few).
 	toFloor := since.Truncate(time.Minute)
+	// Nor from before its waiter started: a waiter reads from its cursor, so a live one has let every line since then
+	// pass, and with no cursor the turn that started it came after the line. Here the trade-off goes the other way: one
+	// in the waiter's first minute is read as before it (11-19: a VERIFIED line read in the turn that started the waiter
+	// drew a false alert), so a waking line posted later in that minute is caught only by the t3WaitingFor alert. The
+	// start is taken a second early: ps gives whole seconds.
+	var waiterFloor time.Time // zero when its start is not known
+	if !started.IsZero() {
+		waiterFloor = started.Add(-time.Second).Truncate(time.Minute).Add(time.Minute)
+	}
+	if waiterFloor.After(toFloor) {
+		toFloor = waiterFloor
+	}
 	for _, m := range lines {
 		t, err := lineTime(m[1], d.Now)
 		if err != nil || t.Before(toFloor) || m[3] == "crius:wakewatch" || busName(project, m[3]) == who {
@@ -389,11 +437,23 @@ func waitingOn(d Deps, procs func() ([]Proc, error), ss []Session, sesErr error,
 		return ok
 	}
 	const noJob = "; no background job of its own runs under its claude"
+	// on its bus, unless it named a time to act that passed without moving it (review P2-2)
+	onBus := func() (waitHold, string, bool) {
+		h.named = strings.Join(items, ", ")
+		c := passedIn(statusPart(lastReply), since, d.Now)
+		if c == "" && len(itemsIn(lastReply)) == 0 {
+			c = passedIn(purposeLine, mine, d.Now)
+		}
+		if c != "" {
+			return h, fmt.Sprintf("the time it named passed over %d min ago without moving it (%q)", int(t3WaitAfter.Minutes()), c), false
+		}
+		return h, "", false
+	}
 	if len(items) == 0 {
 		if idleOnPurpose() || ownJob() {
 			return h, "", false
 		}
-		return h, "its last reply and its newest bus line name no item (a PR number or a row id)" + noJob, false
+		return onBus()
 	}
 	var landed []string
 	for _, item := range items {
@@ -403,16 +463,21 @@ func waitingOn(d Deps, procs func() ([]Proc, error), ss []Session, sesErr error,
 		}
 		var at time.Time
 		var newest []string
-		for _, m := range lines {
+		newestAt := -1
+		for i, m := range lines {
 			if m[3] == "crius:wakewatch" || busName(project, m[3]) == who || !mentions(m[5], item) {
 				continue
 			}
 			if t, err := lineTime(m[1], d.Now); err == nil && !t.Before(floor) && !t.Before(at) {
-				at, newest = t, m
+				at, newest, newestAt = t, m, i
 			}
 		}
 		switch {
 		case newest == nil:
+		// posted before its own newest line, or before its waiter started (a landed line to it woke the turn that
+		// started the waiter; one to others is the turn's to have read): it knew (11-19, review P1-1, r2 P1-A). A role
+		// whose reply still waits on it is then held up to t3WaitingFor, not t3WaitAfter.
+		case landedTypes[newest[2]] && (newestAt < mineAt || at.Before(waiterFloor)):
 		case landedTypes[newest[2]]:
 			landed = append(landed, fmt.Sprintf("%s: %s posted %s at %s", item, newest[3], newest[2], at.Local().Format("15:04")))
 		default:
@@ -420,8 +485,11 @@ func waitingOn(d Deps, procs func() ([]Proc, error), ss []Session, sesErr error,
 			return h, "", false
 		}
 	}
-	if landed == nil && idleOnPurpose() { // an item it waits on that landed should have put it to work
-		return h, "", false
+	if landed == nil { // an item it waits on that landed should have put it to work
+		if idleOnPurpose() || ownJob() {
+			return h, "", false
+		}
+		return onBus()
 	}
 	if ownJob() {
 		return h, "", false
@@ -522,6 +590,9 @@ func Waiting(d Deps, out io.Writer, roles []string) int {
 		case why == "" && h.purpose != "":
 			fmt.Fprintf(out, "%s IDLE on purpose: %q, bus waiter %s; idle %d min after ⏳, said once after %d min (T3 thread %s)\n",
 				who, h.purpose, h.waiter, idle, int(t3WaitAfter.Minutes()), id)
+		case why == "" && h.item == "":
+			fmt.Fprintf(out, "%s WAITING ON ITS BUS (%s), bus waiter %s; idle %d min after ⏳, held until %d min (T3 thread %s)\n",
+				who, h.onBusText(), h.waiter, idle, int(t3WaitingFor.Minutes()), id)
 		case why == "":
 			fmt.Fprintf(out, "%s WAITING ON %s (%s), bus waiter %s; idle %d min after ⏳, held until %d min (T3 thread %s)\n",
 				who, h.item, h.by, h.waiter, idle, int(t3WaitingFor.Minutes()), id)

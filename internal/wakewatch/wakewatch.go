@@ -112,7 +112,7 @@ type Deps struct {
 	// Typed says whether a tab's input box (surface:N) holds typed text, not grey placeholder text: cmux send refuses such a
 	// tab, so a lead's message to it is lost (Crius 11-02 02:19).
 	Typed func(surface string) (bool, error)
-	// Procs lists every process: its pid, its parent's and its command line (rearm).
+	// Procs lists every process: its pid, its parent's, its command line and when it started (rearm, the T3 idle check).
 	Procs func() ([]Proc, error)
 	// SendTab types text into the tab of that title (a role's tab, not Crius's).
 	SendTab func(title, text string) error
@@ -138,6 +138,7 @@ var ErrTabGone = errors.New("cmux has no tab with that surface id")
 type Proc struct {
 	PID, PPID int
 	Command   string
+	Start     time.Time // when it started, to the second; zero when not known
 }
 
 // Workspace is one cmux workspace: Named is false while it shows a default title, and Color is "" when none is set.

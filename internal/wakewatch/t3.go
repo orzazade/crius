@@ -304,7 +304,11 @@ func t3Idle(d Deps, ss []Session, sesErr error, watch projects, park parked, pro
 				out = append(out, [2]string{"t3idle:" + who + ":" + id + ":on-purpose:" + h.purpose, fmt.Sprintf(
 					"%s is IDLE, waiting on purpose: %q, with its bus waiter %s live; idle %d min after a ⏳ reply, no bus line from it for %d min. %s",
 					name, h.purpose, h.waiter, idle, int(quiet.Minutes()), tail)})
-			case why == "" && quiet <= t3WaitingFor: // waiting on an item in flight, its waiter armed: not idle yet
+			case why == "" && quiet <= t3WaitingFor: // waiting on an item in flight or its bus, its waiter armed: not idle yet
+			case why == "" && h.item == "":
+				out = append(out, [2]string{key, fmt.Sprintf("%s is idle %d min after a ⏳ reply, WAITING ON ITS BUS (%s) with its bus waiter %s live, "+
+					"and no bus line from it for %d min: over %d h, so check that its waiter still wakes it. %s",
+					name, idle, h.onBusText(), h.waiter, int(quiet.Minutes()), int(t3WaitingFor.Hours()), tail)})
 			case why == "":
 				out = append(out, [2]string{key, fmt.Sprintf("%s is idle %d min after a ⏳ reply, WAITING ON %s (%s) with its bus waiter %s live, "+
 					"and no bus line from it for %d min: over %d h, so check that %s still moves. %s",
