@@ -52,6 +52,23 @@ func TestProviderCmdFixtureRun(t *testing.T) {
 	}
 }
 
+// The remote-ask demo (testdata/ask-demo, the 11-19 18:49 shape): the state a 5-min run left at 18:55 holds the
+// builder's ask, first seen at 18:50; at 19:00 the ask wakes Crius, the ⏳ tab says nothing, and the tab whose box cannot
+// be reached (its second miss in a row) is a loud "could not look" and exit 1, never a quiet pass.
+func TestProviderCmdAskDemo(t *testing.T) {
+	var out strings.Builder
+	code := providerCmd([]string{"-fixtures", filepath.Join("testdata", "ask-demo")}, &out)
+	s := out.String()
+	if code != 1 || !strings.Contains(s, "2 remote tab(s) read, 0 stopped by a provider error, 0 on a prompt, 1 asking") ||
+		!strings.Contains(s, `ALERT: question unanswered for 10 min in tab thinkpad staffy:builder: first seen at `) ||
+		!strings.Contains(s, `its last reply ends "❓ Need: where the test database copy is, or a go to make one."; no NEED, NEED-OWNER or ASK line from staffy:builder on the bus since `) ||
+		!strings.Contains(s, "tab thinkpad staffy:qa: no prompt, no provider stop, no open ask") ||
+		!strings.Contains(s, "ALERT: the provider-error sweep could not look at tab legion quotes:qa, so a session stopped there, waiting on a prompt or asking a question is not seen") ||
+		strings.Count(s, "ALERT:") != 2 {
+		t.Fatalf("exit %d:\n%s", code, s)
+	}
+}
+
 func TestProviderCmdFixtureRunSaysWhatItCouldNotRead(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "provider-tabs.txt"), []byte("legion quotes:dev\n"), 0o600); err != nil {

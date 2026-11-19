@@ -191,7 +191,7 @@ func TestProviderErrorsCouldNotLookIsLoud(t *testing.T) {
 		t.Fatalf("first failed sweep: posts %q", f.posts)
 	}
 	if _, err := wakewatch.ProviderErrors(f.deps(home, now.Add(5*time.Minute))); err == nil || len(f.posts) != 2 || len(f.crius) != 2 ||
-		!strings.Contains(f.posts[0], "could not look at the T3 Code threads, so a session stopped there or waiting on a prompt is not seen") {
+		!strings.Contains(f.posts[0], "could not look at the T3 Code threads, so a session stopped there, waiting on a prompt or asking a question is not seen") {
 		t.Fatalf("5 min on: err %v posts %q", err, f.posts)
 	}
 	if _, err := wakewatch.ProviderErrors(f.deps(home, now.Add(10*time.Minute))); err == nil || len(f.posts) != 2 {
@@ -235,7 +235,7 @@ func TestProviderErrorsOneFailedLookIsNotSaid(t *testing.T) {
 	}
 	sweep(5)
 	if len(f.posts) != 1 || len(f.crius) != 1 ||
-		f.posts[0] != "ALERT the provider-error sweep could not look at tab legion quotes:dev, so a session stopped there or waiting on a prompt is not seen: ssh: connect to host 100.109.19.101 port 22: Operation timed out" {
+		f.posts[0] != "ALERT the provider-error sweep could not look at tab legion quotes:dev, so a session stopped there, waiting on a prompt or asking a question is not seen: ssh: connect to host 100.109.19.101 port 22: Operation timed out" {
 		t.Fatalf("two failed sweeps in a row: posts %q crius %q", f.posts, f.crius)
 	}
 
@@ -495,7 +495,7 @@ func TestProviderErrorsFailedLookIsNotNoPrompt(t *testing.T) {
 			t.Fatalf("+%d min: a failed look must fail the run, got %v", min, err)
 		}
 	}
-	want := "ALERT the provider-error sweep could not look at tab legion quotes:qa, so a session stopped there or waiting on a prompt is not seen: ssh: connect to host 100.109.19.101 port 22: Operation timed out"
+	want := "ALERT the provider-error sweep could not look at tab legion quotes:qa, so a session stopped there, waiting on a prompt or asking a question is not seen: ssh: connect to host 100.109.19.101 port 22: Operation timed out"
 	if len(f.posts) != 1 || f.posts[0] != want {
 		t.Fatalf("two failed looks must say a prompt there is not seen:\n posts %q\n want %q", f.posts, want)
 	}

@@ -1,0 +1,4 @@
+# 11-19 18:49 shape: staffy:builder asks in its tab (no bus line), staffy:qa ends on ⏳, legion quotes:qa cannot be read
+thinkpad staffy:builder
+thinkpad staffy:qa
+legion quotes:qa

@@ -199,6 +199,28 @@ func fixtureDeps(dir string, now time.Time) (wakewatch.ProviderDeps, error) {
 	if err != nil {
 		return wakewatch.ProviderDeps{}, err
 	}
+	// optional: the sweep's state as a past 5-min run left it (an ask's first-seen time) and bus logs, so a fixture run
+	// can show what a timer due now does. A bus log is kept as bus/<project>.txt: a tracked bus/*.log is private state
+	// to the leak test (store.LeakProblems).
+	copies := map[string]string{filepath.Join(dir, "provider-errors.json"): wakewatch.ProviderStateFile(home)}
+	logs, _ := filepath.Glob(filepath.Join(dir, "bus", "*.txt")) // only a bad pattern errs, and this one is fixed
+	for _, l := range logs {
+		copies[l] = filepath.Join(home, "bus", strings.TrimSuffix(filepath.Base(l), ".txt")+".log")
+	}
+	for from, to := range copies {
+		b, err := os.ReadFile(from)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err == nil {
+			if err = os.MkdirAll(filepath.Dir(to), 0o700); err == nil {
+				err = os.WriteFile(to, b, 0o600)
+			}
+		}
+		if err != nil {
+			return wakewatch.ProviderDeps{}, err
+		}
+	}
 	none := func(...any) error { return errors.New("a fixture run sends nothing") }
 	return wakewatch.ProviderDeps{Home: home, Now: now, Dry: true,
 		Threads: func() ([]wakewatch.FailedThread, error) {
@@ -249,8 +271,8 @@ func providerCmd(args []string, w io.Writer) int {
 	}
 	rep, err := wakewatch.ProviderErrors(d)
 	now = d.Now
-	fmt.Fprintf(w, "provider-error sweep %s: %d failed or interrupted T3 thread(s) read, %d remote tab(s) read, %d stopped by a provider error, %d on a prompt\n",
-		now.Local().Format("2006-01-02 15:04:05"), rep.Threads, rep.Tabs, rep.Stopped, rep.Prompts)
+	fmt.Fprintf(w, "provider-error sweep %s: %d failed or interrupted T3 thread(s) read, %d remote tab(s) read, %d stopped by a provider error, %d on a prompt, %d asking\n",
+		now.Local().Format("2006-01-02 15:04:05"), rep.Threads, rep.Tabs, rep.Stopped, rep.Prompts, rep.Asks)
 	for _, a := range rep.Actions {
 		fmt.Fprintln(w, "  "+a)
 	}

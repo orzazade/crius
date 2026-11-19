@@ -1,0 +1,3 @@
+2026-11-19T18:33 PASS staffy:qa -> staffy:builder,crius:lead — d4548058 · A17b race fix: green 44/44
+2026-11-19T18:33 LANDED staffy:builder -> staffy:qa,crius:lead — A17b race fix: integration b07999ac -> d4548058
+2026-11-19T18:33 VERIFIED staffy:qa -> staffy:builder,crius:lead — d4548058 · A17b race fix land

@@ -24,6 +24,11 @@ import (
 // Mac's own sessions: one open promptAfter wakes Crius once (11-17: Legion quotes:qa sat on a `git clean -f` permission
 // prompt 05:30-12:41 and nobody was woken, as that check reads only the Mac's hook log). A tab that cannot be read keeps
 // its prompt's timer; it is a failed look (said after lookMisses in a row: looks.go), never "no prompt".
+//
+// It also times a remote tab whose last reply asks Crius or the owner (RemoteAsk), as wakewatch's 10-min ask rule does
+// for the Mac's cmux tabs: one ask open promptAfter wakes Crius once, unless the role posted a NEED, NEED-<X> or ASK line
+// on its bus in that turn (11-19 18:49: the Staffy builder on the ThinkPad asked in its tab only and sat idle 80 min
+// before Crius saw it by chance). A reply that ends on ⏳ or ✅ never counts.
 
 const (
 	providerAgain = 15 * time.Minute // a stop this soon after a restart is said to Crius, not restarted again
@@ -72,6 +77,7 @@ type ProviderDeps struct {
 type ProviderReport struct {
 	Threads, Tabs, Stopped int
 	Prompts                int // remote tabs read with a dialog open
+	Asks                   int // remote tabs read whose last reply asks Crius or the owner
 	Actions                []string
 }
 
@@ -87,6 +93,7 @@ type providerState struct {
 	Failing   map[string]time.Time    // a "could not look" said to Crius, by what could not be looked at
 	Missed    map[string]int          // what could not be looked at -> sweeps in a row it failed
 	Prompts   map[string]remotePrompt // "<box> <target>" -> the dialog open in that tab
+	Asks      map[string]remotePrompt // "<box> <target>" -> what that tab's last reply asks (RemoteAsk)
 }
 
 // remotePrompt is a remote tab's open dialog: its hash (promptKey, so a rewrap keeps it), when first seen, and whether
@@ -211,7 +218,7 @@ func ProviderErrors(d ProviderDeps) (ProviderReport, error) {
 			return
 		}
 		st.Failing[what] = d.Now
-		say("ALERT", fmt.Sprintf("the provider-error sweep could not look at %s, so a session stopped there or waiting on a prompt is not seen: %v", what, err))
+		say("ALERT", fmt.Sprintf("the provider-error sweep could not look at %s, so a session stopped there, waiting on a prompt or asking a question is not seen: %v", what, err))
 	}
 	// stop handles one session stopped by a provider error: restart it once, or tell Crius when it stopped again soon
 	// after a restart, or when the restart could not be sent.
@@ -285,10 +292,11 @@ func ProviderErrors(d ProviderDeps) (ProviderReport, error) {
 		})
 	}
 	prompts := map[string]remotePrompt{} // replaces st.Prompts: a tab read with no dialog open drops its entry
+	asks := map[string]remotePrompt{}    // replaces st.Asks the same way
 	tabs, err := d.Tabs()
 	if err != nil {
 		cannot("the remote tab list "+ProviderTabsFile(d.Home), err)
-		prompts = st.Prompts // no tab was looked at: every timer goes on
+		prompts, asks = st.Prompts, st.Asks // no tab was looked at: every timer goes on
 	}
 	for _, t := range tabs {
 		screen, err := d.Capture(t)
@@ -296,6 +304,9 @@ func ProviderErrors(d ProviderDeps) (ProviderReport, error) {
 			cannot("tab "+t.String(), err)
 			if p, ok := st.Prompts[t.String()]; ok { // not seen is not answered: the timer goes on
 				prompts[t.String()] = p
+			}
+			if a, ok := st.Asks[t.String()]; ok {
+				asks[t.String()] = a
 			}
 			continue
 		}
@@ -331,6 +342,36 @@ func ProviderErrors(d ProviderDeps) (ProviderReport, error) {
 		}
 		line, key, ok := ProviderStop(screen)
 		if !ok {
+			if reply, asking := RemoteAsk(screen); asking {
+				rep.Asks++
+				a, seen := asks[t.String()] // a tab listed twice: its first look this sweep stands, so it wakes once
+				if !seen {
+					a = st.Asks[t.String()]
+				}
+				ask := askLine(reply)
+				if h := hash(askKey(reply, ask)); a.Hash != h {
+					a = remotePrompt{Hash: h, Since: d.Now}
+				}
+				if age := d.Now.Sub(a.Since); !seen && age >= promptAfter && !a.Said {
+					// a bus line that holds the ask is looked at again each sweep: once Crius answers it there, a tab
+					// still on the same ask wakes Crius (a bus line does not wake a tab)
+					if text, quiet := askAlert(d.Home, t, screen, ask, a.Since, d.Now); quiet != "" {
+						rep.Actions = append(rep.Actions, fmt.Sprintf("tab %s asks, open %d min; no wake: %s", t, int(age.Minutes()), quiet))
+					} else {
+						say("ALERT", text)
+						a.Said = true
+					}
+				} else if d.Dry && !seen {
+					heard := fmt.Sprintf("Crius hears at %d min", int(promptAfter.Minutes()))
+					if a.Said {
+						heard = "Crius was told or the bus has it"
+					}
+					rep.Actions = append(rep.Actions, fmt.Sprintf("tab %s asks, open %d min (%s): %q", t, int(age.Minutes()), heard, ask))
+				}
+				asks[t.String()] = a
+			} else if d.Dry {
+				rep.Actions = append(rep.Actions, fmt.Sprintf("tab %s: no prompt, no provider stop, no open ask", t))
+			}
 			continue
 		}
 		at := d.Now
@@ -349,6 +390,7 @@ func ProviderErrors(d ProviderDeps) (ProviderReport, error) {
 	}
 	st.Missed = missed.counts()
 	st.Prompts = prompts
+	st.Asks = asks
 	for k, s := range st.Stops {
 		if d.Now.Sub(s.At) > providerKeep {
 			delete(st.Stops, k)
@@ -389,6 +431,9 @@ func loadProvider(home string) (st providerState, err error) {
 	}
 	if st.Prompts == nil {
 		st.Prompts = map[string]remotePrompt{}
+	}
+	if st.Asks == nil {
+		st.Asks = map[string]remotePrompt{}
 	}
 	return st, err
 }

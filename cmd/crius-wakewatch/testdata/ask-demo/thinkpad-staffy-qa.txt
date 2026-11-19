@@ -1,0 +1,23 @@
+  A9 web part: pushed to its branch; qa has it.
+
+⏺ qa raised one small thing that's yours to decide later. It doesn't block A9. I
+  recorded it in the criteria file:
+
+  File size limit: the server allows at most 5,000,000 bytes, and the page says
+  "at most 5 MB". Some systems count sizes differently, so a file shown as "4.8
+  MB" is already too big and gets refused.
+  - Option A: change the page text to "4.7 MB". Text only. My pick.
+  - Option B: raise the server limit to 5,242,880 bytes so the "5 MB" text matches.
+
+  Still running: the backend gate and the deep review of the web code.
+
+  ⏳
+                                         ✔ Update installed · restart to apply
+───────────────────────────────────────────────────────────── staffy · qa ─
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  quota login 0f3b07b4c7f2: 7d 76% (resets Sun 09:00)
+  ⏵⏵ bypass permissions on · 1 shell · ↓ to manage
+
+  ● main
+  ◯ general-purpose  Reading next-config-ts require-… 5m 20s · ↓ 163.3k tokens

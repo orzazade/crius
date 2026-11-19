@@ -1,0 +1,20 @@
+  - A17a page test: landed on web integration (f2c45df).
+
+⏺ **A17b is done ✅**
+  - qa checked the landed code: the gate passed, 8455 tests, 0 failed.
+  - The GOAL "Done" line now reads **55% (41 of 74)**.
+  - I cleaned up the A17b worktree and the gate's temp folder.
+
+  **A17c (the cleanup) is waiting on you:**
+  - **What:** a copy of test data where I can count which old rows would change.
+  - **What to do:** tell me where a test database copy is, or give me a go to make one.
+  - **Why I can't:** I may not touch live data, and I don't know whether a copy already exists.
+  - **What it unblocks:** A17c. qa has its test ready as soon as the copy exists.
+
+  ❓ Need: where the test database copy is, or a go to make one.
+                                         ✔ Update installed · restart to apply
+───────────────────────────────────────────────────────────── staffy · builder ─
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  quota login 0f3b07b4c7f2: 7d 71% (resets Sun 09:00)
+  ⏵⏵ bypass permissions on · 1 shell · ↓ to manage

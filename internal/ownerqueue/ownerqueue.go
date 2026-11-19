@@ -334,16 +334,7 @@ func said(text string) []string {
 // leads that write no status emoji ask with a label or end on a question.
 func Asks(reply string) bool {
 	lines := said(reply)
-	emoji := ""
-	for _, l := range lines {
-		if t := strings.TrimSpace(l); !strings.HasPrefix(t, "|") && !checkRe.MatchString(t) {
-			for _, r := range t {
-				if r == '❓' || r == '✅' || r == '⏳' {
-					emoji = string(r)
-				}
-			}
-		}
-	}
+	emoji := Status(reply)
 	if emoji == "❓" {
 		return true
 	}
@@ -357,6 +348,22 @@ func Asks(reply string) bool {
 	}
 	words := strings.Fields(strings.ReplaceAll(lines[len(lines)-1], "**", ""))
 	return emoji == "" && len(words) > 0 && strings.HasSuffix(words[len(words)-1], "?")
+}
+
+// Status gives a reply's last status emoji (❓, ✅ or ⏳), "" when it has none. One in a code fence, a quote, a table
+// row or on a checklist line is no status.
+func Status(reply string) string {
+	emoji := ""
+	for _, l := range said(reply) {
+		if t := strings.TrimSpace(l); !strings.HasPrefix(t, "|") && !checkRe.MatchString(t) {
+			for _, r := range t {
+				if r == '❓' || r == '✅' || r == '⏳' {
+					emoji = string(r)
+				}
+			}
+		}
+	}
+	return emoji
 }
 
 // checkRe opens a checklist line: "- [x] …", "* [ ] …", "[~] …".

@@ -924,8 +924,14 @@ func queueAsks(d Deps, sa screenAsks) [][2]string {
 func lastReply(body string) string {
 	lines := strings.Split(body, "\n")
 	end := len(lines)
+	tail := true // below the reply's last line: blank lines and right-aligned notices
 	for i := len(lines) - 1; i >= 0; i-- {
 		l := strings.TrimSpace(lines[i])
+		if tail && sideNoticeRe.MatchString(lines[i]) {
+			end = i
+			continue
+		}
+		tail = tail && l == ""
 		if strings.HasPrefix(l, "✻ ") {
 			end = i
 		}
@@ -965,6 +971,9 @@ var (
 	// noticeRe opens a "⏺" line the harness writes, not the lead: "Background command … completed", "Background shell
 	// command didn't finish …", "Compacted while idle …".
 	noticeRe = regexp.MustCompile(`^(?:Background (?:shell )?command\b|Compacted\b)`)
+	// sideNoticeRe is a notice Claude Code draws right-aligned under the last reply, above the input box: "✔ Update
+	// installed · restart to apply" (ThinkPad staffy:builder, 11-20 00:05). It is no line of the reply.
+	sideNoticeRe = regexp.MustCompile(`^\s{20,}[✔✗✘⚠]\s`)
 )
 
 // plainName gives a project's plain name from projects.toml ("" when it has none or the file cannot be read: the row
