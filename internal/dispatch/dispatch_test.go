@@ -39,6 +39,7 @@ type fake struct {
 	proofN      map[int]int    // reads per PR in this run
 	toldAtMerge string         // mergeq.told when the merge command started
 	lands       []string       // each land command started, with the paths it was given
+	landErr     error          // StartLand refuses with it (the lock was held)
 	postFailAll bool           // postErr fails every post, not only MERGE
 	at          time.Time
 	err         error
@@ -130,6 +131,9 @@ func (f *fake) run(t *testing.T, min int) {
 			}
 			if _, err := os.Stat(rc); err == nil {
 				t.Fatalf("a land run started with the last run's %s still there", rc)
+			}
+			if f.landErr != nil {
+				return f.landErr
 			}
 			return os.WriteFile(log, nil, 0o644)
 		},
@@ -1212,6 +1216,37 @@ func TestTheLandCommandRunsOneAtATimeAndSaysEachLandedPR(t *testing.T) {
 	gone := "MERGE demo:lead: merge queue: landing run 4 ended with no exit code (stopped?): gate: y"
 	if len(f.lands) != 4 || len(f.posts) != 5 || f.posts[4] != gone {
 		t.Fatalf("no rc: lands %q posts %q, want %q", f.lands, f.posts, gone)
+	}
+}
+
+// Review 11-20 P3: a start refused because another run holds the lock (two dispatchers at once) is an error of that run;
+// the next runs wait while the lock is held, then say the run that never started once as ended with no exit code.
+func TestARefusedLandStartIsAnErrorAndSaidOnceAfterTheLockIsFree(t *testing.T) {
+	f := newFake(t, 1)
+	_, hold := landing(t, f)
+	// the lock is free when this run looks, and taken by the other dispatcher's run before this one starts
+	f.landErr, f.allowErr = errors.New("the land lock is held: another landing run is going"), true
+	f.run(t, 0)
+	f.landErr, f.allowErr = nil, false
+	if f.err == nil || !strings.Contains(f.err.Error(), "starting landing run 1: the land lock is held") {
+		t.Fatalf("err %v, want the refused start", f.err)
+	}
+	release := hold()
+	defer release()
+	f.run(t, 1)
+	if len(f.lands) != 1 || len(f.posts) != 0 {
+		t.Fatalf("while the lock is held: lands %q posts %q, want no new start and nothing said", f.lands, f.posts)
+	}
+	release()
+	f.run(t, 2)
+	f.run(t, 3)
+	gone := "MERGE demo:lead: merge queue: landing run 1 ended with no exit code (stopped?): "
+	if len(f.lands) != 1 || len(f.posts) != 1 || f.posts[0] != gone {
+		t.Fatalf("after the lock is free: lands %q posts %q, want %q once", f.lands, f.posts, gone)
+	}
+	f.run(t, 12)
+	if len(f.lands) != 2 {
+		t.Fatalf("10 min later: lands %q, want the next run", f.lands)
 	}
 }
 

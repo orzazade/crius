@@ -166,17 +166,33 @@ func runMerge(parent context.Context, command string, limit time.Duration) (stri
 }
 
 // startLand starts the land command under bash in a session of its own (it outlives this dispatcher run; launchd ends
-// only this job's group), inside lockf on lock, so the lock is held exactly while it runs; its output goes to log and its
-// exit code into rc when it ends. A lock already held makes lockf exit 75 with no rc: read as a run that ended with none.
+// only this job's group), its output to log and its exit code into rc when it ends. The lock is taken here, before the
+// start, and handed to bash, so it is held from before startLand returns until bash ends, after it writes rc: a dispatcher
+// that finds the lock free reads the run as ended. (Under lockf the lock was taken only some time after the start, so a
+// look in that gap read a fresh run as ended with no rc, and the look itself could make lockf give up: flaky
+// TestStartLandRunsDetachedUnderItsLock, 11-20.) A lock already held is an error, and no command runs.
 func startLand(command, lock, log, rc string) error {
+	l, err := os.OpenFile(lock, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return err
+	}
+	defer l.Close() // bash keeps its own copy, and with it the lock
+	if err := syscall.Flock(int(l.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); errors.Is(err, syscall.EWOULDBLOCK) {
+		return fmt.Errorf("the land lock %s is held: another landing run is going", lock)
+	} else if err != nil {
+		return fmt.Errorf("taking the land lock: %w", err)
+	}
 	out, err := os.OpenFile(log, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
 		return err
 	}
 	defer out.Close()
 	q := func(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
-	cmd := exec.Command("/usr/bin/lockf", "-t", "0", lock, "/bin/bash", "-c", "(\n"+command+"\n)\necho $? > "+q(rc)) // a subshell: an exit in it still writes rc
+	// the lock is fd 3 in bash, closed for the command (what it leaves running does not hold it); a subshell: an exit in
+	// it still writes rc
+	cmd := exec.Command("/bin/bash", "-c", "(\n"+command+"\n) 3>&-\necho $? > "+q(rc))
 	cmd.Stdout, cmd.Stderr = out, out
+	cmd.ExtraFiles = []*os.File{l}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
 		return err

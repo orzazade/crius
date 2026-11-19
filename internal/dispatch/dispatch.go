@@ -38,8 +38,8 @@
 //
 // With land set (crius:lead 11-10: the queue had landed nothing; a build takes 30 min, so PRs ride in batches), the queue
 // above is off and no proofs are read: the land command picks every ready PR, gates and lands them with its own gates
-// (it, not the dispatcher, keeps the branch rules). It runs detached (bash, its own session, under lockf on landq.lock, so
-// the lock is held exactly while it runs; output in landq.log, exit code in landq.rc), one run at a time. Each run of the
+// (it, not the dispatcher, keeps the branch rules). It runs detached (bash, its own session, holding landq.lock from
+// before it starts until it ends; output in landq.log, exit code in landq.rc), one run at a time. Each run of the
 // dispatcher reads the log's new whole lines: a "LANDED PR ..." line goes into landed.log with its time and to
 // <project>:lead as one INFO. When the run has ended: rc 0 starts the next run at once; rc 3 (nothing to land) waits 10
 // min quietly; any other rc, or none, is said to the lead in one MERGE line with the log's last line, then waits 10 min.
@@ -80,7 +80,7 @@ type Deps struct {
 	Target        func(pr int) (string, error)         // a PR's target branch (refs/heads/...)
 	Merge         func(command string) (string, error) // runs the project's merge command; its output and how it ended
 	// StartLand starts the project's land command detached, under lock (held while it runs), its output to log and its exit
-	// code into rc when it ends; it returns once started
+	// code into rc when it ends; it returns once started, with the lock already held
 	StartLand func(command, lock, log, rc string) error
 	Post      func(typ, to, text string) error
 }
@@ -451,7 +451,7 @@ func landQueue(d Deps, cfg config, dir string) error {
 		}
 		return os.Rename(tmp, statePath)
 	}
-	// a live run holds the lock (lockf around it); the lock is taken here only to look, and let go at once
+	// a live run holds the lock (taken before it starts); the lock is taken here only to look, and let go at once
 	running := false
 	if l, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644); err != nil {
 		return err
