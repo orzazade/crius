@@ -227,7 +227,7 @@ const bashTaskMark = "/shell-snapshots/snapshot-"
 // ownJobOf gives a background job of the role's own: a Bash tool shell (bashTaskMark) that is a child of one of the
 // claude pids and runs no bus waiter in it or under it. Claude Code's other children (its stdin watchdog shell, MCP
 // servers) are no job, and a job's shell that was left to launchd is no longer under the claude. what is the command
-// it runs (its first child's, else its own), cut to 80 characters.
+// it runs (the text it evals, else its first child's, else its own), cut to 80 characters.
 func ownJobOf(procs []Proc, pids map[int]bool) (pid int, what string, ok bool) {
 	kids := map[int][]Proc{}
 	for _, p := range procs {
@@ -245,7 +245,9 @@ func ownJobOf(procs []Proc, pids map[int]bool) (pid int, what string, ok bool) {
 			continue
 		}
 		what = p.Command
-		if k := kids[p.PID]; len(k) > 0 {
+		if _, ev, ok := strings.Cut(p.Command, " eval '"); ok {
+			what, _, _ = strings.Cut(ev, "' < /dev/null")
+		} else if k := kids[p.PID]; len(k) > 0 {
 			what = k[0].Command
 		}
 		if r := []rune(what); len(r) > 80 {

@@ -143,9 +143,8 @@ func newestThread(home, project, role string, r sessionstate.State, states []ses
 //     from the role has moved for over t3WaitAfter, unless it is waiting: a background job of its own runs in T3
 //     (pendingBackgroundTasks; T3 wakes it when the job ends), or a bus waiter runs under its claude and an item it named
 //     is in flight, or its own background job runs under its claude (waitingOn). Either wakes Crius once past
-//     t3WaitingFor, naming the job or the item; or it is idle on
-//     purpose (a bus waiter runs and it said it has no work or named what it waits for), said once as IDLE, never as a
-//     job that may be gone;
+//     t3WaitingFor, naming the job or the item; or it is idle on purpose (a bus waiter runs and it said it has no work
+//     or named what it waits for), said once as IDLE, never as a job that may be gone;
 //   - it is anything but ❓ (which waits on the owner), after t3IdleAfter.
 //
 // The key holds the idle spell's start, and Run says it once (Typed): one wake per idle spell. A role that cannot be
