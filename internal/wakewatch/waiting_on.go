@@ -220,6 +220,42 @@ func waiterOf(procs []Proc, pids map[int]bool) (string, bool) {
 	return "", false
 }
 
+// bashTaskMark is in the command of the shell Claude Code's Bash tool starts for each command; it sources the shell
+// snapshot. Under a claude with no open turn, such a shell is a background task (11-20: api-split's gate ran so).
+const bashTaskMark = "/shell-snapshots/snapshot-"
+
+// ownJobOf gives a background job of the role's own: a Bash tool shell (bashTaskMark) that is a child of one of the
+// claude pids and runs no bus waiter in it or under it. Claude Code's other children (its stdin watchdog shell, MCP
+// servers) are no job, and a job's shell that was left to launchd is no longer under the claude. what is the command
+// it runs (its first child's, else its own), cut to 80 characters.
+func ownJobOf(procs []Proc, pids map[int]bool) (pid int, what string, ok bool) {
+	kids := map[int][]Proc{}
+	for _, p := range procs {
+		kids[p.PPID] = append(kids[p.PPID], p)
+	}
+	var runsWaiter func(p Proc, depth int) bool
+	runsWaiter = func(p Proc, depth int) bool {
+		if isWaiter(strings.Fields(p.Command)) {
+			return true
+		}
+		return depth < 64 && slices.ContainsFunc(kids[p.PID], func(k Proc) bool { return runsWaiter(k, depth+1) })
+	}
+	for _, p := range procs {
+		if !pids[p.PPID] || !strings.Contains(p.Command, bashTaskMark) || runsWaiter(p, 0) {
+			continue
+		}
+		what = p.Command
+		if k := kids[p.PID]; len(k) > 0 {
+			what = k[0].Command
+		}
+		if r := []rune(what); len(r) > 80 {
+			what = string(r[:80]) + "…"
+		}
+		return p.PID, what, true
+	}
+	return 0, "", false
+}
+
 // quietTypes are the line types team-wait.sh (member mode) does not wake a role for on their own.
 var quietTypes = map[string]bool{"ACK": true, "INFO": true, "WAIT": true, "VERIFIED": true, "STATUS": true}
 
@@ -261,7 +297,9 @@ func targetRe(project, role string) *regexp.Regexp {
 // so a thread that has not moved is what the alert is for. With (a) and no item in flight, it is idle on purpose
 // (h.purpose) when its last reply's status part (statusPart), or (when the reply names no item) its newest bus line from within
 // purposeTurn before since, says it has no work or names what it waits for (purposeIn; 11-18: five "job may be gone" alerts
-// for such roles). why is "" when it holds (h.item or h.purpose set); otherwise why not. unread is true when a check
+// for such roles). With (a), a background job of its own that runs under its claude (ownJobOf) holds it too, whatever it
+// named (11-20: api-split's gate ran 50 min as its own Bash task and drew "its job may be gone").
+// why is "" when it holds (h.item or h.purpose set); otherwise why not. unread is true when a check
 // could not be read: unreadable is never waiting.
 func waitingOn(d Deps, procs func() ([]Proc, error), ss []Session, sesErr error, states []sessionstate.State,
 	who, sessionID, lastReply string, since time.Time) (h waitHold, why string, unread bool) {
@@ -340,11 +378,20 @@ func waitingOn(d Deps, procs func() ([]Proc, error), ss []Session, sesErr error,
 		}
 		return h.purpose != ""
 	}
+	// its own background job still runs under its claude: it is at work, whatever it named (11-20)
+	ownJob := func() bool {
+		pid, what, ok := ownJobOf(ps, pids)
+		if ok {
+			h.item, h.by = fmt.Sprintf("its own background job (pid %d)", pid), "a Bash task under its claude: "+what
+		}
+		return ok
+	}
+	const noJob = "; no background job of its own runs under its claude"
 	if len(items) == 0 {
-		if idleOnPurpose() {
+		if idleOnPurpose() || ownJob() {
 			return h, "", false
 		}
-		return h, "its last reply and its newest bus line name no item (a PR number or a row id)", false
+		return h, "its last reply and its newest bus line name no item (a PR number or a row id)" + noJob, false
 	}
 	var landed []string
 	for _, item := range items {
@@ -374,8 +421,11 @@ func waitingOn(d Deps, procs func() ([]Proc, error), ss []Session, sesErr error,
 	if landed == nil && idleOnPurpose() { // an item it waits on that landed should have put it to work
 		return h, "", false
 	}
-	why = fmt.Sprintf("none of %s is in flight (no heavy-run.sh names it, and no other role's line names it since %s's newest)",
-		strings.Join(items, ", "), who)
+	if ownJob() {
+		return h, "", false
+	}
+	why = fmt.Sprintf("none of %s is in flight (no heavy-run.sh names it, and no other role's line names it since %s's newest)%s",
+		strings.Join(items, ", "), who, noJob)
 	if landed != nil {
 		why += "; landed: " + strings.Join(landed, "; ")
 	}
