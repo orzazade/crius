@@ -1,0 +1,6 @@
+100
+  99     1 tmux new-session -d -s quotes
+ 100    99 -bash
+ 200   100 claude --resume 58128bf4-0c1e-4c39-9d1f-6a0f3e1b2c7d --model claude-opus-5-5 --permission-mode bypassPermissions -n quotes · dev
+ 210   200 node /home/crius/.claude-max2/plugins/cache/context-mode/server.mjs
+--- cmdline

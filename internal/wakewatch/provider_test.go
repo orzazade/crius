@@ -59,6 +59,8 @@ type fakeSweep struct {
 	threads    []wakewatch.FailedThread
 	threadsErr error
 	screens    map[string]string
+	procs      map[string]string // Procs' answer by tab
+	claude     map[string]string // Claude's answer by "<tab> <pid>"
 	sendErr    error
 	sentThread []string
 	sentTab    []string
@@ -77,6 +79,21 @@ func (f *fakeSweep) deps(home string, now time.Time) wakewatch.ProviderDeps {
 			}
 			return s, nil
 		},
+		Procs: func(t wakewatch.RemoteTab) (string, error) {
+			s, ok := f.procs[t.String()]
+			if !ok {
+				return "", errors.New("ssh: connect to host 100.109.19.101 port 22: Operation timed out")
+			}
+			return s, nil
+		},
+		Claude: func(t wakewatch.RemoteTab, pid int) (string, error) {
+			s, ok := f.claude[fmt.Sprintf("%s %d", t, pid)]
+			if !ok {
+				return "", errors.New("ssh: connect to host 100.109.19.101 port 22: Operation timed out")
+			}
+			return s, nil
+		},
+		SSH: func(t wakewatch.RemoteTab) ([]string, error) { return []string{"ssh", t.Box}, nil },
 		SendThread: func(id, text string) error {
 			f.sentThread = append(f.sentThread, id+" | "+text)
 			return f.sendErr

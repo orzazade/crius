@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -124,9 +125,18 @@ func tabProcs(t wakewatch.RemoteTab) (string, error) {
 	return string(out), err
 }
 
-// onBox runs a shell command on a tab's box over its ssh (the playbook's hosts.json); the tab is checked to be a tmux
-// session:window first, so it is never shell code.
+// onBox runs a shell command on a tab's box over its ssh (boxSSH).
 func onBox(t wakewatch.RemoteTab, command string) ([]byte, error) {
+	ssh, err := boxSSH(t)
+	if err != nil {
+		return nil, err
+	}
+	return run(nil, ssh[0], append(ssh[1:], command)...)
+}
+
+// boxSSH is the command that runs a shell line on a tab's box: its ssh and target in the playbook's hosts.json. The tab
+// is checked to be a tmux session:window first, so it is never shell code.
+func boxSSH(t wakewatch.RemoteTab) ([]string, error) {
 	if !tabTarget.MatchString(t.Target) {
 		return nil, fmt.Errorf("%q is not a tmux session:window", t.Target)
 	}
@@ -137,11 +147,19 @@ func onBox(t wakewatch.RemoteTab, command string) ([]byte, error) {
 	}
 	for _, h := range hosts {
 		if h.Name == t.Box && len(h.SSH) > 0 {
-			args := append(append([]string{}, h.SSH[1:]...), h.Target, command)
-			return run(nil, h.SSH[0], args...)
+			return append(append([]string{}, h.SSH...), h.Target), nil
 		}
 	}
 	return nil, fmt.Errorf("no box %q in %s", t.Box, path)
+}
+
+// tabClaude gives a claude's session file on a tab's box (its path, then its JSON on one line; the newest where config
+// folders hold one each) and its raw /proc command line (wakewatch.ProviderDeps.Claude).
+func tabClaude(t wakewatch.RemoteTab, pid int) (string, error) {
+	p := strconv.Itoa(pid)
+	out, err := onBox(t, "f=$(ls -t ~/.claude*/sessions/"+p+".json 2>/dev/null | head -n 1); echo \"$f\"; "+
+		"if [ -n \"$f\" ]; then tr -d '\\n' < \"$f\"; fi; echo; tr '\\000\\n' '\\001\\002' < /proc/"+p+"/cmdline 2>/dev/null; echo")
+	return string(out), err
 }
 
 // sendTab types the text into a remote tab with crius-tsend, which proves it was sent (exit 0 SENT).
@@ -173,15 +191,17 @@ func providerDeps(now time.Time) wakewatch.ProviderDeps {
 	home := store.Home()
 	return wakewatch.ProviderDeps{Home: home, Now: now, Threads: failedThreads,
 		Tabs: func() ([]wakewatch.RemoteTab, error) { return wakewatch.ReadProviderTabs(home) }, Capture: captureTab,
-		SendThread: sendThread, SendTab: sendTab, SendCrius: send,
+		Procs: tabProcs, Claude: tabClaude, SSH: boxSSH, SendThread: sendThread, SendTab: sendTab, SendCrius: send,
 		Post: func(typ, text string) error {
 			return watchdog.PostOn(home, "crius", typ, "crius:watchdog", "crius", now, text)
 		}}
 }
 
 // fixtureDeps reads a folder of recorded data instead: threads.json (sqlite3 -json rows of failedQuery),
-// provider-tabs.txt, one <box>-<session>-<window>.txt screen per tab (`tmux capture-pane -p -e`), and now.txt, the
-// sweep's clock for the recording (RFC 3339; the real clock without it). It sends nothing.
+// provider-tabs.txt, one <box>-<session>-<window>.txt screen per tab (`tmux capture-pane -p -e`), now.txt, the sweep's
+// clock for the recording (RFC 3339; the real clock without it), and where a tab has them, its .procs (Procs' answer)
+// and .claude (Claude's answer for any pid). An optional provider-errors.json is the state an earlier look left. The
+// ssh to a box is shown as "ssh <box>". It sends nothing.
 func fixtureDeps(dir string, now time.Time) (wakewatch.ProviderDeps, error) {
 	if b, err := os.ReadFile(filepath.Join(dir, "now.txt")); err == nil {
 		if now, err = time.Parse(time.RFC3339, strings.TrimSpace(string(b))); err != nil {
@@ -221,6 +241,10 @@ func fixtureDeps(dir string, now time.Time) (wakewatch.ProviderDeps, error) {
 			return wakewatch.ProviderDeps{}, err
 		}
 	}
+	tabFile := func(t wakewatch.RemoteTab, ext string) (string, error) {
+		b, err := os.ReadFile(filepath.Join(dir, t.Box+"-"+strings.ReplaceAll(t.Target, ":", "-")+ext))
+		return string(b), err
+	}
 	none := func(...any) error { return errors.New("a fixture run sends nothing") }
 	return wakewatch.ProviderDeps{Home: home, Now: now, Dry: true,
 		Threads: func() ([]wakewatch.FailedThread, error) {
@@ -232,9 +256,12 @@ func fixtureDeps(dir string, now time.Time) (wakewatch.ProviderDeps, error) {
 		},
 		Tabs: func() ([]wakewatch.RemoteTab, error) { return wakewatch.ReadProviderTabs(home) },
 		Capture: func(t wakewatch.RemoteTab) (string, error) {
-			b, err := os.ReadFile(filepath.Join(dir, t.Box+"-"+strings.ReplaceAll(t.Target, ":", "-")+".txt"))
-			return tabsend.Visible(string(b)), err
+			s, err := tabFile(t, ".txt")
+			return tabsend.Visible(s), err
 		},
+		Procs:      func(t wakewatch.RemoteTab) (string, error) { return tabFile(t, ".procs") },
+		Claude:     func(t wakewatch.RemoteTab, _ int) (string, error) { return tabFile(t, ".claude") },
+		SSH:        func(t wakewatch.RemoteTab) ([]string, error) { return []string{"ssh", t.Box}, nil },
 		SendThread: func(id, text string) error { return none() }, SendTab: func(wakewatch.RemoteTab, string) error { return none() },
 		SendCrius: func(string) error { return none() }, Post: func(string, string) error { return none() },
 	}, nil
@@ -271,8 +298,8 @@ func providerCmd(args []string, w io.Writer) int {
 	}
 	rep, err := wakewatch.ProviderErrors(d)
 	now = d.Now
-	fmt.Fprintf(w, "provider-error sweep %s: %d failed or interrupted T3 thread(s) read, %d remote tab(s) read, %d stopped by a provider error, %d on a prompt, %d asking\n",
-		now.Local().Format("2006-01-02 15:04:05"), rep.Threads, rep.Tabs, rep.Stopped, rep.Prompts, rep.Asks)
+	fmt.Fprintf(w, "provider-error sweep %s: %d failed or interrupted T3 thread(s) read, %d remote tab(s) read, %d stopped by a provider error, %d on a prompt, %d asking, %d with unsent text\n",
+		now.Local().Format("2006-01-02 15:04:05"), rep.Threads, rep.Tabs, rep.Stopped, rep.Prompts, rep.Asks, rep.Unsent)
 	for _, a := range rep.Actions {
 		fmt.Fprintln(w, "  "+a)
 	}

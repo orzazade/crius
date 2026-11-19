@@ -627,50 +627,9 @@ const maxNamed = 3
 // nowhere: a known limit. MCP servers, which claude starts without a shell, are no shells. A pane with no claude is an
 // error, never idle.
 func tabJobs(out string) (shells int, jobs []string, err error) {
-	first, rest, _ := strings.Cut(strings.TrimLeft(out, " \t\n"), "\n")
-	pane, err := strconv.Atoi(strings.TrimSpace(first))
+	_, claudes, kids, argv, err := paneProcs(out)
 	if err != nil {
-		return 0, nil, fmt.Errorf("no pane pid in its answer %.60q", first)
-	}
-	rest, cmdlines, _ := strings.Cut(rest, "--- cmdline\n")
-	argv := map[int]string{} // a tool shell's raw argv, joined by spaces, its newlines kept; "" where /proc gave none
-	for _, l := range strings.Split(cmdlines, "\n") {
-		id, a, _ := strings.Cut(l, " ")
-		if pid, err := strconv.Atoi(id); err == nil {
-			argv[pid] = strings.ReplaceAll(strings.ReplaceAll(strings.TrimSuffix(a, "\x01"), "\x02", "\n"), "\x01", " ")
-		}
-	}
-	byPid := map[int]proc{}
-	kids := map[int][]proc{}
-	for _, l := range strings.Split(rest, "\n") {
-		f := strings.Fields(l)
-		if len(f) < 3 {
-			continue
-		}
-		pid, err1 := strconv.Atoi(f[0])
-		ppid, err2 := strconv.Atoi(f[1])
-		if err1 != nil || err2 != nil {
-			continue
-		}
-		p := proc{pid, ppid, strings.Join(f[2:], " ")}
-		byPid[pid] = p
-		kids[ppid] = append(kids[ppid], p)
-	}
-	top, ok := byPid[pane]
-	if !ok {
-		return 0, nil, fmt.Errorf("its pane pid %d is not in the process list", pane)
-	}
-	// the claudes in the pane: the pane's process or its nearest descendants named claude
-	var claudes []proc
-	for queue := []proc{top}; len(queue) > 0; queue = queue[1:] {
-		if p := queue[0]; filepath.Base(strings.Fields(p.args)[0]) == "claude" {
-			claudes = append(claudes, p)
-		} else {
-			queue = append(queue, kids[p.pid]...)
-		}
-	}
-	if len(claudes) == 0 {
-		return 0, nil, fmt.Errorf("no claude process runs in its pane (pid %d, %.40s)", pane, top.args)
+		return 0, nil, err
 	}
 	// odd collects what runs under pid that is not in allowed nor a waiter, nor under a waiter one of waiterHelpers
 	var odd func(pid int, allowed map[string]bool, found []proc) []proc
@@ -738,6 +697,57 @@ func tabJobs(out string) (shells int, jobs []string, err error) {
 		}
 	}
 	return shells, jobs, nil
+}
+
+// paneProcs reads Procs' answer: the pane's own process, the claudes in the pane (the pane's process or its nearest
+// descendants named claude), every process by its parent, and the raw argv of each tool shell the box listed under
+// "--- cmdline" (joined by spaces, its newlines kept). A pane with no claude is an error.
+func paneProcs(out string) (top proc, claudes []proc, kids map[int][]proc, argv map[int]string, err error) {
+	first, rest, _ := strings.Cut(strings.TrimLeft(out, " \t\n"), "\n")
+	pane, err := strconv.Atoi(strings.TrimSpace(first))
+	if err != nil {
+		return proc{}, nil, nil, nil, fmt.Errorf("no pane pid in its answer %.60q", first)
+	}
+	rest, cmdlines, _ := strings.Cut(rest, "--- cmdline\n")
+	argv = map[int]string{} // a tool shell's raw argv, joined by spaces, its newlines kept; "" where /proc gave none
+	for _, l := range strings.Split(cmdlines, "\n") {
+		id, a, _ := strings.Cut(l, " ")
+		if pid, err := strconv.Atoi(id); err == nil {
+			argv[pid] = strings.ReplaceAll(strings.ReplaceAll(strings.TrimSuffix(a, "\x01"), "\x02", "\n"), "\x01", " ")
+		}
+	}
+	byPid := map[int]proc{}
+	kids = map[int][]proc{}
+	for _, l := range strings.Split(rest, "\n") {
+		f := strings.Fields(l)
+		if len(f) < 3 {
+			continue
+		}
+		pid, err1 := strconv.Atoi(f[0])
+		ppid, err2 := strconv.Atoi(f[1])
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		p := proc{pid, ppid, strings.Join(f[2:], " ")}
+		byPid[pid] = p
+		kids[ppid] = append(kids[ppid], p)
+	}
+	top, ok := byPid[pane]
+	if !ok {
+		return proc{}, nil, nil, nil, fmt.Errorf("its pane pid %d is not in the process list", pane)
+	}
+	// the claudes in the pane: the pane's process or its nearest descendants named claude
+	for queue := []proc{top}; len(queue) > 0; queue = queue[1:] {
+		if p := queue[0]; filepath.Base(strings.Fields(p.args)[0]) == "claude" {
+			claudes = append(claudes, p)
+		} else {
+			queue = append(queue, kids[p.pid]...)
+		}
+	}
+	if len(claudes) == 0 {
+		return top, nil, nil, nil, fmt.Errorf("no claude process runs in its pane (pid %d, %.40s)", pane, top.args)
+	}
+	return top, claudes, kids, argv, nil
 }
 
 // descendants is every process under pid, each before what runs under it.

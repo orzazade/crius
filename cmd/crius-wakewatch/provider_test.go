@@ -88,3 +88,28 @@ func TestParseFailedThreadsKeepsGoodRows(t *testing.T) {
 		t.Fatalf("%v %v", ths, err)
 	}
 }
+
+// The frozen-tab demo: Legion's three quotes tabs at 16:58 on 11-19, 5 min after the sweep before (provider-errors.json,
+// the state that look left). dev froze after an update, with Crius's line unsent in its box: Crius hears once, with the
+// restart. builder-2 is working with text typed in its box and qa sits idle with an empty box: neither is alerted. The
+// state's key for dev is Unsent's key of its screen, so a change to the key goes red here, not in the demo.
+func TestProviderCmdFrozenDemo(t *testing.T) {
+	var out strings.Builder
+	code := providerCmd([]string{"-fixtures", filepath.Join("testdata", "frozen-demo")}, &out)
+	s := out.String()
+	alert := ""
+	for _, l := range strings.Split(s, "\n") {
+		if strings.Contains(l, "ALERT") {
+			alert = l
+		}
+	}
+	// the ask check (remote-tab-asks) lists each tab it read in a dry run; only the alert must leave builder-2 and qa out
+	if code != 0 || !strings.Contains(s, "3 remote tab(s) read, 0 stopped by a provider error, 0 on a prompt, 0 asking, 1 with unsent text") ||
+		!strings.Contains(s, "ALERT: tab legion quotes:dev stopped taking input") ||
+		!strings.Contains(s, "for 5 min (first seen 16:53)") ||
+		!strings.Contains(s, "ssh legion 'kill -TERM 200 && ") ||
+		!strings.Contains(s, "claude --resume 58128bf4-0c1e-4c39-9d1f-6a0f3e1b2c7d --model claude-opus-5-5") ||
+		strings.Count(s, "ALERT") != 1 || strings.Contains(alert, "builder-2") || strings.Contains(alert, "quotes:qa") {
+		t.Fatalf("exit %d:\n%s", code, s)
+	}
+}

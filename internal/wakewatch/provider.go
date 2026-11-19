@@ -23,7 +23,8 @@ import (
 // The same look at each remote tab times an open dialog there, as the stuck-prompt check (stuckprompt.go) does for the
 // Mac's own sessions: one open promptAfter wakes Crius once (11-17: Legion quotes:qa sat on a `git clean -f` permission
 // prompt 05:30-12:41 and nobody was woken, as that check reads only the Mac's hook log). A tab that cannot be read keeps
-// its prompt's timer; it is a failed look (said after lookMisses in a row: looks.go), never "no prompt".
+// its prompt's timer; it is a failed look (said after lookMisses in a row: looks.go), never "no prompt". The same look
+// finds a tab that stopped taking input (frozen.go).
 //
 // It also times a remote tab whose last reply asks Crius or the owner (RemoteAsk), as wakewatch's 10-min ask rule does
 // for the Mac's cmux tabs: one ask open promptAfter wakes Crius once, unless the role posted a NEED, NEED-<X> or ASK line
@@ -59,13 +60,19 @@ func (t RemoteTab) String() string { return t.Box + " " + t.Target }
 
 // ProviderDeps is what the sweep reads and does. Capture gives a tab's screen with dim text (Claude Code's grey
 // suggestion in an empty box) taken out. Post puts one line of type typ on Crius's bus. With Dry it sends, posts and
-// saves nothing and only says what it would do.
+// saves nothing and only says what it would do. Procs, Claude and SSH are read only to tell Crius how to restart a frozen
+// tab: Procs as in RestartDeps; Claude gives a claude's session file on its box (its path, then its JSON on one line)
+// and its raw command line from /proc on the next (NUL as \x01, newline as \x02; empty without /proc); SSH gives the
+// command that runs a shell line on the tab's box.
 type ProviderDeps struct {
 	Home       string
 	Now        time.Time
 	Threads    func() ([]FailedThread, error)
 	Tabs       func() ([]RemoteTab, error)
 	Capture    func(RemoteTab) (string, error)
+	Procs      func(RemoteTab) (string, error)
+	Claude     func(t RemoteTab, pid int) (string, error)
+	SSH        func(RemoteTab) ([]string, error)
 	SendThread func(id, text string) error
 	SendTab    func(t RemoteTab, text string) error
 	Post       func(typ, text string) error
@@ -78,6 +85,7 @@ type ProviderReport struct {
 	Threads, Tabs, Stopped int
 	Prompts                int // remote tabs read with a dialog open
 	Asks                   int // remote tabs read whose last reply asks Crius or the owner
+	Unsent                 int // remote tabs read with unsent text in the box and no turn running
 	Actions                []string
 }
 
@@ -94,6 +102,7 @@ type providerState struct {
 	Missed    map[string]int          // what could not be looked at -> sweeps in a row it failed
 	Prompts   map[string]remotePrompt // "<box> <target>" -> the dialog open in that tab
 	Asks      map[string]remotePrompt // "<box> <target>" -> what that tab's last reply asks (RemoteAsk)
+	Frozen    map[string]frozenLook   // "<box> <target>" -> its box holding unsent text
 }
 
 // remotePrompt is a remote tab's open dialog: its hash (promptKey, so a rewrap keeps it), when first seen, and whether
@@ -293,10 +302,11 @@ func ProviderErrors(d ProviderDeps) (ProviderReport, error) {
 	}
 	prompts := map[string]remotePrompt{} // replaces st.Prompts: a tab read with no dialog open drops its entry
 	asks := map[string]remotePrompt{}    // replaces st.Asks the same way
+	frozen := map[string]frozenLook{}    // replaces st.Frozen the same way: a tab read with nothing unsent drops its entry
 	tabs, err := d.Tabs()
 	if err != nil {
 		cannot("the remote tab list "+ProviderTabsFile(d.Home), err)
-		prompts, asks = st.Prompts, st.Asks // no tab was looked at: every timer goes on
+		prompts, asks, frozen = st.Prompts, st.Asks, st.Frozen // no tab was looked at: every timer goes on
 	}
 	for _, t := range tabs {
 		screen, err := d.Capture(t)
@@ -307,6 +317,9 @@ func ProviderErrors(d ProviderDeps) (ProviderReport, error) {
 			}
 			if a, ok := st.Asks[t.String()]; ok {
 				asks[t.String()] = a
+			}
+			if f, ok := st.Frozen[t.String()]; ok {
+				frozen[t.String()] = f
 			}
 			continue
 		}
@@ -339,6 +352,29 @@ func ProviderErrors(d ProviderDeps) (ProviderReport, error) {
 			}
 			prompts[t.String()] = p
 			continue // a tab on a dialog is never restarted: the dialog waits on an answer, not a carry-on
+		}
+		if typed, key, ok := Unsent(screen); ok {
+			rep.Unsent++
+			f, seen := frozen[t.String()] // a tab listed twice: its first look this sweep stands
+			if !seen {
+				f = st.Frozen[t.String()]
+			}
+			if f.Key != key {
+				f = frozenLook{Key: key, Since: d.Now}
+			}
+			if age := d.Now.Sub(f.Since); age >= frozenAfter && !f.Said {
+				say("ALERT", frozenAlert(d, t, screen, typed, f))
+				f.Said = true
+			} else if d.Dry {
+				heard := fmt.Sprintf("Crius hears once it lasts %d min", int(frozenAfter.Minutes()))
+				if f.Said {
+					heard = "Crius was told"
+				}
+				rep.Actions = append(rep.Actions, fmt.Sprintf("unsent text in the box of tab %s for %d min, no turn running (%s): %q",
+					t, int(age.Minutes()), heard, typed))
+			}
+			frozen[t.String()] = f
+			continue // a box holding text is no provider stop (ProviderStop wants it empty)
 		}
 		line, key, ok := ProviderStop(screen)
 		if !ok {
@@ -391,6 +427,7 @@ func ProviderErrors(d ProviderDeps) (ProviderReport, error) {
 	st.Missed = missed.counts()
 	st.Prompts = prompts
 	st.Asks = asks
+	st.Frozen = frozen
 	for k, s := range st.Stops {
 		if d.Now.Sub(s.At) > providerKeep {
 			delete(st.Stops, k)
@@ -434,6 +471,9 @@ func loadProvider(home string) (st providerState, err error) {
 	}
 	if st.Asks == nil {
 		st.Asks = map[string]remotePrompt{}
+	}
+	if st.Frozen == nil {
+		st.Frozen = map[string]frozenLook{}
 	}
 	return st, err
 }
