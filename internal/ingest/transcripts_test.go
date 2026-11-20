@@ -228,17 +228,24 @@ func TestMetadataLineTypesSeenOnThisMacAreKnown(t *testing.T) {
 	eq(t, len(x.run().UnknownTypes), 0)
 }
 
-// Seen 2026-11-21 02:46: Claude Code writes {"type":"repl-mode","replMode":true,"sessionId":…}, a mode marker
-// with no data we record. It must not raise the unknown-type ALERT.
-func TestReplModeMarkerIsKnownAndRaisesNoAlert(t *testing.T) {
-	x := newIC(t, cfg{})
-	testutil.Write(t, x.tx, lines(map[string]any{"type": "repl-mode", "replMode": true, "sessionId": "s1"}))
-	st := x.run()
-	bus, _ := os.ReadFile(filepath.Join(x.home, "bus", "crius.log"))
-	if strings.Contains(string(bus), "unknown transcript line type 'repl-mode'") {
-		t.Fatalf("repl-mode alerted: %s", bus)
+// Marker lines with no data we record must not raise the unknown-type ALERT. Seen on this Mac: repl-mode
+// (2026-11-21 02:46) and session-owner (2026-11-03; the account already comes from the config folder).
+func TestModeAndOwnerMarkersAreKnownAndRaiseNoAlert(t *testing.T) {
+	for _, rec := range []map[string]any{
+		{"type": "repl-mode", "replMode": true, "sessionId": "s1"},
+		{"type": "session-owner", "accountUuid": "a1", "organizationUuid": "o1", "sessionId": "s1"},
+	} {
+		t.Run(rec["type"].(string), func(t *testing.T) {
+			x := newIC(t, cfg{})
+			testutil.Write(t, x.tx, lines(rec))
+			st := x.run()
+			bus, _ := os.ReadFile(filepath.Join(x.home, "bus", "crius.log"))
+			if strings.Contains(string(bus), "unknown transcript line type '"+rec["type"].(string)+"'") {
+				t.Fatalf("alerted: %s", bus)
+			}
+			eq(t, len(st.UnknownTypes), 0)
+		})
 	}
-	eq(t, len(st.UnknownTypes), 0)
 }
 
 func TestUnknownShapesAreCountedAndAlertedOncePerType(t *testing.T) {
