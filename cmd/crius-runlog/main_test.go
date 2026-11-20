@@ -273,3 +273,23 @@ func TestRunFormKeepsTheHeadAndTailOfAHugeOutput(t *testing.T) {
 		t.Fatalf("cut %d + shown %d bytes is not the 5000006 the check wrote", n, shown)
 	}
 }
+
+// Review of the cap: one huge line with no newline (minified JSON) kept nothing but the note, and the note left out the
+// bytes a long line's cut drops. Its start and end show, cut to 2000 bytes each, and the note counts the rest.
+func TestRunFormKeepsTheStartAndEndOfOneHugeLine(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CRIUS_HOME", home)
+	rc, _, errs := runlogCmd(t, "run", "cortex", "oneline", "1e4d6df", "--", "sh", "-c", "head -c 1000000 /dev/zero | tr '\\0' x")
+	if rc != 0 {
+		t.Fatalf("rc %d: %.300s", rc, errs)
+	}
+	m, _ := filepath.Glob(filepath.Join(home, "runs", "cortex-oneline-*.md"))
+	if len(m) != 1 {
+		t.Fatalf("logs %v", m)
+	}
+	b, _ := os.ReadFile(m[0])
+	part := "| " + strings.Repeat("x", 2000) + " …\n"
+	if want := "output:\n" + part + "… 996000 bytes cut …\n" + part; !strings.HasSuffix(string(b), want) {
+		t.Fatalf("want the line's start and end and 996000 bytes cut, log ends\n%q", b[max(0, len(b)-300):])
+	}
+}

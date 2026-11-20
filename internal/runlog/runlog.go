@@ -309,29 +309,26 @@ func Check(dir, project, ref, sha string, argv []string, limit time.Duration, ec
 			b.WriteString(quote(l))
 		}
 	} else {
-		// The middle was never held. Keep whole lines only: the head up to its last newline, the tail from its first.
-		head, tail := string(out.head), string(out.tail)
-		if i := strings.LastIndexByte(head, '\n'); i >= 0 {
-			head = head[:i+1]
-		} else {
-			head = ""
-		}
-		if i := strings.IndexByte(tail, '\n'); i >= 0 {
-			tail = tail[i+1:]
-		} else {
-			tail = ""
-		}
-		hl, tl := splitLines(head), splitLines(tail)
-		hl, tl = hl[:min(len(hl), headKeep)], tl[max(0, len(tl)-tailKeep):]
+		// The middle was never held. The head's last line and the tail's first may be parts of lines; they are kept
+		// as they are, so one long line (minified JSON) still shows its start and end. The note counts every byte the
+		// log does not show, those quote cuts from a long line too.
+		hl, hnl := pieces(string(out.head))
+		tl, tnl := pieces(string(out.tail))
+		hl, hnl = hl[:min(len(hl), headKeep)], hnl[:min(len(hnl), headKeep)]
+		tl, tnl = tl[max(0, len(tl)-tailKeep):], tnl[max(0, len(tnl)-tailKeep):]
 		shown := int64(0)
-		for _, l := range append(append([]string{}, hl...), tl...) {
-			shown += int64(len(l)) + 1
-		}
-		if !strings.HasSuffix(tail, "\n") && len(tl) > 0 {
-			shown-- // the output's last line had no newline
-		}
-		for _, l := range hl {
+		for i, l := range hl {
+			shown += int64(len(cutLine(l)))
+			if hnl[i] {
+				shown++
+			}
 			b.WriteString(quote(l))
+		}
+		for i, l := range tl {
+			shown += int64(len(cutLine(l)))
+			if tnl[i] {
+				shown++
+			}
 		}
 		fmt.Fprintf(&b, "… %d bytes cut …\n", out.total-shown)
 		for _, l := range tl {
@@ -367,6 +364,20 @@ func Check(dir, project, ref, sha string, argv []string, limit time.Duration, ec
 	return path, exit, timedOut, nil
 }
 
+// pieces is s cut at each newline, saying for each piece whether a newline followed it in s; an empty last piece
+// (s ends in a newline) is left out.
+func pieces(s string) (ps []string, nl []bool) {
+	ps = strings.Split(s, "\n")
+	nl = make([]bool, len(ps))
+	for i := range ps[:len(ps)-1] {
+		nl[i] = true
+	}
+	if ps[len(ps)-1] == "" {
+		ps, nl = ps[:len(ps)-1], nl[:len(nl)-1]
+	}
+	return ps, nl
+}
+
 // splitLines is s's lines, with no last empty one; none for "".
 func splitLines(s string) []string {
 	if s == "" {
@@ -400,10 +411,18 @@ func (c *capped) Write(p []byte) (int, error) {
 
 // quote keeps one output line behind "| ", cut to lineKeep bytes, so it can never start a header or shot line.
 func quote(l string) string {
-	if len(l) > lineKeep {
-		l = strings.ToValidUTF8(l[:lineKeep], "") + " …"
+	if c := cutLine(l); c != l {
+		return "| " + c + " …\n"
 	}
 	return "| " + l + "\n"
+}
+
+// cutLine is the part of l a log shows: at most lineKeep bytes, valid UTF-8.
+func cutLine(l string) string {
+	if len(l) > lineKeep {
+		return strings.ToValidUTF8(l[:lineKeep], "")
+	}
+	return l
 }
 
 // keepGoing writes to w and drops its errors, so the copy into the log's buffer goes on when the echo is closed.

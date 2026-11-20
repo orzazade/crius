@@ -398,7 +398,9 @@ func (r *runner) pauseAccounts(tx *sql.Tx, rep *quota.Report, as *quota.Accounts
 	var full []quota.AcctUse
 	var room, unsure []string
 	seen, hasRoom := map[string]bool{}, map[string]bool{}
-	unknown := map[string]string{} // login -> name: no measured share this week, so it pauses no role (11-21)
+	// login -> name: a listed Max account with no measured share this week, so a tab on it keeps its role from a PAUSE
+	// (11-21). A login no row lists does not: nobody starts on it, and its tab's role pauses as before.
+	unknown := map[string]string{}
 	for _, a := range rep.Accounts {
 		seen[a.Login] = true
 		listed := as.Of(a.Login) != nil && as.Of(a.Login).Plan == "max"
@@ -416,10 +418,14 @@ func (r *runner) pauseAccounts(tx *sql.Tx, rep *quota.Report, as *quota.Accounts
 		case st == "full":
 			unsure = append(unsure, a.Name+" "+why)
 		case why == "":
-			unknown[a.Login] = a.Name
+			if listed {
+				unknown[a.Login] = a.Name
+			}
 			unsure = append(unsure, a.Name+" not measured")
 		default:
-			unknown[a.Login] = a.Name
+			if listed {
+				unknown[a.Login] = a.Name
+			}
 			unsure = append(unsure, fmt.Sprintf("%s %g%% unsure", a.Name, a.SevenPct)) // short: the NEED is one bus line
 		}
 	}
@@ -434,7 +440,7 @@ func (r *runner) pauseAccounts(tx *sql.Tx, rep *quota.Report, as *quota.Accounts
 	// A role with a tab on an account with room, as the room list counts it: a PAUSE to the role would stop that tab too.
 	// A role with a tab on an unknown account is not paused either: only an account measured at the limit pauses a role
 	// (11-21), and the NEED names the unknown one. Pick never starts new work on it. Room wins over unknown; among
-	// several, the first name, so the NEED's words do not change with map order.
+	// several unknown ones, the first name, so the NEED's words do not change with map order.
 	elsewhere, unmeasured := map[string]string{}, map[string]string{}
 	for login, roles := range tabs {
 		for _, role := range roles {
