@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/orzazade/crius/internal/quota"
 )
 
 // fixtureLogins are the logins each config dir holds as of 11-16: ThinkPad ~/.claude is max1's login (d94b…) and
@@ -238,7 +240,7 @@ func TestSpoolLinesSkipAndCountABadLineAndLeaveTheOneBeingWritten(t *testing.T) 
 	good := `{"ts":"2026-11-15T23:40:00Z","kind":"change","login":"c07a2a080f26","rl":true,"seven_pct":34,"seven_reset":1795255200,"responded":true}`
 	long := `{"ts":"2026-11-15T23:41:00Z","kind":"change","login":"c07a2a080f26","rl":true,"seven_pct":35,"seven_reset":1795255200,"responded":true,"pad":"` + strings.Repeat("x", 2<<20) + `"}`
 	in := good + "\n" + `{"ts":"2026-11-15T2{"ts":"cut and joined"}` + "\n\n" + long + "\n" + `{"ts":"2026-11-15T23:5`
-	ls, bad := spoolLines([]byte(in))
+	ls, bad := quota.ParseSpool([]byte(in))
 	if len(ls) != 2 || bad != 1 || *ls[1].SevenPct != 35 {
 		t.Fatalf("%d lines, %d bad", len(ls), bad)
 	}
@@ -340,5 +342,32 @@ func TestSigninReadBlipOnAMachineWakesNobodyTwoInARowWake(t *testing.T) {
 		if !strings.Contains(all, w) {
 			t.Fatalf("second failed run in a row, no %q in %q", w, all)
 		}
+	}
+}
+
+// 11-21: Pick must read the week the sweep reads. The sweep keeps a copy of each other machine's spool for it
+// (quota.HostLines): the lines it read, or why the read failed; the Mac's own spool is in the store and is not copied.
+func TestSigninsKeepsACopyOfEachOtherMachinesSpoolForPick(t *testing.T) {
+	home := t.TempDir()
+	tp := oneLine("c07a2a080f26", 96, signinNow.Add(-30*time.Minute), signinNow.Add(12*time.Hour))
+	Signins(SigninReads{Status: reads(t, nil), Login: logins(nil), Spool: func(host string) ([]byte, error) {
+		switch host {
+		case "thinkpad":
+			return tp, nil
+		case "legion":
+			return nil, errors.New("ssh: no route")
+		}
+		return nil, nil
+	}}, home, signinNow)
+	lines, notes, _ := quota.HostLines(home, quota.RemoteHosts, signinNow)
+	if len(lines) != 1 || lines[0].Login != "c07a2a080f26" {
+		t.Fatalf("want the thinkpad line, got %+v", lines)
+	}
+	all := strings.Join(notes, "\n")
+	if !strings.Contains(all, "thinkpad spool read under 1 min ago") || !strings.Contains(all, "legion spool NEVER READ") || !strings.Contains(all, "ssh: no route") {
+		t.Fatalf("%s", all)
+	}
+	if _, err := os.Stat(filepath.Join(home, "spool", "hosts", ".jsonl")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("the Mac's spool is not copied")
 	}
 }

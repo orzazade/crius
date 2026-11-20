@@ -2208,7 +2208,7 @@ func TestLimitLineFitsABusLine(t *testing.T) {
 		names = append(names, fmt.Sprintf("project-%02d:builder-%02d abcdef%02d", i, i, i))
 	}
 	for _, c := range []struct{ moves, names []string }{{moves, names}, {moves[:1], names}, {moves, names[:1]}, {moves[:1], nil}} {
-		line := limitLine(a, c.moves, c.names, 164, []string{"/x/.claude-new", "/x/.claude-new", "/y/.claude-other"})
+		line := limitLine(a, c.moves, c.names, 164, []string{"/x/.claude-new", "/x/.claude-new", "/y/.claude-other"}, quota.RemoteHosts)
 		if n := utf8.RuneCountInString(line); n > store.MaxLen {
 			t.Errorf("%d moves, %d names: %d runes, over %d: %q", len(c.moves), len(c.names), n, store.MaxLen, line)
 		}
@@ -2226,7 +2226,7 @@ func TestLimitLineKeepsTheFirstMove(t *testing.T) {
 	a := quota.AcctUse{Name: strings.Repeat("n", 60), SevenMeasuredPct: 99.5, SevenMeasuredAt: qNow, Reset: qNow.Add(time.Hour)}
 	slug := strings.Repeat("s", 20)
 	move := slug + " to none (" + strings.Repeat("e", 40) + ")"
-	line := limitLine(a, []string{move}, []string{slug + ":builder abcdef01"}, 164, []string{"/x/" + strings.Repeat("d", 80)})
+	line := limitLine(a, []string{move}, []string{slug + ":builder abcdef01"}, 164, []string{"/x/" + strings.Repeat("d", 80)}, nil)
 	if n := utf8.RuneCountInString(line); n > store.MaxLen {
 		t.Errorf("%d runes, over %d: %q", n, store.MaxLen, line)
 	}
@@ -2251,7 +2251,7 @@ func TestLimitLineSurvivesAnEmptyFolderAtEveryRoom(t *testing.T) {
 					t.Fatalf("pad %d: limitLine panicked: %v", pad, v)
 				}
 			}()
-			line := limitLine(a, []string{"p to max2"}, []string{name}, 0, []string{"", "/x/a"})
+			line := limitLine(a, []string{"p to max2"}, []string{name}, 0, []string{"", "/x/a"}, nil)
 			if n := utf8.RuneCountInString(line); n > store.MaxLen {
 				t.Fatalf("pad %d: %d runes, over %d", pad, n, store.MaxLen)
 			}

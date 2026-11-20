@@ -14,7 +14,9 @@ package wakewatch
 // or over 95% of its week, or at 100% (blocked until the reset), wakes Crius once per login, state and day with the reset
 // time. A share under 95% last measured over weekStale ago, a window with no sample since its reset, a login no line
 // names, a login or spool that could not be read: each is UNKNOWN, said loudly, never OK. A login is the 12-hex hash
-// quota.LoginOf gives (of the account id in the dir's .claude.json; never a token or an email).
+// quota.LoginOf gives (of the account id in the dir's .claude.json; never a token or an email). The run keeps a copy of
+// each other machine's spool, or why it could not be read, in ~/.crius/spool/hosts/ (quota.SaveHostSpool): Pick reads
+// those (quota.HostLines) by the same rule, so the sweep and Pick give one answer per login (11-21).
 //
 // Known gaps (review 11-17, follow-ups): (1) a spool line names the login its folder held at render time, not the one its
 // session runs on; quota.reduce now takes the window from measured lines only, which covers an idle session left on an
@@ -23,7 +25,6 @@ package wakewatch
 // comes, the login reads as "reset, no sample since" (UNKNOWN), not the new week's share.
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -83,8 +84,8 @@ var Remotes = map[string]remote{
 	"thinkpad": {ThinkPadSSH, ""},
 }
 
-// Hosts are every machine whose spool is read, the Mac ("") first.
-var Hosts = []string{"", "legion", "thinkpad"}
+// Hosts are every machine whose spool is read, the Mac ("") first; the others are quota.RemoteHosts, whose copies Pick reads.
+var Hosts = append([]string{""}, quota.RemoteHosts...)
 
 // LoginRemote prints the login (quota.LoginOf: the first 12 hex of the sha256 of the account id in the dir's
 // .claude.json, ~/.claude.json for ~/.claude) of config dir on a remote machine, "" when none: never the id, a token or an email.
@@ -169,11 +170,13 @@ type SigninReads struct {
 }
 
 // SigninWatch is one read of every account: a row each, in the order of Accounts, each machine whose spool could not
-// be read (host -> why), and each machine's spool lines that were not JSON and were skipped (host -> how many).
+// be read (host -> why), each machine's spool lines that were not JSON and were skipped (host -> how many), and each
+// machine whose copy for Pick could not be written (host -> why; Pick then says its copy is old).
 type SigninWatch struct {
-	Rows   []SigninRow
-	Unread map[string]string
-	Bad    map[string]int
+	Rows    []SigninRow
+	Unread  map[string]string
+	Bad     map[string]int
+	CopyErr map[string]string
 }
 
 var loginHash = regexp.MustCompile(`^[0-9a-f]{12}$`)
@@ -181,7 +184,7 @@ var loginHash = regexp.MustCompile(`^[0-9a-f]{12}$`)
 // Signins reads every account and spool at once (one slow or dead machine must not hold up the rest). home is Crius's
 // folder: its accounts.toml names each login.
 func Signins(r SigninReads, home string, now time.Time) SigninWatch {
-	w := SigninWatch{Rows: make([]SigninRow, len(Accounts)), Unread: map[string]string{}, Bad: map[string]int{}}
+	w := SigninWatch{Rows: make([]SigninRow, len(Accounts)), Unread: map[string]string{}, Bad: map[string]int{}, CopyErr: map[string]string{}}
 	lgs := make([]string, len(Accounts))
 	lgErr := make([]error, len(Accounts))
 	spools := make([][]byte, len(Hosts))
@@ -210,11 +213,16 @@ func Signins(r SigninReads, home string, now time.Time) SigninWatch {
 
 	var lines []quota.Line
 	for i, h := range Hosts {
+		if h != "" { // the copy Pick reads (quota.HostLines): the same lines, no ssh of its own
+			if err := quota.SaveHostSpool(home, h, spools[i], spErr[i], now); err != nil {
+				w.CopyErr[h] = err.Error()
+			}
+		}
 		if spErr[i] != nil {
 			w.Unread[hostName(h)] = spErr[i].Error()
 			continue
 		}
-		ls, bad := spoolLines(spools[i])
+		ls, bad := quota.ParseSpool(spools[i])
 		if bad > 0 {
 			w.Bad[hostName(h)] = bad
 		}
@@ -226,27 +234,6 @@ func Signins(r SigninReads, home string, now time.Time) SigninWatch {
 		w.Rows[i].week(lgs[i], lgErr[i], weeks, as, asErr, w.Unread, now)
 	}
 	return w
-}
-
-// spoolLines parses a spool. A last line with no newline is being written and is left. A line that is not JSON (a write
-// cut short when the disk filled, and joined to the next) is skipped and counted, as ingest does: one bad line must not
-// blind the whole machine for good. Only the count is ever said, never the line.
-func spoolLines(b []byte) (out []quota.Line, bad int) {
-	if i := bytes.LastIndexByte(b, '\n'); i < len(b)-1 {
-		b = b[:i+1]
-	}
-	for _, ln := range bytes.Split(b, []byte("\n")) {
-		if len(bytes.TrimSpace(ln)) == 0 {
-			continue
-		}
-		var l quota.Line
-		if err := json.Unmarshal(ln, &l); err != nil {
-			bad++
-			continue
-		}
-		out = append(out, l)
-	}
-	return out, bad
 }
 
 func hostName(h string) string {
@@ -537,6 +524,9 @@ func SigninTable(w SigninWatch, loc *time.Location) string {
 	t.Flush()
 	for _, h := range slices.Sorted(maps.Keys(w.Unread)) {
 		fmt.Fprintf(&b, "spool unread %s: %s; check: %s\n", h, w.Unread[h], spoolShell(h))
+	}
+	for _, h := range slices.Sorted(maps.Keys(w.CopyErr)) {
+		fmt.Fprintf(&b, "spool %s: copy for Pick NOT written: %s\n", h, w.CopyErr[h])
 	}
 	for _, h := range slices.Sorted(maps.Keys(w.Bad)) {
 		fmt.Fprintf(&b, "spool %s: %d lines not JSON, skipped\n", h, w.Bad[h])

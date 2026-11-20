@@ -22,7 +22,11 @@ import (
 
 // PickAccount is the account a session of project starts on, its folder and why: want is "max" for the Max one whose
 // week resets soonest, or a Max row's name (quota.Pick); never the enterprise account (owner 11-07). The figures are the
-// record store's, as crius-rec quota reads them. crius-spawn and the playbook's claude -p calls use it.
+// record store's, as crius-rec quota reads them, with each login's week read together with the other machines' spool
+// lines the sign-in sweep copied (quota.HostLines): one answer per login, the sweep's (11-21: the sweep saw max3 at 96%
+// on the Legion; Pick, on the Mac's store alone, called it unknown and kept max1 held). Why and the error name each
+// machine's copy and its age, loudly when it is missing, old or its last read failed. crius-spawn and the playbook's
+// claude -p calls use it.
 func PickAccount(home, project, want string) (name, dir, why string, err error) {
 	root, pauseAt, err := ForSpawn(home, project)
 	if err != nil {
@@ -37,11 +41,21 @@ func PickAccount(home, project, want string) (name, dir, why string, err error) 
 		return "", "", "", err
 	}
 	defer db.Close()
-	r, err := quota.Build(db, projects, time.Now())
+	now := clock()
+	r, err := quota.Build(db, projects, now)
 	if err != nil {
 		return "", "", "", err
 	}
-	return quota.Pick(r, projects.Accounts, root, want, pauseAt)
+	lines, notes, _ := quota.HostLines(home, quota.RemoteHosts, now)
+	hosts := "other machines: " + strings.Join(notes, "; ")
+	name, dir, why, err = quota.Pick(r.WithLines(lines, projects.Accounts), projects.Accounts, root, want, pauseAt)
+	if err != nil {
+		return "", "", "", fmt.Errorf("%w (%s)", err, hosts)
+	}
+	if why == "" {
+		return name, dir, hosts, nil
+	}
+	return name, dir, why + "; " + hosts, nil
 }
 
 // clock is the time the quota and bus clock checks run at; tests set it.
@@ -537,6 +551,11 @@ func (r *runner) pauseAccounts(tx *sql.Tx, rep *quota.Report, as *quota.Accounts
 // Shares only rise within a window, so a measured one at the limit holds at any age. Wakewatch's weekly watch reads
 // each login's week on its own and says what is unknown.
 func (r *runner) limitChecks(tx *sql.Tx, rep *quota.Report, as *quota.Accounts) error {
+	// Each login's week is read as PickAccount reads it, with the other machines' copies (quota.HostLines): a login at the
+	// limit on another machine gets its NEED, and the move target is the one crius-spawn -move picks. A NEED made while a
+	// copy is missing, old or unread names those machines; the full ages are said where the move is made.
+	lines, _, blind := quota.HostLines(r.home, quota.RemoteHosts, rep.Now)
+	rep = rep.WithLines(lines, as)
 	hooks := map[string]sessionstate.State{}
 	states, err := sessionstate.List(filepath.Join(r.home, "sessions"))
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -599,7 +618,7 @@ func (r *runner) limitChecks(tx *sql.Tx, rep *quota.Report, as *quota.Accounts) 
 		for _, project := range slices.Sorted(maps.Keys(next)) {
 			moves = append(moves, project+" to "+next[project])
 		}
-		if err := r.queueLine(tx, need, "NEED", "crius", "crius:lead", limitLine(a, moves, names, len(unknown), unlisted)); err != nil {
+		if err := r.queueLine(tx, need, "NEED", "crius", "crius:lead", limitLine(a, moves, names, len(unknown), unlisted, blind)); err != nil {
 			return err
 		}
 	}
@@ -611,7 +630,7 @@ func (r *runner) limitChecks(tx *sql.Tx, rep *quota.Report, as *quota.Accounts) 
 // count of unplaced ones, and the count of those on folders accounts.toml does not list with as many of the folders as
 // fit (reviews of da1dcd3 and 85a7444: a long list cut the target and hint off). Each part has its least form reserved
 // before an earlier one takes its share.
-func limitLine(a quota.AcctUse, moves, names []string, unplaced int, unlisted []string) string {
+func limitLine(a quota.AcctUse, moves, names []string, unplaced int, unlisted, blind []string) string {
 	head := fmt.Sprintf("quota: account %s at %g%% of its 7d (%s, resets %s) over the %d%% limit. Next by the rule: ",
 		truncate(a.Name, 20), a.SevenMeasuredPct, a.SevenMeasuredAt.Local().Format("15:04"),
 		a.Reset.Local().Format("Mon 15:04"), quota.Limit)
@@ -656,7 +675,13 @@ func limitLine(a quota.AcctUse, moves, names []string, unplaced int, unlisted []
 		}
 		if s := " (" + fitList(folders, room-3) + ")"; utf8.RuneCountInString(s) <= room {
 			tail += s
+			room -= utf8.RuneCountInString(s)
 		}
+	}
+	// Last, as room allows: the machines whose copies were missing, old or unread when the moves were picked (the
+	// moves' own details are said where the move is made, crius-spawn -move).
+	if s := "; blind to " + strings.Join(blind, ", "); len(blind) > 0 && utf8.RuneCountInString(s) <= room {
+		tail += s
 	}
 	return head + movesText + hint + on + tail
 }

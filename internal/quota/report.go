@@ -58,8 +58,9 @@ type Report struct {
 	EntWeek, EntToday  []Share
 	EntWeekUSD, EntDay float64
 	Violations         []Violation
-	EntUsage           *EntUsage // set by the `quota` command (a live read), not by Build
-	Accounts           []AcctUse // each login measured, listed rows by name first, then unlisted logins by hash
+	EntUsage           *EntUsage           // set by the `quota` command (a live read), not by Build
+	Accounts           []AcctUse           // each login measured, listed rows by name first, then unlisted logins by hash
+	byLogin            map[string][]sample // each login's store samples, for WithLines
 }
 
 // Querier is a *sql.DB or a *sql.Tx.
@@ -643,6 +644,7 @@ func Build(db Querier, p Projects, now time.Time) (*Report, error) {
 			byLogin[s.login] = append(byLogin[s.login], s)
 		}
 	}
+	rep.byLogin = byLogin
 	newest := map[string]time.Time{} // per login: its newest sample of its own current window, if not ended yet
 	for login, ls := range byLogin {
 		cur, u := reduce(ls, now)
