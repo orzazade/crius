@@ -107,17 +107,17 @@ type reqAgg struct {
 	in, out, cr, cw, cw1h, cw5m int64
 }
 
-// dataKeys are the top-level fields ingest makes rows from: message (turns, tool use, usage), requestId (requests) and
-// attachment (credential_org). A line of an unknown type with none of them is a marker: it is counted, not alerted, so
+// dataKeys are the top-level fields ingest makes rows from: message (turns, tool use, usage), requestId (requests),
+// attachment (credential_org), customTitle (session title, which files the session) and subtype (compactions). A line of an unknown type with none of them is a marker: it is counted, not alerted, so
 // each new marker Claude Code adds does not need a release. A timestamp alone does not count: known markers such as
 // api-request and queue-operation carry one, and ingest reads times only from lines it records.
-var dataKeys = []string{"message", "requestId", "attachment"}
+var dataKeys = []string{"message", "requestId", "attachment", "customTitle", "subtype"}
 
-// carriesData reports whether a line has a non-null field from dataKeys. Bad JSON reports true, so it is never
-// passed off as a marker.
+// carriesData reports whether a line has a non-null field from dataKeys. A line that is not a JSON object (a bare
+// null included) reports true, so it is never passed off as a marker.
 func carriesData(raw []byte) bool {
 	var m map[string]json.RawMessage
-	if json.Unmarshal(raw, &m) != nil {
+	if json.Unmarshal(raw, &m) != nil || m == nil {
 		return true
 	}
 	for _, k := range dataKeys {

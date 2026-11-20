@@ -275,17 +275,45 @@ func TestAnUnknownTypeCarryingDataStillAlerts(t *testing.T) {
 		{"type": "assistant-v2", "message": map[string]any{"role": "assistant", "content": []any{}}},
 		{"type": "turn-usage", "requestId": "req_9"},
 		{"type": "org-note", "attachment": map[string]any{"type": "credential_org"}},
+		{"type": "session-title", "customTitle": "crius:lead", "sessionId": "s1"},
+		{"type": "boundary", "subtype": "compact_boundary", "uuid": "u1", "timestamp": "2026-11-21T03:09:00Z"},
 	} {
 		t.Run(rec["type"].(string), func(t *testing.T) {
 			x := newIC(t, cfg{})
 			testutil.Write(t, x.tx, lines(rec))
 			st := x.run()
 			eq(t, st.UnknownTypes, map[string]int{rec["type"].(string): 1})
-			bus := testutil.Read(t, filepath.Join(x.home, "bus", "crius.log"))
-			if !strings.Contains(bus, "unknown transcript line type '"+rec["type"].(string)+"' (1 lines in") {
+			bus, _ := os.ReadFile(filepath.Join(x.home, "bus", "crius.log"))
+			if !strings.Contains(string(bus), "unknown transcript line type '"+rec["type"].(string)+"' (1 lines in") {
 				t.Fatalf("no alert: %s", bus)
 			}
 		})
+	}
+}
+
+// Review of 1a72927: a type seen first only as markers still alerts once a later run brings a line of it with data.
+func TestAMarkerTypeThatLaterCarriesDataAlertsThen(t *testing.T) {
+	x := newIC(t, cfg{})
+	testutil.Write(t, x.tx, lines(map[string]any{"type": "late-shape", "sessionId": "s1"}))
+	x.run()
+	bus, _ := os.ReadFile(filepath.Join(x.home, "bus", "crius.log"))
+	if strings.Contains(string(bus), "'late-shape'") {
+		t.Fatalf("alerted on a marker: %s", bus)
+	}
+	appendFile(t, x.tx, lines(map[string]any{"type": "late-shape", "requestId": "r1"}))
+	x.run()
+	if bus, _ := os.ReadFile(filepath.Join(x.home, "bus", "crius.log")); !strings.Contains(string(bus), "unknown transcript line type 'late-shape'") {
+		t.Fatal("no alert once the type carried data")
+	}
+}
+
+// Review of 1a72927: a bare null line is not an object, so it is never passed off as a marker.
+func TestANullLineStillAlerts(t *testing.T) {
+	x := newIC(t, cfg{})
+	testutil.Write(t, x.tx, "null\n")
+	x.run()
+	if bus, _ := os.ReadFile(filepath.Join(x.home, "bus", "crius.log")); !strings.Contains(string(bus), "unknown transcript line type ''") {
+		t.Fatal("no alert for a null line")
 	}
 }
 
