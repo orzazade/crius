@@ -74,10 +74,10 @@ func deadRoles(d Deps, st *state, ss []Session, sesErr error, watch projects, pa
 			st.Roles[k] = roleSeen{Live: d.Now}
 			continue
 		}
-		if closed, err := sessionstate.ClosedRole(dir, project, role); err != nil {
+		if closed, err := sessionstate.IsClosed(dir, project, role, r.SessionID); err != nil {
 			failed = append(failed, err.Error())
 			continue
-		} else if closed == r.SessionID {
+		} else if closed {
 			delete(st.Roles, k)
 			continue
 		}
@@ -176,6 +176,6 @@ func closedOnPurpose(home, who string) bool {
 	if err != nil {
 		return false
 	}
-	closed, err := sessionstate.ClosedRole(dir, project, role)
-	return err == nil && closed != "" && closed == r.SessionID
+	closed, err := sessionstate.IsClosed(dir, project, role, r.SessionID)
+	return err == nil && closed
 }

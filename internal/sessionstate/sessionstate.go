@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -549,8 +550,8 @@ func ReadRole(dir, project, role string) (State, error) {
 	return s, nil
 }
 
-// closedPath is the mark crius-spawn -close leaves beside a role's file, <project>.<role>.closed: the id of the session
-// closed on purpose.
+// closedPath is the mark crius-spawn -close and -fresh leave beside a role's file, <project>.<role>.closed: the ids of
+// the sessions closed on purpose, one per line, the newest close last.
 func closedPath(dir, project, role string) (string, error) {
 	p, err := RolePath(dir, project, role)
 	if err != nil {
@@ -560,52 +561,124 @@ func closedPath(dir, project, role string) (string, error) {
 }
 
 // CloseRole marks session id of a role closed on purpose (owner 11-08: rig-refresh and appinsights-e2e ended with
-// their goals done), so wakewatch's dead-role check skips it. Another session of the role, or OpenRole, opens it again.
+// their goals done), so wakewatch's dead-role check skips it. The ids closed before stay in the mark (07bd54d review:
+// a role with two closed sessions kept only one marked, and the other's claude spoke for the role again); id moves to
+// the end when it was in it already. Another session of the role, or OpenRole with id, opens the role again.
 func CloseRole(dir, project, role, id string) error {
-	p, err := closedPath(dir, project, role)
+	ids, err := ClosedSessions(dir, project, role)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(p, []byte(id+"\n"), 0o600)
+	return writeClosed(dir, project, role, append(slices.DeleteFunc(ids, func(s string) bool { return s == id }), id))
 }
 
-// ClosedRole gives the session id a role was closed with, "" when it is not closed.
+// ClosedRole gives the session id a role was closed with last, "" when it is not closed.
 func ClosedRole(dir, project, role string) (string, error) {
+	ids, err := ClosedSessions(dir, project, role)
+	if err != nil || len(ids) == 0 {
+		return "", err
+	}
+	return ids[len(ids)-1], nil
+}
+
+// IsClosed says whether session id is in the role's closed mark: any id there, not only the newest (07bd54d review
+// P2-1: a role file that went back to an older closed session read as open).
+func IsClosed(dir, project, role, id string) (bool, error) {
+	ids, err := ClosedSessions(dir, project, role)
+	return slices.Contains(ids, id), err
+}
+
+// ClosedSessions gives every session id in the role's closed mark, the newest close last; none when it has no mark.
+func ClosedSessions(dir, project, role string) ([]string, error) {
 	p, err := closedPath(dir, project, role)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	b, err := os.ReadFile(p)
 	if errors.Is(err, fs.ErrNotExist) {
-		return "", nil
+		return nil, nil
+	} else if err != nil {
+		return nil, err
 	}
-	return strings.TrimSpace(string(b)), err
+	return strings.Fields(string(b)), nil
 }
 
-// OpenRole removes a role's closed mark, if it has one.
-func OpenRole(dir, project, role string) error {
+// OpenRole takes session id out of the role's closed mark (it is wanted back), and removes the mark when no id is left.
+func OpenRole(dir, project, role, id string) error {
+	ids, err := ClosedSessions(dir, project, role)
+	if err != nil {
+		return err
+	}
+	return writeClosed(dir, project, role, slices.DeleteFunc(ids, func(s string) bool { return s == id }))
+}
+
+// writeClosed writes ids as the role's closed mark, and removes the mark when there are none.
+func writeClosed(dir, project, role string, ids []string) error {
 	p, err := closedPath(dir, project, role)
 	if err != nil {
 		return err
 	}
-	return ignoreGone(os.Remove(p))
+	if len(ids) == 0 {
+		return ignoreGone(os.Remove(p))
+	}
+	return os.WriteFile(p, []byte(strings.Join(ids, "\n")+"\n"), 0o600)
+}
+
+// LockRole holds the role's lock file, <project>.<role>.lock beside its file, until unlock is called; the kernel lets
+// go if the process dies. A lock another process holds is ErrLocked at once: crius-spawn -fresh takes it so two runs
+// for one role cannot both start a session (07bd54d review).
+func LockRole(dir, project, role string) (unlock func(), err error) {
+	p, err := RolePath(dir, project, role)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, err
+	}
+	p = strings.TrimSuffix(p, ".json") + ".lock"
+	f, err := os.OpenFile(p, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return nil, fmt.Errorf("%s %w", p, ErrLocked)
+		}
+		return nil, fmt.Errorf("lock %s: %w", p, err)
+	}
+	return func() { f.Close() }, nil
 }
 
 // Process finds the live process that has session id open, from Claude Code's own status files,
 // <config>/sessions/<pid>.json: its pid and -n name, or pid 0 when no live process's file names the session (a crashed
-// one leaves its file behind, and after /clear the same process names the new id).
+// one leaves its file behind, and after /clear the same process names the new id). It is an error, never pid 0, when
+// no live process was found and a status file of a pid that runs cannot be read or parsed.
 func Process(config, id string) (pid int, name string, err error) {
 	if config == "" {
 		return 0, "", fmt.Errorf("session %s: no Claude config folder to look in", id)
 	}
-	files, err := filepath.Glob(filepath.Join(config, "sessions", "*.json"))
+	sessions := filepath.Join(config, "sessions") // none, or no config folder: no claude runs with it
+	files, err := filepath.Glob(filepath.Join(sessions, "*.json"))
 	if err != nil {
 		return 0, "", err
 	}
+	// files that may name the session: absence is known only when none is left (07bd54d review). A file Claude names
+	// <pid>.json whose pid runs no process cannot be the live one; a crashed claude may leave one damaged for good.
+	var unread []string
+	notRead := func(f string, err error) {
+		if pid, perr := strconv.Atoi(strings.TrimSuffix(filepath.Base(f), ".json")); perr == nil && (pid <= 0 || errors.Is(syscall.Kill(pid, 0), syscall.ESRCH)) {
+			return
+		}
+		unread = append(unread, fmt.Sprintf("%s (%v)", filepath.Base(f), err))
+	}
 	for _, f := range files {
 		b, err := os.ReadFile(f)
-		if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
 			continue // the session ended and its file went while we looked
+		} else if err != nil {
+			notRead(f, err)
+			continue
 		}
 		var st struct {
 			PID       int    `json:"pid"`
@@ -613,7 +686,11 @@ func Process(config, id string) (pid int, name string, err error) {
 			Name      string `json:"name"`
 			ProcStart string `json:"procStart"`
 		}
-		if json.Unmarshal(b, &st) != nil || st.SessionID != id {
+		if err := json.Unmarshal(b, &st); err != nil {
+			notRead(f, err)
+			continue
+		}
+		if st.SessionID != id {
 			continue
 		}
 		live, err := Live(st.PID, st.ProcStart)
@@ -623,6 +700,9 @@ func Process(config, id string) (pid int, name string, err error) {
 		if live {
 			return st.PID, st.Name, nil
 		}
+	}
+	if len(unread) > 0 {
+		return 0, "", fmt.Errorf("session %s: could not read %s in %s, so whether a live process has it open is not known", id, strings.Join(unread, ", "), sessions)
 	}
 	return 0, "", nil
 }

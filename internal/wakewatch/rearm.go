@@ -73,11 +73,11 @@ func rearm(d Deps, st *state, ss []Session, sesErr error, screens []Screen, scrE
 			seen[k] = true
 			continue
 		}
-		if closed, err := sessionstate.ClosedRole(dir, project, role); err != nil {
+		if closed, err := sessionstate.IsClosed(dir, project, role, r.SessionID); err != nil {
 			failed = append(failed, err.Error())
 			seen[k] = true
 			continue
-		} else if closed == r.SessionID {
+		} else if closed {
 			continue
 		}
 		seen[k] = true

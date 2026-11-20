@@ -289,6 +289,12 @@ func ownJobOf(procs []Proc, pids map[int]bool) (pid int, what string, ok bool) {
 	return 0, "", false
 }
 
+// OwnJob gives a background job of claude pid's own, as ownJobOf finds it: a Bash tool shell under it that runs no bus
+// waiter. T3 does not list such a job (crius-spawn -fresh waits for it before it stops the claude).
+func OwnJob(procs []Proc, pid int) (job int, what string, ok bool) {
+	return ownJobOf(procs, map[int]bool{pid: true})
+}
+
 // quietTypes are the line types team-wait.sh (member mode) does not wake a role for on their own.
 var quietTypes = map[string]bool{"ACK": true, "INFO": true, "WAIT": true, "VERIFIED": true, "STATUS": true}
 

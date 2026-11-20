@@ -294,9 +294,9 @@ func alive(home, project, role string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if closed, err := sessionstate.ClosedRole(dir, project, role); err != nil {
+	if closed, err := sessionstate.IsClosed(dir, project, role, r.SessionID); err != nil {
 		return false, err
-	} else if closed == r.SessionID {
+	} else if closed {
 		return false, nil
 	}
 	user, err := os.UserHomeDir()

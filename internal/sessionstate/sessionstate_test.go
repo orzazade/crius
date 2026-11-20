@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -466,5 +467,115 @@ func TestAStopFailureEndsTheTurn(t *testing.T) {
 	run := State{SessionID: "s-1", State: Running}
 	if s := Apply(run, Input{SessionID: "s-1", Event: "StopFailure", Error: "server_error", AgentID: "a359a54a2937da471"}, time.Now()); s.State != Running {
 		t.Errorf("a subagent's StopFailure: %+v", s)
+	}
+}
+
+// 07bd54d review (a): the closed mark held one id, so closing a second session of a role dropped the first one's mark
+// and an older closed claude came back into view. The mark keeps every closed id; ClosedRole still gives the newest,
+// and OpenRole takes back only the id it is given.
+func TestTheClosedMarkKeepsEveryClosedSessionOfARole(t *testing.T) {
+	dir := t.TempDir()
+	for _, id := range []string{"s-a", "s-b", "s-a", "s-c"} {
+		if err := CloseRole(dir, "axi", "qa-2", id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ids, err := ClosedSessions(dir, "axi", "qa-2")
+	if err != nil || strings.Join(ids, ",") != "s-b,s-a,s-c" {
+		t.Fatalf("closed sessions %q %v, want s-b,s-a,s-c (one each, newest close last)", ids, err)
+	}
+	if c, err := ClosedRole(dir, "axi", "qa-2"); err != nil || c != "s-c" {
+		t.Errorf("ClosedRole %q %v, want the newest, s-c", c, err)
+	}
+	if err := OpenRole(dir, "axi", "qa-2", "s-c"); err != nil {
+		t.Fatal(err)
+	}
+	if ids, _ := ClosedSessions(dir, "axi", "qa-2"); strings.Join(ids, ",") != "s-b,s-a" {
+		t.Errorf("after OpenRole s-c: %q, want s-b,s-a still closed", ids)
+	}
+	if c, _ := ClosedRole(dir, "axi", "qa-2"); c != "s-a" {
+		t.Errorf("after OpenRole s-c ClosedRole is %q, want s-a", c)
+	}
+	for _, id := range []string{"s-a", "s-b"} {
+		if err := OpenRole(dir, "axi", "qa-2", id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if ids, err := ClosedSessions(dir, "axi", "qa-2"); err != nil || len(ids) != 0 {
+		t.Errorf("all opened: %q %v", ids, err)
+	}
+}
+
+// 07bd54d review (b): Process read a status file it could not read or parse as "no live process", so crius-spawn
+// -fresh started a new session while the old claude may still run. Such a file of a pid that runs is an error; one of
+// a pid that runs nothing cannot be the live one (a crashed claude may leave it damaged for good), and is skipped.
+func TestProcessFailsWhenItCouldNotLook(t *testing.T) {
+	config := t.TempDir()
+	if pid, _, err := Process(config, "s-old"); err != nil || pid != 0 { // no claude ran with this config yet
+		t.Errorf("no sessions folder yet: pid %d, err %v; want 0, nil", pid, err)
+	}
+	testutil.Write(t, filepath.Join(config, "sessions", "1.json"), `{"pid":1,"sessionId":"s-other"}`)
+	if pid, _, err := Process(config, "s-old"); err != nil || pid != 0 { // positive control: read, and not there
+		t.Errorf("read and absent: pid %d, err %v; want 0, nil", pid, err)
+	}
+	me := strconv.Itoa(os.Getpid()) // a pid that runs
+	p := filepath.Join(config, "sessions", me+".json")
+	testutil.Write(t, p, `{"pid":`+me+`,"sessionId":"s-old"}`)
+	if err := os.Chmod(p, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(p, 0o600) })
+	if pid, _, err := Process(config, "s-old"); err == nil || !strings.Contains(err.Error(), "could not read "+me+".json") {
+		t.Errorf("unreadable status file: pid %d, err %v; want an error that it could not read %s.json", pid, err, me)
+	}
+	os.Chmod(p, 0o600)
+	testutil.Write(t, p, `{"pid":`+me+`,"sessi`)
+	if pid, _, err := Process(config, "s-old"); err == nil || !strings.Contains(err.Error(), "could not read "+me+".json") {
+		t.Errorf("damaged status file: pid %d, err %v; want an error that it could not read %s.json", pid, err, me)
+	}
+	os.Remove(p)
+	testutil.Write(t, filepath.Join(config, "sessions", "2147483.json"), `{"pid":2147483,"sessi`) // no such pid
+	if pid, _, err := Process(config, "s-old"); err != nil || pid != 0 {
+		t.Errorf("damaged file of a pid that runs nothing: pid %d, err %v; want 0, nil", pid, err)
+	}
+}
+
+// 07bd54d review P2-1: callers asked ClosedRole(...) == the role file's session, so a role file back on an older
+// closed session (s-a, then s-b closed after it) read as open. IsClosed asks the whole mark.
+func TestIsClosedAsksEveryIdInTheMark(t *testing.T) {
+	dir := t.TempDir()
+	for _, id := range []string{"s-a", "s-b"} {
+		if err := CloseRole(dir, "axi", "qa-2", id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for id, want := range map[string]bool{"s-a": true, "s-b": true, "s-c": false} {
+		if got, err := IsClosed(dir, "axi", "qa-2", id); err != nil || got != want {
+			t.Errorf("IsClosed %s: %v %v, want %v", id, got, err, want)
+		}
+	}
+}
+
+// 07bd54d review (d): two crius-spawn -fresh runs for one role could both start a session. LockRole holds a role's
+// lock file until unlock; a second LockRole while it is held fails at once with ErrLocked, and works after unlock.
+func TestLockRoleLetsOneHolderAtATime(t *testing.T) {
+	dir := t.TempDir()
+	unlock, err := LockRole(dir, "axi", "qa-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LockRole(dir, "axi", "qa-2"); !errors.Is(err, ErrLocked) {
+		t.Errorf("second LockRole while held: %v, want ErrLocked", err)
+	}
+	if u, err := LockRole(dir, "axi", "qa-3"); err != nil { // another role is free
+		t.Errorf("another role: %v", err)
+	} else {
+		u()
+	}
+	unlock()
+	if u, err := LockRole(dir, "axi", "qa-2"); err != nil {
+		t.Errorf("after unlock: %v", err)
+	} else {
+		u()
 	}
 }

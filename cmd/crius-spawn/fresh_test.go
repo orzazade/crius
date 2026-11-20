@@ -4,6 +4,7 @@ import (
 	"errors"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -33,6 +34,8 @@ type fakeFresh struct {
 	stubborn bool // ignores SIGTERM
 	did      []string
 	spawned  bool
+	jobs     [][]wakewatch.Proc // the process list, one per read; the last one repeats; none: only the claude
+	procsErr error
 }
 
 func (f *fakeFresh) freshener(home string) freshener {
@@ -69,6 +72,20 @@ func (f *fakeFresh) freshener(home string) freshener {
 				f.alive = false
 			}
 			return nil
+		},
+		procs: func() ([]wakewatch.Proc, error) {
+			f.did = append(f.did, "ps")
+			if f.procsErr != nil {
+				return nil, f.procsErr
+			}
+			ps := []wakewatch.Proc{{PID: 16238, PPID: 1, Command: "claude --resume s-old"}}
+			if len(f.jobs) > 0 {
+				ps = append(ps, f.jobs[0]...)
+				if len(f.jobs) > 1 {
+					f.jobs = f.jobs[1:]
+				}
+			}
+			return ps, nil
 		},
 		spawn: func() (string, error) {
 			f.did = append(f.did, "spawn")
@@ -168,8 +185,8 @@ func TestFreshPutsTheClosedMarkBackWhenItCannotStopTheClaude(t *testing.T) {
 	if f.spawned {
 		t.Errorf("spawned although the old claude still runs")
 	}
-	if m, _ := sessionstate.ClosedRole(filepath.Join(home, "roles"), "axi", "qa-2"); m != "s-older" {
-		t.Errorf("closed mark %q, want the earlier s-older back", m)
+	if m, _ := sessionstate.ClosedSessions(filepath.Join(home, "roles"), "axi", "qa-2"); strings.Join(m, ",") != "s-older" {
+		t.Errorf("closed mark %q, want the earlier s-older back alone", m)
 	}
 }
 
@@ -185,5 +202,99 @@ func TestFreshRefusesWhenTheThreadsSessionIsNotTheRolesOwn(t *testing.T) {
 	}
 	if f.spawned || !f.alive {
 		t.Errorf("a refusal spawned (%v) or stopped the claude (alive %v)", f.spawned, f.alive)
+	}
+}
+
+// gateJob is a Bash tool shell of the old claude's own (pid 16238) that runs a gate: T3 does not list it as a
+// background job (11-20: api-split's gate ran 50 min so), and stopping the claude would end it.
+var gateJob = []wakewatch.Proc{
+	{PID: 17001, PPID: 16238, Command: "/bin/zsh -c source /Users/x/.claude/shell-snapshots/snapshot-zsh-1.sh && eval 'go test ./...' < /dev/null"},
+	{PID: 17002, PPID: 17001, Command: "go test ./..."},
+}
+
+// 07bd54d review (c): -fresh read only the background jobs T3 lists, so a ⏳ job the old claude runs as its own Bash
+// shell (which T3 does not list) died with the claude. -fresh waits for it as for any background job, and refuses,
+// naming it, when it still runs at the end of the wait; a failed process list is a refusal too, never "no job".
+func TestFreshWaitsForTheOldClaudesOwnJobThatT3DoesNotList(t *testing.T) {
+	f := &fakeFresh{threads: []wakewatch.T3Thread{idleThread}, alive: true, jobs: [][]wakewatch.Proc{gateJob, gateJob, nil}}
+	if _, err := f.freshener(freshHome(t)).fresh("axi", "qa-2"); err != nil || f.alive {
+		t.Fatalf("after the job ended: err %v, alive %v (did %q)", err, f.alive, f.did)
+	}
+	if n := strings.Count(strings.Join(f.did, ","), "ps"); n < 3 {
+		t.Errorf("want it to read the processes until the job ended (3 reads), did %q", f.did)
+	}
+	for _, c := range []struct {
+		name string
+		f    *fakeFresh
+		want string
+	}{
+		{"job runs on", &fakeFresh{threads: []wakewatch.T3Thread{idleThread}, alive: true, jobs: [][]wakewatch.Proc{gateJob}}, "go test ./..."},
+		{"ps failed", &fakeFresh{threads: []wakewatch.T3Thread{idleThread}, alive: true, procsErr: errors.New("ps: exit status 1")}, "ps: exit status 1"},
+	} {
+		home := freshHome(t)
+		_, err := c.f.freshener(home).fresh("axi", "qa-2")
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: want a refusal naming %q, got %v", c.name, c.want, err)
+		}
+		if c.f.spawned || !c.f.alive {
+			t.Errorf("%s: a refusal still spawned (%v) or stopped the old claude (alive %v)", c.name, c.f.spawned, c.f.alive)
+		}
+		if m, _ := sessionstate.ClosedRole(filepath.Join(home, "roles"), "axi", "qa-2"); m != "" {
+			t.Errorf("%s: a refusal left the role closed (%q)", c.name, m)
+		}
+	}
+}
+
+// 07bd54d review (d): two -fresh runs for one role at once both passed the boundary and both spawned. The second run,
+// started while the first is inside its spawn, is refused at once and touches nothing; the first one still finishes.
+func TestTwoFreshRunsForOneRoleStartOneSession(t *testing.T) {
+	home := freshHome(t)
+	first := &fakeFresh{threads: []wakewatch.T3Thread{idleThread}, alive: true}
+	in, release := make(chan struct{}), make(chan struct{})
+	fr := first.freshener(home)
+	spawn := fr.spawn
+	fr.spawn = func() (string, error) {
+		close(in)
+		<-release
+		return spawn()
+	}
+	var wg sync.WaitGroup
+	var firstErr error
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, firstErr = fr.fresh("axi", "qa-2")
+	}()
+	<-in
+	second := &fakeFresh{threads: []wakewatch.T3Thread{idleThread}, alive: true}
+	_, err := second.freshener(home).fresh("axi", "qa-2")
+	close(release)
+	wg.Wait()
+	if err == nil || !strings.Contains(err.Error(), "another crius-spawn -fresh for axi qa-2 runs") {
+		t.Errorf("second -fresh while the first spawns: want a refusal, got %v (did %q)", err, second.did)
+	}
+	if second.spawned || len(second.did) > 0 {
+		t.Errorf("the refused run still did %q", second.did)
+	}
+	if firstErr != nil || !first.spawned {
+		t.Errorf("first -fresh: err %v, spawned %v", firstErr, first.spawned)
+	}
+}
+
+// Review P3: a job of the claude's own that starts between the two boundary reads (after the close) refuses at the
+// second read, and the closed mark goes back exactly as it was.
+func TestFreshPutsTheMarkBackWhenAJobStartsAfterTheClose(t *testing.T) {
+	home := freshHome(t)
+	testutil.Write(t, filepath.Join(home, "roles", "axi.qa-2.closed"), "s-older\ns-old\ns-oldest\n")
+	f := &fakeFresh{threads: []wakewatch.T3Thread{idleThread}, alive: true, jobs: [][]wakewatch.Proc{nil, gateJob}}
+	_, err := f.freshener(home).fresh("axi", "qa-2")
+	if err == nil || !strings.Contains(err.Error(), "go test ./...") {
+		t.Fatalf("want a refusal naming the job, got %v (did %q)", err, f.did)
+	}
+	if f.spawned || !f.alive {
+		t.Errorf("a refusal spawned (%v) or stopped the claude (alive %v)", f.spawned, f.alive)
+	}
+	if m, _ := sessionstate.ClosedSessions(filepath.Join(home, "roles"), "axi", "qa-2"); strings.Join(m, ",") != "s-older,s-old,s-oldest" {
+		t.Errorf("closed mark %q, want it back as s-older,s-old,s-oldest", m)
 	}
 }

@@ -486,3 +486,45 @@ func TestAClosedSessionsThreadNeverWakesCriusAfterANewSessionStarts(t *testing.T
 		t.Errorf("want one idle wake for the role's open session th-qa, got %q (all: %q)", w, f.sent)
 	}
 }
+
+// 07bd54d review (a): the closed mark held one id, so once a second session of the role was closed (s-mid, by -fresh),
+// the first closed one (s-old, closed by -close and its claude still running) spoke for the role again. Every session
+// in the mark stays out of view.
+func TestEveryClosedSessionOfARoleStaysOutOfView(t *testing.T) {
+	home := threadHome(t, "qa") // the role's file names the new session s-qa, in th-qa
+	testutil.Write(t, filepath.Join(home, "roles", "quotes.qa.closed"), "s-old\ns-mid\n")
+	f := &fake{threads: map[string]T3Thread{
+		"th-old": {Status: "completed", Updated: t0.Add(-12 * time.Minute), LastReply: "the suite is green"},
+		"th-mid": {Status: "completed", Updated: t0.Add(-15 * time.Minute), LastReply: "handed over"},
+		"th-qa":  {Status: "completed", Updated: t0.Add(-20 * time.Minute), LastReply: "done ✅"},
+	}, states: []sessionstate.State{
+		{SessionID: "s-old", Project: "quotes", Role: "qa", Thread: "th-old", Time: t0.Add(-time.Minute)}, // still had events
+		{SessionID: "s-mid", Project: "quotes", Role: "qa", Thread: "th-mid", Time: t0.Add(-time.Hour)},
+		{SessionID: "s-qa", Project: "quotes", Role: "qa", Thread: "th-qa", Time: t0.Add(-2 * time.Hour)},
+	}}
+	runOnce(t, home, f, t0)
+	for _, th := range []string{"th-old)", "th-mid)"} {
+		if w := t3Wakes(f, th); len(w) != 0 {
+			t.Errorf("closed session's thread %s woke Crius: %q", th, w)
+		}
+	}
+	if w := t3Wakes(f, "T3 thread th-qa) is idle 20 min"); len(w) != 1 {
+		t.Errorf("want one idle wake for the role's open session th-qa, got %q (all: %q)", w, f.sent)
+	}
+}
+
+// 07bd54d review P2-1: the role's file went back to s-qa, closed before s-later was. The checks asked only whether the
+// newest closed id is the role file's session, so the closed s-qa woke Crius as idle. Any id in the mark closes it.
+func TestARoleFileOnAnOlderClosedSessionStaysClosed(t *testing.T) {
+	home := threadHome(t, "qa") // the role's file names s-qa, in th-qa
+	testutil.Write(t, filepath.Join(home, "roles", "quotes.qa.closed"), "s-qa\ns-later\n")
+	f := &fake{threads: map[string]T3Thread{
+		"th-qa": {Status: "completed", Updated: t0.Add(-20 * time.Minute), LastReply: "the suite is green"},
+	}, states: []sessionstate.State{
+		{SessionID: "s-qa", Project: "quotes", Role: "qa", Thread: "th-qa", Time: t0.Add(-20 * time.Minute)},
+	}}
+	runOnce(t, home, f, t0)
+	if w := t3Wakes(f, "th-qa)"); len(w) != 0 {
+		t.Errorf("a role on a closed session woke Crius: %q", w)
+	}
+}

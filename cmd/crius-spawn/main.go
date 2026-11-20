@@ -192,6 +192,14 @@ func main() {
 				pid, _, err := sessionstate.Process(config, id)
 				return pid, err
 			},
+			procs: func() ([]wakewatch.Proc, error) {
+				ps, err := psProcs()
+				out := make([]wakewatch.Proc, len(ps))
+				for i, p := range ps {
+					out[i] = wakewatch.Proc{PID: p.pid, PPID: p.ppid, Command: p.command}
+				}
+				return out, err
+			},
 			signal: func(pid int, sig syscall.Signal) error { return syscall.Kill(pid, sig) },
 			spawn:  spawn}
 		start = func() (string, error) { return f.fresh(s.Project, s.Role) }
@@ -231,7 +239,7 @@ func resume(home, project, role string, d launch.Deps, t launch.T3) error {
 			if err := launch.ResumeT3(th, t); err != nil {
 				return fmt.Errorf("%s %s: %w", project, role, err)
 			}
-			if err := sessionstate.OpenRole(filepath.Join(home, "roles"), project, role); err != nil { // back: no longer closed
+			if err := sessionstate.OpenRole(filepath.Join(home, "roles"), project, role, r.SessionID); err != nil { // back: no longer closed
 				return err
 			}
 			fmt.Printf("OK t3 %s resumed\n", th)
@@ -242,7 +250,7 @@ func resume(home, project, role string, d launch.Deps, t launch.T3) error {
 	if err != nil {
 		return err
 	}
-	if err := sessionstate.OpenRole(filepath.Join(home, "roles"), project, role); err != nil { // wanted back: no longer closed
+	if err := sessionstate.OpenRole(filepath.Join(home, "roles"), project, role, s.SessionID); err != nil { // wanted back: no longer closed
 		return err
 	}
 	acct, dir, err := sessionAccount(home, s.FiledConfig()) // its account, wherever a restore put it
