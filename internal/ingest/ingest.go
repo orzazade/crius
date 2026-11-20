@@ -40,6 +40,7 @@ type Stats struct {
 	Warnings                                         []string
 	UnknownTypes                                     map[string]int
 	BadLines, Redactions, Synthetic, SessionsTouched int
+	StepRuns, DecisionChecks                         int // steps.go: heavy runs read, decisions checked
 }
 
 type runner struct {
@@ -343,6 +344,7 @@ func Run(home string) (*Stats, error) {
 	r.ingestLogs()
 	r.ingestFiles()
 	r.ingestQuota()
+	r.ingestSteps()
 	r.flushAlerts()
 	var unpriced int
 	if err := db.QueryRow("select count(*) from request where cost_list_usd is null").Scan(&unpriced); err != nil {
