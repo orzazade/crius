@@ -35,8 +35,10 @@ func main() {
 	}
 }
 
-// run dispatches each project with a DISPATCH.toml; one project's error does not stop the others, and each is said
-// once on Crius's bus as an ALERT (a dispatcher that fails quietly leaves rows waiting with no one told).
+// run dispatches each project with a DISPATCH.toml; one project's error does not stop the others. Each project's error
+// is said on Crius's bus as one ALERT naming the log; the same error on the next runs is not said again until resay
+// has passed (a fix that did not hold must not go quiet: 11-17 to 11-21, 2760 failures after one ALERT). A clean run,
+// or a new error, ends the quiet.
 func run(home string, now time.Time, mk func(home, project string, now time.Time) dispatch.Deps) error {
 	cfgs, err := filepath.Glob(filepath.Join(home, "state", "*", "DISPATCH.toml"))
 	if err != nil {
@@ -45,30 +47,112 @@ func run(home string, now time.Time, mk func(home, project string, now time.Time
 	var errs []error
 	for _, c := range cfgs {
 		project := filepath.Base(filepath.Dir(c))
-		if err := dispatch.Run(mk(home, project, now)); err != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", project, err))
+		err := boardGone(filepath.Dir(c), now)
+		if err == nil {
+			err = dispatch.Run(mk(home, project, now))
 		}
+		if err == nil {
+			if rerr := os.Remove(markPath(home, project)); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
+				err = fmt.Errorf("could not clear the alert mark, so its next failure would not be said: %w", rerr)
+			}
+		}
+		if err == nil {
+			continue
+		}
+		err = fmt.Errorf("%s: %w", project, err)
+		if aerr := alert(home, project, now, err); aerr != nil {
+			err = fmt.Errorf("%w; %v", err, aerr)
+		}
+		errs = append(errs, err)
 	}
-	err = errors.Join(errs...)
-	seen := filepath.Join(home, "state", "dispatch.error")
-	if err == nil {
-		os.Remove(seen) // a literal path: the next failure is said again
+	return errors.Join(errs...)
+}
+
+// resay is how long one project's same error stays quiet before it is said again.
+const resay = 6 * time.Hour
+
+// markName is the file in <home>/state/<project>/ that keeps one project's last said error. It names the host: a
+// project's state folder may be a copy of another machine's (legion-pull mirrors the Legion's state/quotes/), and that
+// machine's mark must not stand in for this one's.
+var markName = func() string {
+	h, _ := os.Hostname()
+	if h = strings.Split(h, ".")[0]; h == "" {
+		h = "host"
+	}
+	return "dispatch-alert-" + h + ".json"
+}()
+
+// writeFile is os.WriteFile; a test makes it fail.
+var writeFile = os.WriteFile
+
+func markPath(home, project string) string { return filepath.Join(home, "state", project, markName) }
+
+type mark struct {
+	Key   string    `json:"key"`   // the error with its volatile numbers taken out
+	Since time.Time `json:"since"` // its first run
+	Said  time.Time `json:"said"`  // when it was last said
+}
+
+// alert says err on Crius's bus unless the project's mark holds the same error said less than resay ago. The mark is
+// saved before the ALERT is posted; a mark that cannot be saved is said in the ALERT (which then repeats every run)
+// and returned; an ALERT that cannot be posted takes its new mark back, so the next run tries again.
+func alert(home, project string, now time.Time, err error) error {
+	path := markPath(home, project)
+	key := alertKey(err)
+	var old mark
+	prev, rerr := os.ReadFile(path)
+	if rerr == nil && json.Unmarshal(prev, &old) == nil && old.Key == key && now.Sub(old.Said) < resay {
 		return nil
 	}
-	// the same error with only its volatile numbers changed (a new tab's surface, a duration) is not said again
-	key := alertKey(err)
-	if last, _ := os.ReadFile(seen); string(last) != key {
-		if perr := watchdog.PostOn(home, "crius", "ALERT", "crius:dispatch", "crius:lead", now, "dispatcher failed: "+err.Error()); perr != nil {
-			return fmt.Errorf("%w; and the ALERT was not posted: %v", err, perr)
-		}
-		os.WriteFile(seen, []byte(key), 0o644)
+	m := mark{Key: key, Since: now, Said: now}
+	// the log first: the bus cuts a line at 300 characters
+	logp := "(log " + filepath.Join(home, "logs", "dispatch.log") + "): "
+	text := "dispatcher failed " + logp + err.Error()
+	if rerr == nil && old.Key == key {
+		m.Since = old.Since
+		text = "dispatcher still failing since " + old.Since.Format("2006-01-02T15:04") + " " + logp + err.Error()
 	}
-	return err
+	next, _ := json.Marshal(m)
+	werr := writeFile(path, next, 0o644)
+	if werr != nil {
+		text = "could not save the alert mark, so this repeats every run (why: in the log); " + text // short: 300 characters
+		werr = fmt.Errorf("the alert mark was not saved: %w", werr)
+	}
+	if perr := watchdog.PostOn(home, "crius", "ALERT", "crius:dispatch", "crius:lead", now, text); perr != nil {
+		var berr error
+		if werr == nil { // take the new mark back: this ALERT was not said, and the next run must try again
+			if rerr == nil {
+				berr = writeFile(path, prev, 0o644)
+			} else {
+				berr = os.Remove(path)
+			}
+			if berr != nil {
+				berr = fmt.Errorf("the old alert mark was not put back, so the next runs may be quiet: %w", berr)
+			}
+		}
+		return errors.Join(werr, fmt.Errorf("and the ALERT was not posted: %v", perr), berr)
+	}
+	return werr
+}
+
+// boardGone is the error for a project whose board was taken away while its DISPATCH.toml stayed: no BOARD.toml, and
+// a BOARD.toml.lock this user may not write (quotes 11-21: its board moved to the Legion, and legion-pull leaves the
+// copied lock read-only). A project with no rows yet has a writable lock and no board: it is not gone.
+func boardGone(dir string, now time.Time) error {
+	if _, err := os.Lstat(filepath.Join(dir, "BOARD.toml")); !errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	lock := filepath.Join(dir, "BOARD.toml.lock")
+	if _, err := os.Lstat(lock); err != nil || syscall.Access(lock, 2) == nil { // 2: W_OK
+		return nil
+	}
+	return fmt.Errorf("this project's board is gone (no BOARD.toml, only a read-only BOARD.toml.lock); switch dispatch off: mv DISPATCH.toml DISPATCH.toml.off-%s", now.Format("0102"))
 }
 
 // volatile are the numbers that change from run to run with no new cause: a tab's surface, workspace or pid, and
-// durations; row ids and roles stay, so the same error on another row is said.
-var volatile = regexp.MustCompile(`\b(surface|workspace|window|pane|pid)[: ]\d+|\b\d+(\.\d+)?(ms|s|m|h|%)\b`)
+// durations, and the date in boardGone's advice (.off-MMDD); row ids and roles stay, so the same error on another row is
+// said.
+var volatile = regexp.MustCompile(`\b(surface|workspace|window|pane|pid)[: ]\d+|\b\d+(\.\d+)?(ms|s|m|h|%)\b|\.off-\d{4}\b`)
 
 // alertKey is an error with its volatile numbers taken out.
 func alertKey(err error) string { return volatile.ReplaceAllString(err.Error(), "#") }

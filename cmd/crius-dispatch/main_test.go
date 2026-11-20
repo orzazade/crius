@@ -43,15 +43,18 @@ func TestOnlyConfiguredProjectsAndOneAlertPerFailure(t *testing.T) {
 		t.Fatalf("ran %q", ran)
 	}
 	run(home, t0.Add(time.Minute), mk)
+	if _, err := os.Stat(markPath(home, "beta")); err != nil {
+		t.Fatalf("no error mark after a failing run, so the clean-run check below tests nothing: %v", err)
+	}
 	b, _ := os.ReadFile(filepath.Join(home, "bus", "crius.log"))
-	if n := strings.Count(string(b), " ALERT crius:dispatch -> crius:lead — dispatcher failed: beta: DISPATCH.toml needs cap >= 1"); n != 1 {
+	if n := strings.Count(string(b), " ALERT crius:dispatch -> crius:lead — dispatcher failed (log "+filepath.Join(home, "logs", "dispatch.log")+"): beta: DISPATCH.toml needs cap >= 1"); n != 1 {
 		t.Fatalf("want one ALERT, got %d: %q", n, b)
 	}
 	os.WriteFile(filepath.Join(home, "state", "beta", "DISPATCH.toml"), []byte("cap = 1\nprefix = \"p-\"\nprompt = \"do {id}\"\n"), 0o644)
 	if err := run(home, t0.Add(2*time.Minute), mk); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(home, "state", "dispatch.error")); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(markPath(home, "beta")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the error mark stayed after a clean run: %v", err)
 	}
 }
@@ -93,11 +96,11 @@ func TestTheSameErrorOnAnotherRowIsSaid(t *testing.T) {
 	home := t.TempDir()
 	os.MkdirAll(filepath.Join(home, "bus"), 0o755)
 	for i, id := range []string{"AC12", "AC13"} {
-		seen := filepath.Join(home, "state", "dispatch.error")
+		seen := markPath(home, "alpha")
 		_ = seen
 		err := fmt.Errorf("alpha: %s: is alpha:p-%s alive: damaged role file", id, strings.ToLower(id))
 		if got := alertKey(err); i == 0 {
-			os.MkdirAll(filepath.Join(home, "state"), 0o755)
+			os.MkdirAll(filepath.Join(home, "state", "alpha"), 0o755)
 			os.WriteFile(seen, []byte(got), 0o644)
 		} else if b, _ := os.ReadFile(seen); string(b) == got {
 			t.Fatalf("AC13's error has AC12's key %q", got)
