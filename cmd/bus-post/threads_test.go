@@ -108,7 +108,8 @@ func TestOnlyTypesThatAskToActAreDelivered(t *testing.T) {
 	}
 	os.Remove(filepath.Join(fake, "calls"))
 	for _, typ := range []string{"INFO", "ACK", "START"} {
-		if rc, errs := post(t, at("2026-11-15T04:11"), log, typ, "crius:dev", "crius:qa", "y"); rc != 0 || errs != "" {
+		if rc, errs := post(t, at("2026-11-15T04:11"), log, typ, "crius:dev", "crius:qa", "y"); rc != 0 ||
+			!strings.HasPrefix(errs, "bus-post: posted; "+typ+" is not sent to threads") || strings.Count(errs, "\n") != 1 {
 			t.Errorf("%s: rc %d: %q", typ, rc, errs)
 		}
 	}
@@ -211,5 +212,82 @@ func TestTabRolesAreUnchanged(t *testing.T) {
 	}
 	if calls := readOr(t, filepath.Join(fake, "calls")); calls != "" {
 		t.Errorf("calls %q", calls)
+	}
+}
+
+// 11-20 22:04 and 22:05: Crius posted INFO lines that needed action to axi:api-split and cortex:lead, both T3 threads,
+// saw no "delivered" line and took the silence for delivery; both had to be sent again with crius-send. A type that is
+// not sent to threads says so, naming the role and the types that are sent.
+func TestAnInfoToAThreadRoleSaysItWasNotSent(t *testing.T) {
+	home, log := setup(t)
+	roles(t, home)
+	fake := fakeT3(t, home)
+	rc, errs := post(t, at("2026-11-20T22:04"), log, "INFO", "crius:lead", "crius:qa, crius:build", "rebase on main")
+	want := "bus-post: posted; INFO is not sent to threads (only ANSWER, ASK, CORRECTED, CORRECTION, DECISION, DONE, " +
+		"FAIL, GO, NEED, ORDER, OWNER, PASS, PAUSE, READY): crius:qa sees it only when it next reads the bus; if it must " +
+		"act now, post it as one of those types or send it with crius-send\n"
+	if rc != 0 || errs != want {
+		t.Fatalf("rc %d, stderr:\n%q\nwant:\n%q", rc, errs, want)
+	}
+	if calls := readOr(t, filepath.Join(fake, "calls")); calls != "" {
+		t.Errorf("an INFO went to the thread: %q", calls)
+	}
+}
+
+// An action type keeps its "delivered to" line and gets no note.
+func TestAnActionTypeToAThreadRoleHasNoNote(t *testing.T) {
+	home, log := setup(t)
+	roles(t, home)
+	fakeT3(t, home)
+	rc, errs := post(t, at("2026-11-20T22:06"), log, "DECISION", "crius:lead", "crius:qa", "rebase on main")
+	if rc != 0 || !strings.Contains(errs, "delivered to crius:qa (thread th-qa)") || strings.Contains(errs, "is not sent to threads") {
+		t.Errorf("rc %d, stderr %q", rc, errs)
+	}
+}
+
+// No noise: an INFO to a tab role, to a role with no file, to crius:lead, or from a thread role to itself says nothing.
+func TestAnInfoToNoThreadRoleSaysNothing(t *testing.T) {
+	home, log := setup(t)
+	roles(t, home)
+	fakeT3(t, home)
+	for _, to := range []string{"crius:build", "crius:nobody", "crius:lead", "crius", "crius:dev"} {
+		if rc, errs := post(t, at("2026-11-20T22:07"), log, "INFO", "crius:dev", to, "fyi"); rc != 0 || errs != "" {
+			t.Errorf("to %s: rc %d, stderr %q", to, rc, errs)
+		}
+	}
+	// a copy asks nothing of its reader
+	if rc, errs := post(t, at("2026-11-20T22:07"), log, "INFO", "crius:dev", "crius:build cc crius:qa", "fyi"); rc != 0 || errs != "" {
+		t.Errorf("cc: rc %d, stderr %q", rc, errs)
+	}
+}
+
+// Review P2: the note names only roles a send could reach. A role filed in Crius's own thread, in the poster's own thread
+// (T3CODE_THREAD_ID), or under an id that is no thread id would get nothing as an action type either, so the note's
+// advice would be false for it.
+func TestAnInfoNamesOnlyRolesASendCouldReach(t *testing.T) {
+	home, log := setup(t)
+	roles(t, home)
+	fakeT3(t, home)
+	testutil.Write(t, filepath.Join(home, "roles", "crius.ops.json"), `{"session_id":"o","project":"crius","role":"ops","t3_thread":"th-crius"}`)
+	testutil.Write(t, filepath.Join(home, "roles", "crius.bad.json"), `{"session_id":"x","project":"crius","role":"bad","t3_thread":"-rf"}`)
+	t.Setenv("T3CODE_THREAD_ID", "th-qa")
+	if rc, errs := post(t, at("2026-11-20T22:08"), log, "INFO", "crius:dev", "crius:ops, crius:bad, crius:qa", "fyi"); rc != 0 || errs != "" {
+		t.Errorf("rc %d, stderr %q", rc, errs)
+	}
+	rc, errs := post(t, at("2026-11-20T22:08"), log, "INFO", "crius:dev", "crius:ops, crius:qa, crius:ms, crius:dev", "fyi")
+	if rc != 0 || !strings.HasSuffix(errs, "): crius:ms sees it only when it next reads the bus; if it must act now, post it as "+
+		"one of those types or send it with crius-send\n") {
+		t.Errorf("rc %d, stderr %q", rc, errs)
+	}
+}
+
+// Review P3: two roles "see" it.
+func TestAnInfoToTwoThreadRolesNamesBoth(t *testing.T) {
+	home, log := setup(t)
+	roles(t, home)
+	fakeT3(t, home)
+	rc, errs := post(t, at("2026-11-20T22:09"), log, "INFO", "crius:lead", "crius:qa, crius:ms", "fyi")
+	if rc != 0 || !strings.Contains(errs, "): crius:qa, crius:ms see it only when they next read the bus;") {
+		t.Errorf("rc %d, stderr %q", rc, errs)
 	}
 }

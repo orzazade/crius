@@ -79,16 +79,46 @@ func threadRecipients(to, project, home string) []threadRole {
 	return th
 }
 
+// notSent says on stderr that a line of type typ, which is not sent to threads, reached the thread roles of to only on the
+// bus. Silence read as "delivered": on 11-20 two INFO lines that needed action sat unread in axi:api-split's and
+// cortex:lead's threads. It names only the roles deliver would send an action type to, and says nothing when there are
+// none: not the poster's own role or thread, not Crius's thread, not a filed id that is no thread id.
+func notSent(home, log, typ, from, to, own string, stderr io.Writer) {
+	crius, _ := wakewatch.CriusThread(home) // unreadable: no role is left out for it; deliver reports the error on its path
+	var who []string
+	for _, t := range threadRecipients(to, logProject(log), home) {
+		if t.id != "" && t.id != own && t.id != crius && !strings.HasPrefix(t.id, "-") && t.role != strings.ToLower(from) {
+			who = append(who, t.role)
+		}
+	}
+	if len(who) == 0 {
+		return
+	}
+	sees := "sees it only when it next reads"
+	if len(who) > 1 {
+		sees = "see it only when they next read"
+	}
+	var types []string
+	for k := range actTypes {
+		types = append(types, k)
+	}
+	slices.Sort(types)
+	fmt.Fprintf(stderr, "bus-post: posted; %s is not sent to threads (only %s): %s %s the bus; "+
+		"if it must act now, post it as one of those types or send it with crius-send\n", typ, strings.Join(types, ", "),
+		strings.Join(who, ", "), sees)
+}
+
 // deliver hands line, of type typ from from, to the thread of every main recipient it asks to act, one t3 call per
 // thread, all at once. It never sends to the poster's own thread (its role, or the thread it runs in) nor to Crius's
 // thread, nor to a thread whose send would start a second session for a role whose live claude reads the bus through its
 // own waiter (twin). It says on stderr who got it and who did not, and gives the roles that got it or are read by such a
 // live claude, and whether a send failed.
 func deliver(home, log, typ, from, to, line string, stderr io.Writer) (got []string, failed bool) {
+	own := os.Getenv("T3CODE_THREAD_ID")
 	if !actTypes[typ] {
+		notSent(home, log, typ, from, to, own, stderr)
 		return nil, false
 	}
-	own := os.Getenv("T3CODE_THREAD_ID")
 	crius, err := wakewatch.CriusThread(home)
 	if err != nil {
 		fmt.Fprintf(stderr, "bus-post: %v; a role filed in that thread may get this line\n", err)
