@@ -457,6 +457,11 @@ func Waiting(d Deps, out io.Writer, roles []string) int {
 			continue
 		}
 		idle := int(d.Now.Sub(th.Updated).Minutes())
+		if len(th.Background) > 0 { // t3Idle holds it on its own T3 background job before waitingOn
+			fmt.Fprintf(out, "%s WAITING ON its own T3 background job(s) %s; idle %d min after ⏳, held until %d min (T3 thread %s)\n",
+				who, strings.Join(th.Background, ", "), idle, int(t3WaitingFor.Minutes()), id)
+			continue
+		}
 		h, why, unread := waitingOn(d, readProcs, ss, sesErr, states, who, r.SessionID, th.LastReply, th.Updated)
 		if unread {
 			code = 2

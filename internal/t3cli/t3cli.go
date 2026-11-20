@@ -82,6 +82,11 @@ type Show struct {
 		Archived    bool    `json:"archived"`
 		// "subagent" for a thread T3 started with delegate_task, "fork" for a fork, null for a top-level thread
 		RelationshipToParent string `json:"relationshipToParent"`
+		// the thread's own background jobs still running (a command or a test run it started); T3 wakes it when one ends
+		Background []struct {
+			TaskID      string `json:"taskId"`
+			Description string `json:"description"`
+		} `json:"pendingBackgroundTasks"`
 	} `json:"thread"`
 	Messages []struct {
 		Role  string `json:"role"`

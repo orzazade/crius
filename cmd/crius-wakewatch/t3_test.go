@@ -213,3 +213,32 @@ func TestThreadReadsADelegateChild(t *testing.T) {
 		}
 	}
 }
+
+// The shape `t3 thread show --json` printed on 11-20 for axi qa-2 (fields cut to the ones read): its run completed and a
+// background job of its own still runs in T3. A thread with none prints [].
+const backgroundJSON = `{"thread":{"threadId":"mcp:launch:71a0","title":"AXI · qa-2","status":"completed","activeRunId":null,
+"pendingRequestCount":0,"blockedOnThreadWait":null,"pendingBackgroundTasks":[{"taskId":"bipblrp3r","kind":"command",
+"description":"Re-arm qa-2 bus waiter with 2h limit"},{"taskId":"b7x2","kind":"command","description":"Run the G150 suite",
+"awaited":true}],"updatedAt":"2026-11-20T11:02:00.000Z"},
+"messages":[{"role":"assistant","runId":"r9","text":"Bus waiter re-armed for 2 h. ⏳"}]}`
+
+func TestThreadReadsItsBackgroundJobs(t *testing.T) {
+	dir := fakeT3(t)
+	put(t, dir, "out", backgroundJSON)
+	th, err := thread("x")
+	want := []string{"bipblrp3r (Re-arm qa-2 bus waiter with 2h limit)", "b7x2 (Run the G150 suite)"}
+	if err != nil || strings.Join(th.Background, "|") != strings.Join(want, "|") {
+		t.Fatalf("background jobs: %q %v", th.Background, err)
+	}
+	tasks := backgroundJSON[strings.Index(backgroundJSON, `,"pendingBackgroundTasks"`):strings.Index(backgroundJSON, `,"updatedAt"`)]
+	for _, none := range []string{`,"pendingBackgroundTasks":[]`, `,"pendingBackgroundTasks":null`, ``} {
+		put(t, dir, "out", strings.Replace(backgroundJSON, tasks, none, 1))
+		if th, err := thread("x"); err != nil || len(th.Background) != 0 {
+			t.Fatalf("no background job (%q): %q %v", none, th.Background, err)
+		}
+	}
+	put(t, dir, "out", strings.Replace(backgroundJSON, `"description":"Re-arm qa-2 bus waiter with 2h limit"`, `"description":""`, 1))
+	if th, err := thread("x"); err != nil || len(th.Background) != 2 || th.Background[0] != "bipblrp3r" {
+		t.Fatalf("a job with no description: %q %v", th.Background, err)
+	}
+}

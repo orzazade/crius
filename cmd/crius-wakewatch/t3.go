@@ -73,6 +73,13 @@ func parseThread(b []byte) (wakewatch.T3Thread, error) {
 	th := wakewatch.T3Thread{Status: v.Thread.Status, Active: v.Thread.ActiveRunID != nil && *v.Thread.ActiveRunID != "",
 		Pending: v.Thread.Pending, Updated: at, Settled: v.Thread.Settled || v.Thread.Archived,
 		Child: v.Thread.RelationshipToParent == "subagent"}
+	for _, bg := range v.Thread.Background {
+		job := bg.TaskID
+		if bg.Description != "" {
+			job += " (" + bg.Description + ")"
+		}
+		th.Background = append(th.Background, job)
+	}
 	for i := len(v.Messages) - 1; i >= 0; i-- {
 		if v.Messages[i].Role == "assistant" {
 			th.LastReply = v.Messages[i].Text

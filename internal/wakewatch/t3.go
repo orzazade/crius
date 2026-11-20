@@ -42,6 +42,8 @@ func CriusThread(home string) (string, error) {
 // assistant message ("" when the messages read hold none), whether a user message came after that reply, and whether
 // the owner or Crius settled or archived it (T3's sign that nobody wants more from the thread). Child says T3 started it
 // for a parent thread with delegate_task (relationshipToParent "subagent"): T3 hands its result to that parent.
+// Background names the thread's own background jobs still running (pendingBackgroundTasks, "<taskId> (<description>)"):
+// T3 wakes the thread when one ends.
 type T3Thread struct {
 	Status     string
 	Active     bool
@@ -51,6 +53,7 @@ type T3Thread struct {
 	Unanswered bool
 	Settled    bool
 	Child      bool
+	Background []string
 }
 
 // ErrT3NoAnswer marks a t3 call that said nothing in its whole per-call limit: the T3 server hangs, so the check that
@@ -132,8 +135,9 @@ func newestThread(home, project, role string, r sessionstate.State, states []ses
 //   - a request (an approval or a question) has waited on someone for over t3IdleAfter;
 //   - a message to it after its last reply has no answer, after t3IdleAfter;
 //   - its last reply's newest status emoji (RULES §3.5) is ⏳, its own named job, and neither the thread nor a bus line
-//     from the role has moved for over t3WaitAfter, unless it is waiting (waitingOn: a bus waiter runs under its claude
-//     and an item it named is in flight), which wakes Crius once past t3WaitingFor, naming the item; or it is idle on
+//     from the role has moved for over t3WaitAfter, unless it is waiting: a background job of its own runs in T3
+//     (pendingBackgroundTasks; T3 wakes it when the job ends), or a bus waiter runs under its claude and an item it named
+//     is in flight (waitingOn). Either wakes Crius once past t3WaitingFor, naming the job or the item; or it is idle on
 //     purpose (a bus waiter runs and it said it has no work or named what it waits for), said once as IDLE, never as a
 //     job that may be gone;
 //   - it is anything but ❓ (which waits on the owner), after t3IdleAfter.
@@ -277,6 +281,16 @@ func t3Idle(d Deps, ss []Session, sesErr error, watch projects, park parked, pro
 			}
 			quiet := d.Now.Sub(moved)
 			if quiet <= t3WaitAfter {
+				continue
+			}
+			// 11-20: axi qa and qa-2 woke Crius 4 times as "job may be gone" while T3 ran their job. A task T3 still lists after
+			// its process died (a T3 restart) moves the alert from 45 min to t3WaitingFor, which names it.
+			if len(th.Background) > 0 {
+				if quiet > t3WaitingFor {
+					out = append(out, [2]string{key, fmt.Sprintf("%s is idle %d min after a ⏳ reply, WAITING ON its own T3 background job(s) %s, "+
+						"and no bus line from it for %d min: over %d h, so check that the job still moves. %s",
+						name, idle, strings.Join(th.Background, ", "), int(quiet.Minutes()), int(t3WaitingFor.Hours()), tail)})
+				}
 				continue
 			}
 			h, why, _ := waitingOn(d, readProcs, ss, sesErr, states, who, r.SessionID, th.LastReply, from)

@@ -420,3 +420,46 @@ func TestFinishedChildIsOnlyACompletedChildThatAsksNothing(t *testing.T) {
 		}
 	}
 }
+
+// 11-20: axi qa-2 and qa woke Crius 4 times as "idle N min after a ⏳ reply ... its job may be gone" while T3 still ran a
+// background job of theirs (pendingBackgroundTasks: a bus waiter re-armed for 2 h, an awaited test run), so T3 would wake
+// them when it ended. A thread with its own background job running is held as waiting, as a named item holds one, and
+// wakes Crius once past t3WaitingFor, naming the job. One with no background job still alerts past 45 min.
+func TestAT3ThreadWithItsOwnBackgroundJobIsHeldAsWaiting(t *testing.T) {
+	home := threadHome(t, "qa2", "qa", "ms")
+	reply := "Bus waiter re-armed for 2 h; I pick up the next NEED-QA when it fires. ⏳"
+	f := &fake{threads: map[string]T3Thread{
+		"th-qa2": {Status: "completed", Updated: t0.Add(-50 * time.Minute), LastReply: reply,
+			Background: []string{"bipblrp3r (Re-arm qa-2 bus waiter with 2h limit)"}},
+		"th-qa": {Status: "waiting", Updated: t0.Add(-50 * time.Minute), LastReply: "G150 suite runs. ⏳",
+			Background: []string{"b7x2 (Run the G150 suite)"}},
+		"th-ms": {Status: "completed", Updated: t0.Add(-50 * time.Minute), LastReply: reply},
+	}}
+	runOnce(t, home, f, t0)
+	for _, id := range []string{"th-qa2", "th-qa"} {
+		if w := t3Wakes(f, "T3 thread "+id+")"); len(w) != 0 {
+			t.Errorf("%s, its own job running in T3, woke Crius: %q", id, w)
+		}
+	}
+	if w := t3Wakes(f, "T3 thread th-ms)"); len(w) != 1 || !strings.Contains(w[0], "its job may be gone") {
+		t.Errorf("th-ms, no background job, ⏳ 50 min: want one 'job may be gone' wake, got %q", w)
+	}
+	runOnce(t, home, f, t0.Add(80*time.Minute)) // 130 min quiet: over t3WaitingFor
+	w := t3Wakes(f, "T3 thread th-qa2)")
+	if len(w) != 1 || !strings.Contains(w[0], "WAITING ON its own T3 background job(s) bipblrp3r (Re-arm qa-2 bus waiter") ||
+		strings.Contains(w[0], "its job may be gone") {
+		t.Fatalf("th-qa2 past %s: want one wake naming its job, got %q", t3WaitingFor, w)
+	}
+	if w := t3Wakes(f, "T3 thread th-qa)"); len(w) != 1 || !strings.Contains(w[0], "b7x2 (Run the G150 suite)") {
+		t.Errorf("th-qa past %s: want one wake naming its job, got %q", t3WaitingFor, w)
+	}
+	runOnce(t, home, f, t0.Add(100*time.Minute)) // the same spell: said once
+	if w := t3Wakes(f, "T3 thread th-qa2)"); len(w) != 1 {
+		t.Errorf("one spell woke Crius %d times: %q", len(w), w)
+	}
+	var b strings.Builder
+	Waiting(f.deps(home, t0), &b, []string{"quotes:qa2"})
+	if !strings.Contains(b.String(), "quotes:qa2 WAITING ON its own T3 background job(s) bipblrp3r") {
+		t.Errorf("crius-wakewatch waiting disagrees with the alert: %q", b.String())
+	}
+}
