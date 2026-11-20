@@ -10,7 +10,7 @@ package runlog
 
 import (
 	"bufio"
-	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -21,6 +21,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -218,11 +219,17 @@ func place(dir, name, content string, check func(tmp string) error) (string, err
 }
 
 // How much of a check's output its log keeps: the first headKeep and last tailKeep lines, each cut to lineKeep bytes.
+// Only the first headBytes and last tailBytes of the output are held in memory at all (review of 8f9968b: it held all).
 const (
-	headKeep = 40
-	tailKeep = 160
-	lineKeep = 2000
+	headKeep  = 40
+	tailKeep  = 160
+	lineKeep  = 2000
+	headBytes = 1 << 16
+	tailBytes = 1 << 18
 )
+
+// DefaultLimit is how long a check may run before Check kills it.
+const DefaultLimit = 10 * time.Minute
 
 // Check runs one check command (argv, no shell: pass `sh -c '…'` for pipes) with no input, and writes its log into
 // dir as <project>-<ref>-<local time>.md: `sha: <sha>`, then `pass: 1` only when the command exits 0 (else
@@ -230,37 +237,50 @@ const (
 // output line can read as a header line. echo, when not nil, gets the output as it comes. A name taken already
 // (two checks of one ref in one second) gets -2, -3, … so a check that ran always has its log. It gives the log's path
 // and the command's exit code; err is set only when no log was written (bad values, or the command did not start).
+// A check still running after limit is killed with its whole process group (children it started too) and fails: its
+// log says `limit: timed out after <limit>` and timedOut is true. Only the head and tail of the output are kept; when
+// the middle is cut, a line says how many bytes.
 // Before it places the log it reads it back with bus-post's reader: a passing log must give the sha and pass 1, a
 // failing one must be refused by Proven. 11-20/11-21: Crius checked cortex 1e4d6df and 71eb7a0 by real commands and
 // posted no VERIFIED, as the log had to be written by hand.
-func Check(dir, project, ref, sha string, argv []string, echo io.Writer) (path string, exit int, err error) {
+func Check(dir, project, ref, sha string, argv []string, limit time.Duration, echo io.Writer) (path string, exit int, timedOut bool, err error) {
 	for _, v := range []struct{ what, s string }{{"project", project}, {"ref", ref}} {
 		if !nameRe.MatchString(v.s) {
-			return "", 0, fmt.Errorf("%s %q is not part of a file name: letters, digits, '.', '_' and '-', starting with a letter or digit", v.what, v.s)
+			return "", 0, false, fmt.Errorf("%s %q is not part of a file name: letters, digits, '.', '_' and '-', starting with a letter or digit", v.what, v.s)
 		}
 	}
 	if !headSha.MatchString("sha: "+sha) || strings.TrimSpace(sha) != sha {
-		return "", 0, fmt.Errorf("sha %q is not 7 to 40 lower-case hex characters", sha)
+		return "", 0, false, fmt.Errorf("sha %q is not 7 to 40 lower-case hex characters", sha)
 	}
 	if len(argv) == 0 || argv[0] == "" {
-		return "", 0, errors.New("no check command given")
+		return "", 0, false, errors.New("no check command given")
+	}
+	if limit <= 0 {
+		return "", 0, false, fmt.Errorf("limit %s is not a time above zero", limit)
 	}
 	cmdText := OneLine(strings.Join(argv, " "))
 
-	var out bytes.Buffer
-	c := exec.Command(argv[0], argv[1:]...)
-	c.Stdout, c.Stderr = &out, &out
+	out := &capped{}
+	ctx, cancel := context.WithTimeout(context.Background(), limit)
+	defer cancel()
+	c := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	c.SysProcAttr = &syscall.SysProcAttr{Setpgid: true} // its own group, so the limit kills its children too
+	c.Cancel = func() error { return syscall.Kill(-c.Process.Pid, syscall.SIGKILL) }
+	c.Stdout, c.Stderr = out, out
 	if echo != nil {
-		c.Stdout = io.MultiWriter(&out, keepGoing{echo}) // a closed echo (piped into head) never cuts the log's output
+		c.Stdout = io.MultiWriter(out, keepGoing{echo}) // a closed echo (piped into head) never cuts the log's output
 		c.Stderr = c.Stdout
 	}
 	c.WaitDelay = 10 * time.Second // a child left running with the output open (`sleep 1000 &`) does not hold the log
 	start := time.Now()
 	if err := c.Run(); c.ProcessState == nil {
-		return "", 0, fmt.Errorf("the check did not start: %v", err)
+		return "", 0, false, fmt.Errorf("the check did not start: %v", err)
 	}
 	if exit = c.ProcessState.ExitCode(); exit == 0 && !c.ProcessState.Success() {
 		exit = -1 // never a pass when it did not exit 0 by itself
+	}
+	if timedOut = ctx.Err() != nil && !c.ProcessState.Success(); timedOut && exit == 0 {
+		exit = -1
 	}
 
 	var b strings.Builder
@@ -269,21 +289,54 @@ func Check(dir, project, ref, sha string, argv []string, echo io.Writer) (path s
 	} else {
 		fmt.Fprintf(&b, "sha: %s\nfail: 1\n", sha)
 	}
-	fmt.Fprintf(&b, "cmd: %s\nexit: %d\nran: %s for %s\noutput:\n", cmdText, exit,
+	fmt.Fprintf(&b, "cmd: %s\nexit: %d\nran: %s for %s\n", cmdText, exit,
 		start.Format(time.RFC3339), time.Since(start).Round(time.Millisecond))
-	lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
-	if out.Len() == 0 {
-		lines = nil
+	if timedOut {
+		fmt.Fprintf(&b, "limit: timed out after %s; its process group was killed\n", limit)
 	}
-	if len(lines) > headKeep+tailKeep {
-		for _, l := range lines[:headKeep] {
+	b.WriteString("output:\n")
+	if out.total <= int64(len(out.head)+len(out.tail)) {
+		// All of it is held: cut by lines, as before.
+		lines := splitLines(string(out.head) + string(out.tail))
+		if len(lines) > headKeep+tailKeep {
+			for _, l := range lines[:headKeep] {
+				b.WriteString(quote(l))
+			}
+			fmt.Fprintf(&b, "… %d lines cut …\n", len(lines)-headKeep-tailKeep)
+			lines = lines[len(lines)-tailKeep:]
+		}
+		for _, l := range lines {
 			b.WriteString(quote(l))
 		}
-		fmt.Fprintf(&b, "… %d lines cut …\n", len(lines)-headKeep-tailKeep)
-		lines = lines[len(lines)-tailKeep:]
-	}
-	for _, l := range lines {
-		b.WriteString(quote(l))
+	} else {
+		// The middle was never held. Keep whole lines only: the head up to its last newline, the tail from its first.
+		head, tail := string(out.head), string(out.tail)
+		if i := strings.LastIndexByte(head, '\n'); i >= 0 {
+			head = head[:i+1]
+		} else {
+			head = ""
+		}
+		if i := strings.IndexByte(tail, '\n'); i >= 0 {
+			tail = tail[i+1:]
+		} else {
+			tail = ""
+		}
+		hl, tl := splitLines(head), splitLines(tail)
+		hl, tl = hl[:min(len(hl), headKeep)], tl[max(0, len(tl)-tailKeep):]
+		shown := int64(0)
+		for _, l := range append(append([]string{}, hl...), tl...) {
+			shown += int64(len(l)) + 1
+		}
+		if !strings.HasSuffix(tail, "\n") && len(tl) > 0 {
+			shown-- // the output's last line had no newline
+		}
+		for _, l := range hl {
+			b.WriteString(quote(l))
+		}
+		fmt.Fprintf(&b, "… %d bytes cut …\n", out.total-shown)
+		for _, l := range tl {
+			b.WriteString(quote(l))
+		}
 	}
 
 	check := func(tmp string) error {
@@ -309,9 +362,40 @@ func Check(dir, project, ref, sha string, argv []string, echo io.Writer) (path s
 		path, err = place(dir, fmt.Sprintf("%s-%d", name, i), b.String(), check)
 	}
 	if err != nil {
-		return "", 0, err
+		return "", 0, false, err
 	}
-	return path, exit, nil
+	return path, exit, timedOut, nil
+}
+
+// splitLines is s's lines, with no last empty one; none for "".
+func splitLines(s string) []string {
+	if s == "" {
+		return nil
+	}
+	return strings.Split(strings.TrimSuffix(s, "\n"), "\n")
+}
+
+// capped holds the first headBytes and the last tailBytes written to it (at most twice tailBytes at a time), and
+// counts every byte, so a check's output never has to fit in memory. Check gives it one writer for stdout and stderr,
+// so exec copies into it from one goroutine.
+type capped struct {
+	head, tail []byte
+	total      int64
+}
+
+func (c *capped) Write(p []byte) (int, error) {
+	c.total += int64(len(p))
+	n := len(p)
+	if room := headBytes - len(c.head); room > 0 {
+		k := min(room, len(p))
+		c.head = append(c.head, p[:k]...)
+		p = p[k:]
+	}
+	c.tail = append(c.tail, p...)
+	if len(c.tail) > 2*tailBytes {
+		c.tail = append([]byte(nil), c.tail[len(c.tail)-tailBytes:]...)
+	}
+	return n, nil
 }
 
 // quote keeps one output line behind "| ", cut to lineKeep bytes, so it can never start a header or shot line.

@@ -1,13 +1,15 @@
 // Command crius-runlog writes the run log a VERIFIED bus line must name. Two forms:
 //
-//	crius-runlog run <project> <ref> <sha> -- <cmd> [args...]
+//	crius-runlog run [-limit 10m] <project> <ref> <sha> -- <cmd> [args...]
 //	crius-runlog <name> <sha> <pass N> <cmd> [notes...]
 //
 // The run form runs the check command itself (no shell: give `sh -c '…'` for pipes) and writes
 // ~/.crius/runs/<project>-<ref>-<local time>.md ($CRIUS_HOME/runs when set): `sha: <sha>`, `pass: 1` only when the
 // command exits 0 (else `fail: 1`), `cmd:`, `exit:` and the cut output. It is for a check Crius does by a real command
 // (git log of a deploy commit, a gh run, a live HTTP call, a test re-run); on 11-20/11-21 such checks posted no
-// VERIFIED because the log had to be written by hand.
+// VERIFIED because the log had to be written by hand. A check still running after -limit (default 10m) is killed with
+// all its children and fails: its log says `limit: timed out after <limit>`. Only the head and tail of a long output
+// are kept, with a line saying how many bytes were cut between them.
 //
 // The second form writes a hand check's log with a pass count typed in: `sha: <sha>`, `pass: <N>`, `cmd: <cmd>`, then
 // one line per note. N is a bare whole number of 1 or more. On 11-19 four hand-written run logs were refused for
@@ -22,6 +24,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -54,15 +57,28 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 // check is the run form: it runs the command, echoing its output to stderr, and writes its log.
 func check(args []string, stdout, stderr io.Writer) int {
+	usage := "usage: crius-runlog run [-limit 10m] <project> <ref> <sha> -- <cmd> [args...]"
+	fl := flag.NewFlagSet("crius-runlog run", flag.ContinueOnError)
+	fl.SetOutput(stderr)
+	limit := fl.Duration("limit", runlog.DefaultLimit, "kill the check and fail it when it runs longer")
+	if err := fl.Parse(args); err != nil {
+		fmt.Fprintln(stderr, usage)
+		return 2
+	}
+	args = fl.Args()
 	if len(args) < 5 || args[3] != "--" {
-		fmt.Fprintln(stderr, "usage: crius-runlog run <project> <ref> <sha> -- <cmd> [args...]")
+		fmt.Fprintln(stderr, usage)
 		return 2
 	}
 	project, ref, sha := args[0], args[1], args[2]
-	path, exit, err := runlog.Check(filepath.Join(store.Home(), "runs"), project, ref, sha, args[4:], stderr)
+	path, exit, timedOut, err := runlog.Check(filepath.Join(store.Home(), "runs"), project, ref, sha, args[4:], *limit, stderr)
 	if err != nil {
 		fmt.Fprintf(stderr, "crius-runlog: refused: %v\n", err)
 		return 2
+	}
+	if timedOut {
+		fmt.Fprintf(stderr, "crius-runlog: the check timed out after %s and was killed; its log %s says `fail: 1`, so no VERIFIED line can name it\n", *limit, path)
+		return 1
 	}
 	if exit != 0 {
 		fmt.Fprintf(stderr, "crius-runlog: the check failed (exit %d); its log %s says `fail: 1`, so no VERIFIED line can name it\n", exit, path)

@@ -4,8 +4,12 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/orzazade/crius/internal/runlog"
 )
@@ -188,5 +192,84 @@ func TestRunFormRunsTheCheckAndWritesItsLog(t *testing.T) {
 		if after, _ := filepath.Glob(filepath.Join(home, "runs", "*.md")); len(after) != len(before) {
 			t.Fatalf("%v wrote a log", c.args)
 		}
+	}
+}
+
+// Review of 8f9968b: the run form had no time limit, so a hung check blocked forever. With -limit it kills the
+// check's whole process group (a child it left running too) when the limit runs out, writes a `fail: 1` log that
+// says so, and exits 1.
+func TestRunFormKillsAHungCheckAtItsLimit(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CRIUS_HOME", home)
+	pidFile := filepath.Join(home, "child.pid")
+	rc, _, errs := runlogCmd(t, "run", "-limit", "1s", "cortex", "hung", "1e4d6df", "--",
+		"sh", "-c", "sleep 999 & echo $! > "+pidFile+"; wait")
+	if rc != 1 || !strings.Contains(errs, "timed out after 1s") {
+		t.Fatalf("hung check: rc %d: %s", rc, errs)
+	}
+	m, _ := filepath.Glob(filepath.Join(home, "runs", "cortex-hung-*.md"))
+	if len(m) != 1 {
+		t.Fatalf("logs %v", m)
+	}
+	b, _ := os.ReadFile(m[0])
+	if !strings.HasPrefix(string(b), "sha: 1e4d6df\nfail: 1\n") || !strings.Contains(string(b), "\nlimit: timed out after 1s;") {
+		t.Fatalf("log is\n%s", b)
+	}
+	if _, err := runlog.Proven(m[0], m[0]); err == nil {
+		t.Fatal("a timed-out check's log reads as passing")
+	}
+	pb, _ := os.ReadFile(pidFile)
+	pid, err := strconv.Atoi(strings.TrimSpace(string(pb)))
+	if err != nil {
+		t.Fatalf("child pid %q: %v", pb, err)
+	}
+	gone := false
+	for i := 0; i < 50 && !gone; i++ { // a killed child may take a moment to be reaped; this waits, it asserts no time
+		gone = syscall.Kill(pid, 0) == syscall.ESRCH
+		if !gone {
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+	if !gone {
+		syscall.Kill(pid, syscall.SIGKILL)
+		t.Fatalf("the check's child %d still runs after the limit", pid)
+	}
+
+	for _, bad := range []string{"0s", "-1s", "soon"} {
+		if rc, _, errs := runlogCmd(t, "run", "-limit", bad, "cortex", "x", "1e4d6df", "--", "true"); rc != 2 {
+			t.Fatalf("-limit %s: rc %d: %s", bad, rc, errs)
+		}
+	}
+}
+
+// Review of 8f9968b: the run form kept all of a check's output in memory. It keeps the head and the tail and says how
+// many bytes it cut between them.
+func TestRunFormKeepsTheHeadAndTailOfAHugeOutput(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CRIUS_HOME", home)
+	rc, _, errs := runlogCmd(t, "run", "cortex", "big", "1e4d6df", "--",
+		"sh", "-c", "echo FIRST; yes 0123456789 | head -c 4999995; echo LAST")
+	if rc != 0 {
+		t.Fatalf("rc %d: %.300s", rc, errs)
+	}
+	m, _ := filepath.Glob(filepath.Join(home, "runs", "cortex-big-*.md"))
+	if len(m) != 1 {
+		t.Fatalf("logs %v", m)
+	}
+	b, _ := os.ReadFile(m[0])
+	cut := regexp.MustCompile(`\n… (\d+) bytes cut …\n`).FindStringSubmatch(string(b))
+	if cut == nil || !strings.Contains(string(b), "\n| FIRST\n") || !strings.HasSuffix(string(b), "\n| LAST\n") {
+		t.Fatalf("log of %d bytes has no bytes-cut note, or lost the head or tail:\n%.500s", len(b), b)
+	}
+	// The output was 6 + 4999995 + 5 bytes; what the log does not show is what it cut.
+	n, _ := strconv.Atoi(cut[1])
+	shown := 0
+	for _, l := range strings.Split(string(b), "\n") {
+		if strings.HasPrefix(l, "| ") {
+			shown += len(l) - 2 + 1
+		}
+	}
+	if n+shown != 5000006 {
+		t.Fatalf("cut %d + shown %d bytes is not the 5000006 the check wrote", n, shown)
 	}
 }

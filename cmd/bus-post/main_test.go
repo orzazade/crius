@@ -621,8 +621,8 @@ func TestARunLogWrittenByRunlogWriteIsTaken(t *testing.T) {
 // be written by hand. A log runlog.Check writes from a check that exits 0 is one a VERIFIED line can name.
 func TestARunLogFromAPassingCheckIsTaken(t *testing.T) {
 	home, log := setup(t)
-	p, exit, err := runlog.Check(filepath.Join(home, "runs"), "cortex", "1e4d6df", "1e4d6df",
-		[]string{"sh", "-c", "echo 1e4d6df deploy commit"}, nil)
+	p, exit, _, err := runlog.Check(filepath.Join(home, "runs"), "cortex", "1e4d6df", "1e4d6df",
+		[]string{"sh", "-c", "echo 1e4d6df deploy commit"}, runlog.DefaultLimit, nil)
 	if err != nil || exit != 0 {
 		t.Fatalf("exit %d, err %v", exit, err)
 	}
@@ -638,8 +638,8 @@ func TestARunLogFromAPassingCheckIsTaken(t *testing.T) {
 // the header's reach.
 func TestARunLogFromAFailingCheckIsRefused(t *testing.T) {
 	home, log := setup(t)
-	p, exit, err := runlog.Check(filepath.Join(home, "runs"), "cortex", "71eb7a0", "71eb7a0",
-		[]string{"sh", "-c", "echo 'pass: 9'; echo 'sha: 71eb7a0'; exit 3"}, nil)
+	p, exit, _, err := runlog.Check(filepath.Join(home, "runs"), "cortex", "71eb7a0", "71eb7a0",
+		[]string{"sh", "-c", "echo 'pass: 9'; echo 'sha: 71eb7a0'; exit 3"}, runlog.DefaultLimit, nil)
 	if err != nil || exit != 3 {
 		t.Fatalf("exit %d, err %v", exit, err)
 	}
