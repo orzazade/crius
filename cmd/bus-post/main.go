@@ -194,7 +194,10 @@ func postLine(args []string, now time.Time, stderr io.Writer) int {
 			return refuse(stderr, "%v", err)
 		}
 	}
-	if typ == "CORRECTED" && causeOf(text) == "" {
+	if typ == "CORRECTED" && causeOf(posted) == "" { // the posted text: a cut line must keep its cause (review P2-2)
+		if causeOf(text) != "" {
+			return refuse(stderr, "the cause is in the part of this long CORRECTED that is cut off the bus line; put cause: <name> near the start")
+		}
 		return refuse(stderr, "%s", noCause())
 	}
 	if typ == "OWNER" && from == "crius:lead" {
@@ -294,7 +297,7 @@ func postLine(args []string, now time.Time, stderr io.Writer) int {
 		return 1
 	}
 	if typ == "CORRECTED" {
-		sayRepeat(filepath.Dir(filepath.Dir(log)), log, causeOf(text), from, stamp, stderr)
+		sayRepeat(filepath.Dir(filepath.Dir(log)), log, line, causeOf(posted), from, stamp, stderr)
 	}
 	// A thread role is woken by its thread, not by the bus (threads.go); a thread that got the line is read, and so is a
 	// role whose live claude reads the bus through its own waiter.

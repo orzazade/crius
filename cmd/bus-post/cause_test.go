@@ -73,3 +73,38 @@ func TestOtherCausesOtherBusesAndOldLinesAreNoRepeat(t *testing.T) {
 		t.Fatalf("crius.log: %q", b)
 	}
 }
+
+// Review P2-1: a line another writer adds right after this one must not make bus-post read its own line as the first.
+func TestALineAddedAfterThePostIsNotTakenForTheFirst(t *testing.T) {
+	home, _ := setup(t)
+	log := filepath.Join(home, "bus", "axi.log")
+	mine := "2026-11-21T03:30 CORRECTED axi:ms-flow -> crius:lead — y; cause: stale context"
+	testutil.Write(t, log, mine+"\n2026-11-21T03:30 INFO axi:qa -> crius:lead — someone else\n")
+	if first, err := sameCause(log, mine, "stale context", at("2026-11-21T03:30")); err != nil || first != "" {
+		t.Fatalf("first %q, err %v", first, err)
+	}
+	testutil.Write(t, log, "2026-11-21T01:00Z CORRECTED axi:qa -> crius:lead — x; cause: stale context\n"+mine+"\n")
+	if first, err := sameCause(log, mine, "stale context", at("2026-11-21T03:30")); err != nil || first != "2026-11-21T01:00Z axi:qa" {
+		t.Fatalf("a Z stamp: first %q, err %v", first, err)
+	}
+}
+
+// Review P2-2: a long CORRECTED is posted cut; a cause only in the cut-off part would leave the bus line without it.
+func TestALongCorrectedMustKeepItsCauseOnTheBusLine(t *testing.T) {
+	_, log := setup(t)
+	long := strings.Repeat("the old line named the wrong tree and the wrong sha ", 8)
+	rc, errs := post(t, at("2026-11-21T03:30"), log, "CORRECTED", "axi:ms-flow", "crius:lead", long+"; cause: stale context")
+	if rc != 2 || !strings.Contains(errs, "near the start") || busText(t, log) != "" {
+		t.Fatalf("rc %d, %q", rc, errs)
+	}
+	if rc, errs := post(t, at("2026-11-21T03:30"), log, "CORRECTED", "axi:ms-flow", "crius:lead",
+		"cause: stale context; "+long); rc != 0 || !strings.Contains(busText(t, log), "cause: stale context") {
+		t.Fatalf("rc %d, %q", rc, errs)
+	}
+}
+
+func TestAPluralCauseCounts(t *testing.T) {
+	if c := causeOf("cause: missing tests"); c != "missing test" {
+		t.Fatalf("%q", c)
+	}
+}

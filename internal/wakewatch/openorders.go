@@ -11,9 +11,9 @@ import (
 	"time"
 )
 
-// orderAfter is how long a role may stay silent after Crius told it to act. Measured on the buses 11-10..11-21: of
-// 1518 DECISION/ORDER/GO lines from crius:lead to a team role, 129 had no line from that role within 1 h, 66 within
-// 2 h, 36 within 4 h; 2 h keeps the wakes near 6 a day.
+// orderAfter is how long a role may stay silent after Crius told it to act. Replayed every 10 min over the watched
+// buses 11-14..11-21 this gives 1 wake: 13 Crius lines to quotes:lead on 11-18, a role that no longer posted. (A
+// rougher count in the first commit said 66 of 1518 lines; it was wrong, review of ef15655.)
 const orderAfter = 2 * time.Hour
 
 // actTypes are the lines from Crius that a role must act on.
@@ -24,7 +24,8 @@ var actTypes = map[string]bool{"DECISION": true, "ORDER": true, "GO": true}
 // as OpenRig keeps a queue item open until its seat closes it and its stuck sweep wakes the owner (OpenRig trial test 6,
 // ~/Projects/yolo/openrig-trial/RESULTS.md). The other way round, a line to Crius nobody answered, is missed().
 // Any line from the role counts as seen: whether it applied the decision stays Crius's check. A whole team ("all"),
-// a copy ("cc …"), another team's role and a parked role or project owe nothing.
+// a copy ("cc …"), another team's role, a parked role or project, and a name that never posted on this bus (a group
+// such as "builders", a program, a typo) owe nothing.
 func openOrders(home string, now time.Time, watch projects, park parked) ([][2]string, error) {
 	logs, err := filepath.Glob(filepath.Join(home, "bus", "*.log"))
 	if err != nil {
@@ -33,8 +34,8 @@ func openOrders(home string, now time.Time, watch projects, park parked) ([][2]s
 	sort.Strings(logs)
 	var out [][2]string
 	for _, log := range logs {
-		team := strings.TrimSuffix(filepath.Base(log), ".log")
-		if !watch.has(team) || park[strings.ToLower(team)] {
+		team := strings.ToLower(strings.TrimSuffix(filepath.Base(log), ".log"))
+		if !watch.has(team) || park[team] {
 			continue
 		}
 		b, err := os.ReadFile(log)
@@ -47,18 +48,20 @@ func openOrders(home string, now time.Time, watch projects, park parked) ([][2]s
 			at         time.Time
 		}
 		var open []order
+		spoke := map[string]bool{}
 		for _, line := range strings.Split(text, "\n") {
 			m := lineRe.FindStringSubmatch(line)
 			if m == nil {
 				continue
 			}
 			typ, from, to := m[2], strings.ToLower(m[3]), m[4]
+			spoke[from] = true
 			open = slices.DeleteFunc(open, func(o order) bool { return o.role == from })
 			if from != "crius:lead" || !actTypes[typ] {
 				continue
 			}
 			at, err := lineTime(m[1], now)
-			if err != nil || now.Sub(at) > window {
+			if err != nil {
 				continue
 			}
 			main, _, _ := strings.Cut(to, "(")
@@ -77,25 +80,28 @@ func openOrders(home string, now time.Time, watch projects, park parked) ([][2]s
 				open = append(open, order{line, r, at})
 			}
 		}
-		// One wake per role, for its oldest open line: a role that missed one line most likely missed the next too.
+		// One wake per role and silence, for its oldest open line: a role that missed one line most likely missed the
+		// next too. Once that oldest line is past the window the silence is history, and no later line wakes Crius anew
+		// for it (review P2-3).
 		later := map[string]int{}
 		var first []order
 		for _, o := range open {
-			if now.Sub(o.at) < orderAfter {
-				continue
-			}
 			if later[o.role]++; later[o.role] == 1 {
 				first = append(first, o)
 			}
 		}
 		for _, o := range first {
+			age := now.Sub(o.at)
+			if age < orderAfter || age > window || !spoke[o.role] {
+				continue
+			}
 			more := ""
 			if n := later[o.role] - 1; n > 0 {
 				more = fmt.Sprintf(" (and %d later line(s) to it)", n)
 			}
 			out = append(out, [2]string{"order:" + hash(log+"\n"+o.line+"\n"+o.role),
 				fmt.Sprintf("%s: %s has posted nothing since this line %d h ago%s; did it see it? %s",
-					filepath.Base(log), o.role, int(now.Sub(o.at).Hours()), more, o.line)})
+					filepath.Base(log), o.role, int(age.Hours()), more, o.line)})
 		}
 	}
 	return out, nil

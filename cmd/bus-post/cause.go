@@ -18,9 +18,9 @@ import (
 // list, and a fix queued when a cause repeats; there a model labelled the cause, here the poster names it.
 var (
 	causes  = []string{"missing test", "wrong assumption", "stale context", "silent failure", "misread request", "harness or tool", "review gap", "bad data"}
-	causeRe = regexp.MustCompile(`(?i)\bcause:\s*(missing test|wrong assumption|stale context|silent failure|misread request|harness or tool|harness|tool|review gap|bad data)\b`)
+	causeRe = regexp.MustCompile(`(?i)\bcause:\s*(missing test|wrong assumption|stale context|silent failure|misread request|harness or tool|harness|tool|review gap|bad data)s?\b`)
 	// a CORRECTED bus line: its stamp, sender and text
-	correctedRe = regexp.MustCompile(`^(\d{4}-\d\d-\d\dT\d\d:\d\d) CORRECTED (\S+) .*? — (.*)$`)
+	correctedRe = regexp.MustCompile(`^(\d{4}-\d\d-\d\dT\d\d:\d\d)(Z?) CORRECTED (\S+) .*? — (.*)$`)
 )
 
 // repeatDays is how far back a CORRECTED of the same cause on the same bus counts as the first of two.
@@ -45,35 +45,47 @@ func noCause() string {
 		">, so a second mistake of one cause is seen (§2.6)"
 }
 
-// sameCause looks in log, before the line just written (the last one), for a CORRECTED of the same cause in the last
+// sameCause looks in log, before the last copy of line (the one just written; lines other writers added after it are
+// not read), for a CORRECTED of the same cause in the last
 // repeatDays. It gives the earlier line's stamp and sender, or "" when there is none.
-func sameCause(log, cause string, now time.Time) (string, error) {
+func sameCause(log, line, cause string, now time.Time) (string, error) {
 	b, err := os.ReadFile(log)
 	if err != nil {
 		return "", err
 	}
 	lines := strings.Split(strings.TrimSuffix(string(b), "\n"), "\n")
-	if len(lines) > 0 {
-		lines = lines[:len(lines)-1]
-	}
+	own := -1
 	for i := len(lines) - 1; i >= 0; i-- {
+		if lines[i] == line {
+			own = i
+			break
+		}
+	}
+	if own < 0 {
+		return "", fmt.Errorf("the line just posted is not in %s", log)
+	}
+	for i := own - 1; i >= 0; i-- {
 		m := correctedRe.FindStringSubmatch(lines[i])
-		if m == nil || causeOf(m[3]) != cause {
+		if m == nil || causeOf(m[4]) != cause {
 			continue
 		}
-		at, err := time.ParseInLocation("2006-01-02T15:04", m[1], now.Location())
+		loc := now.Location()
+		if m[2] == "Z" {
+			loc = time.UTC
+		}
+		at, err := time.ParseInLocation("2006-01-02T15:04", m[1], loc)
 		if err != nil || now.Sub(at) > repeatDays*24*time.Hour {
 			continue
 		}
-		return m[1] + " " + m[2], nil
+		return m[1] + m[2] + " " + m[3], nil
 	}
 	return "", nil
 }
 
 // sayRepeat tells the poster and wakes Crius (an ALERT on crius.log) when this CORRECTED's cause was seen before on
 // its bus. home is the Crius home of the log.
-func sayRepeat(home, log, cause, from string, now time.Time, stderr io.Writer) {
-	first, err := sameCause(log, cause, now)
+func sayRepeat(home, log, line, cause, from string, now time.Time, stderr io.Writer) {
+	first, err := sameCause(log, line, cause, now)
 	if err != nil {
 		fmt.Fprintf(stderr, "bus-post: posted, but could not look for an earlier CORRECTED of the same cause: %v\n", err)
 		return
