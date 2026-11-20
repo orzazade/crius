@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,8 +14,26 @@ import (
 	"github.com/orzazade/crius/internal/testutil"
 )
 
-// world is a remote (bare repo), a clone of it that crius-overlap reads, a work clone that pushes branches, a Crius home
-// and a fake bus-post that records each call as one line of posted.txt.
+// busPost is the real bus-post, built once: a fake one hid that WARN is no bus type and that quotes.log is only a copy
+// of the Legion's bus (live run 11-20, both refused).
+var busPost string
+
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "overlap-bus-post")
+	if err != nil {
+		panic(err)
+	}
+	busPost = filepath.Join(dir, "bus-post")
+	if out, err := exec.Command("go", "build", "-o", busPost, "../bus-post").CombinedOutput(); err != nil {
+		panic(fmt.Sprintf("building bus-post: %v\n%s", err, out))
+	}
+	code := m.Run()
+	os.RemoveAll(dir)
+	os.Exit(code)
+}
+
+// world is a remote (bare repo), a clone of it that crius-overlap reads, a work clone that pushes branches, and a Crius
+// home with the real bus-post.
 type world struct {
 	root, home, remote, clone, work string
 }
@@ -35,10 +54,18 @@ func newWorld(t *testing.T) world {
 	testutil.Git(t, w.work, "remote", "add", "origin", w.remote)
 	testutil.Git(t, w.work, "push", "-q", "origin", "main")
 	testutil.Git(t, root, "clone", "-q", w.remote, w.clone)
-	testutil.Write(t, filepath.Join(home, "bin", "bus-post"), "#!/bin/sh\nprintf '%s|' \"$@\" >> \""+
-		filepath.Join(root, "posted.txt")+"\"\necho >> \""+filepath.Join(root, "posted.txt")+"\"\n")
-	if err := os.Chmod(filepath.Join(home, "bin", "bus-post"), 0o755); err != nil {
+	for _, d := range []string{"bin", "bus"} {
+		if err := os.MkdirAll(filepath.Join(home, d), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(busPost, filepath.Join(home, "bin", "bus-post")); err != nil {
 		t.Fatal(err)
+	}
+	for _, log := range []string{"demo.log", "crius.log"} { // bus-post posts only to a bus log that exists
+		if err := os.WriteFile(filepath.Join(home, "bus", log), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	w.config(t, "demo", `[[repo]]
 path = "`+w.clone+`"
@@ -67,16 +94,27 @@ func (w world) branch(t *testing.T, name string, files ...string) {
 	testutil.Git(t, w.work, "switch", "-q", "main")
 }
 
+// posted is every line on the demo bus, then on Crius's bus, as "<log>|<TYPE> <from> -> <to> — <text>" (no time).
 func (w world) posted(t *testing.T) []string {
 	t.Helper()
-	b, err := os.ReadFile(filepath.Join(w.root, "posted.txt"))
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
+	var lines []string
+	for _, log := range []string{"demo.log", "crius.log"} {
+		b, err := os.ReadFile(filepath.Join(w.home, "bus", log))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, l := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+			if l == "" {
+				continue
+			}
+			_, rest, _ := strings.Cut(l, " ")
+			lines = append(lines, log+"|"+rest)
+		}
 	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	return strings.Split(strings.TrimSuffix(string(b), "\n"), "\n")
+	return lines
 }
 
 func (w world) run(t *testing.T, args ...string) (string, error) {
@@ -86,7 +124,7 @@ func (w world) run(t *testing.T, args ...string) (string, error) {
 	return out.String(), err
 }
 
-// Two branches that change one file give one WARN on the project's bus; a third branch on other files gives none; a
+// Two branches that change one file give one INFO on the project's bus; a third branch on other files gives none; a
 // second run posts nothing new; when the shared set grows the pair is posted again.
 func TestTwoBranchesOnOneFileWarnOnce(t *testing.T) {
 	w := newWorld(t)
@@ -98,7 +136,7 @@ func TestTwoBranchesOnOneFileWarnOnce(t *testing.T) {
 		t.Fatalf("run: %v\n%s", err, out)
 	}
 	got := w.posted(t)
-	want := filepath.Join(w.home, "bus", "demo.log") + "|WARN|crius:overlap|demo:lead|feat/one and feat/two both change 1 files: a.txt — land one first, rebase the other|"
+	want := "demo.log|INFO crius:overlap -> demo:lead — feat/one and feat/two both change 1 files: a.txt — land one first, rebase the other"
 	if len(got) != 1 || got[0] != want {
 		t.Fatalf("posted %q\nwant %q", got, want)
 	}
@@ -234,13 +272,48 @@ func TestAllRunsEveryProjectAndPostsAFailureOnce(t *testing.T) {
 		}
 	}
 	got := w.posted(t)
-	if len(got) != 2 || !strings.Contains(got[0]+got[1], "|WARN|crius:overlap|demo:lead|feat/one and feat/two") ||
-		!strings.Contains(got[0]+got[1], filepath.Join(w.home, "bus", "crius.log")+"|WARN|crius:overlap|crius:lead|crius-overlap broken could not look:") {
+	if len(got) != 2 || !strings.Contains(got[0]+got[1], "demo.log|INFO crius:overlap -> demo:lead — feat/one and feat/two") ||
+		!strings.Contains(got[0]+got[1], "crius.log|ALERT crius:overlap -> crius:lead — crius-overlap broken could not look:") {
 		t.Fatalf("posted %q", got)
 	}
 	os.Remove(filepath.Join(w.home, "state", "broken", "overlap.toml"))
 	if _, err := w.run(t, "all"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A line bus-post refuses is not marked as said: the run fails, and once the bus takes lines again the pair and the
+// failure reason are each posted once.
+func TestARefusedPostIsTriedAgain(t *testing.T) {
+	w := newWorld(t)
+	w.branch(t, "feat/one", "a.txt")
+	w.branch(t, "feat/two", "a.txt")
+	w.config(t, "broken", "[[repo]]\npath = \""+filepath.Join(w.root, "nope")+"\"\nremote = \"origin\"\nbase = \"main\"\nmax_age_days = 7\n")
+	for _, log := range []string{"demo.log", "crius.log"} {
+		if err := os.Remove(filepath.Join(w.home, "bus", log)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := w.run(t, "all"); err == nil || !strings.Contains(err.Error(), "no bus log") {
+		t.Fatalf("want the refusal as an error, got %v", err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(w.home, "state", "demo", "overlap-seen.tsv")); strings.Contains(string(b), "feat/one") {
+		t.Fatalf("a pair that was not posted is marked as seen:\n%s", b)
+	}
+	for _, log := range []string{"demo.log", "crius.log"} {
+		if err := os.WriteFile(filepath.Join(w.home, "bus", log), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := w.run(t, "all"); err == nil {
+			t.Fatal("want an error for the broken project")
+		}
+	}
+	got := w.posted(t)
+	if len(got) != 2 || !strings.HasPrefix(got[0], "demo.log|INFO crius:overlap -> demo:lead — feat/one and feat/two") ||
+		!strings.HasPrefix(got[1], "crius.log|ALERT crius:overlap -> crius:lead — crius-overlap broken could not look:") {
+		t.Fatalf("want the pair and the failure posted once each, got %q", got)
 	}
 }
 
@@ -279,7 +352,7 @@ func TestOpenPRsOnly(t *testing.T) {
 		t.Fatalf("%v\n%s", err, out)
 	}
 	got := w.posted(t)
-	if len(got) != 1 || !strings.Contains(got[0], "|PR 11 feat/one and PR 12 feat/two both change 1 files: a.txt — ") ||
+	if len(got) != 1 || !strings.Contains(got[0], "— PR 11 feat/one and PR 12 feat/two both change 1 files: a.txt — ") ||
 		!strings.Contains(out, "compared 2 open PRs") {
 		t.Fatalf("posted %q\n%s", got, out)
 	}
@@ -310,7 +383,7 @@ func TestABurstIsCut(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := w.posted(t)
-	if len(got) != 6 || !strings.Contains(got[5], "|5 more clashing pairs: crius-overlap demo lists them|") {
+	if len(got) != 6 || !strings.Contains(got[5], "— 5 more clashing pairs: crius-overlap demo lists them") {
 		t.Fatalf("posted %d: %q", len(got), got)
 	}
 	if _, err := w.run(t, "demo"); err != nil || len(w.posted(t)) != 6 {
@@ -406,7 +479,7 @@ func TestARepoThatFailsKeepsItsSeenPairs(t *testing.T) {
 	if _, err := w.run(t, "demo"); err != nil || len(w.posted(t)) != 2 {
 		t.Fatalf("first run: %v, posted %q", err, w.posted(t))
 	}
-	if !strings.Contains(w.posted(t)[1], "|other: feat/one and feat/two both change") {
+	if !strings.Contains(w.posted(t)[1], "— other: feat/one and feat/two both change") {
 		t.Fatalf("a project of two repos names the repo: %q", w.posted(t))
 	}
 	testutil.Git(t, other, "remote", "set-url", "origin", filepath.Join(w.root, "gone.git"))
@@ -507,5 +580,21 @@ func TestAnOrphanBranchIsSkipped(t *testing.T) {
 	if err != nil || !strings.Contains(out, "gh-pages: no history shared with main; not compared") ||
 		!strings.Contains(out, "feat/one and feat/two both change") {
 		t.Fatalf("%v\n%s", err, out)
+	}
+}
+
+// A project whose bus here is only a copy of a bus on another machine (quotes.log, staffy.log: a .remote marker) gets
+// its lines on Crius's bus, for its lead, instead of a refusal.
+func TestARemoteBusGoesToCrius(t *testing.T) {
+	w := newWorld(t)
+	testutil.Write(t, filepath.Join(w.home, "bus", "demo.log.remote"), "use bus-post-elsewhere\n")
+	w.branch(t, "feat/one", "a.txt")
+	w.branch(t, "feat/two", "a.txt")
+	if out, err := w.run(t, "demo"); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	got := w.posted(t)
+	if len(got) != 1 || !strings.HasPrefix(got[0], "crius.log|INFO crius:overlap -> crius:lead — for demo:lead (its bus is on another machine): feat/one and feat/two both change 1 files") {
+		t.Fatalf("posted %q", got)
 	}
 }

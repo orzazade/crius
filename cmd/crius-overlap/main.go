@@ -1,7 +1,7 @@
 // Command crius-overlap warns a team early when two open work branches change the same files, so they land in order
 // instead of meeting at merge (AXI PRs 8461, 8462 and 8463 all edited the same files and clashed, 11-20).
 //
-//	crius-overlap <project>                 fetch, compare, post one WARN per new clashing pair, list every clash
+//	crius-overlap <project>                 fetch, compare, post one INFO per new clashing pair, list every clash
 //	crius-overlap <project> check <branch>  exit 3 and print the clashes when <branch> shares files with open work
 //	crius-overlap all                       every project with a <home>/state/<project>/overlap.toml (the launchd job)
 //
@@ -23,7 +23,8 @@
 // team's refs/remotes are not touched. For each open branch it takes the files changed since the branch left base, less
 // the files whose change has landed (see files). Two branches that share a file are a clash. Each clash is posted once to
 // <home>/bus/<project>.log, again only when its shared files grow; the pairs posted are in
-// <home>/state/<project>/overlap-seen.tsv.
+// <home>/state/<project>/overlap-seen.tsv. When that bus is only a copy of a bus on another machine (a .remote marker),
+// the line goes to <home>/bus/crius.log for Crius to pass on.
 //
 // With prs, a PR that conflicts with base may have no merge ref (GitHub) or an old one (Azure DevOps): it is compared at
 // the tip its merge ref names, and the output says so.
@@ -559,7 +560,7 @@ func watch(home string, now time.Time, project string, out io.Writer, list bool)
 					held[p.key()] = union
 					continue
 				}
-				if err := post(home, project+".log", project+":lead", p.text(len(repos) > 1)); err != nil {
+				if err := post(home, project, "INFO", project+":lead", p.text(len(repos) > 1)); err != nil {
 					errs = append(errs, err)
 					continue
 				}
@@ -577,7 +578,7 @@ func watch(home string, now time.Time, project string, out io.Writer, list bool)
 	}
 	if len(held) > 0 {
 		text := fmt.Sprintf("%d more clashing pairs: crius-overlap %s lists them", len(held), project)
-		if err := post(home, project+".log", project+":lead", text); err != nil {
+		if err := post(home, project, "INFO", project+":lead", text); err != nil {
 			errs = append(errs, err)
 		} else {
 			maps.Copy(next, held)
@@ -703,7 +704,7 @@ func all(home string, now time.Time, out io.Writer) error {
 			if slices.Contains(was, key) {
 				continue
 			}
-			if err := post(home, "crius.log", "crius:lead", "crius-overlap "+project+" could not look: "+line); err != nil {
+			if err := post(home, "crius", "ALERT", "crius:lead", "crius-overlap "+project+" could not look: "+line); err != nil {
 				errs = append(errs, err)
 				keys = keys[:len(keys)-1] // not said: say it next run
 			}
@@ -718,8 +719,17 @@ func all(home string, now time.Time, out io.Writer) error {
 // hexWord is a word bus-post would take for a commit id; the bus line names only branches and files, so none is one.
 var hexWord = regexp.MustCompile(`^[0-9A-Fa-f]{7,40}$`)
 
-// post sends one WARN line with bus-post. Exit 5 and 8 are posted, with a recipient or thread not reached.
-func post(home, log, to, text string) error {
+// post sends one line with bus-post to a project's bus. A bus that is only a copy here of a live bus on another machine
+// (quotes.log, staffy.log) would refuse it, and the wrappers that post there run over ssh, which a 10-min job must not
+// wait on (store.OpenBus): such a line goes on Crius's bus for Crius to relay. Exit 5 and 8 of bus-post are posted, with a
+// recipient or thread not reached.
+func post(home, project, typ, to, text string) error {
+	log := filepath.Join(home, "bus", project+".log")
+	if _, remote, err := store.RemoteCopy(log); err != nil {
+		return err
+	} else if remote {
+		log, text, to = filepath.Join(home, "bus", "crius.log"), "for "+to+" (its bus is on another machine): "+text, "crius:lead"
+	}
 	var notSha []string
 	for _, w := range strings.FieldsFunc(text, func(r rune) bool {
 		return !(r == '_' || r == '-' || r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z')
@@ -728,7 +738,7 @@ func post(home, log, to, text string) error {
 			notSha = append(notSha, w)
 		}
 	}
-	cmd := exec.Command(filepath.Join(home, "bin", "bus-post"), filepath.Join(home, "bus", log), "WARN", "crius:overlap", to, text)
+	cmd := exec.Command(filepath.Join(home, "bin", "bus-post"), log, typ, "crius:overlap", to, text)
 	cmd.Env = append(os.Environ(), "SAY_NOT_SHA="+strings.Join(notSha, ","))
 	got, err := cmd.CombinedOutput()
 	var ee *exec.ExitError
@@ -736,7 +746,7 @@ func post(home, log, to, text string) error {
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("bus-post to %s: %v: %s", log, err, strings.TrimSpace(string(got)))
+		return fmt.Errorf("bus-post to %s: %v: %s", filepath.Base(log), err, strings.Join(strings.Fields(string(got)), " "))
 	}
 	return nil
 }
