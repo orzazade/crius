@@ -249,13 +249,53 @@ func TestModeAndOwnerMarkersAreKnownAndRaiseNoAlert(t *testing.T) {
 	}
 }
 
+// Claude Code keeps adding marker lines (repl-mode 11-21 02:46, data-flow-records 11-21 03:09, tools-used 10-27):
+// a line of an unknown type that carries none of the fields ingest makes rows from is counted, never alerted.
+func TestAnUnknownMarkerTypeIsCountedButRaisesNoAlert(t *testing.T) {
+	x := newIC(t, cfg{})
+	testutil.Write(t, x.tx, lines(
+		map[string]any{"type": "data-flow-records", "v": 1, "sessionId": "s1", "records": []any{}},
+		map[string]any{"type": "data-flow-records", "v": 1, "sessionId": "s1",
+			"records": []any{map[string]any{"tool_name": "Bash", "event_id": "e1"}}},
+		map[string]any{"type": "tools-used", "tools": []any{"Bash"}, "sessionId": "s1"},
+		map[string]any{"type": "marker-with-time", "timestamp": "2026-11-21T03:09:00Z", "uuid": "u1"},
+	))
+	st := x.run()
+	eq(t, st.UnknownTypes, map[string]int{"data-flow-records": 2, "tools-used": 1, "marker-with-time": 1})
+	bus, _ := os.ReadFile(filepath.Join(x.home, "bus", "crius.log"))
+	if strings.Contains(string(bus), "unknown transcript line type") {
+		t.Fatalf("alerted: %s", bus)
+	}
+}
+
+// The other side of the rule: an unknown type that carries a field ingest makes rows from still alerts, since rows
+// may be missing.
+func TestAnUnknownTypeCarryingDataStillAlerts(t *testing.T) {
+	for _, rec := range []map[string]any{
+		{"type": "assistant-v2", "message": map[string]any{"role": "assistant", "content": []any{}}},
+		{"type": "turn-usage", "requestId": "req_9"},
+		{"type": "org-note", "attachment": map[string]any{"type": "credential_org"}},
+	} {
+		t.Run(rec["type"].(string), func(t *testing.T) {
+			x := newIC(t, cfg{})
+			testutil.Write(t, x.tx, lines(rec))
+			st := x.run()
+			eq(t, st.UnknownTypes, map[string]int{rec["type"].(string): 1})
+			bus := testutil.Read(t, filepath.Join(x.home, "bus", "crius.log"))
+			if !strings.Contains(bus, "unknown transcript line type '"+rec["type"].(string)+"' (1 lines in") {
+				t.Fatalf("no alert: %s", bus)
+			}
+		})
+	}
+}
+
 func TestUnknownShapesAreCountedAndAlertedOncePerType(t *testing.T) {
 	x := newIC(t, cfg{})
-	testutil.Write(t, x.tx, lines(map[string]any{"type": "brand-new-thing", "uuid": "z"})+"{not json\n")
+	testutil.Write(t, x.tx, lines(map[string]any{"type": "brand-new-thing", "uuid": "z", "message": map[string]any{"role": "user"}})+"{not json\n")
 	st := x.run()
 	eq(t, st.UnknownTypes, map[string]int{"brand-new-thing": 1})
 	eq(t, st.BadLines, 1)
-	appendFile(t, x.tx, lines(map[string]any{"type": "brand-new-thing", "uuid": "z2"})+"{not json either\n")
+	appendFile(t, x.tx, lines(map[string]any{"type": "brand-new-thing", "uuid": "z2", "message": map[string]any{"role": "user"}})+"{not json either\n")
 	x.run()
 	alerts := strings.Split(strings.TrimSpace(testutil.Read(t, filepath.Join(x.home, "bus", "crius.log"))), "\n")
 	n, bad := 0, 0
@@ -276,7 +316,7 @@ func TestUnknownShapesAreCountedAndAlertedOncePerType(t *testing.T) {
 // Codex P2 on the Python version: alerts were decided after the cursor commit, so a failure in between lost them.
 func TestAnAlertThatCouldNotBePostedIsPostedOnTheNextRun(t *testing.T) {
 	x := newIC(t, cfg{})
-	testutil.Write(t, x.tx, lines(map[string]any{"type": "brand-new-thing"}))
+	testutil.Write(t, x.tx, lines(map[string]any{"type": "brand-new-thing", "requestId": "r1"}))
 	bus := filepath.Join(x.home, "bus")
 	if err := os.Chmod(bus, 0o500); err != nil {
 		t.Fatal(err)
@@ -304,7 +344,7 @@ func TestALongStoredAlertIsCutWhenPosted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	testutil.Write(t, x.tx, lines(map[string]any{"type": "brand-new-thing"}))
+	testutil.Write(t, x.tx, lines(map[string]any{"type": "brand-new-thing", "requestId": "r1"}))
 	x.run()
 	log := testutil.Read(t, filepath.Join(x.home, "bus", "crius.log"))
 	if !strings.Contains(log, strings.Repeat("y", 300)+"\n") || strings.Contains(log, strings.Repeat("y", 301)) ||
@@ -317,7 +357,7 @@ func TestALongStoredAlertIsCutWhenPosted(t *testing.T) {
 // to post and hold back the alerts after it on every later run.
 func TestAnAlertWithANewlineDoesNotBlockTheQueue(t *testing.T) {
 	x := newIC(t, cfg{})
-	testutil.Write(t, x.tx, lines(map[string]any{"type": "new\nshape"}, map[string]any{"type": "zz-after"}))
+	testutil.Write(t, x.tx, lines(map[string]any{"type": "new\nshape", "requestId": "r1"}, map[string]any{"type": "zz-after", "requestId": "r2"}))
 	x.run()
 	log := testutil.Read(t, filepath.Join(x.home, "bus", "crius.log"))
 	if !strings.Contains(log, "'new shape'") || !strings.Contains(log, "'zz-after'") {

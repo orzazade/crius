@@ -16,8 +16,8 @@ import (
 	"github.com/orzazade/crius/internal/store"
 )
 
-// knownTypes are every top-level line type seen in real transcripts (Claude Code 2.x; list started 2026-10-16, grown as new types show up). Others are
-// counted and alerted.
+// knownTypes are every top-level line type seen in real transcripts (Claude Code 2.x; list started 2026-10-16). Others
+// are counted; they are alerted only when they carry a field ingest makes rows from (see dataKeys).
 var knownTypes = map[string]bool{}
 
 func init() {
@@ -105,6 +105,27 @@ type block struct {
 type reqAgg struct {
 	first, last, model, uuid    string
 	in, out, cr, cw, cw1h, cw5m int64
+}
+
+// dataKeys are the top-level fields ingest makes rows from: message (turns, tool use, usage), requestId (requests) and
+// attachment (credential_org). A line of an unknown type with none of them is a marker: it is counted, not alerted, so
+// each new marker Claude Code adds does not need a release. A timestamp alone does not count: known markers such as
+// api-request and queue-operation carry one, and ingest reads times only from lines it records.
+var dataKeys = []string{"message", "requestId", "attachment"}
+
+// carriesData reports whether a line has a non-null field from dataKeys. Bad JSON reports true, so it is never
+// passed off as a marker.
+func carriesData(raw []byte) bool {
+	var m map[string]json.RawMessage
+	if json.Unmarshal(raw, &m) != nil {
+		return true
+	}
+	for _, k := range dataKeys {
+		if v, ok := m[k]; ok && strings.TrimSpace(string(v)) != "null" {
+			return true
+		}
+	}
+	return false
 }
 
 func isObject(raw json.RawMessage) bool {
@@ -327,7 +348,7 @@ func (r *runner) transcriptFile(rt root, path string) error {
 		reqs := map[string]*reqAgg{}
 		var order []string
 		var first, last, cwd, title string
-		unknown := map[string]int{}
+		unknown, unknownData := map[string]int{}, map[string]bool{}
 		bad := 0
 		next, n, err := scanLines(path, c, func(pos int64, raw []byte) error {
 			var o txLine
@@ -336,7 +357,11 @@ func (r *runner) transcriptFile(rt root, path string) error {
 				return nil
 			}
 			if !knownTypes[o.Type] {
-				unknown[truncate(o.Type, 40)]++
+				t := truncate(o.Type, 40)
+				unknown[t]++
+				if carriesData(raw) {
+					unknownData[t] = true
+				}
 				return nil
 			}
 			ts := o.Timestamp
@@ -441,6 +466,9 @@ func (r *runner) transcriptFile(rt root, path string) error {
 		}
 		for t, k := range unknown {
 			r.st.UnknownTypes[t] += k
+			if !unknownData[t] {
+				continue
+			}
 			if err := r.queueAlert(tx, "unknown-type:"+t, fmt.Sprintf("unknown transcript line type '%s' (%d lines in %s);"+
 				" Claude Code format may have changed; rows from these lines are missing", t, k, filepath.Base(path))); err != nil {
 				return err
