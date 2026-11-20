@@ -463,3 +463,26 @@ func TestAT3ThreadWithItsOwnBackgroundJobIsHeldAsWaiting(t *testing.T) {
 		t.Errorf("crius-wakewatch waiting disagrees with the alert: %q", b.String())
 	}
 }
+
+// 11-20: axi qa-2 was closed with crius-spawn -close and a new session started for the role, but the old claude kept
+// running, so its session stayed the role's newest by its events. wakewatch then said twice "axi · qa-2 (T3 thread
+// mcp:launch:71a0f99e…) is idle 11 min … no status mark" about the old thread, closed on purpose. A session closed by
+// crius-spawn -close never speaks for its role: the role's other, open session is the one watched.
+func TestAClosedSessionsThreadNeverWakesCriusAfterANewSessionStarts(t *testing.T) {
+	home := threadHome(t, "qa") // the role's file names the new session s-qa, in th-qa
+	testutil.Write(t, filepath.Join(home, "roles", "quotes.qa.closed"), "s-old\n")
+	f := &fake{threads: map[string]T3Thread{
+		"th-old": {Status: "completed", Updated: t0.Add(-12 * time.Minute), LastReply: "the suite is green"},
+		"th-qa":  {Status: "completed", Updated: t0.Add(-20 * time.Minute), LastReply: "done ✅"},
+	}, states: []sessionstate.State{
+		{SessionID: "s-old", Project: "quotes", Role: "qa", Thread: "th-old", Time: t0.Add(-time.Minute)}, // still had events
+		{SessionID: "s-qa", Project: "quotes", Role: "qa", Thread: "th-qa", Time: t0.Add(-2 * time.Hour)},
+	}}
+	runOnce(t, home, f, t0)
+	if w := t3Wakes(f, "th-old)"); len(w) != 0 {
+		t.Errorf("the closed session's thread woke Crius: %q", w)
+	}
+	if w := t3Wakes(f, "T3 thread th-qa) is idle 20 min"); len(w) != 1 {
+		t.Errorf("want one idle wake for the role's open session th-qa, got %q (all: %q)", w, f.sent)
+	}
+}

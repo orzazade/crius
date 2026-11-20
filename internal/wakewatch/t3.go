@@ -97,14 +97,19 @@ func roleThread(home string, r sessionstate.State) string {
 // The sessions are the role's current one (with roleThread's thread) and each one crius-hook filed under project:role
 // (states), dated by their latest event. A role whose sessions moved to a new thread may still name an old one in its
 // file (11-17: cortex:lead); an older session never speaks for the role, so one moved back to a tab is not watched here.
+// A session crius-spawn -close closed never speaks for the role either while the role's file names another one (11-20:
+// axi qa-2's closed claude kept running after a new session started, so its thread was the newest and woke Crius as
+// idle). When the role's file names the closed session, the whole role is closed: the callers deal with that.
 func newestThread(home, project, role string, r sessionstate.State, states []sessionstate.State) string {
 	type seen struct {
 		thread string
 		at     time.Time
 	}
+	// an unreadable mark closes nothing here; t3Idle and the dead-role check read it again and fail loud on it
+	closed, _ := sessionstate.ClosedRole(filepath.Join(home, "roles"), project, role)
 	by := map[string]seen{}
 	for _, s := range states {
-		if s.Project == project && s.Role == role {
+		if s.Project == project && s.Role == role && (closed == "" || s.SessionID != closed || s.SessionID == r.SessionID) {
 			by[s.SessionID] = seen{s.Thread, s.Time}
 		}
 	}

@@ -152,6 +152,10 @@ func showThread(home, id string) (wakewatch.T3Thread, string, error) {
 			Instance    string  `json:"providerInstanceId"`
 			ActiveRunID *string `json:"activeRunId"`
 			Pending     int     `json:"pendingRequestCount"`
+			Background  []struct {
+				TaskID      string `json:"taskId"`
+				Description string `json:"description"`
+			} `json:"pendingBackgroundTasks"`
 		} `json:"thread"`
 		Messages []struct {
 			Role string `json:"role"`
@@ -163,6 +167,13 @@ func showThread(home, id string) (wakewatch.T3Thread, string, error) {
 	}
 	th := wakewatch.T3Thread{Status: v.Thread.Status, Pending: v.Thread.Pending,
 		Active: v.Thread.ActiveRunID != nil && *v.Thread.ActiveRunID != ""}
+	for _, bg := range v.Thread.Background { // -fresh waits for these; the move check does not read them
+		job := bg.TaskID
+		if bg.Description != "" {
+			job += " (" + bg.Description + ")"
+		}
+		th.Background = append(th.Background, job)
+	}
 	for i := len(v.Messages) - 1; i >= 0; i-- {
 		if v.Messages[i].Role == "assistant" {
 			th.LastReply = v.Messages[i].Text

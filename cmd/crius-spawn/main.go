@@ -3,6 +3,8 @@
 //	crius-spawn [-backend cmux|t3] [-account max|<name>] [-parent <leader session id>] [-item <project>#<n>] <project> <role> <first prompt…>
 //	crius-spawn -move [-account max|<name>] <project> <role>
 //	crius-spawn -resume <project> <role>
+//	crius-spawn -close <project> <role>
+//	crius-spawn -fresh [-backend cmux|t3] [-account max|<name>] [-parent id] [-item project#n] <project> <role> <first prompt…>
 //	crius-spawn -move-check < <PreToolUse hook input>
 //
 // The tab lands in the project's workspace (made, named and coloured when missing), is named "<project> · <role>",
@@ -29,6 +31,13 @@
 // work or crius-hook files no session for it. -resume of a role whose session runs in a thread sends it the resume
 // prompt there; -move of one is refused (launch.ErrT3Move: T3 cannot keep the session across accounts).
 //
+// With -fresh it replaces a role's session that runs in a T3 thread with a new one (11-20: -close leaves the old claude
+// running, so the next spawn made two live sessions for axi qa-2): it waits for the thread's turn boundary (no run
+// open, no open request, no background job of its own; it refuses, changing nothing, when it cannot read the thread or
+// the wait runs out), marks the old session closed, stops its claude by its own pid (SIGTERM, then SIGKILL), then
+// starts the new session as a plain spawn does (same -account rules; -backend defaults to t3 here) and prints both
+// sessions. On a failure after the close it puts the closed mark back as it was.
+//
 // With -move-check it is the PreToolUse hook for T3 Code's t3_thread_configure (see runMoveCheck): it denies, with
 // the reason, a move of a T3 thread whose run, open request or ⏳ reply means a restart would kill its background jobs.
 package main
@@ -44,6 +53,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/orzazade/crius/internal/ingest"
@@ -52,6 +62,7 @@ import (
 	"github.com/orzazade/crius/internal/quota"
 	"github.com/orzazade/crius/internal/sessionstate"
 	"github.com/orzazade/crius/internal/store"
+	"github.com/orzazade/crius/internal/wakewatch"
 )
 
 func main() {
@@ -61,6 +72,7 @@ func main() {
 	again := flag.Bool("resume", false, "bring the role's current session back: <project> <role>, nothing else")
 	closed := flag.Bool("close", false, "mark the role's current session closed on purpose: <project> <role>, nothing else; wakewatch's dead-role check skips it until another session of the role starts or -resume brings it back")
 	move := flag.Bool("move", false, "resume the role's current session on another Max account (-account, default the one whose week resets soonest under 95%): <project> <role>; only at a turn boundary with no background job but its bus waiter")
+	fresh := flag.Bool("fresh", false, "replace the role's session that runs in a T3 thread: at its turn boundary mark it closed, stop its claude by pid, then start a new session as a plain spawn does (-backend defaults to t3 here): <project> <role> <first prompt…>")
 	backend := flag.String("backend", "cmux", "where a new role runs: cmux (a tab) or t3 (a T3 Code thread); -resume and -move go by where the role's session runs")
 	moveCheck := flag.Bool("move-check", false, "PreToolUse hook for "+configureTool+": hook input on stdin; denies, with the reason, moving a T3 thread that is busy or cannot be read")
 	flag.Usage = func() {
@@ -68,6 +80,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "       crius-spawn -move [-account max|<name>] <project> <role>")
 		fmt.Fprintln(os.Stderr, "       crius-spawn -resume <project> <role>")
 		fmt.Fprintln(os.Stderr, "       crius-spawn -close <project> <role>")
+		fmt.Fprintln(os.Stderr, "       crius-spawn -fresh [-backend cmux|t3] [-account max|<name>] [-parent id] [-item project#n] <project> <role> <first prompt…>")
 		fmt.Fprintln(os.Stderr, "       crius-spawn -move-check < <PreToolUse hook input>")
 		flag.PrintDefaults()
 	}
@@ -114,7 +127,7 @@ func main() {
 		os.Exit(2)
 	}
 	if *closed {
-		if flag.NArg() != 2 || *again || *account != "" || *move || *parent != "" || *item != "" {
+		if flag.NArg() != 2 || *fresh || *again || *account != "" || *move || *parent != "" || *item != "" {
 			flag.Usage()
 			os.Exit(2)
 		}
@@ -125,7 +138,7 @@ func main() {
 		return
 	}
 	if *move {
-		if flag.NArg() != 2 || *again || *parent != "" || *item != "" {
+		if flag.NArg() != 2 || *fresh || *again || *parent != "" || *item != "" {
 			flag.Usage()
 			os.Exit(2)
 		}
@@ -146,7 +159,7 @@ func main() {
 		return
 	}
 	if *again {
-		if flag.NArg() != 2 || *account != "" || *move || *parent != "" || *item != "" {
+		if flag.NArg() != 2 || *fresh || *account != "" || *move || *parent != "" || *item != "" {
 			flag.Usage()
 			os.Exit(2)
 		}
@@ -162,21 +175,49 @@ func main() {
 	}
 	s := launch.Spawn{Project: flag.Arg(0), Role: flag.Arg(1), Account: *account, Parent: *parent, Item: *item,
 		Prompt: strings.Join(flag.Args()[2:], " ")}
-	if *backend == "t3" {
-		st, err := launch.RunT3(s, d, t3)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "crius-spawn:", err)
-			os.Exit(1)
+	start := func() (string, error) { return spawnNew(s, *backend, d, t3) }
+	if *fresh {
+		set := false
+		flag.Visit(func(fl *flag.Flag) { set = set || fl.Name == "backend" })
+		if !set { // -fresh replaces a T3 thread: the new session runs in one too unless -backend says otherwise
+			start = func() (string, error) { return spawnNew(s, "t3", d, t3) }
 		}
-		fmt.Printf("OK t3 %s session %s on %s (T3 instance %s)\n%s\n", st.Thread, st.Session, st.Account, st.Instance, st.Tag)
-		return
+		spawn := start
+		f := freshener{home: store.Home(), wait: 5 * time.Second, tries: 240, stopWait: 250 * time.Millisecond, stopTries: 40,
+			show: func(id string) (wakewatch.T3Thread, error) {
+				th, _, err := showThread(store.Home(), id)
+				return th, err
+			},
+			process: func(config, id string) (int, error) {
+				pid, _, err := sessionstate.Process(config, id)
+				return pid, err
+			},
+			signal: func(pid int, sig syscall.Signal) error { return syscall.Kill(pid, sig) },
+			spawn:  spawn}
+		start = func() (string, error) { return f.fresh(s.Project, s.Role) }
 	}
-	ws, surface, tag, err := launch.Run(s, d)
+	out, err := start()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "crius-spawn:", err)
 		os.Exit(1)
 	}
-	fmt.Printf("OK %s %s\n%s\n", ws, surface, tag)
+	fmt.Println(out)
+}
+
+// spawnNew starts a new session for s in a tab (cmux) or a T3 Code thread (t3), and gives what it prints.
+func spawnNew(s launch.Spawn, backend string, d launch.Deps, t3 launch.T3) (string, error) {
+	if backend == "t3" {
+		st, err := launch.RunT3(s, d, t3)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("OK t3 %s session %s on %s (T3 instance %s)\n%s", st.Thread, st.Session, st.Account, st.Instance, st.Tag), nil
+	}
+	ws, surface, tag, err := launch.Run(s, d)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("OK %s %s\n%s", ws, surface, tag), nil
 }
 
 // resume brings back the session crius-hook keeps as the role's current one, and prints where it runs.
