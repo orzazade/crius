@@ -607,3 +607,36 @@ func TestDispatchJobFindsCmuxAndAz(t *testing.T) {
 		t.Fatalf("%+v", job)
 	}
 }
+
+// The branch overlap watch runs every 10 min over every project with an overlap.toml, and its PATH has git and az (the
+// Azure DevOps fetch token): without az every AXI and Quotes run fails.
+func TestOverlapJobRunsAllEveryTenMinutes(t *testing.T) {
+	in, err := os.ReadFile("space.scifilab.crius.overlap.plist.in")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plist := filepath.Join(t.TempDir(), "p.plist")
+	if err := os.WriteFile(plist, []byte(strings.ReplaceAll(string(in), "@HOME@", "/Users/x")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command("plutil", "-convert", "json", "-o", "-", plist).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var job struct {
+		Label                string
+		ProgramArguments     []string
+		StartInterval        int
+		EnvironmentVariables map[string]string
+		StandardErrorPath    string
+	}
+	if err := json.Unmarshal(out, &job); err != nil {
+		t.Fatal(err)
+	}
+	if job.Label != "space.scifilab.crius.overlap" || job.StartInterval != 600 ||
+		!reflect.DeepEqual(job.ProgramArguments, []string{"/Users/x/.crius/bin/crius-overlap", "all"}) ||
+		!slices.Contains(strings.Split(job.EnvironmentVariables["PATH"], ":"), "/opt/homebrew/bin") ||
+		job.StandardErrorPath != "/Users/x/.crius/logs/overlap.log" {
+		t.Fatalf("%+v", job)
+	}
+}

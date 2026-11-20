@@ -297,13 +297,18 @@ func Overlap(a, b []string) bool {
 	return false
 }
 
+// Key is a path as Overlap compares it: cleaned (no ./ or / in front, no / at the end) and lower case. Two paths with
+// one Key name one file.
+func Key(p string) string {
+	return strings.Trim(path.Clean("/"+strings.ToLower(strings.TrimSpace(p))), "/")
+}
+
 // literal is a cleaned glob's part before its first wildcard, and whether it has one.
 func literal(glob string) (string, bool) {
 	g := strings.ToLower(strings.TrimSpace(glob))
 	wild := strings.IndexAny(g, "*?[{")
 	if wild < 0 {
-		g = strings.Trim(path.Clean("/"+g), "/")
-		return g, false
+		return Key(g), false
 	}
 	// clean only the part before the wildcard; keep a / that ends it (src/a/** is under src/a, not src/ab)
 	head, slash := g[:wild], strings.HasSuffix(g[:wild], "/")
