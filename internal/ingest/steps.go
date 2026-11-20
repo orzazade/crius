@@ -12,8 +12,8 @@ package ingest
 //	[alias]                      # one step under two commands: a kind that starts with the key counts as the value
 //	"bun api-groups.ts run" = "dotnet test tests/Quote.Api.Tests"
 //
-//	[hosts]                      # a DECISION that names a host word is checked there: <cmd> "cat -- <path>"
-//	legion = "~/.crius/state/quotes/build/legion/L"
+//	[hosts]                      # a DECISION with this word just before the setting is checked there:
+//	legion = "~/.crius/state/quotes/build/legion/L"   # <cmd> "head -c 4096 -- <path>"
 //
 //	[settings]                   # names a DECISION may use in place of a path
 //	"heavy slots" = "~/AppxiteRig/heavy/slots"
@@ -27,6 +27,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -49,7 +50,9 @@ const (
 	waitFloor    = 30 * 60        // a day's wait under 30 min is never a NEED
 	decisionWait = 30 * time.Minute
 	decisionAge  = 24 * time.Hour // decisions older than this are not checked
+	readFails    = 3              // reads failed in a row (one per run) before "not checked" is posted
 	hostTimeout  = 20 * time.Second
+	settingMax   = 64 // a one-value settings file holds at most this, on one line
 )
 
 type stepConf struct {
@@ -85,7 +88,7 @@ func loadStepConf(home string) (*stepConf, error) {
 // stepRun is one finished heavy job.
 type stepRun struct {
 	at        time.Time
-	cmd, cwd  string
+	cwd       string
 	kind, raw string // raw: the kind before the alias
 	seconds   int
 	waitS     int
@@ -109,7 +112,7 @@ func readRuns(path string, alias map[string]string) ([]stepRun, int, error) {
 			Cwd     string  `json:"cwd"`
 			Seconds float64 `json:"seconds"`
 			WaitS   float64 `json:"waitS"`
-			Code    int     `json:"code"`
+			Code    *int    `json:"code"`
 			Killed  bool    `json:"killed"`
 		}
 		if len(strings.TrimSpace(sc.Text())) == 0 {
@@ -136,8 +139,8 @@ func readRuns(path string, alias map[string]string) ([]stepRun, int, error) {
 		if best != "" {
 			kind = alias[best]
 		}
-		out = append(out, stepRun{at: t, cmd: j.Cmd, cwd: j.Cwd, kind: kind, raw: raw, seconds: int(j.Seconds),
-			waitS: int(j.WaitS), ok: j.Code == 0 && !j.Killed})
+		out = append(out, stepRun{at: t, cwd: j.Cwd, kind: kind, raw: raw, seconds: int(j.Seconds),
+			waitS: int(j.WaitS), ok: kind != "" && j.Code != nil && *j.Code == 0 && !j.Killed})
 	}
 	if err := sc.Err(); err != nil {
 		return nil, bad, err
@@ -152,38 +155,77 @@ var (
 	rePerl    = regexp.MustCompile(`^perl -e alarm shift; exec @ARGV or die "exec: \$!"\s+\S+\s+`)
 	reCd      = regexp.MustCompile(`^cd\s+\S+\s*&&\s*`)
 	reExport  = regexp.MustCompile(`^export\s+[^;]*;\s*`)
+	reEnv     = regexp.MustCompile(`^env(?:\s+|$)`)
+	reAssign  = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_.]*=\S*(?:\s+|$)`) // VAR=value: a value may be a credential
 	reSha     = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
 )
 
-// stepKind is a command less what changes from run to run of one step: shell wrappers, cd into a worktree, timeouts,
-// output redirection, quiet and build flags, shas and the folders of absolute paths. A --filter stays with its expression
-// (unquoted): each test set is its own step, and the whole project another (one kind for every filter flagged 7 false
-// changes on the Legion log of 11-21).
-func stepKind(cmd string) string {
-	s := strings.TrimSpace(cmd)
+// unwrap takes off the wrappers that run a command: sh -c, timeout, the perl alarm, cd X &&, export X;, env and VAR=v.
+func unwrap(s string) string {
 	for {
 		before := s
 		s = strings.TrimSpace(s)
 		if m := reShell.FindString(s); m != "" {
 			s = strings.Trim(s[len(m):], `"'`)
 		}
-		for _, re := range []*regexp.Regexp{reTimeout, rePerl, reCd, reExport} {
+		for _, re := range []*regexp.Regexp{reTimeout, rePerl, reCd, reExport, reEnv, reAssign} {
 			if m := re.FindString(s); m != "" {
 				s = s[len(m):]
 			}
 		}
 		if s == before {
-			break
+			return s
 		}
 	}
-	f := strings.Fields(s)
+}
+
+// stepKind is a command less what changes from run to run of one step: shell wrappers, cd into a worktree, timeouts,
+// variable settings (a value may be a credential), output redirection and pipes, quiet and build flags, shas and the
+// folders of absolute paths. A chain (a && b; c) keeps every command but cd, export and echo: a step that adds a command
+// is another step. A --filter stays with its expression (unquoted): each test set is its own step, and the whole project
+// another (one kind for every filter flagged 7 false changes on the Legion log of 11-21). "" is no step (only settings).
+func stepKind(cmd string) string {
+	f := strings.Fields(unwrap(cmd))
+	var segs [][]string
+	cur := []string{}
+	for _, w := range f {
+		switch {
+		case w == "&&" || w == "||" || w == ";":
+			segs, cur = append(segs, cur), []string{}
+		case strings.HasSuffix(w, ";") && !strings.Contains(w, "="):
+			segs, cur = append(segs, append(cur, strings.TrimSuffix(w, ";"))), []string{}
+		default:
+			cur = append(cur, w)
+		}
+	}
+	segs = append(segs, cur)
+	var out []string
+	for _, seg := range segs {
+		k := normCmd(strings.Fields(unwrap(strings.Join(seg, " "))))
+		first, _, _ := strings.Cut(k, " ")
+		switch first {
+		case "", "cd", "export", "echo", "true", ":":
+			continue
+		}
+		out = append(out, k)
+	}
+	return strings.Join(out, " && ")
+}
+
+// normCmd is one command of a chain, normalized (see stepKind).
+func normCmd(f []string) string {
 	var out []string
 	for i := 0; i < len(f); i++ {
 		w := f[i]
 		switch {
-		case w == "|" || w == "&&" || w == ";" || w == "||" || strings.HasPrefix(w, ">") || strings.HasPrefix(w, "2>") ||
-			strings.HasPrefix(w, "&>"):
-			i = len(f) // the rest is what the output goes to, or a next command
+		case w == "|" || w == "|&":
+			i = len(f) // the rest of this command is what its output goes through
+			continue
+		case w == ">" || w == ">>" || w == "2>" || w == "2>>" || w == "&>" || w == "1>" || w == "<":
+			i++ // and its file
+			continue
+		case strings.HasPrefix(w, ">") || strings.HasPrefix(w, "2>") || strings.HasPrefix(w, "&>") || strings.HasPrefix(w, "1>") ||
+			strings.HasPrefix(w, "<"):
 			continue
 		case w == "--filter":
 			if i+1 < len(f) { // the expression, quoted with spaces or not, without its quotes
@@ -202,6 +244,8 @@ func stepKind(cmd string) string {
 			continue
 		case w == "-v" && i+1 < len(f):
 			i++
+			continue
+		case reAssign.MatchString(w):
 			continue
 		case reSha.MatchString(w) && strings.ContainsAny(w, "0123456789") && strings.ContainsAny(w, "abcdef"):
 			continue
@@ -268,7 +312,10 @@ func (r *runner) ingestSteps() {
 
 // stepChanges walks each kind's good runs in time order. At each run, the last 3 runs' median is compared with the
 // median of the kind's runs in the 7 days before the first of them; a change is a run where that turns slower (over 1.5x,
-// over 5 min and 10 min or more longer) after a run where it was not. One NEED per change, keyed on its first slow run.
+// over 5 min and 10 min or more longer) after a run where it was not. A step that swings between slow and fast is one
+// change: a new one counts only a week after the last, or when it is 1.5x slower again than the last change's "after"
+// (review P2: bash s-tip-i.sh posted 1 -> 12 min three times in 7 hours). One NEED per change, keyed on its first slow
+// run and a hash of the kind (a kind may hold a secret the line's redaction catches but a key would keep).
 func (r *runner) stepChanges(tx *sql.Tx, name string, runs []stepRun, now time.Time) error {
 	byKind := map[string][]stepRun{}
 	var kinds []string
@@ -284,6 +331,8 @@ func (r *runner) stepChanges(tx *sql.Tx, name string, runs []stepRun, now time.T
 	for _, k := range kinds {
 		rs := byKind[k]
 		wasSlow := false
+		var lastAt time.Time // the last change: its first slow run and its "after" median
+		var lastAfter float64
 		lo := 0 // the first run inside the 7-day window
 		for i := 2; i < len(rs); i++ {
 			w := rs[i-2 : i+1]
@@ -304,7 +353,7 @@ func (r *runner) stepChanges(tx *sql.Tx, name string, runs []stepRun, now time.T
 			}
 			bm, wm := median(bs), median(ws)
 			slow := wm > stepFactor*bm && wm > stepFloor && wm-bm >= stepGain
-			if slow && !wasSlow && now.Sub(rs[i].at) <= stepRecent {
+			if slow && !wasSlow && (lastAt.IsZero() || !w[0].at.Before(lastAt.Add(stepWindow)) || wm > stepFactor*lastAfter) {
 				first := w[0]
 				for _, x := range w {
 					if float64(x.seconds) > stepFactor*bm {
@@ -312,17 +361,18 @@ func (r *runner) stepChanges(tx *sql.Tx, name string, runs []stepRun, now time.T
 						break
 					}
 				}
-				was := ""
-				if raws := rawKinds(base); len(raws) == 1 && raws[0] != k {
-					was = fmt.Sprintf(", before as `%s`", raws[0])
-				} else if len(raws) > 1 {
-					was = fmt.Sprintf(", before as `%s`", strings.Join(raws, "`, `"))
-				}
-				text := fmt.Sprintf("step slower on %s: `%s` %s -> %s min (median of the last 3 runs vs %d runs in the 7 days before%s); first slow run %s in %s",
-					name, k, mins(bm), mins(wm), len(base), was, first.at.Local().Format("2006-01-02 15:04"), first.cwd)
-				key := "steps:" + name + ":" + k + ":" + first.at.UTC().Format(time.RFC3339)
-				if err := r.queueLine(tx, key, "NEED", "crius", "crius:lead", text); err != nil {
-					return err
+				lastAt, lastAfter = first.at, wm
+				if now.Sub(rs[i].at) <= stepRecent {
+					was := ""
+					if raws := rawKinds(base); len(raws) > 1 || len(raws) == 1 && raws[0] != k {
+						was = fmt.Sprintf(", before as `%s`", strings.Join(raws, "`, `"))
+					}
+					text := fmt.Sprintf("step slower on %s: `%s` %s -> %s min (median of the last 3 runs vs %d runs in the 7 days before%s); first slow run %s in %s",
+						name, k, mins(bm), mins(wm), len(base), was, first.at.Local().Format("2006-01-02 15:04"), first.cwd)
+					key := "steps:" + name + ":" + sha1Hex([]byte(k))[:12] + ":" + first.at.UTC().Format(time.RFC3339)
+					if err := r.queueLine(tx, key, "NEED", "crius", "crius:lead", text); err != nil {
+						return err
+					}
 				}
 			}
 			wasSlow = slow
@@ -382,8 +432,9 @@ func (r *runner) queueWaits(tx *sql.Tx, name string, runs []stepRun, now time.Ti
 var (
 	// a path starts at a word edge: qa/heavy-max and M1/M2 are not paths (both read as /heavy-max, /M2 on 11-18, 11-20)
 	rePath  = regexp.MustCompile("(?:^|[\\s(\"'`])((?:~/|/)[^\\s()\",;'`]+)")
-	reArrow = regexp.MustCompile("^[)\"'`]?\\s*(\\S+)\\s*->\\s*(\\S+)") // after a closing quote or paren
-	reTo    = regexp.MustCompile(`\bto\s+(\d+)\b`)
+	reArrow = regexp.MustCompile("^[)\"'`:=]*\\s*(\\S+)\\s*->\\s*(\\S+)") // after a closing quote or paren, or a colon
+	// "to N" counts only after a verb that sets (review P2: "move the Api gate to 3 groups", "QA batch up to 3")
+	reTo = regexp.MustCompile(`(?i)\b(?:raise|lower|set|change|bump|increase|decrease|reduce|drop)\b[^.;]{0,30}?\bto\s+(\d+)\b`)
 )
 
 // decisionSet is the file and value one DECISION sets.
@@ -391,67 +442,73 @@ type decisionSet struct {
 	host, path, value string
 }
 
-// parseDecision finds the settings change in a DECISION's text: "<path or setting> <old> -> <new>", or a path or
-// setting followed later by "to <number>". The host is the first [hosts] name the text holds as a word ("" is here).
+// parseDecision finds the settings change in a DECISION's text: "<path or setting> <old> -> <new>", or a path or setting
+// followed later by a verb that sets and "to <number>". The host is a [hosts] name among the 3 words just before the path
+// or setting ("Legion heavy slots"); none is here (review P2: "Mac heavy slots 1 -> 2 (the Legion stays at 1)").
 func parseDecision(text string, c *stepConf) (decisionSet, bool) {
-	var d decisionSet
-	lower := strings.ToLower(text)
-	var hosts []string
-	for h := range c.Hosts {
-		hosts = append(hosts, h)
-	}
-	sort.Strings(hosts)
-	for _, h := range hosts {
-		if regexp.MustCompile(`\b` + regexp.QuoteMeta(strings.ToLower(h)) + `\b`).MatchString(lower) {
-			d.host = h
-			break
-		}
-	}
 	type hit struct {
-		at        int // where the name ends
-		path      string
-		nameStart int
+		start, end int // the name in text
+		path       string
 	}
 	var hits []hit
 	for _, m := range rePath.FindAllStringSubmatchIndex(text, -1) {
-		hits = append(hits, hit{m[3], strings.TrimRight(text[m[2]:m[3]], ".:"), m[2]})
+		hits = append(hits, hit{m[2], m[3], strings.TrimRight(text[m[2]:m[3]], ".:")})
 	}
 	var names []string
 	for n := range c.Settings {
 		names = append(names, n)
 	}
 	sort.Strings(names)
-	for _, n := range names {
-		if i := strings.Index(lower, strings.ToLower(n)); i >= 0 {
-			hits = append(hits, hit{i + len(n), c.Settings[n], i})
+	for _, n := range names { // matched on text itself: lower-casing can change a string's length (review P3: a panic)
+		re := regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(n) + `\b`)
+		for _, m := range re.FindAllStringIndex(text, -1) {
+			hits = append(hits, hit{m[0], m[1], c.Settings[n]})
 		}
 	}
-	sort.Slice(hits, func(a, b int) bool { return hits[a].nameStart < hits[b].nameStart })
+	sort.SliceStable(hits, func(a, b int) bool { return hits[a].start < hits[b].start })
+	hostOf := func(h hit) string {
+		words := strings.Fields(text[:h.start])
+		if len(words) > 3 {
+			words = words[len(words)-3:]
+		}
+		for _, w := range words {
+			w = strings.Trim(w, ".,;:()`'\"")
+			for name := range c.Hosts {
+				if strings.EqualFold(w, name) {
+					return name
+				}
+			}
+		}
+		return ""
+	}
 	clean := func(v string) string { return strings.TrimRight(v, ".,;:)") }
 	for _, h := range hits { // the arrow form, right after the name
-		if m := reArrow.FindStringSubmatch(text[h.at:]); m != nil {
-			d.path, d.value = h.path, clean(m[2])
-			return d, d.value != ""
+		if m := reArrow.FindStringSubmatch(text[h.end:]); m != nil && clean(m[2]) != "" {
+			return decisionSet{hostOf(h), h.path, clean(m[2])}, true
 		}
 	}
-	for _, h := range hits { // the "to N" form, anywhere after the name
-		if m := reTo.FindStringSubmatch(text[h.at:]); m != nil {
-			d.path, d.value = h.path, m[1]
-			return d, true
+	for _, h := range hits { // the "raise it to N" form, anywhere after the name
+		if m := reTo.FindStringSubmatch(text[h.end:]); m != nil {
+			return decisionSet{hostOf(h), h.path, m[1]}, true
 		}
 	}
-	return d, false
+	return decisionSet{}, false
 }
 
-// readSetting reads a settings file here, or on host with its command.
+// readSetting reads the start of a settings file here, or on host with its command.
 func readSetting(c *stepConf, host, path string) (string, error) {
 	if host == "" {
-		b, err := os.ReadFile(expand(path))
+		f, err := os.Open(expand(path))
+		if err != nil {
+			return "", err
+		}
+		defer f.Close()
+		b, err := io.ReadAll(io.LimitReader(f, 4096))
 		return strings.TrimSpace(string(b)), err
 	}
-	arg := "cat -- '" + strings.ReplaceAll(path, "'", `'\''`) + "'"
+	arg := "head -c 4096 -- '" + strings.ReplaceAll(path, "'", `'\''`) + "'"
 	if rest, ok := strings.CutPrefix(path, "~/"); ok { // the other machine's home
-		arg = "cat -- ~/'" + strings.ReplaceAll(rest, "'", `'\''`) + "'"
+		arg = "head -c 4096 -- ~/'" + strings.ReplaceAll(rest, "'", `'\''`) + "'"
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), hostTimeout)
 	defer cancel()
@@ -466,8 +523,42 @@ func readSetting(c *stepConf, host, path string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
+// decisionState is <home>/state/stepwatch.json: per decision key, its outcome ("ok", "alerted", "skip": not a one-value
+// file) or the reads failed in a row. A decision with an outcome is not read again.
+type decisionState struct {
+	Done  map[string]string `json:"done,omitempty"`
+	Fails map[string]int    `json:"fails,omitempty"`
+}
+
+func loadDecisionState(path string) decisionState {
+	var s decisionState
+	if b, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(b, &s) // a broken file starts over: at worst one decision is read again
+	}
+	if s.Done == nil {
+		s.Done = map[string]string{}
+	}
+	if s.Fails == nil {
+		s.Fails = map[string]int{}
+	}
+	return s
+}
+
+func saveDecisionState(path string, s decisionState) error {
+	b, err := json.Marshal(s)
+	if err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
 // checkDecisions: each Crius DECISION of the last day that sets a file, 30 minutes on, must find the file holding its
-// value. Only the latest decision per file counts. One NEED per decision that is not applied (or cannot be checked).
+// value. Only the latest decision per file counts. One NEED per decision that is not applied; a file that cannot be read
+// three runs in a row is one NEED of its own (a host asleep once does not use up the "not applied" line).
 func (r *runner) checkDecisions(c *stepConf, now time.Time) {
 	rows, err := r.db.Query(`select ts, coalesce(text, '') from event where kind = 'decision' and project = 'crius'
 		and actor = 'lead' and ts >= ? order by ts, id`, now.Add(-decisionAge).UTC().Format("2006-01-02T15:04:05Z"))
@@ -508,31 +599,51 @@ func (r *runner) checkDecisions(c *stepConf, now time.Time) {
 		r.warn(true, "decision check: %v", err)
 		return
 	}
+	statePath := filepath.Join(r.home, "state", "stepwatch.json")
+	st := loadDecisionState(statePath)
+	keep := decisionState{Done: map[string]string{}, Fails: map[string]int{}} // only the decisions still in the window
 	for _, k := range order {
 		d := latest[k]
+		key := "decision:" + d.ts.UTC().Format(time.RFC3339) + ":" + k
+		if done, ok := st.Done[key]; ok {
+			keep.Done[key] = done
+			continue
+		}
 		if now.Sub(d.ts) < decisionWait {
 			continue
 		}
 		r.st.DecisionChecks++
-		key := "decision:" + d.ts.UTC().Format(time.RFC3339) + ":" + k
 		where := d.path
 		if d.host != "" {
 			where = d.host + ":" + d.path
 		}
 		got, err := readSetting(c, d.host, d.path)
-		var text string
+		var text, akey string
 		switch {
 		case err != nil:
-			text = fmt.Sprintf("decision not checked: %s cannot be read (%v); the decision of %s says %s: %s",
-				where, err, d.ts.Local().Format("2006-01-02T15:04"), d.value, d.text)
-		case got != d.value:
-			text = fmt.Sprintf("decision not applied: %s holds %s, the decision says %s (crius:lead %s, %s ago): %s",
-				where, got, d.value, d.ts.Local().Format("2006-01-02T15:04"), now.Sub(d.ts).Round(time.Minute), d.text)
-		default:
+			keep.Fails[key] = st.Fails[key] + 1
+			if keep.Fails[key] < readFails {
+				continue
+			}
+			text, akey = fmt.Sprintf("decision not checked: %s cannot be read %d runs in a row (%v); the decision of %s says %s: %s",
+				where, keep.Fails[key], err, d.ts.Local().Format("2006-01-02T15:04"), d.value, d.text), key+":unread"
+		case got == d.value:
+			keep.Done[key] = "ok"
 			continue
+		case len(got) > settingMax || strings.ContainsAny(got, "\r\n"):
+			keep.Done[key] = "skip" // a document, not a one-value setting: the decision was about something else
+			continue
+		default:
+			text, akey = fmt.Sprintf("decision not applied: %s holds %s, the decision says %s (crius:lead %s, %s ago): %s",
+				where, got, d.value, d.ts.Local().Format("2006-01-02T15:04"), now.Sub(d.ts).Round(time.Minute), d.text), key
+			keep.Done[key] = "alerted"
 		}
-		if err := r.inTx(func(tx *sql.Tx) error { return r.queueLine(tx, key, "NEED", "crius", "crius:lead", text) }); err != nil {
+		if err := r.inTx(func(tx *sql.Tx) error { return r.queueLine(tx, akey, "NEED", "crius", "crius:lead", text) }); err != nil {
 			r.warn(true, "decision check: %v", err)
+			delete(keep.Done, key) // try again next run
 		}
+	}
+	if err := saveDecisionState(statePath, keep); err != nil {
+		r.warn(true, "decision check: %v", err)
 	}
 }

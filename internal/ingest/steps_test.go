@@ -152,7 +152,9 @@ func TestFailedRunsAreNotStepTimes(t *testing.T) {
 // Queue wait: a day whose jobs waited longer in all than they ran posts one NEED with both totals; a day under that, none.
 func TestADayWhoseWaitExceedsItsRunTimePostsOneNeed(t *testing.T) {
 	x := newIC(t, cfg{})
-	now := time.Now()
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.Local) // a fixed noon: no run of the test sits on midnight
+	clock = func() time.Time { return now }
+	t.Cleanup(func() { clock = time.Now })
 	day := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
 	log := filepath.Join(x.root, "legion-runs.log")
 	var runs []heavyRun
@@ -262,6 +264,9 @@ func TestStepKind(t *testing.T) {
 		`bash -c cd /x && dotnet test tests/Quote.Api.Tests --filter "FullyQualifiedName~Q R" -v q`:                "dotnet test tests/Quote.Api.Tests --filter FullyQualifiedName~Q R",
 		"timeout 900 bash /home/crius/.crius/state/quotes/build/bin/train/e2e-tip.sh e3f8cca190550523948b968d41f6": "bash e2e-tip.sh",
 		"bun /Users/o/Projects/x/wt/b2-api-groups/poc/ui-app/scripts/api-groups.ts run 3":                          "bun api-groups.ts run 3",
+		"sh -c npm run typecheck && npm run lint && npx vitest run":                                                "npm run typecheck && npm run lint && npx vitest run",
+		"env NuGetPackageSourceCredentials_AppXite.Default=Username=az;Password=SYNTHETIC-TOKEN":                   "",
+		"bash -c cd /x/wt/a && dotnet test tests/A > /tmp/out.log 2>&1; echo rc=$?":                                "dotnet test tests/A",
 		`perl -e alarm shift; exec @ARGV or die "exec: $!" 1200 bun test ./test/a.test.ts`:                         "bun test ./test/a.test.ts",
 	} {
 		if got := stepKind(in); got != want {
@@ -315,7 +320,12 @@ func TestParseDecision(t *testing.T) {
 		"then F5.E.f1-f3, then F5.M1/M2. Batch small ones to QA up to 3 at once.":                              "",
 		"Legion heavy slots 1 -> 2 now (load 2/12).":                                                           "legion ~/AppxiteRig/heavy/slots 2",
 		"Legion heavy slots is 1 (~/AppxiteRig/heavy/slots), so it timed out. Raise it to 2 now.":              "legion ~/AppxiteRig/heavy/slots 2",
-		"Set `~/x/conf.toml` 4 -> 6.": " ~/x/conf.toml 6",
+		"heavy slots stay at 2; move the Api gate to 3 groups.":                                                "",
+		"keep ~/.crius/state/quotes/STATUS.md current; QA batch up to 3.":                                      "",
+		"Mac heavy slots 1 -> 2 (the Legion stays at 1).":                                                      " ~/AppxiteRig/heavy/slots 2",
+		"Legion heavy slots: 1 -> 2.":                                                                          "legion ~/AppxiteRig/heavy/slots 2",
+		"ȺȺȺȺȺȺȺȺȺȺȺȺ heavy slots 1 -> 3":                                                                      " ~/AppxiteRig/heavy/slots 3",
+		"Set `~/x/conf.toml` 4 -> 6.":                                                                          " ~/x/conf.toml 6",
 	} {
 		got := ""
 		if d, ok := parseDecision(text, c); ok {
@@ -324,5 +334,70 @@ func TestParseDecision(t *testing.T) {
 		if got != want {
 			t.Errorf("parseDecision(%q) = %q, want %q", text, got, want)
 		}
+	}
+}
+
+// A step that swings between slow and fast is one change, not one NEED per swing (review P2: bash s-tip-i.sh posted
+// 1 -> 12 min three times in 7 hours on the Mac log).
+func TestASwingingStepIsOneChange(t *testing.T) {
+	x := newIC(t, cfg{})
+	now := time.Now()
+	log := filepath.Join(x.root, "runs.log")
+	var runs []heavyRun
+	add := func(from time.Duration, n int, mins int) {
+		for i := 0; i < n; i++ {
+			runs = append(runs, heavyRun{At: at(now.Add(-from + time.Duration(i)*20*time.Minute)), Cmd: "bash s-tip-i.sh", Cwd: "/w", Seconds: mins * 60, Code: 0})
+		}
+	}
+	add(72*time.Hour, 10, 1)
+	add(20*time.Hour, 3, 12)
+	add(18*time.Hour, 3, 1)
+	add(16*time.Hour, 3, 12)
+	add(14*time.Hour, 3, 1)
+	add(12*time.Hour, 3, 12)
+	runsLog(t, log, runs)
+	stepConfig(t, x.home, log, "")
+	x.run()
+	if got := stepNeeds(x); len(got) != 1 {
+		t.Fatalf("want one NEED for the swinging step, got %d: %q", len(got), got)
+	}
+}
+
+// A host that cannot be read once posts nothing; three runs in a row post "not checked" once; when it can be read again
+// and still holds the old value, "not applied" still goes out (review P2: one key for both used it up).
+func TestAnUnreadableHostIsLoudOnlyAfterThreeRunsAndDoesNotHideNotApplied(t *testing.T) {
+	x, _ := decisionRig(t, "Legion heavy slots 1 -> 2 now.", 45*time.Minute, "1")
+	host := filepath.Join(x.root, "L")
+	testutil.Write(t, host, "#!/bin/sh\necho 'ssh: connect to host: timed out' >&2\nexit 255\n")
+	x.run()
+	x.run()
+	if got := grepAlerts(x.alerts(), "NEED"); len(got) != 0 {
+		t.Fatalf("two failed reads posted %q", got)
+	}
+	x.run()
+	x.run()
+	if got := grepAlerts(x.alerts(), "decision not checked"); len(got) != 1 || !strings.Contains(got[0], "timed out") {
+		t.Fatalf("want one 'not checked' naming the error, got %q", got)
+	}
+	testutil.Write(t, host, "#!/bin/sh\nexec sh -c \"$*\"\n")
+	x.run()
+	x.run()
+	if got := decisionNeeds(x); len(got) != 1 {
+		t.Fatalf("want one 'not applied' once the host answers, got %q", got)
+	}
+}
+
+// A decision about a file here (no host word) reads it here; a confirmed one is not read again.
+func TestALocalDecisionIsReadHereAndOnce(t *testing.T) {
+	x, _ := decisionRig(t, "Mac heavy slots 1 -> 2 now.", 45*time.Minute, "2")
+	x.run()
+	if got := grepAlerts(x.alerts(), "NEED"); len(got) != 0 {
+		t.Fatalf("an applied local decision posted %q", got)
+	}
+	slots := filepath.Join(x.root, "legion-home", "AppxiteRig", "heavy", "slots")
+	testutil.Write(t, slots, "1\n") // changed after the check: a later change is not this decision's business
+	x.run()
+	if got := grepAlerts(x.alerts(), "NEED"); len(got) != 0 {
+		t.Fatalf("a confirmed decision was read again: %q", got)
 	}
 }
