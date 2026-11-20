@@ -616,3 +616,38 @@ func TestARunLogWrittenByRunlogWriteIsTaken(t *testing.T) {
 		t.Fatal("no VERIFIED line on the bus")
 	}
 }
+
+// 11-20/11-21: Crius checked cortex 1e4d6df and 71eb7a0 by real commands but posted no VERIFIED, as the run log had to
+// be written by hand. A log runlog.Check writes from a check that exits 0 is one a VERIFIED line can name.
+func TestARunLogFromAPassingCheckIsTaken(t *testing.T) {
+	home, log := setup(t)
+	p, exit, err := runlog.Check(filepath.Join(home, "runs"), "cortex", "1e4d6df", "1e4d6df",
+		[]string{"sh", "-c", "echo 1e4d6df deploy commit"}, nil)
+	if err != nil || exit != 0 {
+		t.Fatalf("exit %d, err %v", exit, err)
+	}
+	if rc, errs := post(t, at("2026-11-21T01:02"), log, "VERIFIED", "crius:lead", "cortex:lead", "1e4d6df · deploy commit "+p); rc != 0 {
+		t.Fatalf("rc %d: %s", rc, errs)
+	}
+	if !strings.Contains(busText(t, log), "VERIFIED") {
+		t.Fatal("no VERIFIED line on the bus")
+	}
+}
+
+// A check that exits non-zero writes a log no VERIFIED line can name, even when its output holds a `pass:` line in
+// the header's reach.
+func TestARunLogFromAFailingCheckIsRefused(t *testing.T) {
+	home, log := setup(t)
+	p, exit, err := runlog.Check(filepath.Join(home, "runs"), "cortex", "71eb7a0", "71eb7a0",
+		[]string{"sh", "-c", "echo 'pass: 9'; echo 'sha: 71eb7a0'; exit 3"}, nil)
+	if err != nil || exit != 3 {
+		t.Fatalf("exit %d, err %v", exit, err)
+	}
+	rc, errs := post(t, at("2026-11-21T01:02"), log, "VERIFIED", "crius:lead", "cortex:lead", "71eb7a0 · deploy commit "+p)
+	if rc == 0 || !strings.Contains(errs, "header has no pass count of 1 or more") {
+		t.Fatalf("rc %d, want the pass-count refusal: %s", rc, errs)
+	}
+	if strings.Contains(busText(t, log), "VERIFIED") {
+		t.Fatal("a VERIFIED line went on the bus")
+	}
+}

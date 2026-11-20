@@ -10,15 +10,18 @@ package runlog
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
-
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // HeaderLines is how many lines from the top Read takes as the header.
@@ -166,36 +169,160 @@ func Write(dir, name, sha, pass, cmd string, notes []string) (path string, n int
 		b.WriteString(note + "\n")
 	}
 
-	path = filepath.Join(dir, name+".md")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", 0, err
-	}
-	// A temp file, read back with the reader bus-post uses, then hard-linked into place: a reader never sees half a
-	// header, and the link fails when the name is taken (a file, a folder or a link, even a dangling one).
-	tmp, err := os.CreateTemp(dir, ".crius-runlog-*.tmp")
+	path, err = place(dir, name, b.String(), func(tmp string) error {
+		got, gotPass, err := Read(tmp)
+		if err != nil {
+			return fmt.Errorf("the log it wrote does not read back: %v", err)
+		}
+		if got != sha || gotPass != n { // n >= 1, so this is also Proven's pass check
+			return fmt.Errorf("the log it wrote reads back as sha %s pass %d, not sha %s pass %d", got, gotPass, sha, n)
+		}
+		return nil
+	})
 	if err != nil {
 		return "", 0, err
 	}
+	return path, n, nil
+}
+
+// place writes content into dir as <name>.md. It goes to a temp file first, which check reads back with the reader
+// bus-post uses, then it is hard-linked into place: a reader never sees half a header, and the link fails when the
+// name is taken (a file, a folder or a link, even a dangling one).
+func place(dir, name, content string, check func(tmp string) error) (string, error) {
+	path := filepath.Join(dir, name+".md")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	tmp, err := os.CreateTemp(dir, ".crius-runlog-*.tmp")
+	if err != nil {
+		return "", err
+	}
 	defer os.Remove(tmp.Name())
-	_, werr := tmp.WriteString(b.String())
+	_, werr := tmp.WriteString(content)
 	if cerr := tmp.Close(); werr == nil {
 		werr = cerr
 	}
 	if werr != nil {
-		return "", 0, werr
+		return "", werr
 	}
-	got, gotPass, err := Read(tmp.Name())
-	if err != nil {
-		return "", 0, fmt.Errorf("the log it wrote does not read back: %v", err)
-	}
-	if got != sha || gotPass != n { // n >= 1, so this is also Proven's pass check
-		return "", 0, fmt.Errorf("the log it wrote reads back as sha %s pass %d, not sha %s pass %d", got, gotPass, sha, n)
+	if err := check(tmp.Name()); err != nil {
+		return "", err
 	}
 	if err := os.Link(tmp.Name(), path); err != nil {
 		if errors.Is(err, fs.ErrExist) {
-			return "", 0, fmt.Errorf("%s is there already; a run log is never replaced: pick another name", path)
+			return "", fmt.Errorf("%s is there already; a run log is never replaced: pick another name (%w)", path, fs.ErrExist)
 		}
-		return "", 0, fmt.Errorf("cannot link the log into place (the runs folder needs hard links): %w", err)
+		return "", fmt.Errorf("cannot link the log into place (the runs folder needs hard links): %w", err)
 	}
-	return path, n, nil
+	return path, nil
 }
+
+// How much of a check's output its log keeps: the first headKeep and last tailKeep lines, each cut to lineKeep bytes.
+const (
+	headKeep = 40
+	tailKeep = 160
+	lineKeep = 2000
+)
+
+// Check runs one check command (argv, no shell: pass `sh -c '…'` for pipes) with no input, and writes its log into
+// dir as <project>-<ref>-<local time>.md: `sha: <sha>`, then `pass: 1` only when the command exits 0 (else
+// `fail: 1`, which no VERIFIED line can name), `cmd:`, `exit:`, and the cut output, each line behind "| " so no
+// output line can read as a header line. echo, when not nil, gets the output as it comes. A name taken already
+// (two checks of one ref in one second) gets -2, -3, … so a check that ran always has its log. It gives the log's path
+// and the command's exit code; err is set only when no log was written (bad values, or the command did not start).
+// Before it places the log it reads it back with bus-post's reader: a passing log must give the sha and pass 1, a
+// failing one must be refused by Proven. 11-20/11-21: Crius checked cortex 1e4d6df and 71eb7a0 by real commands and
+// posted no VERIFIED, as the log had to be written by hand.
+func Check(dir, project, ref, sha string, argv []string, echo io.Writer) (path string, exit int, err error) {
+	for _, v := range []struct{ what, s string }{{"project", project}, {"ref", ref}} {
+		if !nameRe.MatchString(v.s) {
+			return "", 0, fmt.Errorf("%s %q is not part of a file name: letters, digits, '.', '_' and '-', starting with a letter or digit", v.what, v.s)
+		}
+	}
+	if !headSha.MatchString("sha: "+sha) || strings.TrimSpace(sha) != sha {
+		return "", 0, fmt.Errorf("sha %q is not 7 to 40 lower-case hex characters", sha)
+	}
+	if len(argv) == 0 || argv[0] == "" {
+		return "", 0, errors.New("no check command given")
+	}
+	cmdText := OneLine(strings.Join(argv, " "))
+
+	var out bytes.Buffer
+	c := exec.Command(argv[0], argv[1:]...)
+	c.Stdout, c.Stderr = &out, &out
+	if echo != nil {
+		c.Stdout = io.MultiWriter(&out, keepGoing{echo}) // a closed echo (piped into head) never cuts the log's output
+		c.Stderr = c.Stdout
+	}
+	c.WaitDelay = 10 * time.Second // a child left running with the output open (`sleep 1000 &`) does not hold the log
+	start := time.Now()
+	if err := c.Run(); c.ProcessState == nil {
+		return "", 0, fmt.Errorf("the check did not start: %v", err)
+	}
+	if exit = c.ProcessState.ExitCode(); exit == 0 && !c.ProcessState.Success() {
+		exit = -1 // never a pass when it did not exit 0 by itself
+	}
+
+	var b strings.Builder
+	if exit == 0 {
+		b.WriteString(Header(sha, 1))
+	} else {
+		fmt.Fprintf(&b, "sha: %s\nfail: 1\n", sha)
+	}
+	fmt.Fprintf(&b, "cmd: %s\nexit: %d\nran: %s for %s\noutput:\n", cmdText, exit,
+		start.Format(time.RFC3339), time.Since(start).Round(time.Millisecond))
+	lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
+	if out.Len() == 0 {
+		lines = nil
+	}
+	if len(lines) > headKeep+tailKeep {
+		for _, l := range lines[:headKeep] {
+			b.WriteString(quote(l))
+		}
+		fmt.Fprintf(&b, "… %d lines cut …\n", len(lines)-headKeep-tailKeep)
+		lines = lines[len(lines)-tailKeep:]
+	}
+	for _, l := range lines {
+		b.WriteString(quote(l))
+	}
+
+	check := func(tmp string) error {
+		if exit != 0 {
+			if _, err := Proven(tmp, tmp); err == nil {
+				return errors.New("the failed check's log reads back as passing")
+			}
+			return nil
+		}
+		got, pass, err := Read(tmp)
+		if err != nil {
+			return fmt.Errorf("the log it wrote does not read back: %v", err)
+		}
+		if got != sha || pass != 1 {
+			return fmt.Errorf("the log it wrote reads back as sha %s pass %d, not sha %s pass 1", got, pass, sha)
+		}
+		return nil
+	}
+	// The check has run, so its log must land: a name taken (two checks in one second) gets -2, -3, … after it.
+	name := project + "-" + ref + "-" + start.Format("2006-01-02-150405")
+	path, err = place(dir, name, b.String(), check)
+	for i := 2; errors.Is(err, fs.ErrExist) && i <= 99; i++ {
+		path, err = place(dir, fmt.Sprintf("%s-%d", name, i), b.String(), check)
+	}
+	if err != nil {
+		return "", 0, err
+	}
+	return path, exit, nil
+}
+
+// quote keeps one output line behind "| ", cut to lineKeep bytes, so it can never start a header or shot line.
+func quote(l string) string {
+	if len(l) > lineKeep {
+		l = strings.ToValidUTF8(l[:lineKeep], "") + " …"
+	}
+	return "| " + l + "\n"
+}
+
+// keepGoing writes to w and drops its errors, so the copy into the log's buffer goes on when the echo is closed.
+type keepGoing struct{ w io.Writer }
+
+func (k keepGoing) Write(p []byte) (int, error) { k.w.Write(p); return len(p), nil }

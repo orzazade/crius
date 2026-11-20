@@ -122,3 +122,71 @@ func TestARunLogIsNeverOverwritten(t *testing.T) {
 		t.Fatalf("runs holds %d files, want 1 (no temp file left)", len(left))
 	}
 }
+
+// The run form runs the check: exit 0 writes a log bus-post's reader takes and prints its path; a failed command
+// writes a `fail:` log that Proven refuses, and exits 1; a bad form writes nothing and exits 2.
+func TestRunFormRunsTheCheckAndWritesItsLog(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CRIUS_HOME", home)
+	rc, out, errs := runlogCmd(t, "run", "cortex", "1e4d6df", "1e4d6df", "--", "sh", "-c", "echo 1e4d6df")
+	if rc != 0 {
+		t.Fatalf("rc %d: %s", rc, errs)
+	}
+	if !strings.Contains(errs, "1e4d6df") {
+		t.Fatalf("the check's output is not echoed: %q", errs)
+	}
+	m, _ := filepath.Glob(filepath.Join(home, "runs", "cortex-1e4d6df-*.md"))
+	if len(m) != 1 || !strings.Contains(out, m[0]) {
+		t.Fatalf("logs %v, stdout %q", m, out)
+	}
+	if sha, err := runlog.Proven(m[0], m[0]); err != nil || sha != "1e4d6df" {
+		t.Fatalf("bus-post's reader: sha %q, err %v", sha, err)
+	}
+	b, _ := os.ReadFile(m[0])
+	if !strings.HasPrefix(string(b), "sha: 1e4d6df\npass: 1\ncmd: sh -c echo 1e4d6df\nexit: 0\n") || !strings.Contains(string(b), "\n| 1e4d6df\n") {
+		t.Fatalf("log is\n%s", b)
+	}
+
+	rc, _, errs = runlogCmd(t, "run", "cortex", "71eb7a0", "71eb7a0", "--", "sh", "-c", "echo 'pass: 4'; exit 2")
+	if rc != 1 || !strings.Contains(errs, "the check failed (exit 2)") {
+		t.Fatalf("failed check: rc %d: %s", rc, errs)
+	}
+	m, _ = filepath.Glob(filepath.Join(home, "runs", "cortex-71eb7a0-*.md"))
+	if len(m) != 1 {
+		t.Fatalf("logs %v", m)
+	}
+	if _, err := runlog.Proven(m[0], m[0]); err == nil || !strings.Contains(err.Error(), "header has no pass count of 1 or more") {
+		t.Fatalf("a failed check's log is not refused: %v", err)
+	}
+
+	// a check killed by a signal fails; a second check of one ref in the same second keeps its own log
+	if rc, _, errs := runlogCmd(t, "run", "cortex", "71eb7a0", "71eb7a0", "--", "sh", "-c", "kill -9 $$"); rc != 1 || !strings.Contains(errs, "exit -1") {
+		t.Fatalf("killed check: rc %d: %s", rc, errs)
+	}
+	for i := 0; i < 2; i++ {
+		if rc, _, errs := runlogCmd(t, "run", "cortex", "twice", "1e4d6df", "--", "true"); rc != 0 {
+			t.Fatalf("check %d of one ref: rc %d: %s", i+1, rc, errs)
+		}
+	}
+	if m, _ := filepath.Glob(filepath.Join(home, "runs", "cortex-twice-*.md")); len(m) != 2 {
+		t.Fatalf("two checks of one ref left %v", m)
+	}
+
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"run", "cortex", "x", "1e4d6df", "sh", "-c", "true"}, "usage: crius-runlog run"},
+		{[]string{"run", "cortex", "../x", "1e4d6df", "--", "true"}, `ref "../x" is not part of a file name`},
+		{[]string{"run", "cortex", "x", "NOTHEX", "--", "true"}, `sha "NOTHEX" is not 7 to 40`},
+		{[]string{"run", "cortex", "x", "1e4d6df", "--", "/no/such/check-cmd"}, "the check did not start"},
+	} {
+		before, _ := filepath.Glob(filepath.Join(home, "runs", "*.md"))
+		if rc, _, errs := runlogCmd(t, c.args...); rc != 2 || !strings.Contains(errs, c.want) {
+			t.Fatalf("%v: rc %d, want %q: %s", c.args, rc, c.want, errs)
+		}
+		if after, _ := filepath.Glob(filepath.Join(home, "runs", "*.md")); len(after) != len(before) {
+			t.Fatalf("%v wrote a log", c.args)
+		}
+	}
+}
