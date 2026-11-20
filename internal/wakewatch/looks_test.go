@@ -95,6 +95,7 @@ var notLooks = map[string]string{
 	"disk":              "free disk below the line",
 	"folder":            "a session in the wrong folder",
 	"handed":            "a lead handed back",
+	"order":             "a Crius decision its role posted nothing after",
 	"hooklog":           "crius-hook logged error lines",
 	"idle":              "an idle tab",
 	"look":              "a workspace with the wrong name or colour",

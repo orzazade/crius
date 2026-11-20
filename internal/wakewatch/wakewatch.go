@@ -253,6 +253,11 @@ func Run(d Deps) error {
 		return err
 	}
 	alerts = append(alerts, m...)
+	oo, err := openOrders(d.Home, d.Now, watch, park)
+	if err != nil {
+		return err
+	}
+	alerts = append(alerts, oo...)
 	ss, sesErr := d.Sessions()
 	alerts = append(alerts, paid(d, ss)...)
 	alerts = append(alerts, twins(d, &st, ss, sesErr)...)
@@ -321,7 +326,7 @@ func Run(d Deps) error {
 		if err != nil {
 			sendErr = err
 		}
-		if (strings.HasPrefix(a[0], "bus:") || strings.HasPrefix(a[0], "folder:") || strings.HasPrefix(a[0], "restore:") || strings.HasPrefix(a[0], "handed:") || strings.HasPrefix(a[0], "dead:") || strings.HasPrefix(a[0], "waited:") || strings.HasPrefix(a[0], "t3idle:") || strings.HasPrefix(a[0], "prompt:") || strings.HasPrefix(a[0], "prompt-unread:") || strings.HasPrefix(a[0], "prompt-untold:") || strings.HasPrefix(a[0], "twins:")) && (err == nil || d.HandedOver != nil && d.HandedOver(err)) {
+		if (strings.HasPrefix(a[0], "bus:") || strings.HasPrefix(a[0], "order:") || strings.HasPrefix(a[0], "folder:") || strings.HasPrefix(a[0], "restore:") || strings.HasPrefix(a[0], "handed:") || strings.HasPrefix(a[0], "dead:") || strings.HasPrefix(a[0], "waited:") || strings.HasPrefix(a[0], "t3idle:") || strings.HasPrefix(a[0], "prompt:") || strings.HasPrefix(a[0], "prompt-unread:") || strings.HasPrefix(a[0], "prompt-untold:") || strings.HasPrefix(a[0], "twins:")) && (err == nil || d.HandedOver != nil && d.HandedOver(err)) {
 			st.Typed[a[0]] = d.Now
 		}
 		// Crius's waiter wakes on a bus line: a wake that cannot be typed goes there, so none is lost (S2, 10-22).

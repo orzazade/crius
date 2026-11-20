@@ -239,7 +239,7 @@ func TestACriusLeadLineToTheAskerAnswersIt(t *testing.T) {
 	var woke []string
 	for _, s := range f.sent {
 		for _, l := range strings.Split(s, "\n") {
-			if strings.Contains(l, ".log: ") {
+			if strings.Contains(l, ".log: ") && !strings.Contains(l, "has posted nothing since") { // openorders_test.go covers those
 				woke = append(woke, l)
 			}
 		}
