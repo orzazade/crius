@@ -401,3 +401,90 @@ func TestALocalDecisionIsReadHereAndOnce(t *testing.T) {
 		t.Fatalf("a confirmed decision was read again: %q", got)
 	}
 }
+
+// heavyCut is heavy.ts's record of a command: cmd cut at 300 characters, key the script's full path when a word names a
+// file, else the full words and " in <cwd>".
+func heavyCut(r heavyRun, script string) heavyRun {
+	if script != "" {
+		r.Key = script
+	} else {
+		r.Key = r.Cmd + " in " + r.Cwd
+	}
+	if len(r.Cmd) > 300 {
+		r.Cmd = r.Cmd[:300]
+	}
+	return r
+}
+
+// The false NEED of 11-21 03:36: `bun all-suites.ts run rigport3.noindex -Users-…-Ap` went "3 -> 21 min", but the cut
+// command mixed different suite parts. Runs of one script whose words were cut have no full name on record (the key is
+// the script alone), so they are not watched, and the run says how many it left out.
+func TestStepsThatShareTheFirst300CharsAreNotOneStep(t *testing.T) {
+	x := newIC(t, cfg{})
+	now := time.Now()
+	log := filepath.Join(x.root, "mac-runs.log")
+	script := "/Users/o/Projects/Appxite/AXI/first-order/docs/build/merge.noindex/all-suites.ts"
+	dir := "/private/tmp/claude-501/-Users-o-Projects-Appxite-AXI-first-order/961aacd5-4a80-4c7f-8295-765d0e55af0c/scratchpad/rigport3.noindex"
+	part := func(name string) string { // the suite part's name comes after the cut
+		return "bun " + script + " run " + dir + " " + dir + "/" + strings.Repeat("x", 120) + "/" + name
+	}
+	var runs []heavyRun
+	for i := 0; i < 10; i++ { // a 3-min part every 4 hours
+		runs = append(runs, heavyCut(heavyRun{At: at(now.Add(-5*24*time.Hour + time.Duration(i)*4*time.Hour)), Cmd: part("unit"),
+			Cwd: "/Users/o/Projects/Appxite/AXI/first-order", Seconds: 180}, script))
+	}
+	for i := 0; i < 3; i++ { // then a different, 21-min part
+		runs = append(runs, heavyCut(heavyRun{At: at(now.Add(-10*time.Hour + time.Duration(i)*time.Hour)), Cmd: part("integration"),
+			Cwd: "/Users/o/Projects/Appxite/AXI/first-order", Seconds: 21 * 60}, script))
+	}
+	if a, b := runs[0].Cmd, runs[len(runs)-1].Cmd; a != b {
+		t.Fatalf("fixture: the two parts must share the cut command, got %q and %q", a, b)
+	}
+	runsLog(t, log, runs)
+	stepConfig(t, x.home, log, "")
+	st := x.run()
+	if st.Status != "complete" {
+		t.Fatalf("%s %q", st.Status, st.Warnings)
+	}
+	if got := stepNeeds(x); len(got) != 0 {
+		t.Fatalf("two different parts under one cut command posted %q", got)
+	}
+	if st.StepRuns != 13 || st.StepUnwatched != 13 {
+		t.Fatalf("want 13 runs read and 13 not watched (cut, no full name), got %d and %d", st.StepRuns, st.StepUnwatched)
+	}
+}
+
+// A command with no script word is on record in full in its key: two filter sets that share the first 300 characters
+// are two steps, and the one that slows down still posts, named in full.
+func TestACutCommandWithItsFullWordsInTheKeyIsStillWatched(t *testing.T) {
+	x := newIC(t, cfg{})
+	now := time.Now()
+	log := filepath.Join(x.root, "legion-runs.log")
+	long := "dotnet test tests/Quote.Api.Tests --filter " + strings.Repeat("FullyQualifiedName~Quote.Api.Tests.Presenter|", 7)
+	var runs []heavyRun
+	for i := 0; i < 10; i++ {
+		ts := now.Add(-5*24*time.Hour + time.Duration(i)*4*time.Hour)
+		runs = append(runs,
+			heavyCut(heavyRun{At: at(ts), Cmd: long + "FullyQualifiedName~Fast", Cwd: "/home/crius/wt/a", Seconds: 600}, ""),
+			heavyCut(heavyRun{At: at(ts.Add(time.Hour)), Cmd: long + "FullyQualifiedName~Slow", Cwd: "/home/crius/wt/a", Seconds: 600}, ""))
+	}
+	for i := 0; i < 3; i++ {
+		ts := now.Add(-10*time.Hour + time.Duration(i)*time.Hour)
+		runs = append(runs,
+			heavyCut(heavyRun{At: at(ts), Cmd: long + "FullyQualifiedName~Fast", Cwd: "/home/crius/wt/a", Seconds: 600}, ""),
+			heavyCut(heavyRun{At: at(ts.Add(time.Minute)), Cmd: long + "FullyQualifiedName~Slow", Cwd: "/home/crius/wt/a", Seconds: 38 * 60}, ""))
+	}
+	if len(runs[0].Cmd) != 300 {
+		t.Fatalf("fixture: the command must be cut, got %d chars", len(runs[0].Cmd))
+	}
+	runsLog(t, log, runs)
+	stepConfig(t, x.home, log, "")
+	st := x.run()
+	got := stepNeeds(x)
+	if len(got) != 1 || !strings.Contains(got[0], "FullyQualifiedName~Slow`") || !strings.Contains(got[0], "10 -> 38 min") {
+		t.Fatalf("want one NEED for the Slow filter set 10 -> 38 min, got %q", got)
+	}
+	if st.StepUnwatched != 0 {
+		t.Fatalf("every run had its full words, got %d not watched", st.StepUnwatched)
+	}
+}

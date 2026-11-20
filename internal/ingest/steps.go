@@ -93,6 +93,7 @@ type stepRun struct {
 	seconds   int
 	waitS     int
 	ok        bool // code 0 and not killed: only these are step times
+	unwatched bool // its command was cut and no full name is on record: no step
 }
 
 func readRuns(path string, alias map[string]string) ([]stepRun, int, error) {
@@ -108,6 +109,7 @@ func readRuns(path string, alias map[string]string) ([]stepRun, int, error) {
 	for sc.Scan() {
 		var j struct {
 			At      string  `json:"at"`
+			Key     string  `json:"key"`
 			Cmd     string  `json:"cmd"`
 			Cwd     string  `json:"cwd"`
 			Seconds float64 `json:"seconds"`
@@ -127,7 +129,11 @@ func readRuns(path string, alias map[string]string) ([]stepRun, int, error) {
 			bad++
 			continue
 		}
-		raw := stepKind(j.Cmd)
+		cmd, whole := fullCmd(j.Cmd, j.Key, j.Cwd)
+		raw := ""
+		if whole {
+			raw = stepKind(cmd)
+		}
 		kind := raw
 		// the longest alias key wins, so the pick does not depend on map order
 		best := ""
@@ -140,13 +146,27 @@ func readRuns(path string, alias map[string]string) ([]stepRun, int, error) {
 			kind = alias[best]
 		}
 		out = append(out, stepRun{at: t, cwd: j.Cwd, kind: kind, raw: raw, seconds: int(j.Seconds),
-			waitS: int(j.WaitS), ok: kind != "" && j.Code != nil && *j.Code == 0 && !j.Killed})
+			waitS: int(j.WaitS), unwatched: !whole, ok: kind != "" && j.Code != nil && *j.Code == 0 && !j.Killed})
 	}
 	if err := sc.Err(); err != nil {
 		return nil, bad, err
 	}
 	sort.SliceStable(out, func(a, b int) bool { return out[a].at.Before(out[b].at) })
 	return out, bad, nil
+}
+
+// heavy.ts cuts a record's cmd at this many characters (cmd.slice(0, 300)), so a cmd this long may be cut.
+const cmdCut = 300
+
+// fullCmd is the whole command of a record, and false when none is on record. A cut cmd is no step name: different steps
+// share its first 300 characters (11-21 03:36, all-suites.ts parts read as one step 3 -> 21 min). heavy.ts's key holds
+// the whole words as "<words> in <cwd>" for a command that names no file; for one that does, the key is that file alone
+// and its other words are lost, so a cut one of those has no full name.
+func fullCmd(cmd, key, cwd string) (string, bool) {
+	if words, ok := strings.CutSuffix(key, " in "+cwd); ok && cwd != "" && words != "" {
+		return words, true
+	}
+	return cmd, len(cmd) < cmdCut
 }
 
 var (
@@ -298,6 +318,11 @@ func (r *runner) ingestSteps() {
 			r.warn(false, "step watch: %s log %s: %d lines not read", l.Name, l.Path, bad)
 		}
 		r.st.StepRuns += len(runs)
+		for _, s := range runs {
+			if s.unwatched {
+				r.st.StepUnwatched++
+			}
+		}
 		if err := r.inTx(func(tx *sql.Tx) error {
 			if err := r.stepChanges(tx, l.Name, runs, now); err != nil {
 				return err
@@ -365,10 +390,10 @@ func (r *runner) stepChanges(tx *sql.Tx, name string, runs []stepRun, now time.T
 				if now.Sub(rs[i].at) <= stepRecent {
 					was := ""
 					if raws := rawKinds(base); len(raws) > 1 || len(raws) == 1 && raws[0] != k {
-						was = fmt.Sprintf(", before as `%s`", strings.Join(raws, "`, `"))
+						was = fmt.Sprintf(", before as `%s`", strings.Join(shortNames(raws), "`, `"))
 					}
 					text := fmt.Sprintf("step slower on %s: `%s` %s -> %s min (median of the last 3 runs vs %d runs in the 7 days before%s); first slow run %s in %s",
-						name, k, mins(bm), mins(wm), len(base), was, first.at.Local().Format("2006-01-02 15:04"), first.cwd)
+						name, shortName(k), mins(bm), mins(wm), len(base), was, first.at.Local().Format("2006-01-02 15:04"), first.cwd)
 					key := "steps:" + name + ":" + sha1Hex([]byte(k))[:12] + ":" + first.at.UTC().Format(time.RFC3339)
 					if err := r.queueLine(tx, key, "NEED", "crius", "crius:lead", text); err != nil {
 						return err
@@ -646,4 +671,22 @@ func (r *runner) checkDecisions(c *stepConf, now time.Time) {
 	if err := saveDecisionState(statePath, keep); err != nil {
 		r.warn(true, "decision check: %v", err)
 	}
+}
+
+// shortName is a step for a NEED's text: a bus line holds 300 characters, and two steps may differ only at the end of a
+// long command, so a long one keeps its start and its end.
+func shortName(k string) string {
+	r := []rune(k)
+	if len(r) <= 100 {
+		return k
+	}
+	return string(r[:40]) + " … " + string(r[len(r)-57:])
+}
+
+func shortNames(ks []string) []string {
+	out := make([]string, len(ks))
+	for i, k := range ks {
+		out[i] = shortName(k)
+	}
+	return out
 }

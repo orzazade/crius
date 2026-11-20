@@ -41,6 +41,7 @@ type Stats struct {
 	UnknownTypes                                     map[string]int
 	BadLines, Redactions, Synthetic, SessionsTouched int
 	StepRuns, DecisionChecks                         int // steps.go: heavy runs read, decisions checked
+	StepUnwatched                                    int // steps.go: runs not watched: command cut and no full name on record
 }
 
 type runner struct {
@@ -433,8 +434,8 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		types = append(types, fmt.Sprintf("%s=%d", t, n))
 	}
 	sort.Strings(types)
-	fmt.Fprintf(stdout, "%s %s sessions=%d unknown=%v bad=%d synthetic=%d redactions=%d warnings=%d\n", utcNow(),
-		st.Status, st.SessionsTouched, types, st.BadLines, st.Synthetic, st.Redactions, len(st.Warnings))
+	fmt.Fprintf(stdout, "%s %s sessions=%d unknown=%v bad=%d synthetic=%d redactions=%d warnings=%d steps=%d unwatched=%d\n", utcNow(),
+		st.Status, st.SessionsTouched, types, st.BadLines, st.Synthetic, st.Redactions, len(st.Warnings), st.StepRuns, st.StepUnwatched)
 	for i, w := range st.Warnings {
 		if i == 20 {
 			fmt.Fprintf(stdout, "  ... %d more\n", len(st.Warnings)-20)
