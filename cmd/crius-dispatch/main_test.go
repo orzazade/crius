@@ -91,23 +91,31 @@ func TestAnErrorWithNewNumbersIsNotSaidAgain(t *testing.T) {
 	}
 }
 
-// Review round 3 P3-4: the dedupe keeps row ids and roles: the same error on another row is said.
+// Review round 3 P3-4: the dedupe keeps row ids and roles: the same error on another row is said. Each error goes
+// through alert, a minute apart, and the bus is counted: AC12 again (new surface and duration only) stays quiet, AC13 is
+// said.
 func TestTheSameErrorOnAnotherRowIsSaid(t *testing.T) {
 	home := t.TempDir()
 	os.MkdirAll(filepath.Join(home, "bus"), 0o755)
-	for i, id := range []string{"AC12", "AC13"} {
-		seen := markPath(home, "alpha")
-		_ = seen
-		err := fmt.Errorf("alpha: %s: is alpha:p-%s alive: damaged role file", id, strings.ToLower(id))
-		if got := alertKey(err); i == 0 {
-			os.MkdirAll(filepath.Join(home, "state", "alpha"), 0o755)
-			os.WriteFile(seen, []byte(got), 0o644)
-		} else if b, _ := os.ReadFile(seen); string(b) == got {
-			t.Fatalf("AC13's error has AC12's key %q", got)
+	os.MkdirAll(filepath.Join(home, "state", "alpha"), 0o755)
+	say := func(i int, id string, surface int, took string) {
+		err := fmt.Errorf("alpha: %s: is alpha:p-%s alive: damaged role file (surface:%d, after %s)", id, strings.ToLower(id), surface, took)
+		if aerr := alert(home, "alpha", t0.Add(time.Duration(i)*time.Minute), err); aerr != nil {
+			t.Fatalf("alert %d: %v", i, aerr)
 		}
 	}
-	if alertKey(errors.New("x surface:1000070039 workspace:12 after 5.7s")) != alertKey(errors.New("x surface:1000070040 workspace:13 after 6.1s")) {
-		t.Fatal("new surfaces or durations made a new key")
+	count := func(id string) int {
+		b, _ := os.ReadFile(filepath.Join(home, "bus", "crius.log"))
+		return strings.Count(string(b), "alpha: "+id+": is alpha:p-"+strings.ToLower(id)+" alive")
+	}
+	say(0, "AC12", 1000070039, "5.7s")
+	say(1, "AC12", 1000070040, "1m6.1s")
+	if n := count("AC12"); n != 1 {
+		t.Fatalf("AC12's error with a new surface and duration was said %d times, want 1", n)
+	}
+	say(2, "AC13", 1000070041, "350ms")
+	if n := count("AC13"); n != 1 {
+		t.Fatalf("AC13's error after AC12's was said %d times, want 1", n)
 	}
 }
 
@@ -261,5 +269,45 @@ func TestStartLandRefusesWhileTheLockIsHeld(t *testing.T) {
 	}
 	if o, _ := os.ReadFile(log); string(o) != "LANDED PR 1\n" {
 		t.Fatalf("log %q: the last run's log was changed", o)
+	}
+}
+
+// Review 11-21: Go durations (time.Duration's String: 1m2.5s, 350ms, 2h3m4.5s, 812µs) and timestamps change every run with
+// no new cause, so an error that only differs in them is one error and is said once.
+func TestAnErrorWithNewDurationsOrTimesIsOneError(t *testing.T) {
+	for _, p := range [][2]string{
+		{"merge.sh: no answer in 1m2.5s", "merge.sh: no answer in 1m4.25s"},
+		{"ps took 350ms", "ps took 1.2s"},
+		{"land ran 2h3m4.5s", "land ran 2h3m9s"},
+		{"az took 812µs", "az took 95µs"},
+		{"az took 812us then 3ns", "az took 9us then 40ns"},
+		{"stale at 2026-11-21T03:04:05+04:00 after 1m2.5s", "stale at 2026-11-21T03:05:07+04:00 after 1m3s"},
+		{"stale at 2026-11-21 03:04:05.123Z", "stale at 2026-11-22 13:44:00.9Z"},
+		{"lock held since 03:04:05 (5% left)", "lock held since 03:05:59 (17% left)"},
+		{"stale since 17:04, after -1m30s and .5s", "stale since 17:05, after -2m and .7s"},
+		{"at 2026-11-21 00:52:59.93 +0400 +04 m=+0.0106", "at 2026-11-21 00:53:59.1 +0400 +04 m=+60.2"},
+	} {
+		if a, b := alertKey(errors.New(p[0])), alertKey(errors.New(p[1])); a != b {
+			t.Errorf("errors %q and %q differ only in durations or times but have keys %q and %q", p[0], p[1], a, b)
+		}
+	}
+}
+
+// The other side: errors that differ in what went wrong, the row, the role or the PR keep different keys.
+func TestDifferentErrorsKeepDifferentKeys(t *testing.T) {
+	for _, p := range [][2]string{
+		{"alpha: AC12: PR 8001 refused: no vote", "alpha: AC12: PR 8001 refused: build failed"},
+		{"alpha: AC12: PR 8001 refused: no vote", "alpha: AC12: PR 8002 refused: no vote"},
+		{"alpha: AC12: is alpha:p-ac12 alive: damaged role file", "alpha: AC13: is alpha:p-ac13 alive: damaged role file"},
+		{"alpha: F-118: no answer in 1m2s", "alpha: F-119: no answer in 1m2s"},
+		{"cap = 0 in DISPATCH.toml", "cap = 1 in DISPATCH.toml"},
+		{"alpha: R-2h: no answer", "alpha: R-3h: no answer"},
+		{"is alpha:p-5m alive", "is alpha:p-6m alive"},
+		{"BOARD.toml:12:40: expected key", "BOARD.toml:13:2: expected key"},
+		{"dial tcp 10.0.0.5:22: refused", "dial tcp 10.0.0.5:23: refused"},
+	} {
+		if a, b := alertKey(errors.New(p[0])), alertKey(errors.New(p[1])); a == b {
+			t.Errorf("different errors %q and %q have one key %q", p[0], p[1], a)
+		}
 	}
 }

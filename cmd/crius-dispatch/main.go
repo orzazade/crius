@@ -149,13 +149,27 @@ func boardGone(dir string, now time.Time) error {
 	return fmt.Errorf("this project's board is gone (no BOARD.toml, only a read-only BOARD.toml.lock); switch dispatch off: mv DISPATCH.toml DISPATCH.toml.off-%s", now.Format("0102"))
 }
 
-// volatile are the numbers that change from run to run with no new cause: a tab's surface, workspace or pid, and
-// durations, and the date in boardGone's advice (.off-MMDD); row ids and roles stay, so the same error on another row is
-// said.
-var volatile = regexp.MustCompile(`\b(surface|workspace|window|pane|pid)[: ]\d+|\b\d+(\.\d+)?(ms|s|m|h|%)\b|\.off-\d{4}\b`)
+// volatile are the parts that change from run to run with no new cause: a tab's surface, workspace or pid; a date or
+// time of day, with its seconds and zone; any Go duration (the shape time.ParseDuration reads: 1m2.5s, 350ms, 812µs);
+// a percent; time.Time.String's monotonic m=+0.01; and the date in boardGone's advice (.off-MMDD). Row ids, roles and
+// PR numbers stay, so the same error on another row is said.
+var volatile = regexp.MustCompile(`\b(surface|workspace|window|pane|pid)[: ]\d+` +
+	`|\b\d{4}-\d{2}-\d{2}([T ]\d{1,2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?)?` +
+	`|\bm=[+-]\d+(\.\d+)?` +
+	`|\b\d+(\.\d+)?%` +
+	`|\.off-\d{4}\b`)
+
+// standalone are a time of day and a Go duration, taken out only when they stand alone: not right after a letter,
+// digit, '.', ':' or '-', so a row id (R-2h), a file:line:col (BOARD.toml:12:40) or a host:port (10.0.0.5:22) stays.
+var standalone = regexp.MustCompile(`(^|[^\w.:-])(` +
+	`\d{1,2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?` +
+	`|[-+]?(\d+(\.\d*)?|\.\d+)(ns|us|µs|μs|ms|s|m|h)((\d+(\.\d*)?|\.\d+)(ns|us|µs|μs|ms|s|m|h))*` +
+	`)\b`)
 
 // alertKey is an error with its volatile numbers taken out.
-func alertKey(err error) string { return volatile.ReplaceAllString(err.Error(), "#") }
+func alertKey(err error) string {
+	return standalone.ReplaceAllString(volatile.ReplaceAllString(err.Error(), "#"), "${1}#")
+}
 
 const toolWait = 3 * time.Minute // crius-spawn waits for the tab, the trust dialog and the first prompt
 
