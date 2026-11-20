@@ -469,3 +469,43 @@ func TestAllSaysEachNewReason(t *testing.T) {
 		t.Fatalf("a clean run left the reasons: %v", err)
 	}
 }
+
+// Review round 2 P2: the merge rule must not drop real clashes: a branch that deletes a file base has since edited
+// (merge-tree keeps base's file, a conflict), and two branches on a file base has since renamed.
+func TestMergeRuleKeepsConflictsAndRenames(t *testing.T) {
+	w := newWorld(t)
+	testutil.Git(t, w.work, "switch", "-q", "-C", "feat/del", "main")
+	testutil.Git(t, w.work, "rm", "-q", "b.txt")
+	testutil.CommitAll(t, w.work)
+	testutil.Git(t, w.work, "push", "-q", "origin", "feat/del")
+	testutil.Git(t, w.work, "switch", "-q", "main")
+	w.branch(t, "feat/edit-b", "b.txt")
+	w.branch(t, "feat/one", "c.txt")
+	w.branch(t, "feat/two", "c.txt")
+	testutil.Write(t, filepath.Join(w.work, "b.txt"), "base edits b\n")
+	testutil.Git(t, w.work, "mv", "c.txt", "c-renamed.txt")
+	testutil.CommitAll(t, w.work)
+	testutil.Git(t, w.work, "push", "-q", "origin", "main")
+	out, err := w.run(t, "demo")
+	if err != nil || !strings.Contains(out, "feat/del and feat/edit-b both change 1 files: b.txt") ||
+		!strings.Contains(out, "feat/one and feat/two both change 1 files: c.txt") {
+		t.Fatalf("a real clash was dropped: %v\n%s", err, out)
+	}
+}
+
+// Review round 2 P2: a branch with no history shared with base (gh-pages) is left out with a note, not a failed repo.
+func TestAnOrphanBranchIsSkipped(t *testing.T) {
+	w := newWorld(t)
+	w.branch(t, "feat/one", "a.txt")
+	w.branch(t, "feat/two", "a.txt")
+	testutil.Git(t, w.work, "switch", "-q", "--orphan", "gh-pages")
+	testutil.Write(t, filepath.Join(w.work, "index.html"), "x\n")
+	testutil.CommitAll(t, w.work)
+	testutil.Git(t, w.work, "push", "-q", "origin", "gh-pages")
+	testutil.Git(t, w.work, "switch", "-q", "-f", "main")
+	out, err := w.run(t, "demo")
+	if err != nil || !strings.Contains(out, "gh-pages: no history shared with main; not compared") ||
+		!strings.Contains(out, "feat/one and feat/two both change") {
+		t.Fatalf("%v\n%s", err, out)
+	}
+}

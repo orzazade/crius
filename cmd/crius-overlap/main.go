@@ -76,6 +76,8 @@ func (u usage) Error() string { return string(u) }
 
 var errClash = errors.New("the branch shares files with another open branch")
 
+var errUnrelated = errors.New("no history shared with base")
+
 // burst is the most pair lines one run posts to a project's bus; the rest go in one line (live Quotes 11-20: a first run
 // had 29 pairs).
 const burst = 5
@@ -182,6 +184,8 @@ type scan struct {
 	listed int
 	open   []branch
 	notes  []string
+	// baseFiles is every path base has, read once
+	baseFiles map[string]bool
 }
 
 func (s *scan) ref(name string) string { return "refs/overlap/" + s.repo.Remote + "/" + name }
@@ -314,7 +318,10 @@ func look(ctx context.Context, r Repo, now time.Time) (*scan, error) {
 		}
 	}
 	for _, t := range tips {
-		if t.files, err = s.files(ctx, t.tip); err != nil {
+		if t.files, err = s.files(ctx, t.tip); errors.Is(err, errUnrelated) {
+			s.notes = append(s.notes, t.label+": no history shared with "+r.Base+"; not compared")
+			continue
+		} else if err != nil {
 			return nil, err
 		}
 		if len(t.files) > 0 {
@@ -329,11 +336,18 @@ func look(ctx context.Context, r Repo, now time.Time) (*scan, error) {
 //   - base, since the two split, has had that file with the very content the commit gives it: a rebase, squash or merge
 //     put it there, and base may have changed it again since (live AXI 11-20: without this, branches landed days ago
 //     clashed with every new one, 1571 pairs);
-//   - merging the commit into base now leaves the file as base has it: a squash that was merged together with another
-//     change to the file, so the commit's own content is nowhere in base.
+//   - merging the commit into base now leaves the file as base has it, with no conflict on it, and base has the file: a
+//     squash merged together with another change to the file, so the commit's own content is nowhere in base. (Without
+//     the last two, a branch deleting a file base edited since, or editing one base renamed since, would drop out.)
+//
+// A commit with no history shared with base (gh-pages) is errUnrelated.
 func (s *scan) files(ctx context.Context, sha string) (map[string]string, error) {
 	fail := func(err error) (map[string]string, error) { return nil, fmt.Errorf("repo %s: %w", s.repo.Name, err) }
 	mb, err := s.git.out(ctx, time.Minute, "merge-base", s.base, sha)
+	var ee *exec.ExitError
+	if errors.As(err, &ee) && ee.ExitCode() == 1 && strings.TrimSpace(mb) == "" {
+		return nil, errUnrelated
+	}
 	if err != nil {
 		return fail(err)
 	}
@@ -353,12 +367,28 @@ func (s *scan) files(ctx context.Context, sha string) (map[string]string, error)
 	for path, blob := range raw(inBase) {
 		landed[path+"\x00"+blob] = true
 	}
-	merged, err := s.git.out(ctx, 2*time.Minute, "merge-tree", "--write-tree", "--no-messages", s.base, sha)
-	var ee *exec.ExitError
+	// -z: the tree, then one "<mode> <blob> <stage>\t<path>" per conflicted entry
+	merged, err := s.git.out(ctx, 2*time.Minute, "merge-tree", "--write-tree", "--no-messages", "-z", s.base, sha)
 	if err != nil && !(errors.As(err, &ee) && ee.ExitCode() == 1) { // 1: a conflict, the tree is still written
 		return fail(err)
 	}
-	tree, _, _ := strings.Cut(merged, "\n")
+	entries := strings.Split(merged, "\x00")
+	tree, conflicted := entries[0], map[string]bool{}
+	for _, e := range entries[1:] {
+		if _, path, ok := strings.Cut(e, "\t"); ok {
+			conflicted[path] = true
+		}
+	}
+	if s.baseFiles == nil {
+		names, err := s.git.out(ctx, time.Minute, "ls-tree", "-r", "-z", "--name-only", s.base)
+		if err != nil {
+			return fail(err)
+		}
+		s.baseFiles = map[string]bool{}
+		for _, n := range strings.Split(names, "\x00") {
+			s.baseFiles[n] = true
+		}
+	}
 	moves, err := s.git.out(ctx, time.Minute, "diff", "--raw", "-z", "--no-abbrev", "--no-renames", "--no-ext-diff", s.base, tree)
 	if err != nil {
 		return fail(err)
@@ -369,7 +399,8 @@ func (s *scan) files(ctx context.Context, sha string) (map[string]string, error)
 	}
 	files := map[string]string{}
 	for f, blob := range raw(changed) {
-		if merging[f] && !landed[f+"\x00"+blob] && !slices.ContainsFunc(s.repo.Ignore, func(g string) bool { return glob(g, f) }) {
+		merges := !merging[f] && !conflicted[f] && s.baseFiles[f]
+		if !merges && !landed[f+"\x00"+blob] && !slices.ContainsFunc(s.repo.Ignore, func(g string) bool { return glob(g, f) }) {
 			files[board.Key(f)] = f
 		}
 	}
@@ -600,7 +631,7 @@ func check(home string, now time.Time, project, name string, out io.Writer) erro
 		found = true
 		files, err := s.files(ctx, sha)
 		if err != nil {
-			return err
+			return fmt.Errorf("branch %s: %w", name, err)
 		}
 		me := branch{name: name, label: name, tip: sha, files: files}
 		n := 0
@@ -783,6 +814,9 @@ func (g gitter) out(ctx context.Context, limit time.Duration, args ...string) (s
 		msg := strings.Join(strings.Fields(stderr.String()), " ")
 		if g.secret != "" {
 			msg = strings.ReplaceAll(msg, g.secret, "<token>")
+		}
+		if ctx.Err() != nil {
+			msg += fmt.Sprintf(" (stopped after %s: git runs in its own process group, so an ssh remote that asks for a key passphrase or a host key cannot be answered here)", limit)
 		}
 		verb := args[0]
 		for i := 0; i+2 < len(args) && args[i] == "-c"; i += 2 {
