@@ -1501,25 +1501,34 @@ func TestQuotaGuardSplitRoleUsesTheRoomTestAndALaterPauseTellsCrius(t *testing.T
 		t.Fatalf("want one NEED for max1, got %q", n)
 	}
 
-	// Review 10-23 had a listed account not measured yet count as room, so a role with a tab there was not paused. Crius
-	// 11-21: an unknown account is no room, as Pick reads it: the NEED names it apart and the role is paused.
+	// An unknown account is no room, as Pick reads it (Crius 11-21), so no new work goes there. But 0f15638 also let a
+	// role with one tab on an unknown account and one on a full one be paused whole, stopping its tab on the unknown
+	// account on a guess. Only an account measured at the limit pauses a role: the role is not paused, and the NEED names
+	// the unknown account once (not every run). A role whose tabs are all on the measured-full account still pauses.
 	now = qNow
 	w := newIC(t, cfg{extra: strings.Replace(guardedProject, "pause_at = 70", "pause_at = 90", 1)})
 	l1, l2 = w.signIn(d1, "u-1"), w.signIn(d2, "u-2")
 	testutil.Write(t, filepath.Join(w.home, "accounts.toml"), "[[account]]\nname = \"max1\"\nplan = \"max\"\ndirs = [\""+
 		d1+"\"]\n[[account]]\nname = \"max2\"\nplan = \"max\"\ndirs = [\""+d2+"\"]\n")
+	w.session("work", s1, "/work/quotes", "[crius account=max project=quotes role=p1]", qNow.Add(-20*time.Minute))
 	w.session("work", s2, "/work/quotes", "[crius account=max project=quotes role=p2]", qNow.Add(-20*time.Minute))
 	w.session("work", s3, "/work/quotes", "[crius account=max project=quotes role=p2]", qNow.Add(-20*time.Minute))
 	fresh := on(sampleAt(s3, qNow.Add(-8*time.Minute), 0, r1), l2, d2)
 	fresh.RL, fresh.FivePct, fresh.FiveReset, fresh.SevenPct, fresh.SevenReset = false, nil, nil, nil, nil // no rate_limits before its first reply
-	w.spool(on(sampleAt(s2, qNow.Add(-9*time.Minute), 92, r1), l1, d1), fresh)
+	w.spool(on(sampleAt(s1, qNow.Add(-10*time.Minute), 92, r1), l1, d1),
+		on(sampleAt(s2, qNow.Add(-9*time.Minute), 92, r1), l1, d1), fresh)
 	w.run()
-	n := grepAlerts(w.alerts(), "account max1 at 92%")
-	if len(n) != 1 || !strings.Contains(n[0], "Room: none; no room: max2 not measured") {
-		t.Fatalf("want a NEED naming max2 not measured as no room, got %q", w.alerts())
+	w.run()
+	n := grepAlerts(w.alerts(), "max2")
+	if len(n) != 1 || !strings.Contains(n[0], "account max1 at 92%") || !strings.Contains(n[0], "PAUSE posted to quotes:p1;") ||
+		!strings.Contains(n[0], "p2 also runs on max2 (quota unknown)") {
+		t.Fatalf("want one NEED naming max2 as unknown and p2 not paused for it, got %q", w.alerts())
 	}
-	if p := grepAlerts(w.bus("quotes"), " -> quotes:p2 — "); len(p) != 1 || strings.Contains(n[0], "p2 also runs on max2") {
-		t.Fatalf("p2's other tab is on max2, unknown, no room: want a PAUSE to quotes:p2 and no split, got %q and %q", p, n)
+	if p := grepAlerts(w.bus("quotes"), " -> quotes:p2 — "); len(p) != 0 {
+		t.Fatalf("p2's other tab is on max2, not measured: want no PAUSE to quotes:p2, got %q", p)
+	}
+	if p := grepAlerts(w.bus("quotes"), " -> quotes:p1 — "); len(p) != 1 {
+		t.Fatalf("p1 runs on max1 alone, measured at 92%%: want one PAUSE to quotes:p1, got %q", w.bus("quotes"))
 	}
 }
 

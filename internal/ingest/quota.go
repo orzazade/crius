@@ -398,6 +398,7 @@ func (r *runner) pauseAccounts(tx *sql.Tx, rep *quota.Report, as *quota.Accounts
 	var full []quota.AcctUse
 	var room, unsure []string
 	seen, hasRoom := map[string]bool{}, map[string]bool{}
+	unknown := map[string]string{} // login -> name: no measured share this week, so it pauses no role (11-21)
 	for _, a := range rep.Accounts {
 		seen[a.Login] = true
 		listed := as.Of(a.Login) != nil && as.Of(a.Login).Plan == "max"
@@ -409,29 +410,41 @@ func (r *runner) pauseAccounts(tx *sql.Tx, rep *quota.Report, as *quota.Accounts
 			full = append(full, a)
 		case !a.Ended.IsZero():
 			if listed {
+				unknown[a.Login] = a.Name
 				unsure = append(unsure, a.Name+" unknown since its week reset")
 			}
 		case st == "full":
 			unsure = append(unsure, a.Name+" "+why)
 		case why == "":
+			unknown[a.Login] = a.Name
 			unsure = append(unsure, a.Name+" not measured")
 		default:
+			unknown[a.Login] = a.Name
 			unsure = append(unsure, fmt.Sprintf("%s %g%% unsure", a.Name, a.SevenPct)) // short: the NEED is one bus line
 		}
 	}
 	if as != nil {
 		for _, a := range as.Rows {
 			if a.Plan == "max" && a.Login != "" && !seen[a.Login] {
+				unknown[a.Login] = a.Name
 				unsure = append(unsure, a.Name+" not measured")
 			}
 		}
 	}
 	// A role with a tab on an account with room, as the room list counts it: a PAUSE to the role would stop that tab too.
-	elsewhere := map[string]string{}
+	// A role with a tab on an unknown account is not paused either: only an account measured at the limit pauses a role
+	// (11-21), and the NEED names the unknown one. Pick never starts new work on it. Room wins over unknown; among
+	// several, the first name, so the NEED's words do not change with map order.
+	elsewhere, unmeasured := map[string]string{}, map[string]string{}
 	for login, roles := range tabs {
 		for _, role := range roles {
-			if hasRoom[login] && role != "unknown" {
+			if role == "unknown" {
+				continue
+			}
+			if hasRoom[login] {
 				elsewhere[role] = as.Name(login)
+			} else if name, ok := unknown[login]; ok && (unmeasured[role] == "" || name < unmeasured[role]) {
+				unmeasured[role] = name
 			}
 		}
 	}
@@ -461,6 +474,12 @@ func (r *runner) pauseAccounts(tx *sql.Tx, rep *quota.Report, as *quota.Accounts
 			if other, ok := elsewhere[role]; ok {
 				if n := len(split); n == 0 || !strings.HasPrefix(split[n-1], role+" ") {
 					split = append(split, role+" also runs on "+other)
+				}
+				continue
+			}
+			if other, ok := unmeasured[role]; ok {
+				if n := len(split); n == 0 || !strings.HasPrefix(split[n-1], role+" ") {
+					split = append(split, role+" also runs on "+other+" (quota unknown)")
 				}
 				continue
 			}
