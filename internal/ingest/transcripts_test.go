@@ -229,7 +229,8 @@ func TestMetadataLineTypesSeenOnThisMacAreKnown(t *testing.T) {
 }
 
 // Marker lines with no data we record must not raise the unknown-type ALERT. Seen on this Mac: repl-mode
-// (2026-11-21 02:46) and session-owner (2026-11-03; the account already comes from the config folder).
+// (2026-11-21 02:46) and session-owner (2026-11-03). session-owner's accountUuid could name the session's
+// account; recording it is a tracked follow-up (STATUS.md), not done yet: the line has no timestamp.
 func TestModeAndOwnerMarkersAreKnownAndRaiseNoAlert(t *testing.T) {
 	for _, rec := range []map[string]any{
 		{"type": "repl-mode", "replMode": true, "sessionId": "s1"},
