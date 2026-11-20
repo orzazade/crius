@@ -76,7 +76,7 @@ func TestQuotaRoomAnswersForTheNamedFolder(t *testing.T) {
 		{full, exitPartial, `"verdict":"full","reason":"max1: 7d 100%`},
 		{roomy, 0, `"verdict":"room","reason":"max2: 7d 40%`},
 		{fresh, 0, `"verdict":"room","reason":"max3 not measured yet"`},
-		{old, 0, `"verdict":"room","reason":"max4 new window`},
+		{old, 0, `"verdict":"room","reason":"max4 quota unknown since its week reset`},
 		{stray, exitUnavailable, `"verdict":"unknown","reason":"login `},
 		{filepath.Join(root, "cfg-none"), exitUnavailable, `"verdict":"unknown","reason":"no login in `},
 	} {

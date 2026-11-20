@@ -16,9 +16,10 @@ const Limit = 95
 // the rows with plan max (want "max"), the one whose week resets soonest, as quota left at a reset is lost, until its
 // 7d share reaches Limit (or the project's pause_at, when lower); or the row named want. A folder counts only when it
 // is signed in and its projects/ is root, the persona's transcript folder (an aitch link of the persona's folder), so
-// crius files the session. A week that ended with no sample since is a new one at 0% that resets a week after the old
-// reset, so it goes last. A row no line measured has no known reset: it is picked only when no measured row has room,
-// and why says so. One full (Room) or at the limit is passed over, and when every row is, Pick says which and at what
+// crius files the session. A row whose newest reading is from a week that has since reset is unknown, like a row no line
+// measured: the reading says nothing about this week, which another machine may have spent (11-21: the Mac read max3 as
+// "a new week, 0%" while the Legion saw it at 96%). An unknown row is picked only when no measured row has room, and why
+// says so. One full (Room) or at the limit is passed over, and when every row is, Pick says which and at what
 // share. With no row that has such a folder and want "max", Pick returns "", and the launch is refused (launch.Run).
 //
 // Reserve, max1, comes last (owner 11-19): nothing starts or moves onto it until every other Max row of accounts.toml is
@@ -67,6 +68,9 @@ func Pick(r *Report, as *Accounts, root, want string, pauseAt int) (name, dir, w
 	return "", "", "", nil
 }
 
+// unknownWeek says why a row whose newest reading is from an earlier week (v.Ended set) has no known share.
+func unknownWeek(v *Report) string { return "no reading since its week reset " + when(v.Ended) }
+
 // Reserve is the Max account used last (owner 11-19: "nothing moves to or starts on account max1 until max2 and max3
 // are both at their limit").
 const Reserve = "max1"
@@ -74,7 +78,8 @@ const Reserve = "max1"
 // reserveHeld says why Reserve may not be picked yet, "" when every other Max row is at its limit (or there is no
 // other, or no Reserve row); full lists those rows with their shares. A row is at its limit as Pick passes one over:
 // full by Room (a 5h window at 100% too), or its 7d share at Limit; a project's lower pause_at pauses that project and
-// puts no account at its limit. A row not signed in, not measured, or whose week ended with no sample since, is not.
+// puts no account at its limit. A row not signed in, not measured, or unknown (its newest reading is from an earlier
+// week) is not: max1 is the last resort after those too, so it stays held until they are measured at their limit.
 func reserveHeld(r *Report, as *Accounts) (held, full string) {
 	var room, at []string
 	reserve := false
@@ -93,7 +98,7 @@ func reserveHeld(r *Report, as *Accounts) (held, full string) {
 		case v == nil || v.Ended.IsZero() && v.Reset.IsZero():
 			room = append(room, a.Name+" quota not measured")
 		case !v.Ended.IsZero():
-			room = append(room, a.Name+" 7d 0%, a new week since "+when(v.Ended))
+			room = append(room, a.Name+" quota unknown ("+unknownWeek(v)+")")
 		default:
 			share := fmt.Sprintf("%s 7d %.0f%%", a.Name, math.Floor(v.SevenPct))
 			if verdict, _ := Room(v); verdict == "full" || v.SevenPct >= Limit {
@@ -153,12 +158,13 @@ func pick(r *Report, as *Accounts, root, want string, pauseAt int) (name, dir, w
 				blind = &p
 			}
 			continue
-		case !v.Ended.IsZero():
-			p.reset = v.Ended
-			for !p.reset.After(r.Now) {
-				p.reset = p.reset.Add(week)
+		case !v.Ended.IsZero(): // unknown, as unmeasured: tried only when no measured row has room
+			unmeasured = append(unmeasured, a.Name+" ("+unknownWeek(v)+")")
+			if blind == nil {
+				p.share = unknownWeek(v)
+				blind = &p
 			}
-			p.share = "7d 0%, no sample since its reset " + when(v.Ended)
+			continue
 		default:
 			share := fmt.Sprintf("7d %.0f%%", math.Floor(v.SevenPct))
 			verdict, reason := Room(v)

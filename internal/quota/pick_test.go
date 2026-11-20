@@ -180,7 +180,7 @@ func TestPickTakesTheSoonestResetUnder95(t *testing.T) {
 	// max3 at 95%: the next soonest, max2.
 	r2 := &Report{Now: n1, Accounts: []AcctUse{use(n1, wm, 99, "2026-10-29 00:00"), use(n1, m3, 95, "2026-10-31 12:00"),
 		use(n1, m2, 13, "2026-11-01 07:00")}}
-	// Thu 00:10: max1's week ended with no sample since, so it is 0% until Thu 11-05: last.
+	// Thu 00:10: max1's week ended with no sample since, so its share is unknown (11-21): last, after a measured one.
 	n2 := at("2026-10-29 00:10")
 	ended := AcctUse{Login: login(wm), Reset: time.Time{}, Ended: at("2026-10-29 00:00")}
 	r3 := &Report{Now: n2, Accounts: []AcctUse{ended, use(n2, m3, 46, "2026-10-31 12:00"), use(n2, m2, 13, "2026-11-01 07:00")}}
@@ -211,7 +211,7 @@ func TestPickTakesTheSoonestResetUnder95(t *testing.T) {
 		{"pause_at 100 keeps 95", r2, as, work, "max", 100, "max2", m2, nil, ""},
 		{"an ended week goes last", r3, as, work, "max", 0, "max3", m3, nil, ""},
 		{"an ended week is used when the rest are full", r4, as, work, "max", 0, "max1", wm,
-			[]string{"no sample since its reset Thu 10-29 00:00"}, ""},
+			[]string{"quota unsure (no reading since its week reset Thu 10-29 00:00)", "picked as no measured account has room"}, ""},
 		{"a reset week goes last", r5, as, work, "max", 0, "max3", m3, nil, ""},
 		{"unmeasured is not picked while a measured one has room", r1, with4, work, "max", 0, "max3", m3,
 			[]string{"quota unknown: max4"}, ""},

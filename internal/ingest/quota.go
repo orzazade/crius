@@ -379,9 +379,11 @@ func (r *runner) pauseAccounts(tx *sql.Tx, rep *quota.Report, as *quota.Accounts
 		seen[a.Login] = true
 		switch {
 		case !a.Ended.IsZero():
-			// A week ended starts a new one on a listed account; a login no row lists is one nobody can start on.
+			// A listed account whose week reset with no reading since is unknown (11-21: another machine may have spent
+			// the new week); it counts as room here, as one never measured does. A login no row lists is one nobody can
+			// start on.
 			if r := as.Of(a.Login); r != nil && r.Plan == "max" {
-				room = append(room, a.Name+" new window")
+				room = append(room, a.Name+" quota unknown since its week reset")
 				hasRoom[a.Login] = true
 			}
 		case a.Reset.IsZero() || !a.Reset.After(rep.Now) || a.SevenPct < float64(p.pauseAt):

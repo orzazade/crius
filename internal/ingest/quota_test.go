@@ -1426,8 +1426,8 @@ func TestQuotaGuardRoomIsAListedAccountAndASplitRoleIsNotPaused(t *testing.T) {
 		t.Fatalf("p2 also runs on max1, which has room: want no PAUSE, got %q", p)
 	}
 	n = grepAlerts(y.alerts(), "account max2 at 92%")
-	if len(n) != 1 || !strings.Contains(n[0], "p2 also runs on max1") || !strings.Contains(n[0], "max4 new window") {
-		t.Fatalf("want a NEED naming p2 on max1 and max4's new window, got %q", y.alerts())
+	if len(n) != 1 || !strings.Contains(n[0], "p2 also runs on max1") || !strings.Contains(n[0], "max4 quota unknown since its week reset") || strings.Contains(n[0], "new window") {
+		t.Fatalf("want a NEED naming p2 on max1 and max4 unknown since its reset (11-21: not a new window, another machine may have spent it), got %q", y.alerts())
 	}
 }
 
