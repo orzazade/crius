@@ -441,7 +441,12 @@ func quotaCmd(home string, now time.Time, asJSON, room bool, stdout, stderr io.W
 		rep.Reasons = append(rep.Reasons, "enterprise fallback: cannot read ("+ent.Reason+")")
 	}
 	if room {
-		view, v, reason := roomFor(rep, projects.Accounts, os.Getenv("AITCH_PRIMARY"))
+		// Read as Pick reads it, with the other machines' copies (11-21: max3 at 96% on the Legion read "room" here).
+		hosts, notes, blind := rep.WithHosts(home, projects.Accounts)
+		view, v, reason := roomFor(hosts, projects.Accounts, os.Getenv("AITCH_PRIMARY"))
+		if len(blind) > 0 {
+			reason += "; other machines: " + strings.Join(notes, "; ")
+		}
 		roomLine(stdout, v, reason, view, ent)
 		switch v {
 		case "room":
@@ -469,9 +474,12 @@ func quotaCmd(home string, now time.Time, asJSON, room bool, stdout, stderr io.W
 }
 
 // roomFor is the --room verdict for the config folder dir that aitch asks about (AITCH_PRIMARY, owner 10-23: several
-// Max accounts), from that folder's login alone: a login no line measured has room when a max row lists it (a session
-// on it is what measures it), else it is unknown. With no dir, or while no line names its login (a statusline from
-// before the field), the verdict is every login's together, as before. The report is nil when it has no numbers.
+// Max accounts), from that folder's login alone, read as Pick reads a Max row for a new session (quota.Standing at quota.Limit):
+// room, full, or unknown when Pick is unsure of it (never measured, no reading since its week reset, an old reading at
+// 90% or more), so aitch takes its fallback rather than a guess (Crius 11-21). With no dir, or while no line names its
+// login (a statusline from before the field), the verdict is every login's together, as before: the Mac's store alone, as
+// WithHosts merges the other machines per login only (a legacy path; aitch always names the folder). The report is nil
+// when it has no numbers.
 func roomFor(rep *quota.Report, as *quota.Accounts, dir string) (*quota.Report, string, string) {
 	if dir == "" || len(rep.Accounts) == 0 {
 		v, reason := quota.Room(rep)
@@ -485,19 +493,18 @@ func roomFor(rep *quota.Report, as *quota.Accounts, dir string) (*quota.Report, 
 		return nil, "unknown", "no login in " + dir
 	}
 	a := as.Of(login)
-	if view := rep.Account(login); view != nil {
-		// A listed account whose week reset with no reading since is unknown (11-21: another machine may have spent the
-		// new week): room, as one never measured (a session measures it).
-		if !view.Ended.IsZero() && a != nil && a.Plan == "max" {
-			return view, "room", a.Name + " quota unknown since its week reset " + view.Ended.Local().Format("02 Jan 15:04") + ", not measured since"
-		}
-		v, reason := quota.Room(view)
-		return view, v, as.Name(login) + ": " + reason
+	if rep.Account(login) == nil && (a == nil || a.Plan != "max") {
+		return nil, "unknown", "login " + login + " of " + dir + ": no line measured it and no max row in accounts.toml lists it"
 	}
-	if a != nil && a.Plan == "max" {
-		return nil, "room", a.Name + " not measured yet"
+	switch st, why, view := quota.Standing(rep, login, quota.Limit); {
+	case st == "unsure" && why == "":
+		return nil, "unknown", as.Name(login) + " quota unknown: not measured yet"
+	case st == "unsure":
+		return view, "unknown", as.Name(login) + " quota unknown: " + why
+	default:
+		_, reason := quota.Room(view)
+		return view, st, as.Name(login) + ": " + reason
 	}
-	return nil, "unknown", "login " + login + " of " + dir + ": no line measured it and no max row in accounts.toml lists it"
 }
 
 // roomLine is the --room answer: one JSON line. Launchers read verdict and reason; the numbers are null when there

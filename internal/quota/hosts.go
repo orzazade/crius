@@ -154,6 +154,14 @@ func ParseSpool(b []byte) (out []Line, bad int) {
 	return out, bad
 }
 
+// WithHosts is r read with the other machines' week (HostLines of RemoteHosts at r.Now, then WithLines): the one reading
+// Pick, the PAUSE guard and quota --room take (11-21: the guard and --room read the Mac's store alone and said room for
+// an account at 96% on the Legion). notes and blind are HostLines'.
+func (r *Report) WithHosts(home string, as *Accounts) (rep *Report, notes, blind []string) {
+	lines, notes, blind := HostLines(home, RemoteHosts, r.Now)
+	return r.WithLines(lines, as), notes, blind
+}
+
 // WithLines is r with each login's window read from its store lines and lines together, by the rule Weeks uses (weekOf):
 // the latest window a measurement on any machine shows, its highest share. lines are other machines' spool lines
 // (HostLines); the Mac's own are in the store already. r comes from Build, which keeps each login's store lines; as names

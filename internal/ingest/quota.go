@@ -46,9 +46,9 @@ func PickAccount(home, project, want string) (name, dir, why string, err error) 
 	if err != nil {
 		return "", "", "", err
 	}
-	lines, notes, _ := quota.HostLines(home, quota.RemoteHosts, now)
+	r, notes, _ := r.WithHosts(home, projects.Accounts)
 	hosts := "other machines: " + strings.Join(notes, "; ")
-	name, dir, why, err = quota.Pick(r.WithLines(lines, projects.Accounts), projects.Accounts, root, want, pauseAt)
+	name, dir, why, err = quota.Pick(r, projects.Accounts, root, want, pauseAt)
 	if err != nil {
 		return "", "", "", fmt.Errorf("%w (%s)", err, hosts)
 	}
@@ -246,10 +246,14 @@ func (r *runner) quotaChecks(tx *sql.Tx) error {
 			return err
 		}
 	}
-	if err := r.pauseChecks(tx, rep, p.Accounts); err != nil {
+	// The pause and limit guards read each login's week as PickAccount does, with the other machines' copies
+	// (quota.WithHosts): an account at its limit on another machine is at its limit here, and the move target is the one
+	// crius-spawn -move picks. Every other figure stays the store's.
+	hosts, _, blind := rep.WithHosts(r.home, p.Accounts)
+	if err := r.pauseChecks(tx, hosts, p.Accounts); err != nil {
 		return err
 	}
-	if err := r.limitChecks(tx, rep, p.Accounts); err != nil {
+	if err := r.limitChecks(tx, hosts, p.Accounts, blind); err != nil {
 		return err
 	}
 	if rep.Reset.IsZero() || !rep.Reset.After(rep.Now) {
@@ -386,32 +390,39 @@ func (r *runner) pauseAccounts(tx *sql.Tx, rep *quota.Report, as *quota.Accounts
 	if err != nil {
 		return err
 	}
+	// Each login reads as Pick reads it (quota.Standing at the project's pause_at): room, full, or unsure. Unsure (no
+	// reading this week, none at all, or one Room cannot tell) is no room (Crius 11-21), listed after "no room:"; it
+	// pauses no one either, so the whole team pauses only when every account is measured at the limit. A full one pauses
+	// only by its 7d share: a 5h window at 100% is no room (listed so) but no PAUSE. A login no row lists whose week
+	// reset is one nobody can start on, and is left out.
 	var full []quota.AcctUse
-	var room []string
+	var room, unsure []string
 	seen, hasRoom := map[string]bool{}, map[string]bool{}
 	for _, a := range rep.Accounts {
 		seen[a.Login] = true
-		switch {
-		case !a.Ended.IsZero():
-			// A listed account whose week reset with no reading since is unknown (11-21: another machine may have spent
-			// the new week); it counts as room here, as one never measured does. A login no row lists is one nobody can
-			// start on.
-			if r := as.Of(a.Login); r != nil && r.Plan == "max" {
-				room = append(room, a.Name+" quota unknown since its week reset")
-				hasRoom[a.Login] = true
-			}
-		case a.Reset.IsZero() || !a.Reset.After(rep.Now) || a.SevenPct < float64(p.pauseAt):
+		listed := as.Of(a.Login) != nil && as.Of(a.Login).Plan == "max"
+		switch st, why, _ := quota.Standing(rep, a.Login, p.pauseAt); {
+		case st == "room":
 			room = append(room, fmt.Sprintf("%s %g%%", a.Name, a.SevenPct))
 			hasRoom[a.Login] = true
-		default:
+		case st == "full" && a.SevenPct >= float64(p.pauseAt):
 			full = append(full, a)
+		case !a.Ended.IsZero():
+			if listed {
+				unsure = append(unsure, a.Name+" unknown since its week reset")
+			}
+		case st == "full":
+			unsure = append(unsure, a.Name+" "+why)
+		case why == "":
+			unsure = append(unsure, a.Name+" not measured")
+		default:
+			unsure = append(unsure, fmt.Sprintf("%s %g%% unsure", a.Name, a.SevenPct)) // short: the NEED is one bus line
 		}
 	}
 	if as != nil {
 		for _, a := range as.Rows {
 			if a.Plan == "max" && a.Login != "" && !seen[a.Login] {
-				room = append(room, a.Name+" not measured")
-				hasRoom[a.Login] = true
+				unsure = append(unsure, a.Name+" not measured")
 			}
 		}
 	}
@@ -427,6 +438,9 @@ func (r *runner) pauseAccounts(tx *sql.Tx, rep *quota.Report, as *quota.Accounts
 	rooms := "none"
 	if len(room) > 0 {
 		rooms = strings.Join(room, ", ")
+	}
+	if len(unsure) > 0 {
+		rooms += "; no room: " + strings.Join(unsure, ", ")
 	}
 	for _, a := range full {
 		key, err := window(tx, fmt.Sprintf("quota:pause:%s:%s:%d:", p.slug, a.Login, p.pauseAt), a.Reset)
@@ -508,7 +522,7 @@ func (r *runner) pauseAccounts(tx *sql.Tx, rep *quota.Report, as *quota.Accounts
 			}
 		}
 	}
-	if len(full) == 0 || len(room) > 0 {
+	if len(full) == 0 || len(room) > 0 || len(unsure) > 0 {
 		return nil
 	}
 	first, shares := full[0].Reset, make([]string, len(full))
@@ -550,12 +564,10 @@ func (r *runner) pauseAccounts(tx *sql.Tx, rep *quota.Report, as *quota.Accounts
 // (SevenMeasuredPct), as a higher one on a line that measured nothing is a repeat that may be another login's window.
 // Shares only rise within a window, so a measured one at the limit holds at any age. Wakewatch's weekly watch reads
 // each login's week on its own and says what is unknown.
-func (r *runner) limitChecks(tx *sql.Tx, rep *quota.Report, as *quota.Accounts) error {
-	// Each login's week is read as PickAccount reads it, with the other machines' copies (quota.HostLines): a login at the
-	// limit on another machine gets its NEED, and the move target is the one crius-spawn -move picks. A NEED made while a
-	// copy is missing, old or unread names those machines; the full ages are said where the move is made.
-	lines, _, blind := quota.HostLines(r.home, quota.RemoteHosts, rep.Now)
-	rep = rep.WithLines(lines, as)
+func (r *runner) limitChecks(tx *sql.Tx, rep *quota.Report, as *quota.Accounts, blind []string) error {
+	// rep is read with the other machines' copies (quota.WithHosts): a login at the limit on another machine gets its
+	// NEED. A NEED made while a copy is missing, old or unread names those machines (blind); the full ages are said where
+	// the move is made.
 	hooks := map[string]sessionstate.State{}
 	states, err := sessionstate.List(filepath.Join(r.home, "sessions"))
 	if err != nil && !errors.Is(err, os.ErrNotExist) {

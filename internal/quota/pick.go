@@ -68,6 +68,36 @@ func Pick(r *Report, as *Accounts, root, want string, pauseAt int) (name, dir, w
 	return "", "", "", nil
 }
 
+// Standing is how one login's week reads against limit (a 7d share): "room"; "full", when Room says full (a 5h window at
+// 100% too) or the 7d share is at limit; or "unsure", when no line measured it, its newest reading is from a week that
+// has since reset, or Room cannot tell (an old reading at 90% or more, as it may be at the limit now, review of item 0;
+// a top share not measured; a reading ahead of the clock). why is the
+// share ("7d 40%", ", 5h 100%" added when full by it) or what is unknown ("" when never measured); v is the login's
+// view, nil when never measured. Pick, the PAUSE guard and quota --room read each login by it, from one report
+// (WithHosts), so the three agree; an unsure login has room for none of them (Crius 11-21), and only Pick still tries
+// one, when no measured row has room.
+func Standing(r *Report, login string, limit int) (state, why string, v *Report) {
+	v = r.Account(login)
+	switch {
+	case v == nil || v.Ended.IsZero() && v.Reset.IsZero():
+		return "unsure", "", nil
+	case !v.Ended.IsZero():
+		return "unsure", unknownWeek(v), v
+	}
+	share := fmt.Sprintf("7d %.0f%%", math.Floor(v.SevenPct))
+	verdict, reason := Room(v)
+	switch {
+	case verdict == "full" || v.SevenPct >= float64(limit):
+		if v.FivePct >= 100 {
+			share += ", 5h 100%"
+		}
+		return "full", share, v
+	case verdict == "unknown":
+		return "unsure", reason, v
+	}
+	return "room", share, v
+}
+
 // unknownWeek says why a row whose newest reading is from an earlier week (v.Ended set) has no known share.
 func unknownWeek(v *Report) string { return "no reading since its week reset " + when(v.Ended) }
 
@@ -151,40 +181,23 @@ func pick(r *Report, as *Accounts, root, want string, pauseAt int) (name, dir, w
 			continue
 		}
 		p := pick{name: a.Name, dir: d}
-		switch v := r.Account(a.Login); {
-		case v == nil || v.Ended.IsZero() && v.Reset.IsZero():
-			unmeasured = append(unmeasured, a.Name)
+		switch st, why, v := Standing(r, a.Login, limit); st {
+		case "unsure": // tried only when no measured row has room
+			if why == "" {
+				unmeasured = append(unmeasured, a.Name)
+			} else {
+				unmeasured = append(unmeasured, a.Name+" ("+why+")")
+			}
 			if blind == nil {
+				p.share = why
 				blind = &p
 			}
 			continue
-		case !v.Ended.IsZero(): // unknown, as unmeasured: tried only when no measured row has room
-			unmeasured = append(unmeasured, a.Name+" ("+unknownWeek(v)+")")
-			if blind == nil {
-				p.share = unknownWeek(v)
-				blind = &p
-			}
+		case "full":
+			full = append(full, a.Name+" "+why)
 			continue
 		default:
-			share := fmt.Sprintf("7d %.0f%%", math.Floor(v.SevenPct))
-			verdict, reason := Room(v)
-			if verdict == "full" || v.SevenPct >= float64(limit) {
-				if v.FivePct >= 100 {
-					share += ", 5h 100%"
-				}
-				full = append(full, a.Name+" "+share)
-				continue
-			}
-			if verdict == "unknown" && v.SevenPct >= 90 {
-				// An old sample at 90% or more may be at the limit now (review of item 0): unsure, like unmeasured.
-				unmeasured = append(unmeasured, a.Name+" ("+reason+")")
-				if blind == nil {
-					p.share = reason
-					blind = &p
-				}
-				continue
-			}
-			p.reset, p.share = v.Reset, share
+			p.reset, p.share = v.Reset, why
 		}
 		if best == nil || p.reset.Before(best.reset) {
 			best = &p

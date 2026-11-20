@@ -1412,7 +1412,7 @@ func TestQuotaGuardRoomIsAListedAccountAndASplitRoleIsNotPaused(t *testing.T) {
 		t.Fatalf("want one NEED for the whole team, got %q", x.alerts())
 	}
 
-	// A third listed account, its week ended: room. p2's second tab runs on it, p2 has a second tab on max1, at 40%, so p2 is not paused on max2.
+	// A third listed account, its week ended: unknown, no room, named apart. p2's second tab runs on it, p2 has a second tab on max1, at 40%, so p2 is not paused on max2.
 	y := newIC(t, cfg{extra: strings.Replace(guardedProject, "pause_at = 70", "pause_at = 90", 1)})
 	l1, l2, l4 = y.signIn(d1, "u-1"), y.signIn(d2, "u-2"), y.signIn(d4, "u-4")
 	testutil.Write(t, filepath.Join(y.home, "accounts.toml"), rows+"[[account]]\nname = \"max4\"\nplan = \"max\"\ndirs = [\""+d4+"\"]\n")
@@ -1426,7 +1426,7 @@ func TestQuotaGuardRoomIsAListedAccountAndASplitRoleIsNotPaused(t *testing.T) {
 		t.Fatalf("p2 also runs on max1, which has room: want no PAUSE, got %q", p)
 	}
 	n = grepAlerts(y.alerts(), "account max2 at 92%")
-	if len(n) != 1 || !strings.Contains(n[0], "p2 also runs on max1") || !strings.Contains(n[0], "max4 quota unknown since its week reset") || strings.Contains(n[0], "new window") {
+	if len(n) != 1 || !strings.Contains(n[0], "p2 also runs on max1") || !strings.Contains(n[0], "no room: max4 unknown since its week reset") || strings.Contains(n[0], "new window") {
 		t.Fatalf("want a NEED naming p2 on max1 and max4 unknown since its reset (11-21: not a new window, another machine may have spent it), got %q", y.alerts())
 	}
 }
@@ -1501,7 +1501,8 @@ func TestQuotaGuardSplitRoleUsesTheRoomTestAndALaterPauseTellsCrius(t *testing.T
 		t.Fatalf("want one NEED for max1, got %q", n)
 	}
 
-	// Review 10-23: a listed account not measured yet is room in the NEED, so a role with a tab there is not paused.
+	// Review 10-23 had a listed account not measured yet count as room, so a role with a tab there was not paused. Crius
+	// 11-21: an unknown account is no room, as Pick reads it: the NEED names it apart and the role is paused.
 	now = qNow
 	w := newIC(t, cfg{extra: strings.Replace(guardedProject, "pause_at = 70", "pause_at = 90", 1)})
 	l1, l2 = w.signIn(d1, "u-1"), w.signIn(d2, "u-2")
@@ -1514,11 +1515,11 @@ func TestQuotaGuardSplitRoleUsesTheRoomTestAndALaterPauseTellsCrius(t *testing.T
 	w.spool(on(sampleAt(s2, qNow.Add(-9*time.Minute), 92, r1), l1, d1), fresh)
 	w.run()
 	n := grepAlerts(w.alerts(), "account max1 at 92%")
-	if len(n) != 1 || !strings.Contains(n[0], "max2 not measured") {
-		t.Fatalf("want a NEED naming max2 not measured as room, got %q", w.alerts())
+	if len(n) != 1 || !strings.Contains(n[0], "Room: none; no room: max2 not measured") {
+		t.Fatalf("want a NEED naming max2 not measured as no room, got %q", w.alerts())
 	}
-	if p := grepAlerts(w.bus("quotes"), " -> quotes:p2 — "); len(p) != 0 || !strings.Contains(n[0], "p2 also runs on max2") {
-		t.Fatalf("p2 also runs on max2, room: want no PAUSE and p2 named, got %q and %q", p, n)
+	if p := grepAlerts(w.bus("quotes"), " -> quotes:p2 — "); len(p) != 1 || strings.Contains(n[0], "p2 also runs on max2") {
+		t.Fatalf("p2's other tab is on max2, unknown, no room: want a PAUSE to quotes:p2 and no split, got %q and %q", p, n)
 	}
 }
 

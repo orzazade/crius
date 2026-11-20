@@ -15,8 +15,8 @@ import (
 
 // Owner 10-23 (several Max accounts): aitch names the primary folder it asks about in AITCH_PRIMARY, and `quota
 // --room` answers for that folder's account alone: a full account is full though another has room, an account with
-// room is room though another is full, a listed Max account signed in but not measured yet has room (a session on it
-// is what measures it), and a login no row lists and no line measured is unknown. Without AITCH_PRIMARY the answer
+// room is room though another is full, a listed Max account signed in but not measured yet, or not since its week reset, is unknown
+// (Crius 11-21: as Pick reads it), and a login no row lists and no line measured is unknown. Without AITCH_PRIMARY the answer
 // is the one for every login together, as before.
 func TestQuotaRoomAnswersForTheNamedFolder(t *testing.T) {
 	root, home := testutil.Temp(t)
@@ -75,8 +75,8 @@ func TestQuotaRoomAnswersForTheNamedFolder(t *testing.T) {
 		{"", exitPartial, `"verdict":"full"`},
 		{full, exitPartial, `"verdict":"full","reason":"max1: 7d 100%`},
 		{roomy, 0, `"verdict":"room","reason":"max2: 7d 40%`},
-		{fresh, 0, `"verdict":"room","reason":"max3 not measured yet"`},
-		{old, 0, `"verdict":"room","reason":"max4 quota unknown since its week reset`},
+		{fresh, exitUnavailable, `"verdict":"unknown","reason":"max3 quota unknown: not measured yet`},
+		{old, exitUnavailable, `"verdict":"unknown","reason":"max4 quota unknown: no reading since its week reset`},
 		{stray, exitUnavailable, `"verdict":"unknown","reason":"login `},
 		{filepath.Join(root, "cfg-none"), exitUnavailable, `"verdict":"unknown","reason":"no login in `},
 	} {
