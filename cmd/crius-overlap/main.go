@@ -5,7 +5,11 @@
 //	crius-overlap <project> check <branch>  exit 3 and print the clashes when <branch> shares files with open work
 //	crius-overlap all                       every project with a <home>/state/<project>/overlap.toml (the launchd job)
 //
-// The config is <home>/state/<project>/overlap.toml, one [[repo]] table per repo:
+// The config is <home>/state/<project>/overlap.toml: optional project keys first, then one [[repo]] table per repo:
+//
+//	bus_post = "~/.crius/bin/bus-post-legion"  # optional: post with this command (same arguments as bus-post) …
+//	bus_log = "/home/crius/.crius/bus/quotes.log" # … to this log, its path where the command runs (both or neither)
+//	owners = { "feature/96365-" = "quotes:dev, quotes:builder-2" } # optional: branch name prefix -> the roles it belongs to
 //
 //	[[repo]]
 //	name = "AppXite.AXI"                  # shown in the bus line when the project has more than one repo
@@ -21,16 +25,17 @@
 // Each run fetches every branch of the remote (and with prs, every refs/pull/<id>/merge: Azure DevOps and GitHub show
 // each open PR so) into refs/overlap/<remote>/ and refs/overlap-pr/<remote>/ of the clone, namespaces of its own: the
 // team's refs/remotes are not touched. For each open branch it takes the files changed since the branch left base, less
-// the files whose change has landed (see files). Two branches that share a file are a clash. Each clash is posted once to
-// <home>/bus/<project>.log, again only when its shared files grow; the pairs posted are in
-// <home>/state/<project>/overlap-seen.tsv. When that bus is only a copy of a bus on another machine (a .remote marker),
-// the line goes to <home>/bus/crius.log for Crius to pass on.
+// the files whose change has landed (see files). Two branches that share a file are a clash, unless one holds every
+// commit of the other that base does not have: a branch built on the other on purpose (a stack) lands after it with no
+// clash. Each clash is posted once to <home>/bus/<project>.log (or with bus_post), again only when its shared files grow
+// or it goes to someone new; the pairs posted are in <home>/state/<project>/overlap-seen.tsv. A line goes to the roles
+// that own its two branches (see owners).
 //
 // With prs, a PR that conflicts with base may have no merge ref (GitHub) or an old one (Azure DevOps): it is compared at
 // the tip its merge ref names, and the output says so.
 //
-// Exit codes: 0 looked (the output says how many branches were compared), 1 could not look (says why: a fetch, a
-// missing repo, a bad config), 2 bad arguments, 3 check found a clash.
+// Exit codes: 0 looked and posted (the output says how many branches were compared), 1 could not look or could not post
+// (says why: a fetch, a missing repo, a bad config, a bus that refused the line), 2 bad arguments, 3 check found a clash.
 package main
 
 import (
@@ -50,9 +55,11 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/BurntSushi/toml"
 	"github.com/orzazade/crius/internal/board"
+	"github.com/orzazade/crius/internal/sessionstate"
 	"github.com/orzazade/crius/internal/store"
 )
 
@@ -118,54 +125,91 @@ type Repo struct {
 	re       *regexp.Regexp
 }
 
-func load(home, project string) ([]Repo, error) {
-	file := filepath.Join(home, "state", project, "overlap.toml")
-	var c struct {
-		Repos []Repo `toml:"repo"`
+// config is one project's overlap.toml.
+type config struct {
+	Repos   []Repo            `toml:"repo"`
+	BusPost string            `toml:"bus_post"`
+	BusLog  string            `toml:"bus_log"`
+	Owners  map[string]string `toml:"owners"`
+}
+
+var roleName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*:[a-z0-9][a-z0-9-]*$`)
+
+// tilde gives a path with a leading ~/ in the user's home folder.
+func tilde(p string) (string, error) {
+	if !strings.HasPrefix(p, "~/") {
+		return p, nil
 	}
+	u, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(u, p[2:]), nil
+}
+
+func load(home, project string) (config, error) {
+	file := filepath.Join(home, "state", project, "overlap.toml")
+	var c config
 	md, err := toml.DecodeFile(file, &c)
 	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", file, err)
+		return c, fmt.Errorf("reading %s: %w", file, err)
 	}
 	if u := md.Undecoded(); len(u) > 0 {
-		return nil, fmt.Errorf("%s: keys crius-overlap does not know: %v", file, u)
+		return c, fmt.Errorf("%s: keys crius-overlap does not know: %v", file, u)
 	}
 	if len(c.Repos) == 0 {
-		return nil, fmt.Errorf("%s names no [[repo]]", file)
+		return c, fmt.Errorf("%s names no [[repo]]", file)
+	}
+	if (c.BusPost == "") != (c.BusLog == "") {
+		return c, fmt.Errorf("%s: bus_post and bus_log go together (the command, and the log it posts to)", file)
+	}
+	if c.BusPost, err = tilde(c.BusPost); err != nil {
+		return c, err
+	}
+	if c.BusLog != "" && !strings.HasPrefix(c.BusLog, "/") {
+		return c, fmt.Errorf("%s: bus_log is the log's whole path where bus_post runs (no ~: no shell reads it there), got %q",
+			file, c.BusLog)
+	}
+	for prefix, to := range c.Owners {
+		var names []string
+		for _, n := range strings.Split(to, ",") {
+			names = append(names, strings.TrimSpace(n))
+		}
+		if prefix == "" || slices.ContainsFunc(names, func(n string) bool { return !roleName.MatchString(n) }) {
+			return c, fmt.Errorf("%s: owners: %q = %q: want a branch name prefix = \"project:role\" (more roles with commas)",
+				file, prefix, to)
+		}
+		c.Owners[prefix] = strings.Join(names, ", ")
 	}
 	names := map[string]bool{}
 	for i := range c.Repos {
 		r := &c.Repos[i]
 		if r.Path == "" || r.Remote == "" || r.Base == "" || r.MaxAge <= 0 {
-			return nil, fmt.Errorf("%s: repo %d needs path, remote, base and max_age_days > 0", file, i+1)
+			return c, fmt.Errorf("%s: repo %d needs path, remote, base and max_age_days > 0", file, i+1)
 		}
 		if r.Auth != "" && r.Auth != "az" {
-			return nil, fmt.Errorf("%s: repo %s: auth is \"az\" or not set, got %q", file, r.Path, r.Auth)
+			return c, fmt.Errorf("%s: repo %s: auth is \"az\" or not set, got %q", file, r.Path, r.Auth)
 		}
-		if strings.HasPrefix(r.Path, "~/") {
-			u, err := os.UserHomeDir()
-			if err != nil {
-				return nil, err
-			}
-			r.Path = filepath.Join(u, r.Path[2:])
+		if r.Path, err = tilde(r.Path); err != nil {
+			return c, err
 		}
 		if r.Name == "" {
 			r.Name = filepath.Base(r.Path)
 		}
 		if names[r.Name] || strings.ContainsAny(r.Name, "\t\n") {
-			return nil, fmt.Errorf("%s: repo name %q is used twice or has a tab (name each [[repo]] apart)", file, r.Name)
+			return c, fmt.Errorf("%s: repo name %q is used twice or has a tab (name each [[repo]] apart)", file, r.Name)
 		}
 		names[r.Name] = true
 		if r.re, err = regexp.Compile(r.Branches); err != nil {
-			return nil, fmt.Errorf("%s: repo %s: branches: %w", file, r.Name, err)
+			return c, fmt.Errorf("%s: repo %s: branches: %w", file, r.Name, err)
 		}
 		for _, g := range r.Ignore {
 			if _, err := path.Match(g, ""); err != nil {
-				return nil, fmt.Errorf("%s: repo %s: ignore %q: %w", file, r.Name, g, err)
+				return c, fmt.Errorf("%s: repo %s: ignore %q: %w", file, r.Name, g, err)
 			}
 		}
 	}
-	return c.Repos, nil
+	return c, nil
 }
 
 // branch is one open branch (or open PR): the name it is known by, the label a bus line shows, its tip, the branch
@@ -402,10 +446,56 @@ func (s *scan) files(ctx context.Context, sha string) (map[string]string, error)
 	for f, blob := range raw(changed) {
 		merges := !merging[f] && !conflicted[f] && s.baseFiles[f]
 		if !merges && !landed[f+"\x00"+blob] && !slices.ContainsFunc(s.repo.Ignore, func(g string) bool { return glob(g, f) }) {
-			files[board.Key(f)] = f
+			files[board.Key(f)] = shown(f)
 		}
 	}
 	return files, nil
+}
+
+// shown is a file name as a bus line and the seen list show it: quoted when it holds a newline, a tab or another control
+// character, so the line stays one line and the seen list's tabs and lines still split it.
+func shown(f string) string {
+	if strings.ContainsFunc(f, unicode.IsControl) {
+		return strconv.Quote(f)
+	}
+	return f
+}
+
+// narrow keeps of the files two branches share only those that both change in commits of their own: commits the other
+// does not hold, nor a copy of (a rebase or cherry-pick: same change, new id). Work both hold is one change, landed once,
+// so it is no clash: one branch built on the other or both on a third, also after a fix on the lower branch, a merge of
+// base into either, or a rebase of the lower one (live Quotes 11-20: PR 8371 is built on 8348, 29 shared files). Merge
+// commits are left out: what they bring in is base's or another branch's, whose own commits still count (a conflict
+// fixed inside a merge is not seen). It keys on history, never on names.
+func (s *scan) narrow(ctx context.Context, p pair, a, b branch) (pair, error) {
+	own := func(tip, other string) (map[string]bool, error) {
+		out, err := s.git.out(ctx, 2*time.Minute, "log", "--raw", "-z", "--no-abbrev", "--no-renames", "--diff-merges=off",
+			"--format=", "--cherry-pick", "--left-only", tip+"..."+other, "^"+s.base)
+		if err != nil {
+			return nil, fmt.Errorf("repo %s: %w", s.repo.Name, err)
+		}
+		keys := map[string]bool{}
+		for f := range raw(out) {
+			keys[board.Key(f)] = true
+		}
+		return keys, nil
+	}
+	ka, err := own(a.tip, b.tip)
+	if err != nil {
+		return p, err
+	}
+	kb, err := own(b.tip, a.tip)
+	if err != nil {
+		return p, err
+	}
+	p.files = nil
+	for k, f := range a.files {
+		if _, ok := b.files[k]; ok && ka[k] && kb[k] {
+			p.files = append(p.files, f)
+		}
+	}
+	slices.Sort(p.files)
+	return p, nil
 }
 
 // raw reads `git diff --raw -z` or `git log --raw -z --format=` output into path -> the content it was given (a blob
@@ -490,27 +580,45 @@ func (p pair) text(multi bool) string {
 	return s
 }
 
-// watch looks at every repo of a project and posts each new or grown clash once. A repo that cannot be looked at keeps
-// its seen pairs and makes the run fail after the others are done. list prints every clash, not only the summary.
+// watch looks at every repo of a project and posts each new or grown clash once, and once more when it goes to someone
+// new. A repo that cannot be looked at keeps its seen pairs and makes the run fail after the others are done; so does a
+// line the bus refuses, which stays unseen and is tried again next run. list prints every clash, not only the summary.
 func watch(home string, now time.Time, project string, out io.Writer, list bool) error {
-	repos, err := load(home, project)
+	c, err := load(home, project)
 	if err != nil {
 		return err
 	}
+	repos := c.Repos
 	unlock, err := lock(home, project)
 	if err != nil {
 		return err
 	}
 	defer unlock()
 	seenPath := filepath.Join(home, "state", project, "overlap-seen.tsv")
-	seen, err := readSeen(seenPath)
+	seen, err := readSeen(seenPath, project)
 	if err != nil {
 		return err
 	}
-	next := map[string][]string{}
-	held := map[string][]string{} // new or grown pairs past the burst limit, posted as one line
+	b := projectBus(home, project, c)
+	own := &owners{home: home, project: project, prefixes: c.Owners}
+	next := map[string]seenRow{}
+	held := map[string]seenRow{} // new, grown or moved pairs past the burst limit, posted as one line
 	var errs []error
 	sent := 0
+	down := false // the bus was not reached: the rest wait for the next run, unseen
+	send := func(to, text string) bool {
+		if down {
+			return false
+		}
+		err := b.post("INFO", to, text)
+		if pe := (postError{}); errors.As(err, &pe) && pe.down {
+			down = true
+		}
+		if err != nil {
+			errs = append(errs, err)
+		}
+		return err == nil
+	}
 	ctx := context.Background()
 	for _, r := range repos {
 		s, err := look(ctx, r, now)
@@ -527,10 +635,10 @@ func watch(home string, now time.Time, project string, out io.Writer, list bool)
 		for _, n := range s.notes {
 			fmt.Fprintf(out, "%s: %s\n", r.Name, n)
 		}
-		var clashes, posted int
+		var clashes, posted, stacks int
 		for i, a := range s.open {
-			for _, b := range s.open[i+1:] {
-				x, y := a, b
+			for _, b2 := range s.open[i+1:] {
+				x, y := a, b2
 				if y.name < x.name {
 					x, y = y, x
 				}
@@ -538,49 +646,72 @@ func watch(home string, now time.Time, project string, out io.Writer, list bool)
 				if !ok {
 					continue
 				}
+				old, had := seen[p.key()]
+				if had {
+					next[p.key()] = old
+				}
+				if p, err = s.narrow(ctx, p, x, y); err != nil {
+					errs = append(errs, err)
+					continue
+				} else if len(p.files) == 0 {
+					stacks++
+					delete(next, p.key())
+					continue
+				}
 				clashes++
 				if list {
 					fmt.Fprintf(out, "  %s\n", p.text(len(repos) > 1))
 				}
-				old := seen[p.key()]
-				if old != nil {
-					next[p.key()] = old
+				to, err := own.pair(x, y)
+				if err != nil {
+					errs = append(errs, err)
+					continue
 				}
-				if !slices.ContainsFunc(p.files, func(f string) bool { return !slices.Contains(old, f) }) {
-					continue // posted before, and not grown since
+				grown := slices.ContainsFunc(p.files, func(f string) bool { return !slices.Contains(old.files, f) })
+				if !grown && old.to == to {
+					continue // posted before to the same roles, and not grown since
 				}
 				union := slices.Clone(p.files)
-				for _, f := range old {
+				for _, f := range old.files {
 					if !slices.Contains(union, f) {
 						union = append(union, f)
 					}
 				}
 				slices.Sort(union)
 				if sent >= burst {
-					held[p.key()] = union
+					held[p.key()] = seenRow{to: to, files: union}
 					continue
 				}
-				if err := post(home, project, "INFO", project+":lead", p.text(len(repos) > 1)); err != nil {
-					errs = append(errs, err)
+				if !send(to, p.text(len(repos) > 1)) {
 					continue
 				}
 				sent++
 				posted++
-				next[p.key()] = union
+				next[p.key()] = seenRow{to: to, files: union}
 			}
 		}
 		summary := "no clashes"
 		if clashes > 0 {
 			summary = fmt.Sprintf("%d clashing pairs, %d posted now", clashes, posted)
 		}
+		if stacks > 0 {
+			summary += fmt.Sprintf("; %d stacked pairs skipped (their shared files are only in work both hold)", stacks)
+		}
 		fmt.Fprintf(out, "%s: fetched %s; %d %s on the remote besides %s; compared %d %s (changed files not in %s, tip within %d days): %s\n",
 			r.Name, r.Remote, s.listed, s.unit(), r.Base, len(s.open), s.unit(), r.Base, r.MaxAge, summary)
 	}
 	if len(held) > 0 {
+		var to []string
+		for _, row := range held {
+			for _, n := range strings.Split(row.to, ", ") {
+				if !slices.Contains(to, n) {
+					to = append(to, n)
+				}
+			}
+		}
+		slices.Sort(to)
 		text := fmt.Sprintf("%d more clashing pairs: crius-overlap %s lists them", len(held), project)
-		if err := post(home, project, "INFO", project+":lead", text); err != nil {
-			errs = append(errs, err)
-		} else {
+		if send(strings.Join(to, ", "), text) {
 			maps.Copy(next, held)
 			fmt.Fprintln(out, "posted: "+text)
 		}
@@ -591,13 +722,91 @@ func watch(home string, now time.Time, project string, out io.Writer, list bool)
 	return errors.Join(errs...)
 }
 
+// owners finds the roles a branch belongs to: the longest owners prefix of its name (or of a branch at the PR's tip);
+// else <role> when the name starts with <role>/ and <project>:<role> has a role file in <home>/roles or has posted on
+// the project's bus (a team on another machine has no role files here; its bus copy names its roles); else crius:lead.
+type owners struct {
+	home, project string
+	prefixes      map[string]string
+	posters       map[string]bool // roles that posted on the project's bus, read once
+}
+
+func (o *owners) of(b branch) ([]string, error) {
+	best := ""
+	for _, h := range b.heads {
+		for p := range o.prefixes {
+			if strings.HasPrefix(h, p) && (len(p) > len(best) || len(p) == len(best) && p < best) {
+				best = p
+			}
+		}
+	}
+	if best != "" {
+		return strings.Split(o.prefixes[best], ", "), nil
+	}
+	for _, h := range b.heads {
+		role, _, ok := strings.Cut(h, "/")
+		if !ok {
+			continue
+		}
+		if f, err := sessionstate.RolePath(filepath.Join(o.home, "roles"), o.project, role); err == nil {
+			if _, err := os.Stat(f); err == nil {
+				return []string{o.project + ":" + role}, nil
+			}
+		}
+		if o.posters == nil {
+			if err := o.readPosters(); err != nil {
+				return nil, err
+			}
+		}
+		if o.posters[o.project+":"+role] {
+			return []string{o.project + ":" + role}, nil
+		}
+	}
+	return []string{"crius:lead"}, nil
+}
+
+// pair is the roles a clash goes to: the first branch's owners, then the second's, each once.
+func (o *owners) pair(a, b branch) (string, error) {
+	var to []string
+	for _, x := range []branch{a, b} {
+		ns, err := o.of(x)
+		if err != nil {
+			return "", err
+		}
+		for _, n := range ns {
+			if !slices.Contains(to, n) {
+				to = append(to, n)
+			}
+		}
+	}
+	return strings.Join(to, ", "), nil
+}
+
+// readPosters reads who posted on the project's bus here ("<time> <TYPE> <project:role> -> …"); a project with no bus
+// here has none.
+func (o *owners) readPosters() error {
+	raw, err := os.ReadFile(filepath.Join(o.home, "bus", o.project+".log"))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("reading who posted on the %s bus: %w", o.project, err)
+	}
+	posters := map[string]bool{}
+	for _, line := range strings.Split(string(raw), "\n") {
+		if f := strings.Fields(line); len(f) > 3 && f[3] == "->" && strings.HasPrefix(f[2], o.project+":") {
+			posters[f[2]] = true
+		}
+	}
+	o.posters = posters
+	return nil
+}
+
 // check compares one branch with all open work. It reads the local branch (not pushed yet) when that holds the remote
 // one, else the remote one; it skips the branch itself and its own PR, also when the PR's merge ref is behind.
 func check(home string, now time.Time, project, name string, out io.Writer) error {
-	repos, err := load(home, project)
+	c, err := load(home, project)
 	if err != nil {
 		return err
 	}
+	repos := c.Repos
 	unlock, err := lock(home, project) // its fetch must not meet the launchd run's in the same clone
 	if err != nil {
 		return err
@@ -640,13 +849,16 @@ func check(home string, now time.Time, project, name string, out io.Writer) erro
 			if o.name == name || slices.Contains(o.heads, name) {
 				continue // itself, or its own PR
 			}
-			if own, err := s.git.ancestor(ctx, o.tip, sha); err != nil {
-				return err
-			} else if own {
-				continue // an older tip of this branch (a PR merge ref behind), or work it is built on
+			p, ok := shared(r.Name, me, o)
+			if ok {
+				if p, err = s.narrow(ctx, p, me, o); err != nil {
+					return err
+				} else if len(p.files) == 0 {
+					continue // an older tip of this branch (a PR merge ref behind), work it is built on, or work built on it
+				}
 			}
 			n++
-			if p, ok := shared(r.Name, me, o); ok {
+			if ok {
 				clashes++
 				fmt.Fprintln(out, p.text(len(repos) > 1))
 			}
@@ -667,8 +879,8 @@ func check(home string, now time.Time, project, name string, out io.Writer) erro
 	return nil
 }
 
-// all watches every project that has an overlap.toml. Each reason a project cannot be looked at (one line per repo) is
-// posted to Crius's bus once; the reasons are kept in overlap-fail.txt with numbers blanked, until a clean run. So a
+// all watches every project that has an overlap.toml. Each reason a project cannot be looked at (one line per repo) or
+// a line of it could not be posted is posted to Crius's bus once; the reasons are kept in overlap-fail.txt with numbers blanked, until a clean run. So a
 // launchd run that fails is never silent, and one that keeps failing the same way says it once.
 func all(home string, now time.Time, out io.Writer) error {
 	files, err := filepath.Glob(filepath.Join(home, "state", "*", "overlap.toml"))
@@ -679,7 +891,6 @@ func all(home string, now time.Time, out io.Writer) error {
 		return fmt.Errorf("no project has %s", filepath.Join(home, "state", "<project>", "overlap.toml"))
 	}
 	var errs []error
-	digits := regexp.MustCompile(`[0-9]+`)
 	for _, f := range files {
 		project := filepath.Base(filepath.Dir(f))
 		fmt.Fprintf(out, "== %s %s\n", project, now.Format("2006-01-02T15:04"))
@@ -695,8 +906,14 @@ func all(home string, now time.Time, out io.Writer) error {
 		old, _ := os.ReadFile(failPath)
 		was := strings.Split(string(old), "\n")
 		var keys []string
-		for _, line := range strings.Split(err.Error(), "\n") {
-			key := digits.ReplaceAllString(line, "N")
+		crius := bus{cmd: filepath.Join(home, "bin", "bus-post"), log: filepath.Join(home, "bus", "crius.log")}
+		for _, e := range leaves(err) {
+			what := "could not look"
+			if pe := (postError{}); errors.As(e, &pe) {
+				what = "could not post"
+			}
+			line := strings.ReplaceAll(e.Error(), "\n", " ")
+			key := failKey(line)
 			if slices.Contains(keys, key) {
 				continue
 			}
@@ -704,7 +921,7 @@ func all(home string, now time.Time, out io.Writer) error {
 			if slices.Contains(was, key) {
 				continue
 			}
-			if err := post(home, "crius", "ALERT", "crius:lead", "crius-overlap "+project+" could not look: "+line); err != nil {
+			if err := crius.post("ALERT", "crius:lead", "crius-overlap "+project+" "+what+": "+line); err != nil {
 				errs = append(errs, err)
 				keys = keys[:len(keys)-1] // not said: say it next run
 			}
@@ -716,20 +933,52 @@ func all(home string, now time.Time, out io.Writer) error {
 	return errors.Join(errs...)
 }
 
+// varies is what changes from run to run in one failure reason: a GUID (az's Trace and Correlation IDs), a sha that
+// moves with each tip, or a number.
+var varies = regexp.MustCompile(`[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}|\b[0-9a-f]{7,40}\b|[0-9]+`)
+
+// failKey is a failure reason with what varies blanked, so one reason is said once.
+func failKey(line string) string { return varies.ReplaceAllString(line, "N") }
+
 // hexWord is a word bus-post would take for a commit id; the bus line names only branches and files, so none is one.
 var hexWord = regexp.MustCompile(`^[0-9A-Fa-f]{7,40}$`)
 
-// post sends one line with bus-post to a project's bus. A bus that is only a copy here of a live bus on another machine
-// (quotes.log, staffy.log) would refuse it, and the wrappers that post there run over ssh, which a 10-min job must not
-// wait on (store.OpenBus): such a line goes on Crius's bus for Crius to relay. Exit 5 and 8 of bus-post are posted, with a
-// recipient or thread not reached.
-func post(home, project, typ, to, text string) error {
-	log := filepath.Join(home, "bus", project+".log")
-	if _, remote, err := store.RemoteCopy(log); err != nil {
-		return err
-	} else if remote {
-		log, text, to = filepath.Join(home, "bus", "crius.log"), "for "+to+" (its bus is on another machine): "+text, "crius:lead"
+// bus is where a project's lines go: a command with bus-post's arguments, and the log it is given.
+type bus struct{ cmd, log string }
+
+// projectBus is <home>/bin/bus-post on <home>/bus/<project>.log, or the config's bus_post and bus_log (a bus on another
+// machine: the copy here refuses lines).
+func projectBus(home, project string, c config) bus {
+	if c.BusPost != "" {
+		return bus{cmd: c.BusPost, log: c.BusLog}
 	}
+	return bus{cmd: filepath.Join(home, "bin", "bus-post"), log: filepath.Join(home, "bus", project+".log")}
+}
+
+// postError is a line the bus did not take: the run could look, and says so apart. down is a bus not reached at all
+// (ssh's exit 255, the time limit, a command that does not start), as against one line refused.
+type postError struct {
+	err  error
+	down bool
+}
+
+func (e postError) Error() string { return e.err.Error() }
+
+// leaves gives every error errors.Join put together, one by one.
+func leaves(err error) []error {
+	if j, ok := err.(interface{ Unwrap() []error }); ok {
+		var all []error
+		for _, e := range j.Unwrap() {
+			all = append(all, leaves(e)...)
+		}
+		return all
+	}
+	return []error{err}
+}
+
+// post sends one line. Exit 5 and 8 of bus-post are posted, with a recipient or thread not reached. A command that hangs
+// (ssh to a machine that sleeps) is stopped, with its whole process group, after two minutes.
+func (b bus) post(typ, to, text string) error {
 	var notSha []string
 	for _, w := range strings.FieldsFunc(text, func(r rune) bool {
 		return !(r == '_' || r == '-' || r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z')
@@ -738,21 +987,38 @@ func post(home, project, typ, to, text string) error {
 			notSha = append(notSha, w)
 		}
 	}
-	cmd := exec.Command(filepath.Join(home, "bin", "bus-post"), log, typ, "crius:overlap", to, text)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, b.cmd, b.log, typ, "crius:overlap", to, text)
 	cmd.Env = append(os.Environ(), "SAY_NOT_SHA="+strings.Join(notSha, ","))
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = 5 * time.Second
 	got, err := cmd.CombinedOutput()
 	var ee *exec.ExitError
 	if errors.As(err, &ee) && (ee.ExitCode() == 5 || ee.ExitCode() == 8) {
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("bus-post to %s: %v: %s", filepath.Base(log), err, strings.Join(strings.Fields(string(got)), " "))
+		down := !errors.As(err, &ee) || ee.ExitCode() == 255 || ctx.Err() != nil
+		return postError{fmt.Errorf("%s to %s: %v: %s", filepath.Base(b.cmd), filepath.Base(b.log), err,
+			strings.Join(strings.Fields(string(got)), " ")), down}
 	}
 	return nil
 }
 
-func readSeen(file string) (map[string][]string, error) {
-	seen := map[string][]string{}
+// seenRow is a pair posted: the roles it went to and the files it shared.
+type seenRow struct {
+	to    string
+	files []string
+}
+
+// seenHead starts a seen list that names the roles each pair went to. A list without it (86fc592) has rows of
+// repo, a, b, files…, all posted to <project>:lead.
+const seenHead = "# crius-overlap seen v2: repo, branch, branch, to, files"
+
+func readSeen(file, project string) (map[string]seenRow, error) {
+	seen := map[string]seenRow{}
 	b, err := os.ReadFile(file)
 	if errors.Is(err, os.ErrNotExist) {
 		return seen, nil
@@ -760,23 +1026,27 @@ func readSeen(file string) (map[string][]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	v2 := lines[0] == seenHead
+	for _, line := range lines {
 		f := strings.Split(line, "\t")
-		if len(f) < 4 {
-			continue // the empty file
+		switch {
+		case v2 && len(f) >= 5:
+			seen[strings.Join(f[:3], "\t")] = seenRow{to: f[3], files: f[4:]}
+		case !v2 && len(f) >= 4:
+			seen[strings.Join(f[:3], "\t")] = seenRow{to: project + ":lead", files: f[3:]}
 		}
-		seen[strings.Join(f[:3], "\t")] = f[3:]
 	}
 	return seen, nil
 }
 
 // writeSeen writes the seen pairs whole (a new file, then renamed over the old one): a run stopped half way leaves the
 // old list, never half a list.
-func writeSeen(file string, seen map[string][]string) error {
-	keys := slices.Sorted(maps.Keys(seen))
+func writeSeen(file string, seen map[string]seenRow) error {
 	var b strings.Builder
-	for _, k := range keys {
-		b.WriteString(k + "\t" + strings.Join(seen[k], "\t") + "\n")
+	b.WriteString(seenHead + "\n")
+	for _, k := range slices.Sorted(maps.Keys(seen)) {
+		b.WriteString(k + "\t" + seen[k].to + "\t" + strings.Join(seen[k].files, "\t") + "\n")
 	}
 	if err := os.WriteFile(file+".new", []byte(b.String()), 0o644); err != nil {
 		return err

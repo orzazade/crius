@@ -136,7 +136,7 @@ func TestTwoBranchesOnOneFileWarnOnce(t *testing.T) {
 		t.Fatalf("run: %v\n%s", err, out)
 	}
 	got := w.posted(t)
-	want := "demo.log|INFO crius:overlap -> demo:lead — feat/one and feat/two both change 1 files: a.txt — land one first, rebase the other"
+	want := "demo.log|INFO crius:overlap -> crius:lead — feat/one and feat/two both change 1 files: a.txt — land one first, rebase the other"
 	if len(got) != 1 || got[0] != want {
 		t.Fatalf("posted %q\nwant %q", got, want)
 	}
@@ -245,6 +245,8 @@ func TestCouldNotLookIsAnError(t *testing.T) {
 		"unknown key":  "[[repo]]\npath = \"" + w.clone + "\"\nremote = \"origin\"\nbase = \"main\"\nmax_age_days = 7\nbranch = \"x\"\n",
 		"no age":       "[[repo]]\npath = \"" + w.clone + "\"\nremote = \"origin\"\nbase = \"main\"\n",
 		"no repos":     "# nothing\n",
+		"bus_log ~":    "bus_post = \"/bin/true\"\nbus_log = \"~/.crius/bus/x.log\"\n[[repo]]\npath = \"" + w.clone + "\"\nremote = \"origin\"\nbase = \"main\"\nmax_age_days = 7\n",
+		"bus_log only": "bus_log = \"/x.log\"\n[[repo]]\npath = \"" + w.clone + "\"\nremote = \"origin\"\nbase = \"main\"\nmax_age_days = 7\n",
 	} {
 		w.config(t, "bad", body)
 		if _, err := w.run(t, "bad"); err == nil {
@@ -272,7 +274,7 @@ func TestAllRunsEveryProjectAndPostsAFailureOnce(t *testing.T) {
 		}
 	}
 	got := w.posted(t)
-	if len(got) != 2 || !strings.Contains(got[0]+got[1], "demo.log|INFO crius:overlap -> demo:lead — feat/one and feat/two") ||
+	if len(got) != 2 || !strings.Contains(got[0]+got[1], "demo.log|INFO crius:overlap -> crius:lead — feat/one and feat/two") ||
 		!strings.Contains(got[0]+got[1], "crius.log|ALERT crius:overlap -> crius:lead — crius-overlap broken could not look:") {
 		t.Fatalf("posted %q", got)
 	}
@@ -311,7 +313,7 @@ func TestARefusedPostIsTriedAgain(t *testing.T) {
 		}
 	}
 	got := w.posted(t)
-	if len(got) != 2 || !strings.HasPrefix(got[0], "demo.log|INFO crius:overlap -> demo:lead — feat/one and feat/two") ||
+	if len(got) != 2 || !strings.HasPrefix(got[0], "demo.log|INFO crius:overlap -> crius:lead — feat/one and feat/two") ||
 		!strings.HasPrefix(got[1], "crius.log|ALERT crius:overlap -> crius:lead — crius-overlap broken could not look:") {
 		t.Fatalf("want the pair and the failure posted once each, got %q", got)
 	}
@@ -583,18 +585,321 @@ func TestAnOrphanBranchIsSkipped(t *testing.T) {
 	}
 }
 
-// A project whose bus here is only a copy of a bus on another machine (quotes.log, staffy.log: a .remote marker) gets
-// its lines on Crius's bus, for its lead, instead of a refusal.
-func TestARemoteBusGoesToCrius(t *testing.T) {
+// A project whose bus here is only a copy of a bus on another machine (quotes.log, staffy.log: a .remote marker) and no
+// bus_post: the refusal is a could-not-post ALERT that names the helper, and the pair stays unseen (no relay via
+// crius.log any more: v2 #3).
+func TestARemoteBusWithoutBusPostIsRefused(t *testing.T) {
 	w := newWorld(t)
 	testutil.Write(t, filepath.Join(w.home, "bus", "demo.log.remote"), "use bus-post-elsewhere\n")
 	w.branch(t, "feat/one", "a.txt")
 	w.branch(t, "feat/two", "a.txt")
+	if _, err := w.run(t, "all"); err == nil {
+		t.Fatal("want the refusal")
+	}
+	got := w.posted(t)
+	notes, _ := filepath.Glob(filepath.Join(w.home, "bus", "notes", "*")) // a long line is cut, the whole text in a note
+	whole := strings.Join(got, "")
+	for _, n := range notes {
+		whole += testutil.Read(t, n)
+	}
+	if len(got) != 1 || !strings.HasPrefix(got[0], "crius.log|ALERT crius:overlap -> crius:lead — crius-overlap demo could not post: ") ||
+		!strings.Contains(whole, "use bus-post-elsewhere") {
+		t.Fatalf("posted %q", got)
+	}
+	if b, _ := os.ReadFile(filepath.Join(w.home, "state", "demo", "overlap-seen.tsv")); strings.Contains(string(b), "feat/one") {
+		t.Fatalf("a pair that was not posted is marked as seen:\n%s", b)
+	}
+}
+
+// branchOn makes a branch on top of another branch (a stacked branch) that changes files, and pushes it.
+func (w world) branchOn(t *testing.T, name, from string, files ...string) {
+	t.Helper()
+	testutil.Git(t, w.work, "switch", "-q", "-C", name, from)
+	for _, f := range files {
+		testutil.Write(t, filepath.Join(w.work, f), name+" "+f+"\n")
+	}
+	testutil.CommitAll(t, w.work)
+	testutil.Git(t, w.work, "push", "-q", "-f", "origin", name)
+	testutil.Git(t, w.work, "switch", "-q", "main")
+}
+
+// v2 #1: a branch built on another one on purpose (live Quotes 11-20: PR 8371 on 8348, 29 shared files) is no clash
+// with it, by git history, not by name; a third branch that shares a file with the stacked one still is. check agrees.
+func TestStackedBranchesAreNoClash(t *testing.T) {
+	w := newWorld(t)
+	w.branch(t, "feat/a", "a.txt")
+	w.branchOn(t, "feat/b", "feat/a", "a.txt", "b.txt")
+	w.branch(t, "feat/c", "b.txt")
+	out, err := w.run(t, "demo")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	got := w.posted(t)
+	if len(got) != 1 || !strings.Contains(got[0], "— feat/b and feat/c both change 1 files: b.txt") {
+		t.Fatalf("want only the feat/b and feat/c pair, posted %q\n%s", got, out)
+	}
+	if !strings.Contains(out, "1 stacked pairs skipped") {
+		t.Fatalf("the skipped stacked pair is not shown:\n%s", out)
+	}
+	out, err = w.run(t, "demo", "check", "feat/a")
+	if err != nil || !strings.Contains(out, "no clashes") {
+		t.Fatalf("check of the lower branch counts the branch built on it: %v\n%s", err, out)
+	}
+	// live Quotes 11-20: 8348 merged base in after 8371 was built on it; a merge commit brings no work of its own
+	testutil.Write(t, filepath.Join(w.work, "m.txt"), "main moves on\n")
+	testutil.CommitAll(t, w.work)
+	testutil.Git(t, w.work, "push", "-q", "origin", "main")
+	testutil.Git(t, w.work, "switch", "-q", "feat/a")
+	testutil.Git(t, w.work, "merge", "-q", "--no-ff", "-m", "merge main", "main")
+	testutil.Git(t, w.work, "push", "-q", "origin", "feat/a")
+	testutil.Git(t, w.work, "switch", "-q", "main")
+	out, err = w.run(t, "demo")
+	if err != nil || len(w.posted(t)) != 1 || !strings.Contains(out, "1 stacked pairs skipped") {
+		t.Fatalf("a merge of base into the lower branch broke the stack: %v, posted %q\n%s", err, w.posted(t), out)
+	}
+	// review P1: a fix on the lower branch after the upper was built on it, and a second upper branch on other files
+	w.branchOn(t, "feat/a", "feat/a", "c.txt")
+	w.branchOn(t, "feat/b2", "feat/b~1", "pkg/other.txt")
+	out, err = w.run(t, "demo")
+	if err != nil || len(w.posted(t)) != 1 || !strings.Contains(out, "3 stacked pairs skipped") {
+		t.Fatalf("the stack is lost after a fix on the lower branch: %v, posted %q\n%s", err, w.posted(t), out)
+	}
+	out, err = w.run(t, "demo", "check", "feat/c")
+	if !errors.Is(err, errClash) || !strings.Contains(out, "feat/c and feat/b both change 1 files: b.txt") {
+		t.Fatalf("check of the third branch: %v\n%s", err, out)
+	}
+	// review r2 P1: both the lower and the upper branch merge base in (two merge bases), and base edits a file the lower
+	// branch changes too
+	testutil.Write(t, filepath.Join(w.work, "c.txt"), "main edits c\n")
+	testutil.CommitAll(t, w.work)
+	testutil.Git(t, w.work, "push", "-q", "origin", "main")
+	for _, b := range []string{"feat/a", "feat/b"} {
+		testutil.Git(t, w.work, "switch", "-q", b)
+		testutil.Git(t, w.work, "-c", "user.email=t@example.invalid", "-c", "user.name=t", "merge", "-q", "--no-ff", "-X", "ours",
+			"-m", "merge main", "main")
+		testutil.Git(t, w.work, "push", "-q", "-f", "origin", b)
+	}
+	testutil.Git(t, w.work, "switch", "-q", "main")
+	out, err = w.run(t, "demo")
+	if err != nil || len(w.posted(t)) != 1 || !strings.Contains(out, "3 stacked pairs skipped") {
+		t.Fatalf("the stack is lost when both branches merge base in: %v, posted %q\n%s", err, w.posted(t), out)
+	}
+}
+
+// v2 #2: a pair goes to the roles that own its branches: a branch named <role>/… when <project>:<role> has a role file
+// or has posted on the project's bus, else crius:lead (AXI has no lead role: lines to axi:lead woke nobody, 11-20).
+func TestPairsGoToTheBranchOwners(t *testing.T) {
+	w := newWorld(t)
+	testutil.Write(t, filepath.Join(w.home, "roles", "demo.ms-flow.json"), "{}\n")
+	testutil.Write(t, filepath.Join(w.home, "bus", "demo.log"), "2026-11-20T09:00 INFO demo:api-split -> crius:lead — hello\n")
+	w.branch(t, "ms-flow/x", "a.txt", "b.txt")
+	w.branch(t, "api-split/y", "a.txt")
+	w.branch(t, "nobody/z", "b.txt")
+	out, err := w.run(t, "demo")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	got := strings.Join(w.posted(t), "\n")
+	for _, want := range []string{
+		"demo.log|INFO crius:overlap -> demo:api-split, demo:ms-flow — api-split/y and ms-flow/x both change 1 files: a.txt",
+		"demo.log|INFO crius:overlap -> demo:ms-flow, crius:lead — ms-flow/x and nobody/z both change 1 files: b.txt",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in\n%s", want, got)
+		}
+	}
+}
+
+// v2 #2: owners in overlap.toml maps a branch name prefix to the roles that own it (the longest prefix wins), before the
+// role rule; a value may name more than one role.
+func TestOwnersConfig(t *testing.T) {
+	w := newWorld(t)
+	testutil.Write(t, filepath.Join(w.home, "roles", "demo.feature.json"), "{}\n")
+	w.config(t, "demo", `owners = { "feature/" = "demo:qa", "feature/96365-" = "demo:dev, demo:builder-2" }
+[[repo]]
+path = "`+w.clone+`"
+remote = "origin"
+base = "main"
+max_age_days = 7
+`)
+	w.branch(t, "feature/96365-one", "a.txt")
+	w.branch(t, "feature/96365-two", "a.txt")
 	if out, err := w.run(t, "demo"); err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
 	got := w.posted(t)
-	if len(got) != 1 || !strings.HasPrefix(got[0], "crius.log|INFO crius:overlap -> crius:lead — for demo:lead (its bus is on another machine): feat/one and feat/two both change 1 files") {
+	if len(got) != 1 || !strings.HasPrefix(got[0], "demo.log|INFO crius:overlap -> demo:dev, demo:builder-2 — feature/96365-one and") {
 		t.Fatalf("posted %q", got)
+	}
+	w.config(t, "demo", "owners = { \"feature/\" = \"Demo Dev\" }\n[[repo]]\npath = \""+w.clone+"\"\nremote = \"origin\"\nbase = \"main\"\nmax_age_days = 7\n")
+	if _, err := w.run(t, "demo"); err == nil || !strings.Contains(err.Error(), "owners") {
+		t.Fatalf("a bad owner must be refused, got %v", err)
+	}
+}
+
+// v2: a pair posted before (a seen list of 86fc592, with no addressee) is posted again only when it now goes to someone
+// else, once; a pair whose addressee stays is not posted again.
+func TestSeenPairsRepostOnlyToANewAddressee(t *testing.T) {
+	w := newWorld(t)
+	w.config(t, "demo", `owners = { "keep/" = "demo:lead" }
+[[repo]]
+path = "`+w.clone+`"
+remote = "origin"
+base = "main"
+max_age_days = 7
+`)
+	w.branch(t, "keep/one", "a.txt")
+	w.branch(t, "keep/two", "a.txt")
+	w.branch(t, "move/one", "b.txt")
+	w.branch(t, "move/two", "b.txt")
+	testutil.Write(t, filepath.Join(w.home, "state", "demo", "overlap-seen.tsv"),
+		"clone\tkeep/one\tkeep/two\ta.txt\nclone\tmove/one\tmove/two\tb.txt\n")
+	for i := 0; i < 2; i++ {
+		if out, err := w.run(t, "demo"); err != nil {
+			t.Fatalf("%v\n%s", err, out)
+		}
+	}
+	got := w.posted(t)
+	if len(got) != 1 || !strings.HasPrefix(got[0], "demo.log|INFO crius:overlap -> crius:lead — move/one and move/two") {
+		t.Fatalf("posted %q", got)
+	}
+}
+
+// v2 #3: bus_post sends a project's lines with another command (bus-post-legion, bus-post-thinkpad: the live bus is on
+// another machine) and bus_log is the log it is given. A refused post is not seen, says "could not post" (not "could not
+// look") to crius:lead once, and goes out when the command works again. A bus that is down (ssh's exit 255) is tried once
+// a run, not once per pair (review P2: 29 pairs at ssh's 10 s each).
+func TestBusPostCommand(t *testing.T) {
+	w := newWorld(t)
+	rec, rc := filepath.Join(w.root, "args"), filepath.Join(w.root, "rc")
+	fake := filepath.Join(w.root, "bin", "bus-post-far")
+	testutil.Write(t, fake, "#!/bin/bash\nprintf '%s\\0' \"$@\" >> "+rec+"\nprintf '\\n' >> "+rec+"\n"+
+		"r=$(cat "+rc+"); [ \"$r\" = 0 ] || echo 'bus-post: refused: far bus is down' >&2; exit $r\n")
+	if err := os.Chmod(fake, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	testutil.Write(t, rc, "255\n")
+	w.config(t, "demo", `bus_post = "`+fake+`"
+bus_log = "/home/far/.crius/bus/demo.log"
+[[repo]]
+path = "`+w.clone+`"
+remote = "origin"
+base = "main"
+max_age_days = 7
+`)
+	w.branch(t, "feat/one", "a.txt")
+	w.branch(t, "feat/two", "a.txt")
+	w.branch(t, "feat/zzz", "b.txt")
+	w.branch(t, "feat/zzz2", "b.txt")
+	for i := 0; i < 2; i++ {
+		if _, err := w.run(t, "all"); err == nil || !strings.Contains(err.Error(), "far bus is down") {
+			t.Fatalf("run %d: want the refusal, got %v", i, err)
+		}
+	}
+	got := w.posted(t)
+	if len(got) != 1 || !strings.HasPrefix(got[0], "crius.log|ALERT crius:overlap -> crius:lead — crius-overlap demo could not post: ") ||
+		strings.Contains(got[0], "could not look") {
+		t.Fatalf("want one could-not-post ALERT, got %q", got)
+	}
+	testutil.Write(t, rc, "0\n")
+	for i := 0; i < 2; i++ {
+		if out, err := w.run(t, "all"); err != nil {
+			t.Fatalf("%v\n%s", err, out)
+		}
+	}
+	calls := strings.Split(strings.TrimSpace(testutil.Read(t, rec)), "\n")
+	if len(calls) != 4 {
+		t.Fatalf("want 2 refused tries and 2 posts, got %d: %q", len(calls), calls)
+	}
+	want := "/home/far/.crius/bus/demo.log\x00INFO\x00crius:overlap\x00crius:lead\x00feat/one and feat/two both change 1 files: a.txt — land one first, rebase the other\x00"
+	if calls[2] != want {
+		t.Fatalf("args %q\nwant %q", calls[2], want)
+	}
+	if len(w.posted(t)) != 1 {
+		t.Fatalf("a line went to a local bus: %q", w.posted(t))
+	}
+}
+
+// v2: a refused post on the local bus reads as could not post, not could not look.
+func TestARefusedLocalPostSaysCouldNotPost(t *testing.T) {
+	w := newWorld(t)
+	w.branch(t, "feat/one", "a.txt")
+	w.branch(t, "feat/two", "a.txt")
+	if err := os.Remove(filepath.Join(w.home, "bus", "demo.log")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.run(t, "all"); err == nil {
+		t.Fatal("want the refusal")
+	}
+	got := w.posted(t)
+	if len(got) != 1 || !strings.Contains(got[0], "crius-overlap demo could not post: ") {
+		t.Fatalf("posted %q", got)
+	}
+}
+
+// v2: a file name with a newline (or a tab) is shown quoted, so the bus line stays one line and the seen list reads back.
+func TestAFileNameWithANewline(t *testing.T) {
+	w := newWorld(t)
+	w.branch(t, "feat/one", "odd\nname.txt", "tab\there.txt")
+	w.branch(t, "feat/two", "odd\nname.txt", "tab\there.txt")
+	for i := 0; i < 2; i++ {
+		if out, err := w.run(t, "demo"); err != nil {
+			t.Fatalf("run %d: %v\n%s", i, err, out)
+		}
+	}
+	got := w.posted(t)
+	if len(got) != 1 || !strings.Contains(got[0], `both change 2 files: "odd\nname.txt", "tab\there.txt"`) {
+		t.Fatalf("posted %q", got)
+	}
+}
+
+// Review r2 P2: a failure reason seen again with only its numbers, commit ids or GUIDs changed (az's Trace ID and
+// Correlation ID, a new tip) is the same reason, so it is said once; a new reason is not.
+func TestFailKey(t *testing.T) {
+	az := func(trace, corr, sha string) string {
+		return "repo svc_quote: az account get-access-token gave no token: exit status 1: AADSTS70043: The refresh token has expired. " +
+			"Trace ID: " + trace + " Correlation ID: " + corr + " Timestamp: 2026-11-20 10:59:03Z at " + sha
+	}
+	a := failKey(az("5f60c1d2-0a3b-4c5d-8e9f-0123456789ab", "e1f2a3b4-c5d6-4e7f-8a9b-0c1d2e3f4a5b", "f4e287146"))
+	b := failKey(az("0c1d2e3f-4a5b-4c6d-9e8f-abcdef012345", "aa11bb22-cc33-4d44-8e55-ff6677889900", "ee6809f98abc"))
+	if a != b {
+		t.Fatalf("one reason, two keys:\n%s\n%s", a, b)
+	}
+	if failKey("repo x: git fetch: exit status 128") == failKey("repo x: bus-post to x.log: exit status 2") {
+		t.Fatal("two reasons, one key")
+	}
+}
+
+// Review r3 P2: a lower branch rebased onto a newer base (its commits copied under new ids) keeps the stack; so does a
+// branch rebased under its own PR's old merge ref, for check.
+func TestARebasedLowerBranchStaysStacked(t *testing.T) {
+	w := newWorld(t)
+	w.branch(t, "feat/a", "a.txt")
+	w.branchOn(t, "feat/b", "feat/a", "b.txt")
+	testutil.Write(t, filepath.Join(w.work, "m.txt"), "main moves on\n")
+	testutil.CommitAll(t, w.work)
+	testutil.Git(t, w.work, "push", "-q", "origin", "main")
+	testutil.Git(t, w.work, "switch", "-q", "feat/a")
+	testutil.Git(t, w.work, "rebase", "-q", "main")
+	testutil.Git(t, w.work, "push", "-q", "-f", "origin", "feat/a")
+	testutil.Git(t, w.work, "switch", "-q", "main")
+	out, err := w.run(t, "demo")
+	if err != nil || len(w.posted(t)) != 0 || !strings.Contains(out, "1 stacked pairs skipped") {
+		t.Fatalf("a rebase of the lower branch broke the stack: %v, posted %q\n%s", err, w.posted(t), out)
+	}
+
+	w.config(t, "demo", "[[repo]]\npath = \""+w.clone+"\"\nremote = \"origin\"\nbase = \"main\"\nmax_age_days = 7\nprs = true\n")
+	w.branch(t, "feat/one", "c.txt")
+	w.pr(t, "11", "feat/one")
+	testutil.Write(t, filepath.Join(w.work, "m.txt"), "main moves again\n")
+	testutil.CommitAll(t, w.work)
+	testutil.Git(t, w.work, "push", "-q", "origin", "main")
+	testutil.Git(t, w.work, "switch", "-q", "feat/one")
+	testutil.Git(t, w.work, "rebase", "-q", "main")
+	testutil.Git(t, w.work, "push", "-q", "-f", "origin", "feat/one")
+	testutil.Git(t, w.work, "switch", "-q", "main")
+	out, err = w.run(t, "demo", "check", "feat/one")
+	if err != nil || !strings.Contains(out, "no clashes") {
+		t.Fatalf("the branch clashes with its own PR's old merge ref: %v\n%s", err, out)
 	}
 }
