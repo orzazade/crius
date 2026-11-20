@@ -16,7 +16,7 @@ import (
 	"github.com/orzazade/crius/internal/store"
 )
 
-// knownTypes are every top-level line type seen in real transcripts on 2026-10-16 (Claude Code 2.x). Others are
+// knownTypes are every top-level line type seen in real transcripts (Claude Code 2.x; list started 2026-10-16, grown as new types show up). Others are
 // counted and alerted.
 var knownTypes = map[string]bool{}
 
