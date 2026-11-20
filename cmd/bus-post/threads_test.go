@@ -101,7 +101,7 @@ func TestOnlyTypesThatAskToActAreDelivered(t *testing.T) {
 	for i, typ := range []string{"DONE", "NEED", "ASK", "FAIL", "PASS", "DECISION", "CORRECTION", "CORRECTED", "ANSWER",
 		"ORDER", "OWNER", "READY", "GO", "PAUSE"} {
 		os.Remove(filepath.Join(fake, "calls"))
-		rc, errs := post(t, at("2026-11-15T04:10"), log, typ, "crius:dev", "crius:qa", "x "+string(rune('a'+i)))
+		rc, errs := post(t, at("2026-11-15T04:10"), log, typ, "crius:dev", "crius:qa", "x "+string(rune('a'+i))+"; cause: bad data") // a CORRECTED names its cause (cause.go)
 		if rc != 0 || readOr(t, filepath.Join(fake, "calls")) != "thread send th-qa -\n" {
 			t.Errorf("%s: rc %d, calls %q: %s", typ, rc, readOr(t, filepath.Join(fake, "calls")), errs)
 		}

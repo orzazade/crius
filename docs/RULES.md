@@ -46,8 +46,9 @@ Details: STATUS.md (rule for every step), [docs/BRIEF-build-1-2.md](BRIEF-build-
    Example: six redaction leaks of one cause led to step 4b (a maintained ruleset), not a seventh patch.
 7. **"Found nothing" and "failed to look" are different states,** and the failure is loud. Silent success is the
    most expensive bug.
-8. **Correct yourself in public.** Post `CORRECTED` on the bus and tell the owner in plain words. Finding your
-   own mistake is never punished; mistakes found by us are counted apart from ones that escaped.
+8. **Correct yourself in public.** Post `CORRECTED` on the bus with `cause: <one of 2.5>` and tell the owner in plain
+   words. bus-post refuses a CORRECTED with no cause, and a second one of the same cause on a bus in 30 days wakes Crius
+   (rule 6). Finding your own mistake is never punished; mistakes found by us are counted apart from ones that escaped.
 
 Details: [docs/MEMORY-AND-MEASUREMENT.md](MEMORY-AND-MEASUREMENT.md) §7b, `~/.claude/skills/cmux-team/reference/lessons.md`,
 `~/.agents/AGENTS.md` (Diagnose repeats, Solve the root cause, Claim completion only when verified).

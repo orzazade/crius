@@ -26,6 +26,9 @@
 // cards ("[queue q62] owner: …"), the only way it closes the card: answers relayed untagged left q62-q64 open for hours
 // (Crius 11-01 17:19).
 //
+// A CORRECTED names its cause from docs/RULES.md §2.5 ("cause: stale context"); a second one of the same cause on its bus
+// in 30 days also posts an ALERT on crius.log (cause.go).
+//
 // An ORDER or ASK to someone with no live Claude Code session is posted and said, exit 5: crius:lead's ORDERs of 10-25
 // 13:18 to crius:build went nowhere for hours. Posted, so a caller must not send it again.
 //
@@ -191,6 +194,9 @@ func postLine(args []string, now time.Time, stderr io.Writer) int {
 			return refuse(stderr, "%v", err)
 		}
 	}
+	if typ == "CORRECTED" && causeOf(text) == "" {
+		return refuse(stderr, "%s", noCause())
+	}
 	if typ == "OWNER" && from == "crius:lead" {
 		if err := namesCard(store.Home(), now, to, logProject(log), text); err != nil {
 			return refuse(stderr, "%v", err)
@@ -286,6 +292,9 @@ func postLine(args []string, now time.Time, stderr io.Writer) int {
 	if err != nil {
 		fmt.Fprintln(stderr, "bus-post: write failed:", err)
 		return 1
+	}
+	if typ == "CORRECTED" {
+		sayRepeat(filepath.Dir(filepath.Dir(log)), log, causeOf(text), from, stamp, stderr)
 	}
 	// A thread role is woken by its thread, not by the bus (threads.go); a thread that got the line is read, and so is a
 	// role whose live claude reads the bus through its own waiter.
