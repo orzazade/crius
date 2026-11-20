@@ -292,10 +292,11 @@ func parseProcs(ps string, now time.Time) ([]wakewatch.Proc, error) {
 	return out, nil
 }
 
-// etimeRe is ps's elapsed time, "[[dd-]hh:]mm:ss" (macOS and Linux procps).
-var etimeRe = regexp.MustCompile(`^(?:(?:(\d+)-)?(\d{1,2}):)?([0-5]?\d):([0-5]\d)$`)
+// etimeRe is ps's elapsed time, "[[d-]hh:]mm:ss" (macOS and Linux procps); etime checks the ranges.
+var etimeRe = regexp.MustCompile(`^(?:(?:(\d+)-)?(\d{1,2}):)?(\d{1,2}):(\d{2})$`)
 
-// etime reads ps's elapsed time.
+// etime reads ps's elapsed time. Fields stay under 24 h, 60 min and 60 s, except the two forms macOS ps prints at its
+// strict "e > 60*60" and "e > 60*60*24" edges: "60:00" (exactly an hour) and "24:00:00" (exactly a day).
 func etime(s string) (time.Duration, error) {
 	m := etimeRe.FindStringSubmatch(s)
 	if m == nil {
@@ -307,7 +308,19 @@ func etime(s string) (time.Duration, error) {
 			n[i], _ = strconv.Atoi(v) // digits only (etimeRe)
 		}
 	}
-	return time.Duration(((n[0]*24+n[1])*60+n[2])*60+n[3]) * time.Second, nil
+	d, h, mm, ss := n[0], n[1], n[2], n[3]
+	hours, days := m[2] != "", m[1] != ""
+	ok := ss < 60 && mm < 60 && h < 24 && len(m[1]) <= 5 // days: 5 digits keeps the duration from overflowing
+	if !ok && ss == 0 && mm == 60 && !hours {            // macOS "60:00"
+		ok = true
+	}
+	if !ok && ss == 0 && mm == 0 && h == 24 && !days { // macOS "24:00:00"
+		ok = true
+	}
+	if !ok {
+		return 0, fmt.Errorf("etime %q: field out of range", s)
+	}
+	return time.Duration(((d*24+h)*60+mm)*60+ss) * time.Second, nil
 }
 
 // waiters gives the bus logs Crius's live waiters cover (waiterLogs), from every process's command line.

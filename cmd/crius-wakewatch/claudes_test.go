@@ -4,8 +4,11 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/orzazade/crius/internal/wakewatch"
 )
 
 // TestHelperSleeps is the process the tests below start as Claude Code: the test binary itself, as macOS hides the
@@ -20,7 +23,8 @@ func TestHelperSleeps(t *testing.T) {
 // The paid-usage check reads each Claude Code process's environment and arguments from the kernel: real processes
 // started as "claude" and as a release under .../claude/versions/ (as the daemon resumes a session; review of the check
 // P1), with an API key and a value holding spaces and "=", are listed with exactly that environment; one not named so is
-// not listed.
+// not listed. The process list is the three started here (pid and argv), so the test does not depend on what else runs
+// on the machine (11-21: an unrelated process at etime "60:00" failed it); TestProcsReadsTheLivePsList covers ps.
 func TestClaudesReadsEachClaudeProcessEnvironment(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("reads processes through sysctl kern.procargs2, macOS only; on Linux procArgs says it is not supported")
@@ -44,10 +48,11 @@ func TestClaudesReadsEachClaudeProcessEnvironment(t *testing.T) {
 		return c
 	}
 	named, release, other := start("claude"), start("/Users/x/.local/share/claude/versions/2.1.319"), start("helper")
-	cs, err := claudes()
-	if err != nil {
-		t.Fatal(err)
+	var ps []wakewatch.Proc
+	for _, c := range []*exec.Cmd{named, release, other} {
+		ps = append(ps, wakewatch.Proc{PID: c.Process.Pid, PPID: os.Getpid(), Start: time.Now(), Command: strings.Join(c.Args, " ")})
 	}
+	cs := claudesIn(ps)
 	found := map[int]bool{}
 	for _, c := range cs {
 		if c.PID == other.Process.Pid {
@@ -72,6 +77,38 @@ func TestClaudesReadsEachClaudeProcessEnvironment(t *testing.T) {
 	if !found[named.Process.Pid] || !found[release.Process.Pid] {
 		t.Fatalf("pids %d (claude), %d (release) listed: %v of %d", named.Process.Pid, release.Process.Pid, found, len(cs))
 	}
+}
+
+// Smoke test on the live machine: ps's whole list reads (every etime form it prints) and lists a helper started as
+// "claude" under this process, started about now, with a command isClaude takes (review P2: claudesIn's test no longer
+// sees ps's command text). It checks only processes it started, never which others run.
+func TestProcsReadsTheLivePsList(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := exec.Command(self, "-test.run=^TestHelperSleeps$")
+	c.Args[0] = "claude"
+	c.Env = append(os.Environ(), "CRIUS_HELPER_SLEEP=1")
+	before := time.Now()
+	if err := c.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.Process.Kill(); c.Wait() })
+	ps, err := procs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range ps {
+		if p.PID == c.Process.Pid {
+			if p.PPID != os.Getpid() || p.Start.Before(before.Add(-2*time.Second)) || p.Start.After(time.Now()) ||
+				!isClaude(strings.Fields(p.Command)) {
+				t.Errorf("the helper reads as %+v", p)
+			}
+			return
+		}
+	}
+	t.Errorf("the helper (pid %d) is not in the ps list of %d", c.Process.Pid, len(ps))
 }
 
 func TestIsClaude(t *testing.T) {

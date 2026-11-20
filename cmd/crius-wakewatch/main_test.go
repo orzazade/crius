@@ -797,6 +797,32 @@ func TestParseProcs(t *testing.T) {
 	}
 }
 
+// etime reads every form ps prints. macOS ps (adv_cmds get_etime) picks the form with a strict "e > 60*60" and
+// "e > 60*60*24", so a process exactly one hour old prints "60:00" and one exactly a day old "24:00:00" (seen 11-21:
+// "60:00" failed the paid-usage check). Linux procps prints [[d-]hh:]mm:ss with hh < 24 and mm, ss < 60.
+func TestEtimeReadsEveryFormPsPrints(t *testing.T) {
+	h, m, s, d := time.Hour, time.Minute, time.Second, 24*time.Hour
+	for in, want := range map[string]time.Duration{
+		"00:00": 0, "00:07": 7 * s, "47:24": 47*m + 24*s, "59:59": 59*m + 59*s,
+		"60:00":       h, // macOS, exactly one hour
+		"01:00:01":    h + s,
+		"23:59:59":    23*h + 59*m + 59*s,
+		"24:00:00":    d,                      // macOS, exactly one day
+		"01-00:00:01": d + s, "1-00:00:00": d, // macOS pads days to two digits, procps does not
+		"2-03:04:05": 2*d + 3*h + 4*m + 5*s, "100-00:00:01": 100*d + s,
+	} {
+		if got, err := etime(in); err != nil || got != want {
+			t.Errorf("etime(%q) = %v, %v; want %v", in, got, err, want)
+		}
+	}
+	for _, bad := range []string{"", "5", "1:60", "60:01", "61:00", "99:00", "24:00:01", "25:00:00", "1-24:00:00",
+		"1-00:60:00", "2-05:06", "+5:00", "-1:00", "1:2:3:4", "a:00", "60:00:00", "123:00:00", "99999999999999999999-00:00:00", "100000-00:00:00"} {
+		if got, err := etime(bad); err == nil {
+			t.Errorf("etime(%q) = %v, no error", bad, got)
+		}
+	}
+}
+
 // The rig check's boot time is this machine's: in the past, and less than a year back.
 func TestBootTimeIsThisMachines(t *testing.T) {
 	b, err := bootTime()

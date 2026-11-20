@@ -20,6 +20,11 @@ func claudes() ([]wakewatch.Claude, error) {
 	if err != nil {
 		return nil, err
 	}
+	return claudesIn(ps), nil
+}
+
+// claudesIn reads the Claude Code processes of a process list (claudes).
+func claudesIn(ps []wakewatch.Proc) []wakewatch.Claude {
 	var out []wakewatch.Claude
 	for _, p := range ps {
 		if !isClaude(strings.Fields(p.Command)) {
@@ -35,7 +40,7 @@ func claudes() ([]wakewatch.Claude, error) {
 		}
 		out = append(out, wakewatch.Claude{PID: p.PID, Args: args, Env: env})
 	}
-	return out, nil
+	return out
 }
 
 // isClaude says a ps command is Claude Code: its first word is a file named claude (the CLI, its daemon and pty hosts,
