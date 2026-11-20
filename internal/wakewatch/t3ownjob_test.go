@@ -99,3 +99,26 @@ func TestARoleWhoseOwnJobDiedIsHeldOnItsBusOnly(t *testing.T) {
 		t.Fatalf("an orphaned job was named as its own: %q", w)
 	}
 }
+
+// Merged with night/t3-waiter-idle (11-20): before t3WaitingFor a live bus waiter holds the role on its bus anyway, so
+// the own job changes the outcome only where the bus hold ends, as when an item it waits on landed after its newest
+// line. Then its own running job still holds it, and with none the alert says so.
+func TestALandedItemHoldsOnlyWhileItsOwnJobRuns(t *testing.T) {
+	landedFake := func(jobs ...Proc) (string, *fake) {
+		home, f := ownJobFake(t, 49*time.Minute, jobs...)
+		log := filepath.Join(home, "bus", "quotes.log")
+		testutil.Write(t, log, testutil.Read(t, log)+stamp(t0.Add(-30*time.Minute))+" MERGED quotes:qa -> crius:lead — MERGED 8454 into envhub\n")
+		return home, f
+	}
+	home, f := landedFake(gateJob...)
+	runOnce(t, home, f, t0)
+	if w := t3Wakes(f); len(w) != 0 {
+		t.Fatalf("its own gate still runs, yet Crius was told: %q", w)
+	}
+	home, f = landedFake()
+	runOnce(t, home, f, t0)
+	if w := t3Wakes(f); len(w) != 1 || !strings.Contains(w[0], "no background job of its own runs under its claude") ||
+		!strings.Contains(w[0], "landed: 8454") {
+		t.Fatalf("want one alert that says 8454 landed and no job of its own runs: %q", w)
+	}
+}
