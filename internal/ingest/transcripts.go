@@ -24,7 +24,7 @@ func init() {
 	for _, t := range strings.Fields(`assistant user system attachment atis-latch last-prompt mode permission-mode
 		queue-operation custom-title agent-name api-request-blob api-request agent-setting ai-title bridge-session
 		file-history-snapshot file-history-delta cost-state api-request-shape artifact-autoreact-ledger
-		artifact-comment-monitor summary fork-context-ref frame-link started result launched pr-link dev-mods`) {
+		artifact-comment-monitor summary fork-context-ref frame-link started result launched pr-link dev-mods repl-mode`) {
 		knownTypes[t] = true
 	}
 }
