@@ -452,6 +452,9 @@ func TestStepsThatShareTheFirst300CharsAreNotOneStep(t *testing.T) {
 	if st.StepRuns != 13 || st.StepUnwatched != 13 {
 		t.Fatalf("want 13 runs read and 13 not watched (cut, no full name), got %d and %d", st.StepRuns, st.StepUnwatched)
 	}
+	if w := strings.Join(st.Warnings, "\n"); !strings.Contains(w, "legion: 13 of 13 runs not watched") || !strings.Contains(w, "(all-suites.ts 13)") {
+		t.Fatalf("want a warning naming 13 of 13 runs of all-suites.ts not watched, got %q", st.Warnings)
+	}
 }
 
 // A command with no script word is on record in full in its key: two filter sets that share the first 300 characters
@@ -486,5 +489,47 @@ func TestACutCommandWithItsFullWordsInTheKeyIsStillWatched(t *testing.T) {
 	}
 	if st.StepUnwatched != 0 {
 		t.Fatalf("every run had its full words, got %d not watched", st.StepUnwatched)
+	}
+}
+
+// A NEED fits one bus line (300 characters) with its end: a long step, several commands it ran as before and a long
+// scratchpad folder are shortened, and the line still names the step's end, its minutes and its first slow run.
+func TestALongStepNeedFitsABusLineWithItsEnd(t *testing.T) {
+	x := newIC(t, cfg{})
+	now := time.Now()
+	log := filepath.Join(x.root, "legion-runs.log")
+	long := "dotnet test tests/Quote.Api.Tests --filter " + strings.Repeat("FullyQualifiedName~Quote.Api.Tests.Presenter|", 4)
+	cwd := "/tmp/claude-1000/-Users-orkhanrzazade-Projects-Appxite-svc-quote-channels/58128bf4-551e-452a-bd69-e8369995f3f6/scratchpad/wt-gate"
+	var runs []heavyRun
+	for i := 0; i < 9; i++ { // before as three different commands
+		runs = append(runs, heavyRun{At: at(now.Add(-5*24*time.Hour + time.Duration(i)*4*time.Hour)),
+			Cmd: fmt.Sprintf("bun /x/api-groups.ts run %d %s", i%3, strings.Repeat("--group-file api-groups.json ", 3)), Cwd: cwd, Seconds: 600})
+	}
+	for i := 0; i < 3; i++ {
+		runs = append(runs, heavyRun{At: at(now.Add(-10*time.Hour + time.Duration(i)*time.Hour)), Cmd: long + "FullyQualifiedName~Slow", Cwd: cwd, Seconds: 38 * 60})
+	}
+	runsLog(t, log, runs)
+	stepConfig(t, x.home, log, "[alias]\n\"bun api-groups.ts run\" = \""+long+"FullyQualifiedName~Slow\"\n")
+	x.run()
+	got := stepNeeds(x)
+	if len(got) != 1 {
+		t.Fatalf("want one NEED, got %q", got)
+	}
+	_, text, _ := strings.Cut(got[0], "— ")
+	if n := len([]rune(text)); n > 300 || !strings.Contains(text, "~Slow`") || !strings.Contains(text, "10 -> 38 min") ||
+		!strings.Contains(text, "first slow run") || !strings.Contains(text, "scratchpad/wt-gate") {
+		t.Fatalf("want a line of at most 300 characters naming ~Slow, 10 -> 38 min and the first slow run in scratchpad/wt-gate, got %d: %q", n, text)
+	}
+	t.Logf("crius.log: %s", text)
+}
+
+func TestShortNameKeepsStartAndEnd(t *testing.T) {
+	k := strings.Repeat("ä", 50) + strings.Repeat("b", 50) + "Ende"
+	got := shortName(k, 40)
+	if n := len([]rune(got)); n != 40 || !strings.HasPrefix(got, "ää") || !strings.HasSuffix(got, "bEnde") || !strings.Contains(got, " … ") {
+		t.Fatalf("shortName(%d runes, 40) = %q (%d runes)", len([]rune(k)), got, n)
+	}
+	if shortName("short", 40) != "short" {
+		t.Fatal("a short name must stay as it is")
 	}
 }

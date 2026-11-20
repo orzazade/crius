@@ -36,8 +36,11 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/orzazade/crius/internal/store"
 )
 
 const (
@@ -92,8 +95,9 @@ type stepRun struct {
 	kind, raw string // raw: the kind before the alias
 	seconds   int
 	waitS     int
-	ok        bool // code 0 and not killed: only these are step times
-	unwatched bool // its command was cut and no full name is on record: no step
+	ok        bool   // code 0 and not killed: only these are step times
+	unwatched bool   // its command was cut and no full name is on record: no step
+	script    string // the file a cut run is keyed on (heavy.ts key), for the not-watched warning
 }
 
 func readRuns(path string, alias map[string]string) ([]stepRun, int, error) {
@@ -146,7 +150,7 @@ func readRuns(path string, alias map[string]string) ([]stepRun, int, error) {
 			kind = alias[best]
 		}
 		out = append(out, stepRun{at: t, cwd: j.Cwd, kind: kind, raw: raw, seconds: int(j.Seconds),
-			waitS: int(j.WaitS), unwatched: !whole, ok: kind != "" && j.Code != nil && *j.Code == 0 && !j.Killed})
+			waitS: int(j.WaitS), unwatched: !whole, script: j.Key, ok: kind != "" && j.Code != nil && *j.Code == 0 && !j.Killed})
 	}
 	if err := sc.Err(); err != nil {
 		return nil, bad, err
@@ -318,10 +322,26 @@ func (r *runner) ingestSteps() {
 			r.warn(false, "step watch: %s log %s: %d lines not read", l.Name, l.Path, bad)
 		}
 		r.st.StepRuns += len(runs)
+		// a cut run of a script is not watched (no full name on record); say so, with the scripts it hits most, each run
+		cut, n := map[string]int{}, 0
 		for _, s := range runs {
 			if s.unwatched {
-				r.st.StepUnwatched++
+				cut[filepath.Base(s.script)]++
+				n++
 			}
+		}
+		if n > 0 {
+			r.st.StepUnwatched += n
+			var top []string
+			for s := range cut {
+				top = append(top, s)
+			}
+			sort.Slice(top, func(a, b int) bool { return cut[top[a]] > cut[top[b]] || cut[top[a]] == cut[top[b]] && top[a] < top[b] })
+			for i := range top {
+				top[i] = fmt.Sprintf("%s %d", top[i], cut[top[i]])
+			}
+			r.warn(false, "step watch: %s: %d of %d runs not watched, command cut at %d characters with only the script on record (%s)",
+				l.Name, n, len(runs), cmdCut, strings.Join(top[:min(3, len(top))], ", "))
 		}
 		if err := r.inTx(func(tx *sql.Tx) error {
 			if err := r.stepChanges(tx, l.Name, runs, now); err != nil {
@@ -388,12 +408,11 @@ func (r *runner) stepChanges(tx *sql.Tx, name string, runs []stepRun, now time.T
 				}
 				lastAt, lastAfter = first.at, wm
 				if now.Sub(rs[i].at) <= stepRecent {
-					was := ""
-					if raws := rawKinds(base); len(raws) > 1 || len(raws) == 1 && raws[0] != k {
-						was = fmt.Sprintf(", before as `%s`", strings.Join(shortNames(raws), "`, `"))
+					var raws []string
+					if rs := rawKinds(base); len(rs) > 1 || len(rs) == 1 && rs[0] != k {
+						raws = rs
 					}
-					text := fmt.Sprintf("step slower on %s: `%s` %s -> %s min (median of the last 3 runs vs %d runs in the 7 days before%s); first slow run %s in %s",
-						name, shortName(k), mins(bm), mins(wm), len(base), was, first.at.Local().Format("2006-01-02 15:04"), first.cwd)
+					text := r.stepLine(name, k, raws, bm, wm, len(base), first)
 					key := "steps:" + name + ":" + sha1Hex([]byte(k))[:12] + ":" + first.at.UTC().Format(time.RFC3339)
 					if err := r.queueLine(tx, key, "NEED", "crius", "crius:lead", text); err != nil {
 						return err
@@ -673,20 +692,59 @@ func (r *runner) checkDecisions(c *stepConf, now time.Time) {
 	}
 }
 
-// shortName is a step for a NEED's text: a bus line holds 300 characters, and two steps may differ only at the end of a
-// long command, so a long one keeps its start and its end.
-func shortName(k string) string {
-	r := []rune(k)
-	if len(r) <= 100 {
-		return k
+// stepLine is a step's NEED text, made to fit a bus line (300 characters): a long step, the steps it ran as before and
+// the folder are shortened until it fits, the step last, so the line keeps its minutes and its first slow run. Each name
+// is redacted before it is shortened: a cut credential may no longer match a redaction rule.
+func (r *runner) stepLine(log, k string, raws []string, bm, wm float64, nbase int, first stepRun) string {
+	k, cwd := r.redacted(k), r.redacted(first.cwd)
+	for i := range raws {
+		raws[i] = r.redacted(raws[i])
 	}
-	return string(r[:40]) + " … " + string(r[len(r)-57:])
+	line := func(name, was, cwd string) string {
+		return fmt.Sprintf("step slower on %s: `%s` %s -> %s min (median of the last 3 runs vs %d runs in the 7 days before%s); first slow run %s in %s",
+			log, name, mins(bm), mins(wm), nbase, was, first.at.Local().Format("2006-01-02 15:04"), cwd)
+	}
+	var all, one, count string
+	if len(raws) > 0 {
+		var names []string
+		for _, w := range raws {
+			names = append(names, shortName(w, 100))
+		}
+		all = ", before as `" + strings.Join(names, "`, `") + "`"
+		one = ", before as `" + shortName(raws[0], 60) + "`"
+		if len(raws) > 1 {
+			one += fmt.Sprintf(" and %d more", len(raws)-1)
+		}
+		count = fmt.Sprintf(", before under %d other commands", len(raws))
+	}
+	short := shortPath(cwd)
+	want := min(utf8.RuneCountInString(k), 40)
+	for _, t := range [][2]string{{all, cwd}, {one, cwd}, {one, short}, {count, short}} {
+		if room := store.MaxLen - utf8.RuneCountInString(line("", t[0], t[1])); room >= want {
+			return line(shortName(k, min(room, 100)), t[0], t[1])
+		}
+	}
+	return line(shortName(k, 40), count, short) // fit cuts the end
 }
 
-func shortNames(ks []string) []string {
-	out := make([]string, len(ks))
-	for i, k := range ks {
-		out[i] = shortName(k)
+// shortName keeps a long step's start and end: two steps may differ only at the end of a long command.
+func shortName(k string, max int) string {
+	r := []rune(k)
+	if len(r) <= max {
+		return k
 	}
-	return out
+	head := (max - 3) * 2 / 5
+	return string(r[:head]) + " … " + string(r[len(r)-(max-3-head):])
+}
+
+// shortPath is a long folder's last two parts.
+func shortPath(p string) string {
+	if utf8.RuneCountInString(p) <= 60 {
+		return p
+	}
+	parts := strings.Split(strings.TrimRight(p, "/"), "/")
+	if len(parts) <= 2 {
+		return shortName(p, 60)
+	}
+	return shortName("…/"+strings.Join(parts[len(parts)-2:], "/"), 60)
 }
