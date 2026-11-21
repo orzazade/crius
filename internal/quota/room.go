@@ -6,9 +6,14 @@ import (
 	"time"
 )
 
+// StaleAfter is how old a sample may be and still decide anything (11-21: every role moved to T3 threads, which run no
+// statusline, and Room kept reading a 6 h old share as room). It is Gap, the age at which ingest calls the sampler stale.
+const StaleAfter = Gap
+
 // Room is the verdict for starting a session on the Max account (owner's rule, Crius 10-16): "room", "full" or
-// "unknown", with a one-line reason that carries the numbers. A sample within Gap has room until a share reaches
-// 100%; an older one only while both shares are under 90%, since they may have grown since. 7d at 100% is full at
+// "unknown", with a one-line reason that carries the numbers. A sample within StaleAfter has room until a share reaches
+// 100%; an older one is unknown, never room, as the shares may have grown since by any amount (11-21: a 6 h old 12% read
+// as room; before, an old one had room while both shares were under 90%). 7d at 100% is full at
 // any age (it cannot drop within a week); a 5h window that has reset counts 0 (Build sets FivePct so). The age is
 // that of the older of the two shares' own measurements (SevenAt, FiveAt), never a heartbeat's or another line's
 // (reviews of 47842ed and 27cdaa1). With no 5h window reported this epoch the 7d share decides alone (live 11-08: the
@@ -36,12 +41,10 @@ func Room(r *Report) (verdict, reason string) {
 		return "unknown", nums + " (top share not measured)"
 	case r.SevenAt.After(r.Now) || !r.FiveReset.IsZero() && r.FiveAt.After(r.Now): // each, not only the older one
 		return "unknown", nums + " (sample ahead of the clock)"
-	case age <= Gap:
+	case age <= StaleAfter:
 		return "room", nums
-	case r.SevenPct < 90 && r.FivePct < 90:
-		return "room", nums + " (under 90%)"
 	}
-	return "unknown", nums + " (90% or more)"
+	return "unknown", nums + " (over the " + ago(StaleAfter) + " limit: unknown)" // under 100 runes (TestRoom)
 }
 
 // MeasuredAt is when the shares Room uses were measured: the older of SevenAt and, while its window runs, FiveAt (a

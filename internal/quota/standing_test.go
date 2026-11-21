@@ -22,7 +22,7 @@ func TestStandingIsUnsureWheneverRoomCannotTell(t *testing.T) {
 	}{
 		{"never measured", "unsure", "", &Report{Now: now}},
 		{"week reset", "unsure", "no reading since its week reset", at(AcctUse{Ended: now.Add(-24 * time.Hour)})},
-		{"old 5h at 93%", "unsure", "(90% or more)", at(AcctUse{FiveKnown: true, SevenAt: now.Add(-time.Hour),
+		{"old 5h at 93%", "unsure", "(over the 45 min limit: unknown)", at(AcctUse{FiveKnown: true, SevenAt: now.Add(-time.Hour),
 			FiveAt: now.Add(-time.Hour), SevenPct: 50, FivePct: 93, Reset: reset, FiveReset: five})},
 		{"ahead of the clock", "unsure", "ahead of the clock", at(AcctUse{FiveKnown: true, SevenAt: now.Add(time.Hour),
 			FiveAt: now.Add(time.Hour), SevenPct: 50, Reset: reset, FiveReset: five})},

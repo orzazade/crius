@@ -70,8 +70,8 @@ func Pick(r *Report, as *Accounts, root, want string, pauseAt int) (name, dir, w
 
 // Standing is how one login's week reads against limit (a 7d share): "room"; "full", when Room says full (a 5h window at
 // 100% too) or the 7d share is at limit; or "unsure", when no line measured it, its newest reading is from a week that
-// has since reset, or Room cannot tell (an old reading at 90% or more, as it may be at the limit now, review of item 0;
-// a top share not measured; a reading ahead of the clock). why is the
+// has since reset, or Room cannot tell (a reading older than StaleAfter, as it may be at the limit now, 11-21; a top
+// share not measured; a reading ahead of the clock). An old reading at the limit is still full: a share only rises. why is the
 // share ("7d 40%", ", 5h 100%" added when full by it) or what is unknown ("" when never measured); v is the login's
 // view, nil when never measured. Pick, the PAUSE guard and quota --room read each login by it, from one report
 // (WithHosts), so the three agree; an unsure login has room for none of them (Crius 11-21), and only Pick still tries

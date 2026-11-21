@@ -1650,7 +1650,7 @@ func TestQuotaAccountAtTheLimitTellsCriusOnce(t *testing.T) {
 	x.session("work", s2, "/work/axi", "[crius account=max project=axi role=lead]", qNow.Add(-4*time.Minute))
 	x.spool(on(sampleAt(s1, qNow.Add(-2*time.Minute), 94, r1), l1, d1),
 		on(sampleAt(s2, qNow.Add(-2*time.Minute), 13, r2), l2, d2),
-		on(sampleAt(s2, qNow.Add(-90*time.Minute), 46, r3), l3, d3))
+		on(sampleAt(s2, qNow.Add(-20*time.Minute), 46, r3), l3, d3)) // within quota.StaleAfter: an older one is unknown, not room
 	x.run()
 	if n := grepAlerts(x.alerts(), " NEED "); len(n) != 0 {
 		t.Fatalf("max1 at 94%%: want no NEED, got %q", n)
@@ -2291,5 +2291,47 @@ func TestQuotaLimitNeedMovesOnlyPlacedProjects(t *testing.T) {
 	text := needText(need[0])
 	if !strings.Contains(text, "Next by the rule: zzz-placed to ") || strings.Contains(text, "aaa-lost") {
 		t.Errorf("want the move of zzz-placed (placed on max1) and none of the unplaced projects: %q", text)
+	}
+}
+
+// 11-21: with every role on T3 threads (no statusline) max2's newest sample aged 6 h, and the PAUSE guard still read it
+// as room ("max2 12%"), so it neither paused nor said its view was old. A sample older than quota.StaleAfter is unknown:
+// the guard lists it under "no room", and its blind NEED names the account and the sample's age.
+func TestQuotaGuardReadsAnOldSampleAsUnknownAndSaysItsAge(t *testing.T) {
+	clock = func() time.Time { return qNow }
+	t.Cleanup(func() { clock = time.Now })
+	x := newIC(t, cfg{extra: strings.Replace(guardedProject, "pause_at = 70", "pause_at = 90", 1)})
+	d1, d2 := filepath.Join(x.home, "cfg1"), filepath.Join(x.home, "cfg2")
+	l1, l2 := x.signIn(d1, "u-1"), x.signIn(d2, "u-2")
+	testutil.Write(t, filepath.Join(x.home, "accounts.toml"), "[[account]]\nname = \"max1\"\nplan = \"max\"\ndirs = [\""+
+		d1+"\"]\n[[account]]\nname = \"max2\"\nplan = \"max\"\ndirs = [\""+d2+"\"]\n")
+	r1, r2 := qNow.Add(4*24*time.Hour), qNow.Add(24*time.Hour)
+	s1, s2 := "aaaaaaaa-0000-0000-0000-000000000001", "aaaaaaaa-0000-0000-0000-000000000002"
+	x.session("work", s1, "/work/quotes", "[crius account=max project=quotes role=p1]", qNow.Add(-20*time.Minute))
+	x.session("work", s2, "/work/quotes", "[crius account=max project=quotes role=p2]", qNow.Add(-6*time.Hour-10*time.Minute),
+		qNow.Add(-3*time.Minute))
+	on := func(l quota.Line, login, dir string) quota.Line {
+		l.Login, l.Dir, l.Persona = login, dir, "work"
+		return l
+	}
+	x.spool(on(sampleAt(s1, qNow.Add(-10*time.Minute), 91, r1), l1, d1),
+		on(sampleAt(s2, qNow.Add(-6*time.Hour-9*time.Minute), 12, r2), l2, d2))
+	x.run()
+	x.run()
+	blind := grepAlerts(x.alerts(), " NEED crius:ingest -> crius:lead — quota guard for quotes is blind")
+	if len(blind) != 1 {
+		t.Fatalf("want one blind NEED for quotes, got %q", x.alerts())
+	}
+	for _, want := range []string{"max2", "6 h old", "over the 45 min limit", "unknown, not room"} {
+		if !strings.Contains(blind[0], want) {
+			t.Errorf("the blind NEED has no %q: %q", want, blind[0])
+		}
+	}
+	pause := grepAlerts(x.alerts(), " NEED crius:ingest -> crius:lead — quota guard: account max1")
+	if len(pause) != 1 {
+		t.Fatalf("want one pause NEED for max1, got %q", x.alerts())
+	}
+	if strings.Contains(pause[0], "Room: max2") || !strings.Contains(pause[0], "no room: max2 12% 6 h old") {
+		t.Errorf("the pause NEED must list max2 as no room with its age, not as room: %q", pause[0])
 	}
 }

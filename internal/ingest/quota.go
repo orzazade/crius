@@ -343,9 +343,13 @@ func (r *runner) pauseChecks(tx *sql.Tx, rep *quota.Report, as *quota.Accounts) 
 			if projects, ok := rep.StaleProjects[st]; ok && !slices.Contains(projects, p.slug) && !slices.Contains(projects, "unknown") {
 				continue // an account only other known projects run on (Crius 10-29); a session of no known project may be p's
 			}
+			old := "" // the age goes in the text only: the key stays one per gap
+			if t, ok := rep.StaleAt[st]; ok {
+				old = ", " + quota.OldText(rep.Now, t)
+			}
 			if err := r.queueLine(tx, "quota:blind:"+p.slug+":"+st, "NEED", "crius", "crius:lead", fmt.Sprintf(
-				"quota guard for %s is blind: the Max 7d share is stale (%s), so it cannot tell whether %s reached its "+
-					"%d%% pause; check the statusline sampler", p.slug, st, p.slug, p.pauseAt)); err != nil {
+				"quota guard for %s is blind: the Max 7d share is stale (%s%s), so it cannot tell whether %s reached its "+
+					"%d%% pause; check the statusline sampler", p.slug, st, old, p.slug, p.pauseAt)); err != nil {
 				return err
 			}
 		}
@@ -404,7 +408,7 @@ func (r *runner) pauseAccounts(tx *sql.Tx, rep *quota.Report, as *quota.Accounts
 	for _, a := range rep.Accounts {
 		seen[a.Login] = true
 		listed := as.Of(a.Login) != nil && as.Of(a.Login).Plan == "max"
-		switch st, why, _ := quota.Standing(rep, a.Login, p.pauseAt); {
+		switch st, why, v := quota.Standing(rep, a.Login, p.pauseAt); {
 		case st == "room":
 			room = append(room, fmt.Sprintf("%s %g%%", a.Name, a.SevenPct))
 			hasRoom[a.Login] = true
@@ -426,7 +430,11 @@ func (r *runner) pauseAccounts(tx *sql.Tx, rep *quota.Report, as *quota.Accounts
 			if listed {
 				unknown[a.Login] = a.Name
 			}
-			unsure = append(unsure, fmt.Sprintf("%s %g%% unsure", a.Name, a.SevenPct)) // short: the NEED is one bus line
+			word := "unsure"
+			if old := quota.OldText(rep.Now, v.MeasuredAt()); old != "" && !v.SevenAt.IsZero() {
+				word, _, _ = strings.Cut(old, ",") // "6 h old"
+			}
+			unsure = append(unsure, fmt.Sprintf("%s %g%% %s", a.Name, a.SevenPct, word)) // short: the NEED is one bus line
 		}
 	}
 	if as != nil {

@@ -475,8 +475,8 @@ func quotaCmd(home string, now time.Time, asJSON, room bool, stdout, stderr io.W
 
 // roomFor is the --room verdict for the config folder dir that aitch asks about (AITCH_PRIMARY, owner 10-23: several
 // Max accounts), from that folder's login alone, read as Pick reads a Max row for a new session (quota.Standing at quota.Limit):
-// room, full, or unknown when Pick is unsure of it (never measured, no reading since its week reset, an old reading at
-// 90% or more), so aitch takes its fallback rather than a guess (Crius 11-21). With no dir, or while no line names its
+// room, full, or unknown when Pick is unsure of it (never measured, no reading since its week reset, a reading older
+// than quota.StaleAfter), so aitch takes its fallback rather than a guess (Crius 11-21). With no dir, or while no line names its
 // login (a statusline from before the field), the verdict is every login's together, as before: the Mac's store alone, as
 // WithHosts merges the other machines per login only (a legacy path; aitch always names the folder). The report is nil
 // when it has no numbers.

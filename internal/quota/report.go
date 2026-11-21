@@ -37,8 +37,10 @@ type Report struct {
 	// StaleProjects: the projects whose open sessions run on the login a Stale entry names; none for a persona entry,
 	// which covers every project of the persona. A project's guard is blind only for its own accounts (Crius 10-29).
 	StaleProjects map[string][]string
-	LastSample    time.Time
-	LastKind      string
+	// StaleAt: the time of the newest line a Stale entry names, absent when it has none, so a guard can say its age.
+	StaleAt    map[string]time.Time
+	LastSample time.Time
+	LastKind   string
 	// SevenAt and FiveAt: the newest measurement showing SevenPct and FivePct. A share only rises within its window,
 	// so a lower reading is an older one; a measurement is a line that came with a response (one from before that
 	// mark: not a heartbeat, which repeats a session's last values).
@@ -770,6 +772,7 @@ func Build(db Querier, p Projects, now time.Time) (*Report, error) {
 			rep.Stale = append(rep.Stale, persona+": no statusline line yet")
 		case t.Sub(last) > Gap: // a request went unmeasured for longer than Gap; idle after a late one is not (live 11-07 20:27)
 			rep.Stale = append(rep.Stale, persona+": last statusline line "+when(last))
+			rep.staleAt(rep.Stale[len(rep.Stale)-1], last)
 		}
 	}
 	sort.Strings(rep.Stale)
@@ -817,6 +820,9 @@ func Build(db Querier, p Projects, now time.Time) (*Report, error) {
 				at = when(last)
 			}
 			rep.Stale = append(rep.Stale, name+": newest current-epoch sample "+at)
+			if !last.IsZero() {
+				rep.staleAt(rep.Stale[len(rep.Stale)-1], last)
+			}
 			var projects []string
 			for project, t := range maxBy[l] {
 				if now.Sub(t) <= Gap && !t.Before(began[l]) {
@@ -1195,4 +1201,20 @@ func (v Violation) text(n int) string {
 func StaleText(entry string) string {
 	return "quota/max STALE: requests ran over 45 min after the statusline sampler's last line (" +
 		clip(entry, 80) + "); is crius-statusline in that persona's statusLine and working?"
+}
+
+func (r *Report) staleAt(entry string, t time.Time) {
+	if r.StaleAt == nil {
+		r.StaleAt = map[string]time.Time{}
+	}
+	r.StaleAt[entry] = t
+}
+
+// OldText says how far over StaleAfter a sample taken at t is at now, for a guard's line: "6 h old, over the 45 min
+// limit: unknown, not room"; "" while it is within the limit.
+func OldText(now, t time.Time) string {
+	if now.Sub(t) <= StaleAfter {
+		return ""
+	}
+	return ago(now.Sub(t)) + " old, over the " + ago(StaleAfter) + " limit: unknown, not room"
 }
