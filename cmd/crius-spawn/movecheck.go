@@ -83,7 +83,7 @@ func moveCheck(home string, in io.Reader) string {
 			"makes the call; a new provider instance restarts its provider session and kills its running background " +
 			"shells. Pass the thread id of an idle thread instead.")
 	}
-	th, instance, err := showThread(home, id)
+	th, instance, _, err := showThread(home, id)
 	if err != nil {
 		return deny(fmt.Sprintf("cannot read T3 thread %s, so it may be busy: %v.", id, err))
 	}
@@ -127,8 +127,9 @@ func moveCheck(home string, in io.Reader) string {
 }
 
 // showThread reads a thread with `t3 thread show --json`: the t3 in the Crius bin folder when there is one (nvm keeps
-// t3 off a hook's PATH), else t3 on the PATH. It gives the thread's provider instance too ("" when t3 names none).
-func showThread(home, id string) (wakewatch.T3Thread, string, error) {
+// t3 off a hook's PATH), else t3 on the PATH. It gives the thread's provider instance too ("" when t3 names none), and
+// the background jobs it lists, with their kind.
+func showThread(home, id string) (wakewatch.T3Thread, string, []t3Job, error) {
 	t3 := "t3"
 	if p := filepath.Join(home, "bin", "t3"); fileExists(p) {
 		t3 = p
@@ -144,7 +145,7 @@ func showThread(home, id string) (wakewatch.T3Thread, string, error) {
 			err = fmt.Errorf("%w (%s)", wakewatch.ErrT3NoAnswer, moveCheckT3Timeout)
 		}
 		said, _, _ := strings.Cut(strings.TrimSpace(stderr.String()+"\n"+stdout.String()), "\n")
-		return wakewatch.T3Thread{}, "", fmt.Errorf("t3 thread show: %v: %s", err, said)
+		return wakewatch.T3Thread{}, "", nil, fmt.Errorf("t3 thread show: %v: %s", err, said)
 	}
 	var v struct {
 		Thread *struct {
@@ -154,6 +155,8 @@ func showThread(home, id string) (wakewatch.T3Thread, string, error) {
 			Pending     int     `json:"pendingRequestCount"`
 			Background  []struct {
 				TaskID      string `json:"taskId"`
+				Kind        string `json:"kind"`
+				Child       string `json:"childThreadId"`
 				Description string `json:"description"`
 			} `json:"pendingBackgroundTasks"`
 		} `json:"thread"`
@@ -163,16 +166,13 @@ func showThread(home, id string) (wakewatch.T3Thread, string, error) {
 		} `json:"messages"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &v); err != nil || v.Thread == nil {
-		return wakewatch.T3Thread{}, "", fmt.Errorf("t3 thread show printed no thread JSON: %.80q", stdout.String())
+		return wakewatch.T3Thread{}, "", nil, fmt.Errorf("t3 thread show printed no thread JSON: %.80q", stdout.String())
 	}
 	th := wakewatch.T3Thread{Status: v.Thread.Status, Pending: v.Thread.Pending,
 		Active: v.Thread.ActiveRunID != nil && *v.Thread.ActiveRunID != ""}
-	for _, bg := range v.Thread.Background { // -fresh waits for these; the move check does not read them
-		job := bg.TaskID
-		if bg.Description != "" {
-			job += " (" + bg.Description + ")"
-		}
-		th.Background = append(th.Background, job)
+	var jobs []t3Job // -fresh waits for these; the move check does not read them
+	for _, bg := range v.Thread.Background {
+		jobs = append(jobs, t3Job{ID: bg.TaskID, Kind: bg.Kind, Child: bg.Child, What: bg.Description})
 	}
 	for i := len(v.Messages) - 1; i >= 0; i-- {
 		if v.Messages[i].Role == "assistant" {
@@ -181,7 +181,7 @@ func showThread(home, id string) (wakewatch.T3Thread, string, error) {
 		}
 		th.Unanswered = th.Unanswered || v.Messages[i].Role == "user"
 	}
-	return th, v.Thread.Instance, nil
+	return th, v.Thread.Instance, jobs, nil
 }
 
 // newestMark gives the newest of ❓, ✅ and ⏳ in text, "" when it has none.

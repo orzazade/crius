@@ -53,7 +53,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/orzazade/crius/internal/ingest"
@@ -62,7 +61,6 @@ import (
 	"github.com/orzazade/crius/internal/quota"
 	"github.com/orzazade/crius/internal/sessionstate"
 	"github.com/orzazade/crius/internal/store"
-	"github.com/orzazade/crius/internal/wakewatch"
 )
 
 func main() {
@@ -182,26 +180,7 @@ func main() {
 		if !set { // -fresh replaces a T3 thread: the new session runs in one too unless -backend says otherwise
 			start = func() (string, error) { return spawnNew(s, "t3", d, t3) }
 		}
-		spawn := start
-		f := freshener{home: store.Home(), wait: 5 * time.Second, tries: 240, stopWait: 250 * time.Millisecond, stopTries: 40,
-			show: func(id string) (wakewatch.T3Thread, error) {
-				th, _, err := showThread(store.Home(), id)
-				return th, err
-			},
-			process: func(config, id string) (int, error) {
-				pid, _, err := sessionstate.Process(config, id)
-				return pid, err
-			},
-			procs: func() ([]wakewatch.Proc, error) {
-				ps, err := psProcs()
-				out := make([]wakewatch.Proc, len(ps))
-				for i, p := range ps {
-					out[i] = wakewatch.Proc{PID: p.pid, PPID: p.ppid, Command: p.command}
-				}
-				return out, err
-			},
-			signal: func(pid int, sig syscall.Signal) error { return syscall.Kill(pid, sig) },
-			spawn:  spawn}
+		f := newFreshener(store.Home(), start)
 		start = func() (string, error) { return f.fresh(s.Project, s.Role) }
 	}
 	out, err := start()
