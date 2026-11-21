@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -90,7 +92,7 @@ func TestRunT3StartsTheRoleOnThePickedAccountsInstance(t *testing.T) {
 	sess := sessionstate.State{SessionID: "11111111-2222-3333-4444-555555555555", State: "running", Cwd: cwd, Name: "lab · probe",
 		Project: "lab", Role: "probe", Thread: "mcp:th-1", Config: max2, Time: time.Now()}
 	reads := 0
-	tt := T3{CLI: f.run, Instances: inst, Roles: roles, Tries: 5,
+	tt := T3{CLI: f.run, Instances: inst, Roles: roles,
 		Sessions: func() ([]sessionstate.State, error) {
 			reads++
 			if reads == 1 { // crius-hook has not filed it yet
@@ -98,6 +100,7 @@ func TestRunT3StartsTheRoleOnThePickedAccountsInstance(t *testing.T) {
 			}
 			return []sessionstate.State{{SessionID: "old", Thread: "mcp:other", Config: max2}, sess}, nil
 		}}
+	(&fakeClock{}).on(&tt, 5*time.Second)
 	got, err := RunT3(Spawn{Project: "lab", Role: "probe", Prompt: "say hi and stop"}, d, tt)
 	if err != nil {
 		t.Fatal(err)
@@ -133,8 +136,9 @@ func TestRunT3PicksTheRolesModel(t *testing.T) {
 	cwd, max2, roles, d, inst := t3Fixture(t)
 	f := &fakeT3{start: `{"threadId":"mcp:th-1"}`, shows: []string{show("completed", "claude-max2", 1, "hi ✅")}}
 	sess := sessionstate.State{SessionID: "11111111-2222-3333-4444-555555555555", Cwd: cwd, Project: "lab", Role: "qa-api", Thread: "mcp:th-1", Config: max2}
-	tt := T3{CLI: f.run, Instances: inst, Roles: roles, Tries: 3,
+	tt := T3{CLI: f.run, Instances: inst, Roles: roles,
 		Sessions: func() ([]sessionstate.State, error) { return []sessionstate.State{sess}, nil }}
+	(&fakeClock{}).on(&tt, 3*time.Second)
 	if _, err := RunT3(Spawn{Project: "lab", Role: "qa-api", Prompt: "say hi and stop"}, d, tt); err != nil {
 		t.Fatal(err)
 	}
@@ -162,11 +166,11 @@ func TestRunT3FailsLoudly(t *testing.T) {
 			func() (map[string]string, error) { return map[string]string{"claudeAgent": "/nowhere/.claude"}, nil }, nil, nil,
 			"no T3 provider instance runs in " + max2 + " (account max2)"},
 		{"no run starts", `{"threadId":"mcp:th-1"}`, []string{show("idle", "claude-max2", 0, "")}, inst, []sessionstate.State{good}, nil,
-			"thread mcp:th-1 started no work: status idle, no reply after 3 reads"},
+			"T3 thread mcp:th-1 did not finish starting in 3s (limit 3s): still waiting for a run or a reply (status idle). Next: it may still start"},
 		{"T3 runs it on another instance", `{"threadId":"mcp:th-1"}`, []string{show("running", "claudeAgent", 1, "")}, inst, nil, nil,
-			"thread mcp:th-1 runs on provider instance claudeAgent, not claude-max2"},
+			"thread mcp:th-1 runs on provider instance claudeAgent, not claude-max2. Next: it may still start"},
 		{"crius-hook files no session", `{"threadId":"mcp:th-1"}`, []string{show("running", "claude-max2", 1, "")}, inst, nil, nil,
-			"crius-hook filed no session for thread mcp:th-1 after 3 reads"},
+			"lab · probe (thread mcp:th-1, running): T3 thread mcp:th-1 did not finish starting in 3s (limit 3s): still waiting for crius-hook to file its Claude session (the thread runs). Next: without it the role record cannot be written"},
 		{"the session runs in another folder", `{"threadId":"mcp:th-1"}`, []string{show("running", "claude-max2", 1, "")}, inst,
 			[]sessionstate.State{{SessionID: good.SessionID, Thread: "mcp:th-1", Config: "/x/.claude"}}, nil,
 			"its Claude session " + good.SessionID + " runs in /x/.claude, not " + max2},
@@ -182,12 +186,84 @@ func TestRunT3FailsLoudly(t *testing.T) {
 		} else if c.pick != nil {
 			dd.Pick = c.pick
 		}
-		tt := T3{CLI: f.run, Instances: c.inst, Roles: t.TempDir(), Tries: 3,
+		tt := T3{CLI: f.run, Instances: c.inst, Roles: t.TempDir(),
 			Sessions: func() ([]sessionstate.State, error) { return c.sess, nil }}
+		(&fakeClock{}).on(&tt, 3*time.Second)
 		_, err := RunT3(Spawn{Project: "lab", Role: "probe", Prompt: "say hi and stop"}, dd, tt)
 		if err == nil || !strings.Contains(err.Error(), c.err) {
 			t.Errorf("%s: err %v, want %q", c.name, err, c.err)
 		}
+	}
+}
+
+// fakeClock is a start-up check's clock: each pause moves it on, and so may a slow t3 call, so no test waits for real.
+// said is what the check wrote on its Log.
+type fakeClock struct {
+	now  time.Time
+	said strings.Builder
+}
+
+// on gives tt this clock, limit as its start-up limit and reads 1 s apart.
+func (c *fakeClock) on(tt *T3, limit time.Duration) {
+	tt.Wait, tt.Limit, tt.Log = time.Second, limit, &c.said
+	tt.Now = func() time.Time { return c.now }
+	tt.Sleep = func(d time.Duration) { c.now = c.now.Add(d) }
+}
+
+var waitLine = regexp.MustCompile(`^waiting on T3 thread mcp:th-1: (.+), (\d+)s of 3m0s$`)
+
+// 11-21: the start-up check ran two waits of 120 reads each (2 x 2 min, longer when t3 answered slowly) with no output,
+// so nobody could tell a slow T3 from a hang. Now one limit in real time bounds both waits, slow t3 calls included; it
+// says what it waits on when that changes and at least once a minute, and the limit's error names the thread, what it
+// still waited for and the next step.
+func TestRunT3SaysWhatItWaitsOnAndStopsAtOneLimit(t *testing.T) {
+	cwd, max2, roles, d, inst := t3Fixture(t)
+	c := &fakeClock{now: time.Date(2026, 11, 22, 1, 0, 0, 0, time.UTC)}
+	start := c.now
+	f := &fakeT3{start: `{"threadId":"mcp:th-1"}`, shows: []string{show("starting", "claude-max2", 0, ""), show("starting", "claude-max2", 0, ""),
+		show("starting", "claude-max2", 0, ""), show("running", "claude-max2", 1, "")}}
+	slow := func(stdin string, args ...string) (string, error) { // T3 under load: each call takes 20 s
+		c.now = c.now.Add(20 * time.Second)
+		return f.run(stdin, args...)
+	}
+	tt := T3{CLI: slow, Instances: inst, Roles: roles,
+		Sessions: func() ([]sessionstate.State, error) { // crius-hook never files the session
+			return []sessionstate.State{{SessionID: "old", Thread: "mcp:other", Config: max2, Cwd: cwd}}, nil
+		}}
+	c.on(&tt, StartLimit)
+	_, err := RunT3(Spawn{Project: "lab", Role: "probe", Prompt: "say hi and stop"}, d, tt)
+	lines := strings.Split(strings.TrimSpace(c.said.String()), "\n")
+	if c.said.Len() == 0 {
+		t.Fatalf("no progress line on Log while the start-up check waited %s; err %v", c.now.Sub(start), err)
+	}
+	if took := c.now.Sub(start); took < StartLimit || took > StartLimit+time.Second {
+		t.Errorf("the start-up check took %s, want one limit of %s for both waits, slow t3 calls included", took, StartLimit)
+	}
+	want := "T3 thread mcp:th-1 did not finish starting in 3m0s (limit 3m0s): still waiting for crius-hook to file its Claude session"
+	if err == nil || !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), "Next: ") {
+		t.Errorf("err %v, want %q and a next step", err, want)
+	}
+	var whys []string
+	last := -1
+	for _, l := range lines {
+		m := waitLine.FindStringSubmatch(l)
+		if m == nil {
+			t.Fatalf("line %q, want %s", l, waitLine)
+		}
+		n, _ := strconv.Atoi(m[2])
+		if last >= 0 && n-last > 60+21 { // a line is due after a minute, at the next read: 20 s call + 1 s pause
+			t.Errorf("%ds between two lines (%q), want one at least once a minute (at the next read)", n-last, l)
+		}
+		last = n
+		if len(whys) == 0 || whys[len(whys)-1] != m[1] {
+			whys = append(whys, m[1])
+		}
+	}
+	if wantWhys := []string{"a run or a reply (status starting)", "crius-hook to file its Claude session (the thread runs)"}; strings.Join(whys, "|") != strings.Join(wantWhys, "|") {
+		t.Errorf("waited on %q, want a line each time the reason changed: %q", whys, wantWhys)
+	}
+	if last < int((StartLimit - time.Minute).Seconds()) {
+		t.Errorf("last line at %ds of a %s wait, want one within a minute of the limit", last, StartLimit)
 	}
 }
 

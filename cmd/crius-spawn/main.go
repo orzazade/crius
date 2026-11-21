@@ -109,6 +109,7 @@ func main() {
 		Send:  func(ws, surface, text string) error { return outbox.SendTo(store.Home(), ws, surface, text) },
 	}
 	t3 := launch.T3{CLI: runT3, Instances: t3Instances, Roles: filepath.Join(store.Home(), "roles"), Wait: time.Second, Tries: 120,
+		Limit: launch.StartLimit, Now: time.Now, Sleep: time.Sleep, Log: os.Stderr,
 		Sessions: func() ([]sessionstate.State, error) {
 			ss, err := sessionstate.List(filepath.Join(store.Home(), "sessions"))
 			if errors.Is(err, sessionstate.ErrDamaged) { // one damaged file names no thread; the others still do

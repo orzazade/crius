@@ -35,7 +35,7 @@ type freshener struct {
 
 // freshLimit bounds -fresh's whole wait for a turn boundary. 11-21: 240 reads 5 s apart (20 min, silent, longer still
 // when T3 answered slowly) outlived Crius's own 15 min wait twice, so its refusal was never seen. With the new session's
-// own start-up checks (2 x 2 min, internal/launch RunT3), -fresh ends inside about 10 min.
+// own start-up check (launch.StartLimit, 3 min), -fresh ends inside about 9 min.
 const freshLimit = 5 * time.Minute
 
 // newFreshener is the -fresh crius-spawn runs: it reads T3, Claude Code's status files and ps, signals by pid, and

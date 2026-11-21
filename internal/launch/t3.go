@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -26,7 +27,13 @@ type T3 struct {
 	Sessions func() ([]sessionstate.State, error)
 	Roles    string        // the roles folder ($CRIUS_HOME/roles)
 	Wait     time.Duration // between two reads
-	Tries    int           // reads before a step gives up
+	Tries    int           // reads before a ResumeT3 step gives up
+	// Limit bounds RunT3's whole start-up check (StartLimit), read on Now, so slow t3 calls count too; Sleep is the
+	// pause between two reads, and Log gets what the check waits on.
+	Limit time.Duration
+	Now   func() time.Time
+	Sleep func(time.Duration)
+	Log   io.Writer
 }
 
 // T3Started is a role started as a thread: the thread, the Claude session crius-hook filed for it, the Max account
@@ -70,6 +77,7 @@ func RunT3(s Spawn, d Deps, t T3) (T3Started, error) {
 	}
 	name, model, _ := command(s.Project, s.Role, acct, dir)
 	tag := s.tag(account)
+	w := startWait{t: t, start: t.Now()} // one limit from here on: the thread start and both checks
 	out, err := t.CLI(tag+"\n"+s.Prompt, "thread", "start", "--json", "--title", name, "--provider", inst, "--model", model, cwd, "-")
 	if err != nil {
 		return T3Started{}, fmt.Errorf("t3 thread start: %v", err)
@@ -84,41 +92,43 @@ func RunT3(s Spawn, d Deps, t T3) (T3Started, error) {
 		return T3Started{}, fmt.Errorf("t3 thread start printed no threadId: %.120q", out)
 	}
 	id := started.Thread
+	w.id = id
 	// Work started: a run open, or a reply already (a short prompt can finish before the first read).
-	var last string
-	err = poll(t, func() (bool, error) {
+	err = w.until(func() (string, error) {
 		th, err := showT3(t, id)
 		if err != nil {
-			return false, err
+			return "", err
 		}
 		if th.Thread.Instance != inst {
-			return false, fmt.Errorf("thread %s runs on provider instance %s, not %s", id, th.Thread.Instance, inst)
+			return "", fmt.Errorf("thread %s runs on provider instance %s, not %s", id, th.Thread.Instance, inst)
 		}
-		last = th.Thread.Status
-		return th.Thread.Status == "running" || th.replied(), nil
-	})
-	if err == errTries {
-		err = fmt.Errorf("thread %s started no work: status %s, no reply after %d reads", id, last, t.Tries)
-	}
+		if th.Thread.Status == "running" || th.replied() {
+			return "", nil
+		}
+		return fmt.Sprintf("a run or a reply (status %s)", th.Thread.Status), nil
+	}, fmt.Sprintf("it may still start: spawn the role again only once `t3 thread show %s` shows no run and no reply "+
+		"(an interrupt does nothing to an idle thread), or archive the thread in the T3 app first; else two sessions run the role", id))
 	if err != nil {
 		return T3Started{}, err
 	}
 	var sess sessionstate.State
-	err = poll(t, func() (bool, error) {
+	err = w.until(func() (string, error) {
 		ss, err := t.Sessions()
 		if err != nil {
-			return false, err
+			return "", err
 		}
 		for _, x := range ss {
 			if x.Thread == id && (sess.SessionID == "" || x.Time.After(sess.Time)) {
 				sess = x
 			}
 		}
-		return sess.SessionID != "", nil
-	})
-	if err == errTries {
-		err = fmt.Errorf("crius-hook filed no session for thread %s after %d reads: its role record cannot be written, so nothing watches it", id, t.Tries)
-	}
+		if sess.SessionID != "" {
+			return "", nil
+		}
+		return "crius-hook to file its Claude session (the thread runs)", nil
+	}, fmt.Sprintf("without it the role record cannot be written, so nothing watches the thread. Check that crius-hook is the "+
+		"SessionStart hook in %s, then stop the thread (t3_thread_interrupt threadId=%s stop=true), see in `t3 thread show %s` "+
+		"that its run ended, and spawn again", filepath.Join(dir, "settings.json"), id, id))
 	if err != nil {
 		return T3Started{}, fmt.Errorf("%s (thread %s, running): %w", name, id, err)
 	}
@@ -271,7 +281,43 @@ func decode(what, out string, v any) error {
 
 var errTries = errors.New("gave up")
 
-// poll calls step until it says done, at most t.Tries times with t.Wait between; errTries when it never did.
+// startWait is RunT3's start-up check of thread id: one Limit, from start, for all its steps, read on t.Now so slow
+// t3 calls count too. It is never silent: it says on t.Log what it waits on when that changes and, at the next read,
+// once a minute has passed since it last said it.
+type startWait struct {
+	t     T3
+	id    string
+	start time.Time
+	why   string    // what it said it waits on last
+	said  time.Time // when it said it
+}
+
+// until calls step until it waits on nothing ("") or fails, t.Wait apart. At the limit it gives a loud error that names
+// the thread, what it still waited for, and next, the next step; a step's own error gets next too, as the thread was
+// started either way. A t3 call that began before the limit may end up to its own timeout after it.
+func (w *startWait) until(step func() (string, error), next string) error {
+	for {
+		why, err := step()
+		if err != nil {
+			return fmt.Errorf("%w. Next: %s", err, next)
+		}
+		if why == "" {
+			return nil
+		}
+		now := w.t.Now()
+		if why != w.why || now.Sub(w.said) >= time.Minute {
+			w.why, w.said = why, now
+			fmt.Fprintf(w.t.Log, "waiting on T3 thread %s: %s, %ds of %s\n", w.id, why, int(now.Sub(w.start).Seconds()), w.t.Limit)
+		}
+		if !now.Before(w.start.Add(w.t.Limit)) {
+			return fmt.Errorf("T3 thread %s did not finish starting in %s (limit %s): still waiting for %s. Next: %s", w.id,
+				now.Sub(w.start).Round(time.Second), w.t.Limit, why, next)
+		}
+		w.t.Sleep(w.t.Wait)
+	}
+}
+
+// poll calls step until it says done (ResumeT3), at most t.Tries times with t.Wait between; errTries when it never did.
 func poll(t T3, step func() (bool, error)) error {
 	for i := 0; i < t.Tries; i++ {
 		if i > 0 {
@@ -315,3 +361,9 @@ func RoleThread(home, project, role string, r sessionstate.State) (string, error
 // (full_thread_summary)".
 var ErrT3Move = errors.New("T3 cannot move a thread to another account as the same session: a change of its provider " +
 	"instance starts a new Claude session that gets only a summary of the thread; nothing moved")
+
+// StartLimit bounds RunT3's whole start-up check: the thread start, a run or reply on the right instance, and
+// crius-hook filing its Claude session. 11-21 fresh T3 threads wrote their first transcript line 5-7 s after T3 made
+// them, and one t3 call takes about 1 s (5 s under load, 30 s at most: crius-spawn's t3Timeout), so 3 min leaves room
+// for a loaded Mac and several hung calls, and is shorter than the 2 x 2 min (and more) the two separate waits took.
+const StartLimit = 3 * time.Minute
