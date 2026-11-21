@@ -21,8 +21,6 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/sys/unix"
-
 	"github.com/orzazade/crius/internal/playbook"
 	"github.com/orzazade/crius/internal/store"
 	"github.com/orzazade/crius/internal/tabsend"
@@ -62,7 +60,7 @@ func run(args []string, out, errs io.Writer, runner func(playbook.Host) tabsend.
 			names = append(names, h.Name)
 			continue
 		}
-		unlock, err := lock(filepath.Join(store.Home(), "state", "tsend.lock"))
+		unlock, err := tabsend.Lock(tabsend.LockFile(store.Home()))
 		if err != nil {
 			fmt.Fprintf(errs, "crius-tsend: NOT SENT, nothing typed: %v\n", err)
 			return 2
@@ -86,17 +84,4 @@ func run(args []string, out, errs io.Writer, runner func(playbook.Host) tabsend.
 	}
 	fmt.Fprintf(errs, "crius-tsend: NOT SENT, nothing typed: no box %q in %s (it has: %s)\n", box, hostsFile, strings.Join(names, ", "))
 	return 2
-}
-
-// lock holds a file lock, so two sends never type into a pane at once (one could press Enter on the other's text).
-func lock(path string) (func(), error) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return nil, err
-	}
-	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX); err != nil {
-		f.Close()
-		return nil, fmt.Errorf("lock %s: %w", path, err)
-	}
-	return func() { f.Close() }, nil
 }

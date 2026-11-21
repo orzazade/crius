@@ -22,7 +22,16 @@ func TestMain(m *testing.M) {
 	}
 	userHome = func() (string, error) { return empty, nil }
 	procList = func() (string, error) { return "", errors.New("a test gives its own process list") }
+	// No test types into this machine's tmux windows: tmux runs on a server of the tests' own, in a short folder (a
+	// socket path is cut at about 100 bytes), which only tmux_test.go starts.
+	sock, err := os.MkdirTemp("/tmp", "bpt")
+	if err != nil {
+		panic(err)
+	}
+	os.Unsetenv("TMUX")
+	os.Setenv("TMUX_TMPDIR", sock)
 	code := m.Run()
+	os.RemoveAll(sock)
 	os.RemoveAll(empty)
 	os.Exit(code)
 }

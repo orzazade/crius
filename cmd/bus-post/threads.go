@@ -53,6 +53,7 @@ type threadRole struct {
 	role, id string
 	thread   bool
 	bus      string
+	noFile   bool // no role file: a role crius-hook never filed (the Legion keeps none), maybe in a tmux window
 }
 
 // mainRecipients gives the main recipients of to as project:role, once each, in order: a copy asks nothing of its reader,
@@ -86,7 +87,7 @@ func threadRecipients(to, project, home string) []threadRole {
 		s, err := sessionstate.ReadRole(filepath.Join(home, "roles"), p, r)
 		switch {
 		case err != nil:
-			th = append(th, threadRole{role: n, bus: "on the bus only (no role file, so no thread is known)"})
+			th = append(th, threadRole{role: n, bus: "on the bus only (no role file, so no thread is known)", noFile: true})
 			continue
 		case s.Workspace != "" || s.Surface != "":
 			th = append(th, threadRole{role: n, bus: "on the bus (tab)"})
@@ -107,7 +108,7 @@ func threadRecipients(to, project, home string) []threadRole {
 type outcomes struct {
 	roles  []string
 	what   map[string]string
-	thread bool // one of them is a thread role; with none, nothing else is said and neither is the summary
+	thread bool // one of them is a thread role or a tmux window; with none, nothing else is said and neither is the summary
 }
 
 func (o *outcomes) set(role, what string) {
@@ -200,14 +201,29 @@ func deliver(home, log, typ, from, to, line string, stderr io.Writer) (got []str
 		err   error
 	}
 	var sends []*send
+	var tm tmuxLook   // this machine's tmux windows (tmux.go), listed only when a role may be in one
+	var tmux []string // roles typed into their local tmux window
 	for _, t := range threadRecipients(to, logProject(log), home) {
 		if t.thread {
 			out.thread = true
+		}
+		inTmux := false
+		if t.id == "" && (t.thread || t.noFile) && t.role != strings.ToLower(from) {
+			var err error
+			if inTmux, err = tm.has(t.role); err != nil && !failed {
+				failed = true
+				fmt.Fprintf(stderr, "bus-post: posted, but could not list this machine's tmux windows, so a role in one "+
+					"is not woken: %v\n", err)
+			}
 		}
 		i := slices.IndexFunc(sends, func(s *send) bool { return s.id == t.id })
 		switch {
 		case t.role == strings.ToLower(from):
 			out.set(t.role, "not sent (the poster)")
+		case inTmux:
+			out.thread = true
+			out.set(t.role, "")
+			tmux = append(tmux, t.role)
 		case !t.thread:
 			out.set(t.role, t.bus)
 		case t.id != "" && t.id == own:
@@ -278,6 +294,16 @@ func deliver(home, log, typ, from, to, line string, stderr io.Writer) (got []str
 			out.set(r, "delivered (thread "+s.id+")")
 		}
 		fmt.Fprintf(stderr, "bus-post: delivered to %s (thread %s)\n", who, s.id)
+	}
+	for _, r := range tmux { // one at a time, under crius-tsend's lock
+		what, bad, said := tmuxSay(r, sendTmux(home, r, line+" (on the bus "+shown(log)+")"))
+		out.set(r, what)
+		fmt.Fprint(stderr, said)
+		if bad {
+			failed = true
+		} else {
+			got = append(got, r)
+		}
 	}
 	return got, failed, out
 }
