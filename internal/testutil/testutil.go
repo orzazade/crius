@@ -36,6 +36,8 @@ func Temp(t *testing.T) (root, home string) {
 	}
 	home = filepath.Join(root, "crius-home")
 	t.Setenv("CRIUS_HOME", home)
+	// T3 Code's home too: ingest reads T3's provider logs from it, and a test must never read the real ones.
+	t.Setenv("T3CODE_HOME", filepath.Join(root, "t3-home"))
 	return root, home
 }
 

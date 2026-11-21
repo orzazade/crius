@@ -1,0 +1,46 @@
+#!/bin/bash
+# t3-quota-demo: read T3 Code's provider logs into a throwaway Crius home, as crius-ingest does, and print per account
+# the newest seven-day share filed from them and its time, plus how many samples were filed and skipped.
+# Reads (never writes) the T3 home (default ~/.t3), and from the Crius home (default ~/.crius) accounts.toml and the
+# crius-hook session records; writes only under a new mktemp folder, which it names (and the Go build
+# cache). Usage: bin/t3-quota-demo [T3 home]
+set -euo pipefail
+repo=$(cd "$(dirname "$0")/.." && pwd)
+t3=${1:-$HOME/.t3}
+from=${CRIUS_DEMO_FROM:-$HOME/.crius}
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/t3-quota-demo.XXXXXX")
+home=$tmp/crius
+echo "throwaway home: $home"
+(cd "$repo" && go build -o "$tmp/bin/" ./cmd/crius-ingest ./cmd/crius-rec)
+CRIUS_HOME=$home "$tmp/bin/crius-rec" init > /dev/null
+# No transcripts: the demo reads only the T3 logs (and the statusline spool, which is empty here).
+mkdir -p "$tmp/no-transcripts" "$home/sessions"
+printf '[transcripts]\npersonal = "%s"\n' "$tmp/no-transcripts" > "$home/projects.toml"
+cp "$from/accounts.toml" "$home/accounts.toml"
+find "$from/sessions" -maxdepth 1 -name '*.json' -exec cp {} "$home/sessions/" \;
+rc=0
+CRIUS_HOME=$home T3CODE_HOME=$t3 "$tmp/bin/crius-ingest" --repo "$repo" > "$tmp/ingest.txt" 2>&1 || rc=$?
+if [ "$rc" -ne 0 ] && [ "$rc" -ne 3 ]; then # 3: partial, its warnings are printed below
+	cat "$tmp/ingest.txt"
+	echo "crius-ingest exit $rc"
+	exit "$rc"
+fi
+/usr/bin/grep -a 'T3 quota\|bad T3' "$tmp/ingest.txt" || echo "  T3 quota: nothing skipped"
+db="file:$home/state/record.db?immutable=1"
+count=$(sqlite3 "$db" "select count(*) from quota where sample_kind = 't3'")
+echo "filed from the T3 logs: $count samples"
+sqlite3 "$db" "select login, seven_day_pct, ts, (select count(distinct session) from quota where sample_kind = 't3'
+	and login = q.login) from quota q where sample_kind = 't3' and ts = (select max(ts) from quota where sample_kind = 't3'
+	and login = q.login) group by login order by login" > "$tmp/newest.txt"
+qrc=0
+CRIUS_HOME=$home "$tmp/bin/crius-rec" quota --json > "$tmp/quota.json" || qrc=$?
+if [ "$qrc" -ne 0 ] && [ "$qrc" -ne 3 ]; then # 3: the report is partial (no statusline sample here), still named
+	echo "crius-rec quota exit $qrc"
+	exit "$qrc"
+fi
+echo "newest T3 sample per account (share, time UTC, sessions):"
+while IFS='|' read -r login pct ts n; do
+	name=$(jq -r --arg l "$login" '[.Accounts[]? | select(.Login == $l) | .Name][0] // ("login " + $l)' "$tmp/quota.json")
+	echo "  $name: ${pct}% at $ts ($n sessions)"
+done < "$tmp/newest.txt"
+echo "ingest exit $rc"

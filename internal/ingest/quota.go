@@ -72,6 +72,7 @@ func (r *runner) ingestQuota() {
 			r.warn(true, "cannot ingest %s: %v", path, err)
 		}
 	}
+	r.ingestT3Quota() // T3 threads run no statusline: their samples come from T3's own logs
 	// Every session's account, also of sessions seen by the statusline before their transcript was read.
 	if err := r.inTx(measuredAccount); err != nil {
 		r.warn(true, "session accounts: %v", err)

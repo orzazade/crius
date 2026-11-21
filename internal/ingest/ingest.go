@@ -42,6 +42,8 @@ type Stats struct {
 	BadLines, Redactions, Synthetic, SessionsTouched int
 	StepRuns, DecisionChecks                         int            // steps.go: heavy runs read, decisions checked
 	StepUnwatched                                    map[string]int // steps.go: runs not watched (cut, no full name) per "<log>:<script>"
+	T3Samples                                        int            // t3quota.go: new quota samples from T3's logs
+	T3Skipped                                        map[string]int `json:",omitempty"` // t3quota.go: samples no record places, per reason
 }
 
 type runner struct {
