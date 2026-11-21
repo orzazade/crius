@@ -2,6 +2,8 @@ package main
 
 import (
 	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -481,5 +483,35 @@ func TestFreshPutsTheMarkBackWhenADeadListingShowsAfterTheClose(t *testing.T) {
 	}
 	if m, _ := sessionstate.ClosedSessions(filepath.Join(home, "roles"), "axi", "qa-2"); strings.Join(m, ",") != "s-older" {
 		t.Errorf("closed mark %q, want s-older back alone", m)
+	}
+}
+
+// Review round 2 P2: the kinds come from T3's own JSON. A misread childThreadId would make a delegate_task child look
+// like it runs inside the claude, and bring back the at-once refusal with its stop=true advice.
+func TestShowThreadReadsEachJobsKindAndChildThread(t *testing.T) {
+	home := t.TempDir()
+	testutil.Write(t, filepath.Join(home, "bin", "t3"), `#!/bin/sh
+cat <<'J'
+{"thread":{"status":"completed","activeRunId":null,"pendingRequestCount":0,"pendingBackgroundTasks":[
+{"taskId":"d9","kind":"subagent","childThreadId":"th-child","description":"review the diff"},
+{"taskId":"s2","kind":"subagent","childThreadId":null,"description":"explore"},
+{"taskId":"b7","kind":"command","description":"go test\n./..."},
+{"taskId":"w1","kind":"monitor","description":"watch PR 12"}]},"messages":[]}
+J
+`)
+	if err := os.Chmod(filepath.Join(home, "bin", "t3"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, _, jobs, err := showThread(home, "th-old")
+	if err != nil {
+		t.Fatalf("showThread: %v", err)
+	}
+	var got []string
+	for _, j := range jobs {
+		got = append(got, fmt.Sprintf("%s in-claude=%v", j, j.inClaude()))
+	}
+	want := "d9 (review the diff) in-claude=false|s2 (explore) in-claude=true|b7 (go test ./...) in-claude=true|w1 (watch PR 12) in-claude=false"
+	if strings.Join(got, "|") != want {
+		t.Errorf("jobs read as\n%s\nwant\n%s", strings.Join(got, "|"), want)
 	}
 }
