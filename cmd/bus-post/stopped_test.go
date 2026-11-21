@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -95,6 +96,54 @@ func TestCriusSilenceAndANewRoleAreQuiet(t *testing.T) {
 	log := stoppedBus(t, "2026-11-01T10:00 DECISION crius:lead -> quotes:lead — go")
 	rc, errs := post(t, at("2026-11-21T03:01"), log, "DONE", "quotes:new", "crius,quotes:other", "x")
 	if rc != 0 || errs != "" {
+		t.Fatal(rc, errs)
+	}
+}
+
+// "crius" is crius:lead: a STOPPED of it is said.
+func TestCriusIsCriusLead(t *testing.T) {
+	log := stoppedBus(t, "2026-11-21T02:00 STOPPED crius:lead -> quotes:lead — moving accounts")
+	rc, errs := post(t, at("2026-11-21T03:01"), log, "DONE", "quotes:lead", "crius", "8094 merged")
+	if rc != 0 || !strings.Contains(errs, "crius:lead is STOPPED (its last line, 2026-11-21T02:00") {
+		t.Fatal(rc, errs)
+	}
+}
+
+// Review P3-1: a RESUMED or START whose text opens with STOPPED tells of a stop that is over.
+func TestAResumedThatOpensWithStoppedIsNoStop(t *testing.T) {
+	log := stoppedBus(t,
+		"2026-11-21T01:00 STOPPED quotes:dev -> crius:lead — limit",
+		"2026-11-21T02:00 RESUMED quotes:dev -> crius:lead — STOPPED by the limit at 01:00, back now")
+	rc, errs := post(t, at("2026-11-21T03:01"), log, "DECISION", "crius:lead", "quotes:dev", "x")
+	if rc != 0 || errs != "" {
+		t.Fatal(rc, errs)
+	}
+}
+
+// Review P2-2: a bus that cannot be read is said, never taken as "not stopped".
+func TestABusThatCannotBeReadIsSaid(t *testing.T) {
+	quotes := stoppedBus(t)
+	cortex := filepath.Join(filepath.Dir(quotes), "cortex.log")
+	if err := os.Mkdir(cortex, 0o700); err != nil { // a folder where the cortex bus should be: no read
+		t.Fatal(err)
+	}
+	rc, errs := post(t, at("2026-11-21T03:01"), quotes, "DECISION", "crius:lead", "cortex:lead", "x")
+	if rc != 0 || !strings.Contains(errs, "could not check whether cortex:lead is stopped") {
+		t.Fatal(rc, errs)
+	}
+}
+
+// Review P2-1: a role whose T3 thread took the line starts a turn there; "nobody reads this" would be false. A stopped
+// role with no thread on the same line is still said (the positive control).
+func TestARoleWhoseThreadGotTheLineIsNotWarned(t *testing.T) {
+	home, log := setup(t)
+	roles(t, home)
+	fakeT3(t, home)
+	testutil.Write(t, log, "2026-11-11T01:25 STOPPED crius:qa -> crius:lead — clean\n"+
+		"2026-11-11T01:26 STOPPED crius:build -> crius:lead — clean\n")
+	rc, errs := post(t, at("2026-11-21T03:01"), log, "DECISION", "crius:lead", "crius:qa, crius:build", "x")
+	if rc != 0 || !strings.Contains(errs, "delivered to crius:qa") || strings.Contains(errs, "crius:qa is STOPPED") ||
+		!strings.Contains(errs, "crius:build is STOPPED") {
 		t.Fatal(rc, errs)
 	}
 }

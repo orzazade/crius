@@ -18,7 +18,8 @@ import (
 // silentFor is how long a role may post nothing before a line to it is said to go to a role that may be stopped.
 const silentFor = 24 * time.Hour
 
-// stoppedText is a line whose text opens with STOPPED ("STOPPED.", "STOPPED: …"), as roles wrote their stop on 11-11.
+// stoppedText is a line whose text opens with STOPPED ("STOPPED.", "STOPPED: …"), as roles wrote their stop on 11-11
+// in DONE, INFO and ALERT lines. A RESUMED or START that opens with it tells of a stop that is over (review P3-1).
 var stoppedText = regexp.MustCompile(`^STOPPED\b`)
 
 // lastSeen is a role's last line on the buses read.
@@ -35,16 +36,20 @@ type lastSeen struct {
 //
 // A role's lines are read from this bus and from its own project's bus next to it (quotes:lead posts on quotes.log).
 // crius:lead reads every bus and posts on few, so its silence is no stop; a role with no line on either bus is a new
-// one, not a stopped one. A bus that cannot be read is said too: "found nothing" is not "could not look".
-func warnStopped(log, to string, now time.Time, stderr io.Writer) {
+// one, not a stopped one. A role in got took the line in its T3 thread, which starts a turn there: it is not warned.
+// A bus that cannot be read is said too: "found nothing" is not "could not look".
+func warnStopped(log, to string, got []string, now time.Time, stderr io.Writer) {
 	project := logProject(log)
 	var roles []string
 	for _, n := range (&store.Line{To: to}).Recipients() {
-		if r := busRole(n, project); r != "" && !slices.Contains(roles, r) {
+		if r := busRole(n, project); r != "" && !slices.Contains(roles, r) && !slices.Contains(got, r) {
 			roles = append(roles, r)
 		}
 	}
-	files := []string{log}
+	if len(roles) == 0 {
+		return
+	}
+	files := []string{filepath.Clean(log)}
 	for _, r := range roles {
 		p, _, _ := strings.Cut(r, ":")
 		if f := filepath.Join(filepath.Dir(log), p+".log"); !slices.Contains(files, f) {
@@ -59,6 +64,7 @@ func warnStopped(log, to string, now time.Time, stderr io.Writer) {
 		}
 		if err != nil {
 			fmt.Fprintf(stderr, "bus-post: posted, but could not check whether %s is stopped: %v\n", strings.Join(roles, ", "), err)
+			return
 		}
 	}
 	for _, r := range roles {
@@ -102,7 +108,7 @@ func lastLines(f string, roles []string, loc *time.Location, seen map[string]las
 				}
 				if perr == nil && !at.Before(seen[who].at) {
 					seen[who] = lastSeen{at: at, stamp: l.Date + "T" + l.Time,
-						stopped: l.Type == "STOPPED" || stoppedText.MatchString(l.Text)}
+						stopped: l.Type == "STOPPED" || l.Type != "RESUMED" && l.Type != "START" && stoppedText.MatchString(l.Text)}
 				}
 			}
 		}
