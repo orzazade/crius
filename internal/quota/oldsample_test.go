@@ -99,4 +99,13 @@ func TestPickOfUnsureRowsTakesTheSoonestResetUnder90(t *testing.T) {
 	if err != nil || name != "max3" || !strings.Contains(why, PickedBlind) || !strings.Contains(why, "in use since, unmeasured") {
 		t.Fatalf("want max3 (soonest reset under 90%%) as a guess, got %q %q %v", name, why, err)
 	}
+	// Review of 63303fc: a row whose week reset since (share unknown, from 0) comes before one read at 90% or more.
+	r = &Report{Now: now, spentAny: now.Add(-time.Minute), Accounts: []AcctUse{
+		{Login: l2, Name: "max2", SevenAt: old, SevenPct: 93, Reset: now.Add(5 * time.Hour)},
+		{Login: l3, Name: "max3", SevenAt: old, SevenPct: 92, Reset: now.Add(10 * time.Hour)},
+		{Login: l4, Name: "max4", Ended: now.Add(-2 * time.Hour)},
+	}}
+	if name, _, why, err := Pick(r, as, work, "max", 0); err != nil || name != "max4" {
+		t.Fatalf("want max4 (week reset) over max3 (92%%), got %q %q %v", name, why, err)
+	}
 }

@@ -70,8 +70,8 @@ func Pick(r *Report, as *Accounts, root, want string, pauseAt int) (name, dir, w
 
 // Standing is how one login's week reads against limit (a 7d share): "room"; "full", when Room says full (a 5h window at
 // 100% too) or the 7d share is at limit; or "unsure", when no line measured it, its newest reading is from a week that
-// has since reset, or Room cannot tell (a reading older than StaleAfter, as it may be at the limit now, 11-21; a top
-// share not measured; a reading ahead of the clock). An old reading at the limit is still full: a share only rises. why is the
+// has since reset, or Room cannot tell (an old reading spent past since, 11-21; an old one at 90% or more, as it may be at
+// the limit now; a top share not measured; a reading ahead of the clock). One at the limit is full at any age. why is the
 // share ("7d 40%", ", 5h 100%" added when full by it) or what is unknown ("" when never measured); v is the login's
 // view, nil when never measured. Pick, the PAUSE guard and quota --room read each login by it, from one report
 // (WithHosts), so the three agree; an unsure login has room for none of them (Crius 11-21), and only Pick still tries
@@ -172,7 +172,7 @@ func pick(r *Report, as *Accounts, root, want string, pauseAt int) (name, dir, w
 	type pick struct {
 		name, dir, share string
 		reset            time.Time
-		low              bool // unsure rows: the last reading is under 90%
+		rank             int // unsure rows: 0 read under 90%, 1 not read this week, 2 read at 90% or more
 	}
 	var best, blind *pick
 	var full, unmeasured []string
@@ -192,15 +192,18 @@ func pick(r *Report, as *Accounts, root, want string, pauseAt int) (name, dir, w
 			} else {
 				unmeasured = append(unmeasured, a.Name+" ("+why+")")
 			}
-			// Of the unsure rows, the soonest reset (a reset does not age) whose last reading this week is under 90%; a
-			// share only rises, so one read at 90% or more, or not read this week, comes after.
-			week := v != nil && v.Ended.IsZero()
-			p.share, p.low = why, week && v.SevenPct < 90 && v.FivePct < 90
-			if week {
+			// Of the unsure rows: first one read this week under 90%, then one whose share this week is not known (never
+			// read, or its week reset since), then one read this week at 90% or more (a share only rises); within a rank,
+			// the soonest reset (a reset does not age; one not known comes last).
+			p.share, p.rank = why, 1
+			if v != nil && v.Ended.IsZero() {
 				p.reset = v.Reset
+				if p.rank = 2; v.SevenPct < 90 && v.FivePct < 90 {
+					p.rank = 0
+				}
 			}
-			if blind == nil || p.low != blind.low && p.low ||
-				p.low == blind.low && !p.reset.IsZero() && (blind.reset.IsZero() || p.reset.Before(blind.reset)) {
+			if blind == nil || p.rank < blind.rank ||
+				p.rank == blind.rank && !p.reset.IsZero() && (blind.reset.IsZero() || p.reset.Before(blind.reset)) {
 				blind = &p
 			}
 			continue

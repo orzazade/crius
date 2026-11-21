@@ -45,7 +45,7 @@ func Room(r *Report) (verdict, reason string) {
 		return "unknown", nums + " (sample ahead of the clock)"
 	case age <= StaleAfter:
 		return "room", nums
-	case r.Unmeasured():
+	case r.unmeasured():
 		return "unknown", nums + " (in use since, unmeasured)" // under 100 runes (TestRoom)
 	case r.SevenPct < 90 && r.FivePct < 90:
 		return "room", nums + " (under 90%)"
@@ -54,14 +54,16 @@ func Room(r *Report) (verdict, reason string) {
 }
 
 // Unmeasured says whether the shares are over StaleAfter old and a request that may be on the login ran over StaleAfter
-// after their measurement, so they may have grown by any amount since (SpentAt).
-func (r *Report) Unmeasured() bool {
+// after their measurement, so they may have grown by any amount since (SpentAt); since is that measurement.
+func (r *Report) Unmeasured() (since time.Time, ok bool) {
 	m := r.MeasuredAt()
 	if m.IsZero() { // a 5h share no line measured: the 7d one's age
 		m = r.SevenAt
 	}
-	return !m.IsZero() && r.Now.Sub(m) > StaleAfter && r.SpentAt.Sub(m) > StaleAfter
+	return m, !m.IsZero() && r.Now.Sub(m) > StaleAfter && r.SpentAt.Sub(m) > StaleAfter
 }
+
+func (r *Report) unmeasured() bool { _, ok := r.Unmeasured(); return ok }
 
 // MeasuredAt is when the shares Room uses were measured: the older of SevenAt and, while its window runs, FiveAt (a
 // zero FiveAt is oldest of all).

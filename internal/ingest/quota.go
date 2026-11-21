@@ -431,8 +431,8 @@ func (r *runner) pauseAccounts(tx *sql.Tx, rep *quota.Report, as *quota.Accounts
 				unknown[a.Login] = a.Name
 			}
 			word := "unsure"
-			if v.Unmeasured() { // spent since its sample: say how old it is
-				word = quota.Ago(rep.Now.Sub(v.SevenAt)) + " old"
+			if since, ok := v.Unmeasured(); ok { // spent since its sample: say how old it is
+				word = quota.Ago(rep.Now.Sub(since)) + " old"
 			}
 			unsure = append(unsure, fmt.Sprintf("%s %g%% %s", a.Name, a.SevenPct, word)) // short: the NEED is one bus line
 		}

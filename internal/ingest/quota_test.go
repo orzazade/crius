@@ -2367,3 +2367,30 @@ func TestQuotaLimitMoveOntoAnUnsureAccountSaysItIsAGuess(t *testing.T) {
 		t.Fatalf("want one limit NEED moving quotes to max2 marked as a guess, got %q", x.alerts())
 	}
 }
+
+// Review of 63303fc: the 11-21 shape end to end. A T3 thread runs no statusline, so its session has a crius tag
+// (account=max) and no line naming its login; its requests may be on any login. max2's old sample, idle on its own login,
+// is then unknown through Build, not only when a test sets the report's fields by hand. With no such session it keeps
+// the old rule (room under 90%).
+func TestQuotaATaggedSessionWithNoLineMakesEveryOldSampleUnknown(t *testing.T) {
+	clock = func() time.Time { return qNow }
+	t.Cleanup(func() { clock = time.Now })
+	x := newIC(t, cfg{extra: guardedProject})
+	d2 := filepath.Join(x.home, "cfg2")
+	l2 := x.signIn(d2, "u-2")
+	testutil.Write(t, filepath.Join(x.home, "accounts.toml"), "[[account]]\nname = \"max2\"\nplan = \"max\"\ndirs = [\""+d2+"\"]\n")
+	s2, s3 := "aaaaaaaa-0000-0000-0000-000000000002", "aaaaaaaa-0000-0000-0000-000000000003"
+	x.session("work", s2, "/work/quotes", "[crius account=max project=quotes role=p2]", qNow.Add(-6*time.Hour-10*time.Minute))
+	l := sampleAt(s2, qNow.Add(-6*time.Hour-9*time.Minute), 12, qNow.Add(4*24*time.Hour))
+	l.Login, l.Dir, l.Persona = l2, d2, "work"
+	x.spool(l)
+	x.run()
+	if st, why, _ := quota.Standing(x.report(), l2, quota.Limit); st != "room" {
+		t.Fatalf("idle since its sample: want room under 90%%, got %s %q", st, why)
+	}
+	x.session("work", s3, "/work/quotes", "[crius account=max project=quotes role=p3]", qNow.Add(-3*time.Minute))
+	x.run()
+	if st, why, _ := quota.Standing(x.report(), l2, quota.Limit); st != "unsure" || !strings.Contains(why, "6 h old (in use since, unmeasured)") {
+		t.Fatalf("a tagged session with no line ran 3 min ago: want unsure, spent since, got %s %q", st, why)
+	}
+}
