@@ -345,7 +345,10 @@ func (r *runner) pauseChecks(tx *sql.Tx, rep *quota.Report, as *quota.Accounts) 
 			}
 			old := "" // the age goes in the text only: the key stays one per gap
 			if t, ok := rep.StaleAt[st]; ok {
-				old = ", " + quota.Ago(rep.Now.Sub(t)) + " old, over the " + quota.Ago(quota.StaleAfter) + " limit: unknown, not room"
+				old = ", " + quota.Ago(rep.Now.Sub(t)) + " old, over the " + quota.Ago(quota.StaleAfter) + " limit"
+				if _, login := rep.StaleProjects[st]; login { // a persona entry names no account to call unknown
+					old += ": unknown, not room"
+				}
 			}
 			if err := r.queueLine(tx, "quota:blind:"+p.slug+":"+st, "NEED", "crius", "crius:lead", fmt.Sprintf(
 				"quota guard for %s is blind: the Max 7d share is stale (%s%s), so it cannot tell whether %s reached its "+

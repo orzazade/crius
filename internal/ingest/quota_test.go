@@ -1104,6 +1104,10 @@ func TestQuotaGuardThatCannotSeeTheShareWakesCrius(t *testing.T) {
 	if len(need) != 1 || !strings.Contains(need[0], "quotes") || !strings.Contains(need[0], "blind") {
 		t.Fatalf("want one NEED saying the quotes guard is blind, got %q", x.alerts())
 	}
+	// A persona entry (its session's line names no login) says the age but calls no account unknown (review of e67d219).
+	if !strings.Contains(need[0], "1 h old, over the 45 min limit") || strings.Contains(need[0], "not room") {
+		t.Fatalf("want the age and no account called unknown, got %q", need[0])
+	}
 	// Without pause_at the stale sample stays an ALERT only (TestQuotaOpenSessionsWithNoRecentSampleAreStale).
 	y := quotaCase(t)
 	y.session("personal", y.sid, "/work/demo", "", qNow.Add(-10*time.Minute))
@@ -2334,6 +2338,8 @@ func TestQuotaGuardReadsAnOldSampleAsUnknownAndSaysItsAge(t *testing.T) {
 	if strings.Contains(pause[0], "Room: max2") || !strings.Contains(pause[0], "no room: max2 12% 6 h old") {
 		t.Errorf("the pause NEED must list max2 as no room with its age, not as room: %q", pause[0])
 	}
+	t.Log(blind[0]) // the morning demo: go test -v -run this test
+	t.Log(pause[0])
 }
 
 // Review of b0f87e2: when every other account is unsure, the limit NEED's move target is Pick's guess, and the line read
