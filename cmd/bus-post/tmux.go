@@ -5,19 +5,21 @@ package main
 // Code thread filed" and Crius typed the lines in by hand with crius-tsend; the Staffy builder had sat 33 h before with
 // nothing to wake it. bus-post runs on the box that holds the window (bus-post-thinkpad and bus-post-legion run it
 // there), so a line that asks such a role to act is typed into the local tmux window <project>:<role>, as crius-tsend
-// types it (tabsend.Send). The lock keeps two senders on this machine apart; a crius-tsend run on the Mac locks the Mac's
-// file, so it and a bus-post here are not kept apart (a clash ends in NOT or MAYBE delivered on one side, never silent).
+// types it (tabsend.Send). The lock (tabsend.LockFile) keeps every typer into this machine's panes apart: bus-posts here,
+// and a crius-tsend from the Mac, which holds this machine's lock through `bus-post --hold-lock` (holdLock).
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/orzazade/crius/internal/store"
 	"github.com/orzazade/crius/internal/tabsend"
 )
 
@@ -80,15 +82,42 @@ func (l *tmuxLook) team(project string) []string {
 	return out
 }
 
-// sendTmux types text into the local tmux window target and proves it went, holding the lock a crius-tsend run on this
-// machine holds.
-func sendTmux(home, target, text string) error {
-	unlock, err := tabsend.Lock(tabsend.LockFile(home))
+// typingLock is this machine's typing lock: the one path both sendTmux and holdLock take, so a bus-post here and a
+// crius-tsend from the Mac can never lock two different files.
+func typingLock() string { return tabsend.LockFile(store.Home()) }
+
+// sendTmux types text into the local tmux window target and proves it went, holding this machine's typing lock (the one
+// a crius-tsend from the Mac holds through holdLock).
+func sendTmux(target, text string) error {
+	unlock, err := tabsend.Lock(typingLock(), tabsend.LockWait)
 	if err != nil {
-		return fmt.Errorf("%w: %v", tabsend.ErrRefused, err)
+		return fmt.Errorf("%w: %w", tabsend.ErrRefused, err)
 	}
 	defer unlock()
 	return tabsend.Send(runLocal, target, text)
+}
+
+// maxHoldWait bounds the wait a --hold-lock caller may ask for.
+const maxHoldWait = 2 * time.Minute
+
+// holdLock is `bus-post --hold-lock <wait>`: it waits up to wait for this machine's typing lock, says LOCKED, and holds
+// it until stdin ends (at most tabsend.HoldMax). crius-tsend on the Mac runs it over ssh around its typing into a pane here, so it and a bus-post
+// here never type at once. Exit 0 held and let go, 1 not held (busy for the whole wait, or the lock failed), 2 usage.
+func holdLock(args []string, in io.Reader, out, errs io.Writer) int {
+	var wait time.Duration
+	var err error
+	if len(args) == 1 {
+		wait, err = time.ParseDuration(args[0])
+	}
+	if len(args) != 1 || err != nil || wait <= 0 || wait > maxHoldWait {
+		fmt.Fprintf(errs, "usage: bus-post --hold-lock <wait, 1ms to %s>\n", maxHoldWait)
+		return 2
+	}
+	if err := tabsend.Hold(typingLock(), wait, tabsend.HoldMax, in, out); err != nil {
+		fmt.Fprintf(errs, "bus-post: %v\n", err)
+		return 1
+	}
+	return 0
 }
 
 // tmuxSay says what happened to a send to role's tmux window on this box, and gives its outcome and whether it failed.

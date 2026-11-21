@@ -314,7 +314,7 @@ func deliver(home, log, typ, from, to, line string, stderr io.Writer) (got []str
 		fmt.Fprintf(stderr, "bus-post: delivered to %s (thread %s)\n", who, s.id)
 	}
 	for _, r := range tmux { // one at a time, under crius-tsend's lock
-		what, bad, said := tmuxSay(r, sendTmux(home, r, line+" (on the bus "+shown(log)+")"))
+		what, bad, said := tmuxSay(r, sendTmux(r, line+" (on the bus "+shown(log)+")"))
 		out.set(r, what)
 		fmt.Fprint(stderr, said)
 		if bad {

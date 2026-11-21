@@ -77,7 +77,7 @@ func TestExitCodes(t *testing.T) {
 		{"usage", []string{"legion", "quotes:qa"}, pane(true), 2, "usage:"},
 	} {
 		var out, errs bytes.Buffer
-		code := run(c.args, &out, &errs, c.runner)
+		code := run(c.args, &out, &errs, c.runner, freeLock)
 		if code != c.code || !strings.Contains(out.String()+errs.String(), c.says) {
 			t.Errorf("%s: exit %d, said %q %q; want exit %d saying %q", c.name, code, out.String(), errs.String(), c.code, c.says)
 		}

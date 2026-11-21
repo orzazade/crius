@@ -37,6 +37,9 @@
 // wake a thread. A role with no tab and no thread that is a window <project>:<role> of this machine's tmux server (the
 // teams on the ThinkPad and the Legion) is typed into, as crius-tsend types (tmux.go).
 //
+// `bus-post --hold-lock <wait>` holds this machine's typing lock until stdin ends: crius-tsend on the Mac runs it over ssh
+// so it and a bus-post here never type into one pane at once (tmux.go).
+//
 // Exit codes: 0 posted, 2 refused (nothing written), 3 refused: a hex word is no commit, 4 refused: a START while a live
 // run is open, 5 posted, but a recipient has no live session (or the check failed), 6 refused: a time typed at the start
 // of the text is off the clock, 7 refused: a READY with no pre-ready PASS record, 8 posted, but a thread or tmux window it
@@ -76,7 +79,12 @@ var (
 	bareRe = regexp.MustCompile(`(?:^|\s)([A-Za-z0-9][A-Za-z0-9._-]*\.log)(?:$|[\s,;:.)])`) // a run log's bare name, no slash
 )
 
-func main() { os.Exit(run(os.Args[1:], time.Now(), os.Stderr)) }
+func main() {
+	if len(os.Args) > 1 && os.Args[1] == "--hold-lock" {
+		os.Exit(holdLock(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
+	}
+	os.Exit(run(os.Args[1:], time.Now(), os.Stderr))
+}
 
 // run posts the line, and logs a refusal to ~/.crius/logs/bus-post-refused.log: a refused line leaves no trace on the
 // bus, and the daily scorecard counts repeats of a known mistake from this log (brief fixes-1025 item 7, E6).
