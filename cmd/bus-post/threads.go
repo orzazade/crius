@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/orzazade/crius/internal/sessionstate"
+	"github.com/orzazade/crius/internal/store"
 	"github.com/orzazade/crius/internal/t3cli"
 	"github.com/orzazade/crius/internal/wakewatch"
 )
@@ -45,38 +46,105 @@ var actTypes = map[string]bool{"DONE": true, "NEED": true, "ASK": true, "FAIL": 
 	"CORRECTION": true, "CORRECTED": true, "ANSWER": true, "ORDER": true, "OWNER": true, "READY": true, "GO": true,
 	"PAUSE": true}
 
-// threadRole is a main recipient filed with no tab (no workspace, no surface). id is the T3 Code thread its current
-// session runs in, "" when none is known: a session outside both cmux and T3 Code, or one that has run no hook since
-// crius-hook began to file T3CODE_THREAD_ID.
-type threadRole struct{ role, id string }
+// threadRole is a main recipient. With thread set it is filed with no tab (no workspace, no surface), and id is the T3
+// Code thread its current session runs in, "" when none is known: a session outside both cmux and T3 Code, or one that
+// has run no hook since crius-hook began to file T3CODE_THREAD_ID. Else bus says how it reads the bus instead.
+type threadRole struct {
+	role, id string
+	thread   bool
+	bus      string
+}
 
-// threadRecipients gives each main recipient of to (a copy asks nothing of its reader, as wakewatch's addressed has it)
-// whose current session crius-hook filed with no tab. The thread comes from that session's own file, which the hook
-// rewrites on every event; the role's file is rewritten only when the role changes session. crius:lead is left out: its
-// own waiter reads the bus. A role with no file is not known to be a thread and is left out too.
-func threadRecipients(to, project, home string) []threadRole {
-	var th []threadRole
+// mainRecipients gives the main recipients of to as project:role, once each, in order: a copy asks nothing of its reader,
+// as wakewatch's addressed has it, and a whole team or "cc" is no one. The split is store.Names, the bus parser's.
+func mainRecipients(to, project string) []string {
+	var out []string
 	main, _, _ := strings.Cut(to, "(")
-	for _, n := range strings.FieldsFunc(main, func(r rune) bool { return r == ',' || r == ' ' }) {
+	for _, n := range store.Names(main) {
 		if strings.EqualFold(n, "cc") {
 			break
 		}
-		n = busRole(n, project)
-		if n == "" || n == "crius:lead" || slices.ContainsFunc(th, func(t threadRole) bool { return t.role == n }) {
+		if n = busRole(n, project); n != "" && !slices.Contains(out, n) {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// threadRecipients gives each main recipient of to, marked a thread when crius-hook filed its current session with no
+// tab. The thread comes from that session's own file, which the hook rewrites on every event; the role's file is
+// rewritten only when the role changes session. crius:lead is no thread: its own waiter reads the bus. A role with no
+// file is not known to be a thread.
+func threadRecipients(to, project, home string) []threadRole {
+	var th []threadRole
+	for _, n := range mainRecipients(to, project) {
+		if n == "crius:lead" {
+			th = append(th, threadRole{role: n, bus: "on the bus (its own waiter reads it)"})
 			continue
 		}
 		p, r, _ := strings.Cut(n, ":")
 		s, err := sessionstate.ReadRole(filepath.Join(home, "roles"), p, r)
-		if err != nil || s.Workspace != "" || s.Surface != "" {
+		switch {
+		case err != nil:
+			th = append(th, threadRole{role: n, bus: "on the bus only (no role file, so no thread is known)"})
+			continue
+		case s.Workspace != "" || s.Surface != "":
+			th = append(th, threadRole{role: n, bus: "on the bus (tab)"})
 			continue
 		}
 		id := s.Thread
 		if cur, err := sessionstate.Read(filepath.Join(home, "sessions"), s.SessionID); err == nil {
 			id = cur.Thread
 		}
-		th = append(th, threadRole{n, id})
+		th = append(th, threadRole{role: n, id: id, thread: true})
 	}
 	return th
+}
+
+// outcomes is what happened to each main recipient of an act-type line, in the order to names them. Its last line on
+// stderr names them all: a sender that keeps only the last line (`2>&1 | tail -1`, Crius 11-21 09:52 and 10:20) saw
+// one "delivered to" line of two and read it as a partial delivery.
+type outcomes struct {
+	roles  []string
+	what   map[string]string
+	thread bool // one of them is a thread role; with none, nothing else is said and neither is the summary
+}
+
+func (o *outcomes) set(role, what string) {
+	if o.what == nil {
+		o.what = map[string]string{}
+	}
+	if _, ok := o.what[role]; !ok {
+		o.roles = append(o.roles, role)
+	}
+	o.what[role] = what
+}
+
+// add appends more to what happened to role, when role is one of them.
+func (o *outcomes) add(role, more string) {
+	if w, ok := o.what[role]; ok {
+		o.what[role] = w + "; " + more
+	}
+}
+
+// addAll appends more to what happened to every role.
+func (o *outcomes) addAll(more string) {
+	for _, r := range o.roles {
+		o.add(r, more)
+	}
+}
+
+// print writes the summary line, for two or more roles of which one is a thread (one role's own line already names it;
+// tabs alone are read from the bus and nothing else is said).
+func (o *outcomes) print(stderr io.Writer) {
+	if len(o.roles) < 2 || !o.thread {
+		return
+	}
+	parts := make([]string, len(o.roles))
+	for i, r := range o.roles {
+		parts[i] = r + " " + o.what[r]
+	}
+	fmt.Fprintf(stderr, "bus-post: to %d roles: %s\n", len(o.roles), strings.Join(parts, "; "))
 }
 
 // notSent says on stderr that a line of type typ, which is not sent to threads, reached the thread roles of to only on the
@@ -87,7 +155,8 @@ func notSent(home, log, typ, from, to, own string, stderr io.Writer) {
 	crius, _ := wakewatch.CriusThread(home) // unreadable: no role is left out for it; deliver reports the error on its path
 	var who []string
 	for _, t := range threadRecipients(to, logProject(log), home) {
-		if t.id != "" && t.id != own && t.id != crius && !strings.HasPrefix(t.id, "-") && t.role != strings.ToLower(from) {
+		if t.thread && t.id != "" && t.id != own && t.id != crius && !strings.HasPrefix(t.id, "-") &&
+			t.role != strings.ToLower(from) {
 			who = append(who, t.role)
 		}
 	}
@@ -112,13 +181,15 @@ func notSent(home, log, typ, from, to, own string, stderr io.Writer) {
 // thread, all at once. It never sends to the poster's own thread (its role, or the thread it runs in) nor to Crius's
 // thread, nor to a thread whose send would start a second session for a role whose live claude reads the bus through its
 // own waiter (twin). It says on stderr who got it and who did not, and gives the roles that got it or are read by such a
-// live claude, and whether a send failed.
-func deliver(home, log, typ, from, to, line string, stderr io.Writer) (got []string, failed bool) {
+// live claude, whether a send failed, and what happened to each main recipient (nil for a type not sent to threads),
+// which the caller prints last.
+func deliver(home, log, typ, from, to, line string, stderr io.Writer) (got []string, failed bool, out *outcomes) {
 	own := os.Getenv("T3CODE_THREAD_ID")
 	if !actTypes[typ] {
 		notSent(home, log, typ, from, to, own, stderr)
-		return nil, false
+		return nil, false, nil
 	}
+	out = &outcomes{}
 	crius, err := wakewatch.CriusThread(home)
 	if err != nil {
 		fmt.Fprintf(stderr, "bus-post: %v; a role filed in that thread may get this line\n", err)
@@ -130,20 +201,33 @@ func deliver(home, log, typ, from, to, line string, stderr io.Writer) (got []str
 	}
 	var sends []*send
 	for _, t := range threadRecipients(to, logProject(log), home) {
+		if t.thread {
+			out.thread = true
+		}
 		i := slices.IndexFunc(sends, func(s *send) bool { return s.id == t.id })
 		switch {
 		case t.role == strings.ToLower(from):
-		case t.id != "" && (t.id == own || t.id == crius):
+			out.set(t.role, "not sent (the poster)")
+		case !t.thread:
+			out.set(t.role, t.bus)
+		case t.id != "" && t.id == own:
+			out.set(t.role, "not sent (the poster's own thread)")
+		case t.id != "" && t.id == crius:
+			out.set(t.role, "not sent (Crius's thread, which reads the bus)")
 		case t.id == "":
+			out.set(t.role, "not woken (no tab and no T3 Code thread filed; on the bus only)")
 			fmt.Fprintf(stderr, "bus-post: posted, but %s has no tab and no T3 Code thread filed: a bus line does not "+
 				"wake it; send it to its session too\n", t.role)
 		case strings.HasPrefix(t.id, "-"):
 			failed = true
+			out.set(t.role, fmt.Sprintf("NOT delivered (filed thread id %q is no thread id)", t.id))
 			fmt.Fprintf(stderr, "bus-post: posted, but not delivered to %s: its filed thread id %q is no thread id; send "+
 				"it to the thread by hand (t3_thread_send, mode auto)\n", t.role, t.id)
 		case i >= 0: // two roles in one thread: one send
+			out.set(t.role, "")
 			sends[i].roles = append(sends[i].roles, t.role)
 		default:
+			out.set(t.role, "")
 			sends = append(sends, &send{id: t.id, roles: []string{t.role}})
 		}
 	}
@@ -157,6 +241,13 @@ func deliver(home, log, typ, from, to, line string, stderr io.Writer) (got []str
 		for _, s := range sends {
 			if why, live := look.twin(s.id, s.roles, log, stderr); why != "" {
 				got = append(got, live...) // its live claude reads the bus: no "no live session" warning for it
+				for _, r := range s.roles {
+					if slices.Contains(live, r) {
+						out.set(r, "reads the bus (its live session's own waiter; thread "+s.id+" not sent)")
+					} else {
+						out.set(r, "not sent (thread "+s.id+" is shared with a role whose live session reads the bus)")
+					}
+				}
 				fmt.Fprintf(stderr, "bus-post: posted, not delivered to %s (thread %s): %s\n", strings.Join(s.roles, ", "),
 					s.id, why)
 				continue
@@ -175,14 +266,20 @@ func deliver(home, log, typ, from, to, line string, stderr io.Writer) (got []str
 		who := strings.Join(s.roles, ", ")
 		if s.err != nil {
 			failed = true
+			for _, r := range s.roles {
+				out.set(r, fmt.Sprintf("NOT delivered (thread %s): %v", s.id, s.err))
+			}
 			fmt.Fprintf(stderr, "bus-post: posted, but not delivered to %s (thread %s): %v; send it to the thread by "+
 				"hand (t3_thread_send, mode auto)\n", who, s.id, s.err)
 			continue
 		}
 		got = append(got, s.roles...)
+		for _, r := range s.roles {
+			out.set(r, "delivered (thread "+s.id+")")
+		}
 		fmt.Fprintf(stderr, "bus-post: delivered to %s (thread %s)\n", who, s.id)
 	}
-	return got, failed
+	return got, failed, out
 }
 
 // liveLook is the live claudes of each role, found as wakewatch's twins check finds them (by the claude's own name, else

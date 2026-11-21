@@ -195,7 +195,13 @@ func (l *Line) Recipients() []string {
 			to = main + "," + cc
 		}
 	}
-	return strings.FieldsFunc(to, func(r rune) bool { return r == ',' || r == ' ' })
+	return Names(to)
+}
+
+// Names splits a list of bus names as a line's To writes them ("a,b", "a b", "a, b") into the names: the one split every
+// reader of To in bus-post and the store uses, so a sender and a reader never count a list differently.
+func Names(list string) []string {
+	return strings.FieldsFunc(list, func(r rune) bool { return r == ',' || r == ' ' })
 }
 
 // minutes is the minute of the day of a checked "HH:MM", 0 for "".

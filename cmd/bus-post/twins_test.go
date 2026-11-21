@@ -98,8 +98,13 @@ func TestALiveClaudeOnAnotherSessionIsNotStartedTwice(t *testing.T) {
 				t.Errorf("%s: stderr lacks %q:\n%s", waiter, want, errs)
 			}
 		}
-		if n := strings.Count(errs, "crius:ms"); n != 1 {
-			t.Errorf("%s: crius:ms named on %d lines, want one:\n%s", waiter, n, errs)
+		// One warning line, then the summary line that names every role (lastLine).
+		if n := strings.Count(strings.TrimSuffix(errs, lastLine(errs)+"\n"), "crius:ms"); n != 1 {
+			t.Errorf("%s: crius:ms named on %d lines before the summary, want one:\n%s", waiter, n, errs)
+		}
+		if l := lastLine(errs); !strings.Contains(l, "crius:ms reads the bus (its live session's own waiter") ||
+			!strings.Contains(l, "crius:qa delivered (thread th-qa)") {
+			t.Errorf("%s: last line %q", waiter, l)
 		}
 	}
 }

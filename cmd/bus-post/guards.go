@@ -32,6 +32,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
+	"github.com/orzazade/crius/internal/store"
 	"github.com/orzazade/crius/internal/wakewatch"
 )
 
@@ -339,7 +340,7 @@ func openRuns(f io.ReaderAt, size int64, now time.Time, window time.Duration) ([
 
 // upperName gives the first recipient name of to with a project part and an upper-case letter, or "".
 func upperName(to string) string {
-	for _, n := range strings.FieldsFunc(to, func(r rune) bool { return r == ',' || r == ' ' }) {
+	for _, n := range store.Names(to) {
 		if strings.Contains(n, ":") && strings.ToLower(n) != n {
 			return n
 		}

@@ -301,7 +301,7 @@ func postLine(args []string, now time.Time, stderr io.Writer) int {
 	}
 	// A thread role is woken by its thread, not by the bus (threads.go); a thread that got the line is read, and so is a
 	// role whose live claude reads the bus through its own waiter.
-	got, failed := deliver(filepath.Dir(filepath.Dir(log)), log, typ, from, to, line, stderr)
+	got, failed, out := deliver(filepath.Dir(filepath.Dir(log)), log, typ, from, to, line, stderr)
 	rc := 0
 	if failed {
 		rc = rcNotDelivered
@@ -309,12 +309,19 @@ func postLine(args []string, now time.Time, stderr io.Writer) int {
 	if typ == "ORDER" || typ == "ASK" {
 		if dead, err := deadRecipients(to, logProject(log), got); err != nil {
 			fmt.Fprintf(stderr, "bus-post: posted, but could not check who has a live session: %v\n", err)
-			return cmp.Or(rc, rcNoSession)
+			out.addAll("live session not checked (" + err.Error() + ")")
+			rc = cmp.Or(rc, rcNoSession)
 		} else if len(dead) > 0 {
 			fmt.Fprintf(stderr, "bus-post: posted, but %s has no live session: nobody reads it until one starts "+
 				"(start it, or send it to someone running)\n", strings.Join(dead, ", "))
-			return cmp.Or(rc, rcNoSession)
+			for _, d := range dead {
+				out.add(d, "no live session")
+			}
+			rc = cmp.Or(rc, rcNoSession)
 		}
+	}
+	if out != nil {
+		out.print(stderr) // last, so a sender that keeps only the last line still sees every role
 	}
 	return rc
 }

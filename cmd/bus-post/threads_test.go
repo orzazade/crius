@@ -88,7 +88,8 @@ func TestALineToAThreadRoleIsDeliveredToTheThread(t *testing.T) {
 		t.Errorf("stdin %q: want the line, then the bus it is on", in)
 	}
 	if !strings.Contains(errs, "delivered to crius:qa (thread th-qa)") || strings.Contains(errs, "send it to the thread too") ||
-		strings.Contains(errs, "crius:build") {
+		strings.Contains(strings.TrimSuffix(errs, lastLine(errs)+"\n"), "crius:build") ||
+		lastLine(errs) != "bus-post: to 2 roles: crius:qa delivered (thread th-qa); crius:build on the bus (tab)" {
 		t.Errorf("stderr %q", errs)
 	}
 }
@@ -289,5 +290,73 @@ func TestAnInfoToTwoThreadRolesNamesBoth(t *testing.T) {
 	rc, errs := post(t, at("2026-11-20T22:09"), log, "INFO", "crius:lead", "crius:qa, crius:ms", "fyi")
 	if rc != 0 || !strings.Contains(errs, "): crius:qa, crius:ms see it only when they next read the bus;") {
 		t.Errorf("rc %d, stderr %q", rc, errs)
+	}
+}
+
+// lastLine is the last line of stderr, all that `bus-post … 2>&1 | tail -1` shows.
+func lastLine(errs string) string {
+	lines := strings.Split(strings.TrimRight(errs, "\n"), "\n")
+	return lines[len(lines)-1]
+}
+
+// 11-21 09:52 and 10:20: Crius posted a DECISION to "axi:api-split,axi:ms-flow" with `2>&1 | tail -1` and saw one
+// "delivered to" line, for one role; both threads had got it, but the other role's line was cut. The last line names
+// every listed role and what happened to it, so a cut view still shows the whole delivery.
+func TestTheLastLineNamesEveryListedRole(t *testing.T) {
+	home, log := setup(t)
+	roles(t, home)
+	fake := fakeT3(t, home)
+	rc, errs := post(t, at("2026-11-21T09:52"), log, "DECISION", "crius:lead", "crius:qa,crius:ms", "OK: hold")
+	if calls := readOr(t, filepath.Join(fake, "calls")); rc != 0 || strings.Count(calls, "thread send") != 2 {
+		t.Fatalf("rc %d, calls %q: %s", rc, calls, errs)
+	}
+	if want := "bus-post: to 2 roles: crius:qa delivered (thread th-qa); crius:ms delivered (thread th-ms)"; lastLine(errs) != want {
+		t.Errorf("last line %q, want %q\nstderr: %s", lastLine(errs), want, errs)
+	}
+
+	// Space-separated, a tab role, a failed send and a cc: the last line names each main recipient, and the exit is 8.
+	// An ORDER also names who has no live session (HOME is the test's: no claude runs there).
+	t.Setenv("HOME", home)
+	testutil.Write(t, filepath.Join(fake, "fail"), "Thread th-ms is no longer available.\n")
+	rc, errs = post(t, at("2026-11-21T09:53"), log, "ORDER", "crius:lead", "crius:ms crius:build (cc crius:qa)", "go")
+	if rc != rcNotDelivered {
+		t.Errorf("rc %d, want %d: %s", rc, rcNotDelivered, errs)
+	}
+	if l := lastLine(errs); !strings.HasPrefix(l, "bus-post: to 2 roles: crius:ms NOT delivered (thread th-ms): ") ||
+		!strings.Contains(l, "; crius:build on the bus (tab); no live session") || strings.Contains(l, "crius:qa") {
+		t.Errorf("last line %q\nstderr: %s", l, errs)
+	}
+}
+
+// Two roles in one thread are both named delivered after one send; an INFO prints no summary (its note stays last);
+// the poster is named the poster even when it has a tab; a failed live-session check is named on the last line too.
+func TestTheSummaryCases(t *testing.T) {
+	home, log := setup(t)
+	roles(t, home)
+	fake := fakeT3(t, home)
+	testutil.Write(t, filepath.Join(home, "roles", "crius.qa2.json"), `{"session_id":"s-qa","project":"crius","role":"qa2"}`)
+	rc, errs := post(t, at("2026-11-21T10:00"), log, "PASS", "crius:dev", "crius:qa,crius:qa2", "x")
+	if want := "bus-post: to 2 roles: crius:qa delivered (thread th-qa); crius:qa2 delivered (thread th-qa)"; rc != 0 ||
+		lastLine(errs) != want || readOr(t, filepath.Join(fake, "calls")) != "thread send th-qa -\n" {
+		t.Errorf("rc %d, last line %q, want %q", rc, lastLine(errs), want)
+	}
+
+	rc, errs = post(t, at("2026-11-21T10:01"), log, "INFO", "crius:dev", "crius:qa,crius:ms", "y")
+	if rc != 0 || strings.Contains(errs, "to 2 roles") || !strings.HasPrefix(lastLine(errs), "bus-post: posted; INFO is not sent") {
+		t.Errorf("INFO: rc %d: %q", rc, errs)
+	}
+
+	rc, errs = post(t, at("2026-11-21T10:02"), log, "DONE", "crius:build", "crius:build,crius:ms", "z")
+	if want := "bus-post: to 2 roles: crius:build not sent (the poster); crius:ms delivered (thread th-ms)"; rc != 0 ||
+		lastLine(errs) != want {
+		t.Errorf("poster: rc %d, last line %q, want %q", rc, lastLine(errs), want)
+	}
+
+	liveHome(t, "crius")
+	testutil.Write(t, filepath.Join(os.Getenv("HOME"), ".claude", "sessions", "1.json"), `{"pid":`)
+	rc, errs = post(t, at("2026-11-21T10:03"), log, "ORDER", "crius:lead", "crius:qa,crius:ms", "go")
+	if l := lastLine(errs); rc != rcNoSession || !strings.HasPrefix(l, "bus-post: to 2 roles: crius:qa delivered (thread th-qa); "+
+		"live session not checked (") || !strings.Contains(l, "crius:ms delivered (thread th-ms); live session not checked (") {
+		t.Errorf("unchecked: rc %d, last line %q", rc, l)
 	}
 }
