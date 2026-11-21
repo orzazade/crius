@@ -306,6 +306,7 @@ func postLine(args []string, now time.Time, stderr io.Writer) int {
 	if failed {
 		rc = rcNotDelivered
 	}
+	warnStopped(log, to, now, stderr) // said only: the line is posted, and the exit code stays as it is (stopped.go)
 	if typ == "ORDER" || typ == "ASK" {
 		if dead, err := deadRecipients(to, logProject(log), got); err != nil {
 			fmt.Fprintf(stderr, "bus-post: posted, but could not check who has a live session: %v\n", err)
