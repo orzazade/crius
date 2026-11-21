@@ -449,11 +449,11 @@ func TestStepsThatShareTheFirst300CharsAreNotOneStep(t *testing.T) {
 	if got := stepNeeds(x); len(got) != 0 {
 		t.Fatalf("two different parts under one cut command posted %q", got)
 	}
-	if st.StepRuns != 13 || st.StepUnwatched != 13 {
-		t.Fatalf("want 13 runs read and 13 not watched (cut, no full name), got %d and %d", st.StepRuns, st.StepUnwatched)
+	if st.StepRuns != 13 || st.StepUnwatched["legion:all-suites.ts"] != 13 || len(st.StepUnwatched) != 1 {
+		t.Fatalf("want 13 runs read and 13 of all-suites.ts not watched (cut, no full name), got %d and %v", st.StepRuns, st.StepUnwatched)
 	}
-	if w := strings.Join(st.Warnings, "\n"); !strings.Contains(w, "legion: 13 of 13 runs not watched") || !strings.Contains(w, "(all-suites.ts 13)") {
-		t.Fatalf("want a warning naming 13 of 13 runs of all-suites.ts not watched, got %q", st.Warnings)
+	if len(st.Warnings) != 0 {
+		t.Fatalf("not watched is a count in the summary, not a warning that never clears: %q", st.Warnings)
 	}
 }
 
@@ -487,8 +487,8 @@ func TestACutCommandWithItsFullWordsInTheKeyIsStillWatched(t *testing.T) {
 	if len(got) != 1 || !strings.Contains(got[0], "FullyQualifiedName~Slow`") || !strings.Contains(got[0], "10 -> 38 min") {
 		t.Fatalf("want one NEED for the Slow filter set 10 -> 38 min, got %q", got)
 	}
-	if st.StepUnwatched != 0 {
-		t.Fatalf("every run had its full words, got %d not watched", st.StepUnwatched)
+	if len(st.StepUnwatched) != 0 {
+		t.Fatalf("every run had its full words, got %v not watched", st.StepUnwatched)
 	}
 }
 

@@ -322,26 +322,15 @@ func (r *runner) ingestSteps() {
 			r.warn(false, "step watch: %s log %s: %d lines not read", l.Name, l.Path, bad)
 		}
 		r.st.StepRuns += len(runs)
-		// a cut run of a script is not watched (no full name on record); say so, with the scripts it hits most, each run
-		cut, n := map[string]int{}, 0
+		// a cut run of a script is not watched (no full name on record): counted per log and script in the summary line,
+		// not a warning (the whole log is read each run, so a warning would never clear)
 		for _, s := range runs {
 			if s.unwatched {
-				cut[filepath.Base(s.script)]++
-				n++
+				if r.st.StepUnwatched == nil {
+					r.st.StepUnwatched = map[string]int{}
+				}
+				r.st.StepUnwatched[l.Name+":"+filepath.Base(s.script)]++
 			}
-		}
-		if n > 0 {
-			r.st.StepUnwatched += n
-			var top []string
-			for s := range cut {
-				top = append(top, s)
-			}
-			sort.Slice(top, func(a, b int) bool { return cut[top[a]] > cut[top[b]] || cut[top[a]] == cut[top[b]] && top[a] < top[b] })
-			for i := range top {
-				top[i] = fmt.Sprintf("%s %d", top[i], cut[top[i]])
-			}
-			r.warn(false, "step watch: %s: %d of %d runs not watched, command cut at %d characters with only the script on record (%s)",
-				l.Name, n, len(runs), cmdCut, strings.Join(top[:min(3, len(top))], ", "))
 		}
 		if err := r.inTx(func(tx *sql.Tx) error {
 			if err := r.stepChanges(tx, l.Name, runs, now); err != nil {
@@ -409,8 +398,8 @@ func (r *runner) stepChanges(tx *sql.Tx, name string, runs []stepRun, now time.T
 				lastAt, lastAfter = first.at, wm
 				if now.Sub(rs[i].at) <= stepRecent {
 					var raws []string
-					if rs := rawKinds(base); len(rs) > 1 || len(rs) == 1 && rs[0] != k {
-						raws = rs
+					if kinds := rawKinds(base); len(kinds) > 1 || len(kinds) == 1 && kinds[0] != k {
+						raws = kinds
 					}
 					text := r.stepLine(name, k, raws, bm, wm, len(base), first)
 					key := "steps:" + name + ":" + sha1Hex([]byte(k))[:12] + ":" + first.at.UTC().Format(time.RFC3339)
@@ -730,7 +719,7 @@ func (r *runner) stepLine(log, k string, raws []string, bm, wm float64, nbase in
 // shortName keeps a long step's start and end: two steps may differ only at the end of a long command.
 func shortName(k string, max int) string {
 	r := []rune(k)
-	if len(r) <= max {
+	if len(r) <= max || max < 5 {
 		return k
 	}
 	head := (max - 3) * 2 / 5
