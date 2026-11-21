@@ -181,9 +181,10 @@ func notSent(home, log, typ, from, to, own string, stderr io.Writer) {
 // deliver hands line, of type typ from from, to the thread of every main recipient it asks to act, one t3 call per
 // thread, all at once. It never sends to the poster's own thread (its role, or the thread it runs in) nor to Crius's
 // thread, nor to a thread whose send would start a second session for a role whose live claude reads the bus through its
-// own waiter (twin). It says on stderr who got it and who did not, and gives the roles that got it or are read by such a
-// live claude, whether a send failed, and what happened to each main recipient (nil for a type not sent to threads),
-// which the caller prints last.
+// own waiter (twin). A role with no tab and no thread that is a window <project>:<role> of this machine's tmux server is
+// typed into instead (tmux.go). It says on stderr who got it and who did not, and gives the roles that got it or are read
+// by such a live claude, whether a send (or the tmux look) failed, and what happened to each main recipient (nil for a
+// type not sent to threads), which the caller prints last.
 func deliver(home, log, typ, from, to, line string, stderr io.Writer) (got []string, failed bool, out *outcomes) {
 	own := os.Getenv("T3CODE_THREAD_ID")
 	if !actTypes[typ] {
@@ -203,18 +204,22 @@ func deliver(home, log, typ, from, to, line string, stderr io.Writer) (got []str
 	var sends []*send
 	var tm tmuxLook   // this machine's tmux windows (tmux.go), listed only when a role may be in one
 	var tmux []string // roles typed into their local tmux window
+	var tmuxErr error // the look failed: said once, and in the outcome of each role it may have missed
 	for _, t := range threadRecipients(to, logProject(log), home) {
 		if t.thread {
 			out.thread = true
 		}
-		inTmux := false
+		inTmux, looked, missed := false, false, false
 		if t.id == "" && (t.thread || t.noFile) && t.role != strings.ToLower(from) {
 			var err error
-			if inTmux, err = tm.has(t.role); err != nil && !failed {
-				failed = true
-				fmt.Fprintf(stderr, "bus-post: posted, but could not list this machine's tmux windows, so a role in one "+
-					"is not woken: %v\n", err)
+			if inTmux, err = tm.has(t.role); err != nil {
+				if tmuxErr == nil {
+					fmt.Fprintf(stderr, "bus-post: posted, but could not list this machine's tmux windows, so a role in "+
+						"one is not woken: %v\n", err)
+				}
+				tmuxErr, failed, missed = err, true, true
 			}
+			looked = err == nil
 		}
 		i := slices.IndexFunc(sends, func(s *send) bool { return s.id == t.id })
 		switch {
@@ -224,6 +229,16 @@ func deliver(home, log, typ, from, to, line string, stderr io.Writer) (got []str
 			out.thread = true
 			out.set(t.role, "")
 			tmux = append(tmux, t.role)
+		case !t.thread && t.noFile && looked && len(tm.team(teamOf(t.role))) > 0:
+			// The Legion files no roles, and its team runs in the tmux session of its project: a role not among its windows
+			// (a closed window, a window named otherwise) is not woken.
+			p := teamOf(t.role)
+			has := strings.Join(tm.team(p), ", ")
+			out.thread = true
+			out.set(t.role, "not woken (no role file, and tmux session "+p+" on "+boxName()+" has no window of its name; on "+
+				"the bus only)")
+			fmt.Fprintf(stderr, "bus-post: posted, but %s has no role file, and tmux session %s on %s has no window of its "+
+				"name (it has: %s): a bus line does not wake it; send it to its session too\n", t.role, p, boxName(), has)
 		case !t.thread:
 			out.set(t.role, t.bus)
 		case t.id != "" && t.id == own:
@@ -245,6 +260,9 @@ func deliver(home, log, typ, from, to, line string, stderr io.Writer) (got []str
 		default:
 			out.set(t.role, "")
 			sends = append(sends, &send{id: t.id, roles: []string{t.role}})
+		}
+		if missed {
+			out.add(t.role, "tmux windows not listed: "+tmuxErr.Error())
 		}
 	}
 	if len(sends) > 0 {

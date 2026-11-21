@@ -5,7 +5,8 @@ package main
 // Code thread filed" and Crius typed the lines in by hand with crius-tsend; the Staffy builder had sat 33 h before with
 // nothing to wake it. bus-post runs on the box that holds the window (bus-post-thinkpad and bus-post-legion run it
 // there), so a line that asks such a role to act is typed into the local tmux window <project>:<role>, as crius-tsend
-// types it (tabsend.Send, under the same lock).
+// types it (tabsend.Send). The lock keeps two senders on this machine apart; a crius-tsend run on the Mac locks the Mac's
+// file, so it and a bus-post here are not kept apart (a clash ends in NOT or MAYBE delivered on one side, never silent).
 
 import (
 	"context"
@@ -27,7 +28,9 @@ const tmuxCall = 30 * time.Second
 func runLocal(line string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), tmuxCall)
 	defer cancel()
-	return exec.CommandContext(ctx, "/bin/sh", "-c", line).CombinedOutput()
+	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", line)
+	cmd.WaitDelay = time.Second // a child that keeps the output open must not hold the call past its limit
+	return cmd.CombinedOutput()
 }
 
 // tmuxWindows gives session:window for every window of this machine's tmux server: none when tmux is not installed or
@@ -65,7 +68,20 @@ func (l *tmuxLook) has(role string) (bool, error) {
 	return slices.Contains(l.windows, role), l.err
 }
 
-// sendTmux types text into the local tmux window target and proves it went, holding the lock crius-tsend holds.
+// team gives the windows of this machine's tmux session named project ("staffy", "quotes"), where the team's roles run;
+// none when there is no such session. Call it after has.
+func (l *tmuxLook) team(project string) []string {
+	var out []string
+	for _, w := range l.windows {
+		if s, win, ok := strings.Cut(w, ":"); ok && s == project {
+			out = append(out, win)
+		}
+	}
+	return out
+}
+
+// sendTmux types text into the local tmux window target and proves it went, holding the lock a crius-tsend run on this
+// machine holds.
 func sendTmux(home, target, text string) error {
 	unlock, err := tabsend.Lock(tabsend.LockFile(home))
 	if err != nil {
@@ -100,4 +116,10 @@ func boxName() string {
 	}
 	h, _, _ = strings.Cut(h, ".")
 	return strings.ToLower(h)
+}
+
+// teamOf gives the project of a project:role name.
+func teamOf(role string) string {
+	p, _, _ := strings.Cut(role, ":")
+	return p
 }

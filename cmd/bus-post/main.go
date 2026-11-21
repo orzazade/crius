@@ -34,12 +34,13 @@
 //
 // A line that asks a T3 Code thread role to act (DONE, NEED, ASK, FAIL, PASS, DECISION, CORRECTION, CORRECTED, ANSWER,
 // ORDER, OWNER, READY, GO, PAUSE) is also handed to its thread with `t3 thread send` (threads.go): a bus line does not
-// wake a thread.
+// wake a thread. A role with no tab and no thread that is a window <project>:<role> of this machine's tmux server (the
+// teams on the ThinkPad and the Legion) is typed into, as crius-tsend types (tmux.go).
 //
 // Exit codes: 0 posted, 2 refused (nothing written), 3 refused: a hex word is no commit, 4 refused: a START while a live
 // run is open, 5 posted, but a recipient has no live session (or the check failed), 6 refused: a time typed at the start
-// of the text is off the clock, 7 refused: a READY with no pre-ready PASS record, 8 posted, but a thread it names did
-// not get it (it wins over 5; stderr says both), 1 the write failed. 3, 4 and 6 are the codes the Quotes say.sh wrappers gave; 7 was agreed with
+// of the text is off the clock, 7 refused: a READY with no pre-ready PASS record, 8 posted, but a thread or tmux window it
+// names did not get it, or the tmux windows could not be listed (it wins over 5; stderr says both), 1 the write failed. 3, 4 and 6 are the codes the Quotes say.sh wrappers gave; 7 was agreed with
 // quotes:lead.
 package main
 

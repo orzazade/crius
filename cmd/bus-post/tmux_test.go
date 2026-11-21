@@ -117,9 +117,40 @@ func TestOnlyActTypesToTheRolesOwnWindowAreTyped(t *testing.T) {
 	}
 }
 
-// Every test runs against a tmux server of its own: TestMain's TMUX_TMPDIR is not the real one.
-func TestTestsNeverReachTheRealTmuxServer(t *testing.T) {
-	if os.Getenv("TMUX") != "" || !strings.HasPrefix(os.Getenv("TMUX_TMPDIR"), os.TempDir()) && !strings.HasPrefix(os.Getenv("TMUX_TMPDIR"), "/tmp/") {
-		t.Fatalf("TMUX %q, TMUX_TMPDIR %q", os.Getenv("TMUX"), os.Getenv("TMUX_TMPDIR"))
+// The Legion files no roles, and its team runs in the tmux session of its project: a role with no window there (closed,
+// or named otherwise: "builder-1 = quotes:dev") is said not woken, not left silent. With no session of its project, a
+// role with no role file stays as it was (on the Mac such a role reads the bus itself).
+func TestARoleWithNoRoleFileMissingFromItsTeamsTmuxSessionIsSaidNotWoken(t *testing.T) {
+	_, log := setup(t)
+	tmuxServer(t, "ty", "sleep", "600")
+	rc, errs := post(t, at("2026-11-21T22:52"), log, "DECISION", "crius:lead", "crius:tx", "go")
+	if rc != 0 || !strings.Contains(errs, "crius:tx has no role file, and tmux session crius on "+boxName()+
+		" has no window of its name (it has: ty)") {
+		t.Fatalf("rc %d, stderr %q", rc, errs)
+	}
+	rc, errs = post(t, at("2026-11-21T22:53"), log, "DECISION", "crius:lead", "other:tx", "go")
+	if rc != 0 || errs != "" {
+		t.Errorf("no team session: rc %d, stderr %q", rc, errs)
+	}
+}
+
+// A failed look at the tmux windows is said, exit 8, and named for each role it may have missed, also when another
+// role failed first (review 11-22: the look's error was said only when nothing had failed before).
+func TestAFailedTmuxLookIsSaidAfterAnotherRoleFailed(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("no tmux on this machine")
+	}
+	home, log := setup(t)
+	testutil.Write(t, filepath.Join(home, "roles", "crius.tx.json"), `{"session_id":"s-tx","project":"crius","role":"tx","t3_thread":"-x"}`)
+	shut := filepath.Join(t.TempDir(), "shut")
+	if err := os.Mkdir(shut, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(shut, 0o700) })
+	t.Setenv("TMUX_TMPDIR", shut) // tmux can make no socket folder there
+	rc, errs := post(t, at("2026-11-21T22:08"), log, "DECISION", "crius:lead", "crius:tx, crius:ty", "go")
+	if rc != rcNotDelivered || !strings.Contains(errs, "could not list this machine's tmux windows") ||
+		!strings.Contains(lastLine(errs), "crius:ty on the bus only (no role file, so no thread is known); tmux windows not listed: ") {
+		t.Fatalf("rc %d, stderr %q", rc, errs)
 	}
 }
