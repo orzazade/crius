@@ -38,7 +38,13 @@ type Report struct {
 	// which covers every project of the persona. A project's guard is blind only for its own accounts (Crius 10-29).
 	StaleProjects map[string][]string
 	// StaleAt: the time of the newest line a Stale entry names, absent when it has none, so a guard can say its age.
-	StaleAt    map[string]time.Time
+	StaleAt map[string]time.Time
+	// SpentAt: the newest request of the week that may have spent the login this view reads (Account), or any login in
+	// the whole report: one on that login, a Max one whose line names no login, or one on no known account. spentBy and
+	// spentAny hold it per login and for every login, for Account.
+	SpentAt    time.Time
+	spentBy    map[string]time.Time
+	spentAny   time.Time
 	LastSample time.Time
 	LastKind   string
 	// SevenAt and FiveAt: the newest measurement showing SevenPct and FivePct. A share only rises within its window,
@@ -739,6 +745,9 @@ func Build(db Querier, p Projects, now time.Time) (*Report, error) {
 		default:
 			rep.UnknownUSD += usd
 			unknown[sid] = true
+			if t.After(rep.spentAny) { // on no known account: it may be on any Max login
+				rep.spentAny = t
+			}
 		}
 		// Every session that is not known to be on enterprise needs statusline lines: a Max session for its share,
 		// an unknown one for its account (a persona whose statusline never ran leaves all its sessions unknown).
@@ -763,6 +772,16 @@ func Build(db Querier, p Projects, now time.Time) (*Report, error) {
 	}
 	rep.Shares, rep.EntWeek, rep.EntToday = sorted(shares), sorted(entWeek), sorted(entDay)
 	rep.UnknownSessions = len(unknown)
+	// A Max request whose line names no login may be on any login too.
+	if t := newestMax[""]; t.After(rep.spentAny) {
+		rep.spentAny = t
+	}
+	rep.spentBy, rep.SpentAt = newestMax, rep.spentAny
+	for _, t := range newestMax {
+		if t.After(rep.SpentAt) {
+			rep.SpentAt = t
+		}
+	}
 	for persona, t := range newestOpen {
 		if now.Sub(t) > Gap {
 			continue
@@ -1210,11 +1229,5 @@ func (r *Report) staleAt(entry string, t time.Time) {
 	r.StaleAt[entry] = t
 }
 
-// OldText says how far over StaleAfter a sample taken at t is at now, for a guard's line: "6 h old, over the 45 min
-// limit: unknown, not room"; "" while it is within the limit.
-func OldText(now, t time.Time) string {
-	if now.Sub(t) <= StaleAfter {
-		return ""
-	}
-	return ago(now.Sub(t)) + " old, over the " + ago(StaleAfter) + " limit: unknown, not room"
-}
+// Ago is how long d is, as the quota lines say it: "46 min", "6 h".
+func Ago(d time.Duration) string { return ago(d) }

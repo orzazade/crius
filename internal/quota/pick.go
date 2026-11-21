@@ -101,6 +101,9 @@ func Standing(r *Report, login string, limit int) (state, why string, v *Report)
 // unknownWeek says why a row whose newest reading is from an earlier week (v.Ended set) has no known share.
 func unknownWeek(v *Report) string { return "no reading since its week reset " + when(v.Ended) }
 
+// PickedBlind is in Pick's why when it picked an unsure row, as no measured one had room.
+const PickedBlind = "picked as no measured account has room"
+
 // Reserve is the Max account used last (owner 11-19: "nothing moves to or starts on account max1 until max2 and max3
 // are both at their limit").
 const Reserve = "max1"
@@ -169,6 +172,7 @@ func pick(r *Report, as *Accounts, root, want string, pauseAt int) (name, dir, w
 	type pick struct {
 		name, dir, share string
 		reset            time.Time
+		low              bool // unsure rows: the last reading is under 90%
 	}
 	var best, blind *pick
 	var full, unmeasured []string
@@ -188,8 +192,15 @@ func pick(r *Report, as *Accounts, root, want string, pauseAt int) (name, dir, w
 			} else {
 				unmeasured = append(unmeasured, a.Name+" ("+why+")")
 			}
-			if blind == nil {
-				p.share = why
+			// Of the unsure rows, the soonest reset (a reset does not age) whose last reading this week is under 90%; a
+			// share only rises, so one read at 90% or more, or not read this week, comes after.
+			week := v != nil && v.Ended.IsZero()
+			p.share, p.low = why, week && v.SevenPct < 90 && v.FivePct < 90
+			if week {
+				p.reset = v.Reset
+			}
+			if blind == nil || p.low != blind.low && p.low ||
+				p.low == blind.low && !p.reset.IsZero() && (blind.reset.IsZero() || p.reset.Before(blind.reset)) {
 				blind = &p
 			}
 			continue
@@ -225,7 +236,7 @@ func pick(r *Report, as *Accounts, root, want string, pauseAt int) (name, dir, w
 			why = fmt.Sprintf("account %s: quota unsure (%s)", blind.name, blind.share)
 		}
 		if want == "max" {
-			why += "; picked as no measured account has room"
+			why += "; " + PickedBlind
 		}
 		if notes != nil {
 			why += "; " + strings.Join(notes, "; ")

@@ -345,7 +345,7 @@ func (r *runner) pauseChecks(tx *sql.Tx, rep *quota.Report, as *quota.Accounts) 
 			}
 			old := "" // the age goes in the text only: the key stays one per gap
 			if t, ok := rep.StaleAt[st]; ok {
-				old = ", " + quota.OldText(rep.Now, t)
+				old = ", " + quota.Ago(rep.Now.Sub(t)) + " old, over the " + quota.Ago(quota.StaleAfter) + " limit: unknown, not room"
 			}
 			if err := r.queueLine(tx, "quota:blind:"+p.slug+":"+st, "NEED", "crius", "crius:lead", fmt.Sprintf(
 				"quota guard for %s is blind: the Max 7d share is stale (%s%s), so it cannot tell whether %s reached its "+
@@ -431,8 +431,8 @@ func (r *runner) pauseAccounts(tx *sql.Tx, rep *quota.Report, as *quota.Accounts
 				unknown[a.Login] = a.Name
 			}
 			word := "unsure"
-			if old := quota.OldText(rep.Now, v.MeasuredAt()); old != "" && !v.SevenAt.IsZero() {
-				word, _, _ = strings.Cut(old, ",") // "6 h old"
+			if v.Unmeasured() { // spent since its sample: say how old it is
+				word = quota.Ago(rep.Now.Sub(v.SevenAt)) + " old"
 			}
 			unsure = append(unsure, fmt.Sprintf("%s %g%% %s", a.Name, a.SevenPct, word)) // short: the NEED is one bus line
 		}
@@ -642,9 +642,12 @@ func (r *runner) limitChecks(tx *sql.Tx, rep *quota.Report, as *quota.Accounts, 
 			to := "none (no Max room)" // short: the line is one bus line
 			root, pauseAt, err := ForSpawn(r.home, s.project)
 			if err == nil {
-				var name string
-				if name, _, _, err = quota.Pick(rep, as, root, "max", pauseAt); err == nil && name != "" {
+				var name, why string
+				if name, _, why, err = quota.Pick(rep, as, root, "max", pauseAt); err == nil && name != "" {
 					to = name
+					if strings.Contains(why, quota.PickedBlind) {
+						to += " (quota unsure)" // a guess, not the rule's pick
+					}
 				}
 			}
 			if err != nil {

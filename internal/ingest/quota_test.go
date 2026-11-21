@@ -1650,7 +1650,7 @@ func TestQuotaAccountAtTheLimitTellsCriusOnce(t *testing.T) {
 	x.session("work", s2, "/work/axi", "[crius account=max project=axi role=lead]", qNow.Add(-4*time.Minute))
 	x.spool(on(sampleAt(s1, qNow.Add(-2*time.Minute), 94, r1), l1, d1),
 		on(sampleAt(s2, qNow.Add(-2*time.Minute), 13, r2), l2, d2),
-		on(sampleAt(s2, qNow.Add(-20*time.Minute), 46, r3), l3, d3)) // within quota.StaleAfter: an older one is unknown, not room
+		on(sampleAt(s2, qNow.Add(-90*time.Minute), 46, r3), l3, d3))
 	x.run()
 	if n := grepAlerts(x.alerts(), " NEED "); len(n) != 0 {
 		t.Fatalf("max1 at 94%%: want no NEED, got %q", n)
@@ -2333,5 +2333,37 @@ func TestQuotaGuardReadsAnOldSampleAsUnknownAndSaysItsAge(t *testing.T) {
 	}
 	if strings.Contains(pause[0], "Room: max2") || !strings.Contains(pause[0], "no room: max2 12% 6 h old") {
 		t.Errorf("the pause NEED must list max2 as no room with its age, not as room: %q", pause[0])
+	}
+}
+
+// Review of b0f87e2: when every other account is unsure, the limit NEED's move target is Pick's guess, and the line read
+// as a pick by the rule ("quotes to max2"). It says so.
+func TestQuotaLimitMoveOntoAnUnsureAccountSaysItIsAGuess(t *testing.T) {
+	clock = func() time.Time { return qNow }
+	t.Cleanup(func() { clock = time.Now })
+	x := newIC(t, cfg{extra: strings.Replace(guardedProject, "pause_at = 70", "pause_at = 99", 1)})
+	d1, d2 := filepath.Join(x.home, "cfg1"), filepath.Join(x.home, "cfg2")
+	l1, l2 := x.signIn(d1, "u-1"), x.signIn(d2, "u-2")
+	for _, d := range []string{d1, d2} {
+		if err := os.Symlink(x.work, filepath.Join(d, "projects")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	testutil.Write(t, filepath.Join(x.home, "accounts.toml"), "[[account]]\nname = \"max1\"\nplan = \"max\"\ndirs = [\""+
+		d1+"\"]\n[[account]]\nname = \"max2\"\nplan = \"max\"\ndirs = [\""+d2+"\"]\n")
+	s1, s2 := "aaaaaaaa-0000-0000-0000-000000000001", "aaaaaaaa-0000-0000-0000-000000000002"
+	x.session("work", s1, "/work/quotes", "[crius account=max project=quotes role=p1]", qNow.Add(-3*time.Minute))
+	x.session("work", s2, "/work/quotes", "[crius account=max project=quotes role=p2]", qNow.Add(-6*time.Hour-10*time.Minute),
+		qNow.Add(-3*time.Minute))
+	on := func(l quota.Line, login, dir string) quota.Line {
+		l.Login, l.Dir, l.Persona = login, dir, "work"
+		return l
+	}
+	x.spool(on(sampleAt(s1, qNow.Add(-2*time.Minute), 96, qNow.Add(24*time.Hour)), l1, d1),
+		on(sampleAt(s2, qNow.Add(-6*time.Hour-9*time.Minute), 12, qNow.Add(4*24*time.Hour)), l2, d2))
+	x.run()
+	need := grepAlerts(x.alerts(), "quota: account max1 at 96%")
+	if len(need) != 1 || !strings.Contains(need[0], "quotes to max2 (quota unsure)") {
+		t.Fatalf("want one limit NEED moving quotes to max2 marked as a guess, got %q", x.alerts())
 	}
 }
