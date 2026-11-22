@@ -19,6 +19,10 @@
 // is one bus-post takes. The sha is 7 to 40 lower-case hex. It never replaces a file that is there. It prints the
 // path to name in the VERIFIED line.
 //
+// No secret reaches the log or what crius-runlog prints: a token, password or key in the command, the notes or the output
+// is written as <redacted> (internal/redact); the command itself runs with its real arguments. When redaction fails nothing
+// is written.
+//
 // Exit codes: 0 written (the check passed), 1 the check failed (a `fail:` log is written; no VERIFIED can name it),
 // 2 refused (nothing written).
 package main
@@ -30,6 +34,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/orzazade/crius/internal/redact"
 	"github.com/orzazade/crius/internal/runlog"
 	"github.com/orzazade/crius/internal/store"
 )
@@ -38,8 +43,9 @@ func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
 
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "run" {
-		return check(args[1:], stdout, stderr)
+		return check(args[1:], stdout, redact.NewStream(stderr), stderr)
 	}
+	stderr = redact.NewStream(stderr) // a refusal quotes what it refuses
 	if len(args) < 4 {
 		fmt.Fprintln(stderr, "usage: crius-runlog run <project> <ref> <sha> -- <cmd> [args...]\n"+
 			"       crius-runlog <name> <sha> <pass N> <cmd> [notes...]")
@@ -55,8 +61,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// check is the run form: it runs the command, echoing its output to stderr, and writes its log.
-func check(args []string, stdout, stderr io.Writer) int {
+// check is the run form: it runs the command, echoing its output to echo (runlog.Check redacts it), and writes its log.
+// Its own messages go to stderr.
+func check(args []string, stdout, stderr, echo io.Writer) int {
 	usage := "usage: crius-runlog run [-limit 10m] <project> <ref> <sha> -- <cmd> [args...]"
 	fl := flag.NewFlagSet("crius-runlog run", flag.ContinueOnError)
 	fl.SetOutput(stderr)
@@ -71,7 +78,7 @@ func check(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	project, ref, sha := args[0], args[1], args[2]
-	path, exit, timedOut, err := runlog.Check(filepath.Join(store.Home(), "runs"), project, ref, sha, args[4:], *limit, stderr)
+	path, exit, timedOut, err := runlog.Check(filepath.Join(store.Home(), "runs"), project, ref, sha, args[4:], *limit, echo)
 	if err != nil {
 		fmt.Fprintf(stderr, "crius-runlog: refused: %v\n", err)
 		return 2

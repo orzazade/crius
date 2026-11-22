@@ -23,6 +23,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/orzazade/crius/internal/redact"
 )
 
 // HeaderLines is how many lines from the top Read takes as the header.
@@ -132,14 +134,45 @@ func OneLine(s string) string {
 	}, s)), " ")
 }
 
+// The redaction of what a log keeps and what Check echoes; tests make it fail.
+var (
+	redactCommand = redact.Command
+	redactScript  = redact.Script
+	redactLog     = redact.Log
+	newStream     = redact.NewStream
+)
+
+// redacted gives f's text. A rule that fails is an error, so the caller writes nothing.
+func redacted(f func() string) (s string, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("redaction failed, so nothing is written: %v", r)
+		}
+	}()
+	return f(), nil
+}
+
+// noSecret refuses a part of the log's file name that holds a secret: a file name cannot be cut like text.
+func noSecret(what, s string) error {
+	r, err := redacted(func() string { return redactLog(s) })
+	if err == nil && r != s {
+		err = fmt.Errorf("the %s holds a secret (%s); it would be a file name: pick another", what, r)
+	}
+	return err
+}
+
 // Write writes a test run's log for a hand check into dir as <name>.md: the `sha:` and `pass:` lines, `cmd: <cmd>`,
 // then one line per note. pass is the text as typed and must be a bare whole number of 1 or more. It never replaces a
 // file that is there, and it takes the log only after Read (the reader bus-post uses) gives back the sha and pass it
-// was given, so a log it writes is one bus-post takes. It gives the log's path and the pass count.
+// was given, so a log it writes is one bus-post takes. It gives the log's path and the pass count. Secrets in cmd and the
+// notes are replaced (internal/redact), and a name that holds one is refused.
 func Write(dir, name, sha, pass, cmd string, notes []string) (path string, n int, err error) {
 	name = strings.TrimSuffix(name, ".md")
 	if !nameRe.MatchString(name) {
 		return "", 0, fmt.Errorf("name %q is not a file name: letters, digits, '.', '_' and '-', starting with a letter or digit", name)
+	}
+	if err := noSecret("name", name); err != nil {
+		return "", 0, err
 	}
 	if !headSha.MatchString("sha: "+sha) || strings.TrimSpace(sha) != sha {
 		return "", 0, fmt.Errorf("sha %q is not 7 to 40 lower-case hex characters", sha)
@@ -156,6 +189,9 @@ func Write(dir, name, sha, pass, cmd string, notes []string) (path string, n int
 	if n < 1 {
 		return "", 0, fmt.Errorf("pass %d proves nothing: bus-post takes a run log only with a pass count of 1 or more", n)
 	}
+	if cmd, err = redacted(func() string { return redactScript(cmd) }); err != nil {
+		return "", 0, err
+	}
 	if cmd = OneLine(cmd); cmd == "" {
 		return "", 0, errors.New("cmd is empty: say what was run or checked")
 	}
@@ -163,6 +199,9 @@ func Write(dir, name, sha, pass, cmd string, notes []string) (path string, n int
 	b.WriteString(Header(sha, n))
 	b.WriteString("cmd: " + cmd + "\n")
 	for i, note := range notes {
+		if note, err = redacted(func() string { return redactLog(note) }); err != nil {
+			return "", 0, err
+		}
 		note = OneLine(note)
 		if headSha.MatchString(note) || headRun.MatchString(note) || headWalk.MatchString(note) || shotRe.MatchString(note) {
 			return "", 0, fmt.Errorf("note %d %q reads as a header line; reword it", i+1, note)
@@ -243,6 +282,9 @@ const DefaultLimit = 10 * time.Minute
 // Before it places the log it reads it back with bus-post's reader: a passing log must give the sha and pass 1, a
 // failing one must be refused by Proven. 11-20/11-21: Crius checked cortex 1e4d6df and 71eb7a0 by real commands and
 // posted no VERIFIED, as the log had to be written by hand.
+// Secrets never reach the log or the echo: the command text is redacted, and the output is redacted line by line before
+// any of it is cut or echoed (11-23: a GH_TOKEN in a `sh -c` text was saved). The command itself gets argv as it is. When
+// redaction fails no log is written and err says so.
 func Check(dir, project, ref, sha string, argv []string, limit time.Duration, echo io.Writer) (path string, exit int, timedOut bool, err error) {
 	for _, v := range []struct{ what, s string }{{"project", project}, {"ref", ref}} {
 		if !nameRe.MatchString(v.s) {
@@ -258,7 +300,15 @@ func Check(dir, project, ref, sha string, argv []string, limit time.Duration, ec
 	if limit <= 0 {
 		return "", 0, false, fmt.Errorf("limit %s is not a time above zero", limit)
 	}
-	cmdText := OneLine(strings.Join(argv, " "))
+	for _, v := range []struct{ what, s string }{{"project", project}, {"ref", ref}} {
+		if err := noSecret(v.what, v.s); err != nil {
+			return "", 0, false, err
+		}
+	}
+	cmdText, err := redacted(func() string { return OneLine(redactCommand(argv)) })
+	if err != nil {
+		return "", 0, false, err
+	}
 
 	out := &capped{}
 	ctx, cancel := context.WithTimeout(context.Background(), limit)
@@ -266,15 +316,19 @@ func Check(dir, project, ref, sha string, argv []string, limit time.Duration, ec
 	c := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	c.SysProcAttr = &syscall.SysProcAttr{Setpgid: true} // its own group, so the limit kills its children too
 	c.Cancel = func() error { return syscall.Kill(-c.Process.Pid, syscall.SIGKILL) }
-	c.Stdout, c.Stderr = out, out
+	var sink io.Writer = out
 	if echo != nil {
-		c.Stdout = io.MultiWriter(out, keepGoing{echo}) // a closed echo (piped into head) never cuts the log's output
-		c.Stderr = c.Stdout
+		sink = io.MultiWriter(out, keepGoing{echo}) // a closed echo (piped into head) never cuts the log's output
 	}
+	stream := newStream(sink)
+	c.Stdout, c.Stderr = stream, stream
 	c.WaitDelay = 10 * time.Second // a child left running with the output open (`sleep 1000 &`) does not hold the log
 	start := time.Now()
 	if err := c.Run(); c.ProcessState == nil {
 		return "", 0, false, fmt.Errorf("the check did not start: %v", err)
+	}
+	if err := stream.Close(); err != nil {
+		return "", 0, false, fmt.Errorf("%w; the check ran and nothing is written", err)
 	}
 	if exit = c.ProcessState.ExitCode(); exit == 0 && !c.ProcessState.Success() {
 		exit = -1 // never a pass when it did not exit 0 by itself

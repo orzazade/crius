@@ -46,12 +46,18 @@ var pairRe = regexp.MustCompile(`(?i)` + secretKey + `[\w.-]*\\*["']?[ \t]*` + o
 var blockStart = regexp.MustCompile(`(?i)^(?:![^\s]+[ \t]*)?(?:[|>][-+0-9]*|[(\[{])?[ \t]*(?:#.*)?$|` + secretKey +
 	`[\w.-]*\\*["']?[ \t]*` + operator + `$`)
 
-var secretRes = []*regexp.Regexp{
+var secretRes = append([]*regexp.Regexp{
 	// A long flag and its value, to the end of the line (--password hunter2).
 	regexp.MustCompile(`(?i)--` + secretKey + `[\w-]*[ \t]+[^\s-][^\n]*`),
-	// Credentials in a URL (postgres://user:pass@host, redis://:pass@host, ftp://me@corp.com:pass@host), to the last @
-	// before the path.
-	regexp.MustCompile(`\b[A-Za-z][A-Za-z0-9+.-]*://[^/\s:"']*:[^\s/"']+@`),
+	userInfoRe,
+}, shapeRes...)
+
+// userInfoRe is credentials in a URL (postgres://user:pass@host, redis://:pass@host, ftp://me@corp.com:pass@host), to the
+// last @ before the path.
+var userInfoRe = regexp.MustCompile(`\b[A-Za-z][A-Za-z0-9+.-]*://[^/\s:"']*:[^\s/"']+@`)
+
+// shapeRes are secrets known by their own form.
+var shapeRes = []*regexp.Regexp{
 	// openssl's password argument (-pass pass:x, -passin, -passout).
 	regexp.MustCompile(`(?i)-pass(?:in|out)?[ \t]+pass:\S*`),
 	regexp.MustCompile(`\b(sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{36,}|xox[bpors]-[A-Za-z0-9-]+|AKIA[0-9A-Z]{16})`),
@@ -189,14 +195,8 @@ func valueEnd(s string, v int) int {
 	if i := strings.IndexByte(s[v:], '\n'); i >= 0 {
 		le = v + i
 	}
-	// v follows an operator or a space, so an escaped quote (\") starts with its backslash and is no opener here. The
-	// close counts only before a separator: 'it''s x', 'a'"'"'b' and ""x go on after it.
-	if q := s[v:min(v+1, le)]; q == `"` || q == "'" || q == "`" {
-		if c := strings.IndexByte(s[v+1:le], q[0]); c >= 0 && !strings.Contains(s[v+1:v+1+c], `\`) {
-			if e := v + 1 + c + 1; e == le || strings.IndexByte(" \t\r,;)]}#", s[e]) >= 0 {
-				return e
-			}
-		}
+	if e, ok := quotedEnd(s, v, le); ok {
+		return e
 	}
 	if !blockStart.MatchString(strings.TrimRight(s[v:le], " \t\r")) || le == len(s) {
 		return le
@@ -216,6 +216,20 @@ func valueEnd(s string, v int) int {
 		end = lineEnd(s, end+1)
 	}
 	return end
+}
+
+// quotedEnd is where the quoted value at v certainly closes, before le.
+func quotedEnd(s string, v, le int) (int, bool) {
+	// v follows an operator or a space, so an escaped quote (\") starts with its backslash and is no opener here. The
+	// close counts only before a separator: 'it''s x', 'a'"'"'b' and ""x go on after it.
+	if q := s[v:min(v+1, le)]; q == `"` || q == "'" || q == "`" {
+		if c := strings.IndexByte(s[v+1:le], q[0]); c >= 0 && !strings.Contains(s[v+1:v+1+c], `\`) {
+			if e := v + 1 + c + 1; e == le || strings.IndexByte(" \t\r,;)]}#", s[e]) >= 0 {
+				return e, true
+			}
+		}
+	}
+	return 0, false
 }
 
 func lineEnd(s string, from int) int {

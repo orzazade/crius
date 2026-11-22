@@ -54,6 +54,11 @@ func loadRules(b []byte) []rule {
 // as gitleaks does; its keywords
 // are a quick filter, as in gitleaks.
 func redactRules(s string, rs []rule) (string, int) {
+	return redactRulesAs(s, rs, "[redacted]", func(string) bool { return true })
+}
+
+// redactRulesAs is redactRules with the text that stands for a secret, and leaving alone what secret says is none.
+func redactRulesAs(s string, rs []rule, mark string, secret func(string) bool) (string, int) {
 	hits := 0
 	lower := strings.ToLower(s)
 	for _, r := range rs {
@@ -71,11 +76,11 @@ func redactRules(s string, rs []rule) (string, int) {
 			if g := r.group; g > 0 && 2*g+1 < len(m) && m[2*g] >= 0 {
 				lo, hi = m[2*g], m[2*g+1]
 			}
-			if lo < last || r.entropy > 0 && entropy(s[lo:hi]) < r.entropy {
+			if lo < last || r.entropy > 0 && entropy(s[lo:hi]) < r.entropy || !secret(s[lo:hi]) {
 				continue
 			}
 			b.WriteString(s[last:lo])
-			b.WriteString("[redacted]")
+			b.WriteString(mark)
 			hits++
 			last = hi
 		}
