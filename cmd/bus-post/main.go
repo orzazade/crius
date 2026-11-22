@@ -29,6 +29,9 @@
 // A CORRECTED names its cause from docs/RULES.md §2.5 ("cause: stale context"); a second one of the same cause on its bus
 // in 30 days also posts an ALERT on crius.log (cause.go).
 //
+// A DECISION from crius:lead on the AXI log that refers to Microsoft documentation names the page URL and "last updated
+// <date>" (msdocs.go).
+//
 // An ORDER or ASK to someone with no live Claude Code session is posted and said, exit 5: crius:lead's ORDERs of 10-25
 // 13:18 to crius:build went nowhere for hours. Posted, so a caller must not send it again.
 //
@@ -211,6 +214,11 @@ func postLine(args []string, now time.Time, stderr io.Writer) int {
 	}
 	if typ == "OWNER" && from == "crius:lead" {
 		if err := namesCard(store.Home(), now, to, logProject(log), text); err != nil {
+			return refuse(stderr, "%v", err)
+		}
+	}
+	if typ == "DECISION" && from == "crius:lead" && logProject(log) == "axi" {
+		if err := namesMSDocs(text); err != nil {
 			return refuse(stderr, "%v", err)
 		}
 	}
