@@ -102,7 +102,8 @@ func TestANoteOfTheDecisionCounts(t *testing.T) {
 			t.Errorf("bad note %s: rc %d, %q", form, rc, errs)
 		}
 	}
-	if rc, errs := post(t, at("2026-11-23T01:00"), log, "DECISION", "crius:lead", "axi:api-split", "J6 go, full: "+filepath.Join(notes, "gone.txt")); rc != 2 ||
+	gone := filepath.Join(notes, "gone.txt")
+	if rc, errs := post(t, at("2026-11-23T01:00"), log, "DECISION", "crius:lead", "axi:api-split", "J6: Microsoft docs say so, full: "+gone); rc != 2 ||
 		!strings.Contains(errs, "gone.txt") || busText(t, log) != "" {
 		t.Errorf("a note that cannot be read: rc %d, %q", rc, errs)
 	}
@@ -135,5 +136,14 @@ func TestOtherLinesOnMicrosoftAreUntouched(t *testing.T) {
 		if rc, errs := post(t, at("2026-11-23T01:00"), log, c.typ, c.from, "axi:api-split", c.text); rc == 2 || !strings.Contains(busText(t, log), c.text) {
 			t.Errorf("%+v: rc %d, %q", c, rc, errs)
 		}
+	}
+}
+
+// A DECISION that says nothing of Microsoft documentation is not held by a notes file that is not on this Mac (second
+// review of 11-23).
+func TestANoteNotHereHoldsOnlyATextOnMicrosoftDocs(t *testing.T) {
+	_, log := axiLog(t)
+	if rc, errs := post(t, at("2026-11-23T01:00"), log, "DECISION", "crius:lead", "axi:api-split", "J6 go, full: /home/legion/bus/notes/axi-gone.txt"); rc != 0 || busText(t, log) == "" {
+		t.Errorf("rc %d, %q", rc, errs)
 	}
 }

@@ -41,9 +41,11 @@ var (
 )
 
 // namesMSDocs refuses a text (with its notes) that refers to Microsoft documentation without a page URL and the date the
-// page was last updated. A note it cannot read is an error: failed to look is not found nothing.
+// page was last updated. A note it cannot read counts as not there: it holds only a text that refers to
+// Microsoft documentation itself, as many DECISIONs name a note that lies on another machine.
 func namesMSDocs(text string) error {
 	all := text
+	var unread error
 	for _, m := range notePath.FindAllStringSubmatch(text, -1) {
 		p := strings.TrimRightFunc(m[1], func(r rune) bool { return unicode.IsPunct(r) && r != '/' })
 		if ext := filepath.Ext(p); ext != ".txt" && ext != ".md" ||
@@ -52,7 +54,8 @@ func namesMSDocs(text string) error {
 		}
 		b, err := os.ReadFile(expand(p))
 		if err != nil {
-			return fmt.Errorf("could not read the note this DECISION names to check it for Microsoft documentation: %v", err)
+			unread = fmt.Errorf("could not read the note this DECISION names: %v", err)
+			continue
 		}
 		all += "\n" + string(b)
 	}
@@ -69,6 +72,10 @@ func namesMSDocs(text string) error {
 	if len(missing) == 0 {
 		return nil
 	}
-	return errors.New("a DECISION to AXI that refers to Microsoft documentation names the page URL and \"last updated <date>\", " +
+	err := errors.New("a DECISION to AXI that refers to Microsoft documentation names the page URL and \"last updated <date>\", " +
 		"so a decision never rests on an old page unseen; add " + strings.Join(missing, " and ") + " to the text or the note it names")
+	if unread != nil {
+		err = fmt.Errorf("%w; %v", err, unread)
+	}
+	return err
 }
