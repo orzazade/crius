@@ -3,6 +3,8 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -342,6 +344,69 @@ func TestTheHandFormKeepsNoSecret(t *testing.T) {
 		}
 		if strings.Contains(everything(t, home, out, errs), ghToken) {
 			t.Error("secret kept by a refusal")
+		}
+	}
+}
+
+// The second review of 11-23: sshpass -p X and the like, with the flag right behind its client, in each place it can stand.
+func TestAPasswordFlagRightBehindItsClientReachesNothing(t *testing.T) {
+	for _, argv := range [][]string{
+		{"sh", "-c", "echo mysql -p" + password + " -uroot; echo sshpass -p " + password + " ssh"},
+		{"sh", "-c", "echo docker login -p " + password + " -u a >&2"},
+		{"sshpass -p " + password + " ssh", "x"}, // does not start: the error names it
+	} {
+		home := t.TempDir()
+		t.Setenv("CRIUS_HOME", home)
+		_, out, errs := runlogCmd(t, append([]string{"run", "cortex", "sec", "1e4d6df", "--"}, argv...)...)
+		if all := everything(t, home, out, errs); strings.Contains(all, password) {
+			t.Errorf("%q: secret kept", argv)
+		}
+	}
+	home := t.TempDir()
+	t.Setenv("CRIUS_HOME", home)
+	rc, out, errs := runlogCmd(t, "n-1", "1e4d6df", "1", "az login -p "+password, "sshpass -p"+password, "mongosh -p "+password)
+	if all := everything(t, home, out, errs); rc != 0 || strings.Contains(all, password) {
+		t.Errorf("hand form: rc %d, secret kept %v", rc, strings.Contains(all, password))
+	}
+}
+
+// The second review of 11-23: the bytes a line over 1 MiB lost were in no count. The note counts all the log does not show.
+func TestTheBytesCutNoteCountsAnOverLongLine(t *testing.T) {
+	for _, c := range []struct {
+		script string
+		total  int
+	}{
+		{"head -c 3000000 /dev/zero | tr '\\0' x", 3000000},
+		{"head -c 3000000 /dev/zero | tr '\\0' x; echo; echo LAST", 3000006},
+		{"head -c 3000000 /dev/zero | tr '\\0' x; echo; yes 0123456789 | head -c 520000", 3520001},
+		{"head -c 3000000 /dev/zero | tr '\\0' x; echo; head -c 100 /dev/zero | tr '\\0' y; echo; head -c 270000 /dev/zero | tr '\\0' z", 3270102},
+	} {
+		home := t.TempDir()
+		t.Setenv("CRIUS_HOME", home)
+		if rc, _, errs := runlogCmd(t, "run", "cortex", "long", "1e4d6df", "--", "sh", "-c", c.script); rc != 0 {
+			t.Fatalf("rc %d: %.300s", rc, errs)
+		}
+		log := oneLog(t, home)
+		_, output, _ := strings.Cut(log, "\noutput:\n")
+		cut, shown := 0, 0
+		for _, l := range strings.SplitAfter(output, "\n") {
+			if m := regexp.MustCompile(`^… (\d+) bytes cut …\n$`).FindStringSubmatch(l); m != nil {
+				cut, _ = strconv.Atoi(m[1])
+				continue
+			}
+			l, ok := strings.CutPrefix(l, "| ")
+			if !ok {
+				continue
+			}
+			if s, long := strings.CutSuffix(l, " …\n"); long {
+				l = s + "\n" // quote cut it
+			}
+			l = regexp.MustCompile(`<redacted> \(\d+ bytes of a line over 1048576 bytes left out\)`).ReplaceAllString(l, "")
+			shown += len(l)
+		}
+		// A shown line's newline may be the log's own (a cut line's, or a part of a line): at most one per line shown.
+		if n := cut + shown; n < c.total || n > c.total+2*strings.Count(output, " …\n")+2 {
+			t.Errorf("%q: cut %d + shown %d is not the %d bytes the check wrote", c.script, cut, shown, c.total)
 		}
 	}
 }

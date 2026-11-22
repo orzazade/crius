@@ -21,11 +21,16 @@ const Mark = "<redacted>"
 // (GH_TOKEN_PROD, DB_PASS_2, TOKENS), and the known *_KEY names. A bare "key" is no secret's name (a cache key, a sort key).
 const logKey = `(?:` + secretKey + `|(?-i:TOKENS?(?:_[A-Z0-9_]*)?\b|_(?:PASS|PWD|PAT|AUTH)(?:_[A-Z0-9_]*)?\b)|` +
 	`(?:access|account|encryption|signing|master|storage|subscription|openai|anthropic|cosmos|deploy|sas|webhook|hmac|client|` +
-	`auth|app|service|function|shared|admin|root|session|jwt)[_-]?key|shared[_-]?access[_-]?signature|[_-]pat\b)`
+	`auth|app|service|functions?|shared|admin|root|session|jwt)[_-]?key|shared[_-]?access[_-]?signature|[_-]pat\b|` +
+	`[a-z0-9](?:pass|pwd)\b|__key\b|oauth2-bearer\b)`
+
+// lastKey are names that are a secret's only where the name ends with them: pass-rate and credential.helper are none. The
+// last two are what Kubernetes calls the value of a TLS and of a registry secret.
+const lastKey = `(?:\bpass|credentials?|creds|\b(?:tls|ca|server|client|ssl)\.key|\.docker(?:configjson|cfg))`
 
 // logPairRe is a secret-named key and its operator; the last group marks where the value starts. A scheme
-// (Authorization: Bearer \u2026) is part of the value here: it goes with it.
-var logPairRe = regexp.MustCompile(`(?i)` + logKey + `[\w.-]*\\*["']?([ \t]*)(` + operator + `)([ \t]*)()`)
+// (Authorization: Bearer \u2026) is part of the value here: it goes with it. The name may be an index: x["TOKEN"] = .
+var logPairRe = regexp.MustCompile(`(?i)(?:` + logKey + `[\w.-]*|` + lastKey + `)\\*(?:["']\\*\]?)?([ \t]*)(` + operator + `)([ \t]*)()`)
 
 // A secret-named flag (the group before the last) and the space before its value, on a command line.
 var logFlagRe = regexp.MustCompile(`(?i)` + flagStart + `(--?[\w-]*` + logKey + `[\w-]*)(?:[ \t]|\\\r?\n)+()`)
@@ -33,8 +38,8 @@ var logFlagRe = regexp.MustCompile(`(?i)` + flagStart + `(--?[\w-]*` + logKey + 
 // A whole argument that is a secret-named flag: the next argument is its value.
 var flagArgRe = regexp.MustCompile(`(?i)^--?[\w-]*` + logKey + `[\w-]*$`)
 
-// notSecretName is a name that holds a secret word and not the secret: TOKEN_FILE, --password-stdin, secret_name.
-var notSecretName = regexp.MustCompile(`(?i)[_-](?:file|path|dir|count|name|length|type|stdin)\\*["']?$`)
+// notSecretName is a name that holds a secret word and not the secret: TOKEN_FILE, --password-stdin, BYPASS, OLDPWD.
+var notSecretName = regexp.MustCompile(`(?i)(?:[_-](?:file|path|dir|count|name|length|type|stdin)|(?:^|[_.-])(?:bypass|compass|encompass|surpass|trespass|overpass|underpass|oldpwd))\\*(?:["']\\*\]?)?$`)
 
 // name:pass behind a user flag; ids in digits (docker's 1000:1000) are no password. The name is in the first group set,
 // the password in the next: to the quote that closes, else to the next blank. curlUserRe is for text that names curl, which
@@ -71,15 +76,27 @@ var (
 	valueLine = regexp.MustCompile(`(?i)^\s*["']?value["']?\s*:\s*()`)
 )
 
-// logShortFlags are the short password flags a run log takes: only behind a client that takes one, in one command, as -p
-// is a parallel count, a project or "make parents" elsewhere (go test -p 2 ./internal/mysql). The group marks the value.
-const oneCommand = `(?:[^\n;|&]|\\\r?\n)*?`
+// logShortFlags are the flags that hold a password or a secret only behind what takes one, in one command: -p is a parallel
+// count, a project or "make parents" elsewhere (go test -p 2 ./internal/mysql), --value and --body are any text. The flag
+// may be the first argument or a later one. The group marks the value.
+const (
+	oneCommand = `(?:[^\n;|&]|\\\r?\n)*?`
+	laterFlag  = `(?:["'\s\\]` + oneCommand + `)?[\s"',]`
+)
 
 var logShortFlags = []*regexp.Regexp{
-	regexp.MustCompile(`(?:^|[\s;&|("']|/bin/)(?:mysql(?:dump|admin|import|show|check|sh)?|mariadb(?:-\w+)?|mongo(?:sh|dump|restore|export|import)?|sshpass|` +
-		`(?:docker|podman|nerdctl|buildah|skopeo|helm|oras|oc|az|cf)\b` + oneCommand + `\blogin)[\s\\]` + oneCommand + `(?:[\s"',]|^)-p(?:[ \t]+|=)?()[^\s=]`),
+	regexp.MustCompile(`(?:^|[\s;&|("'` + "`" + `]|/bin/)(?:mysql(?:dump|admin|import|show|check|sh)?|mariadb(?:-\w+)?|mongo(?:sh|dump|restore|export|import)?|sshpass|` +
+		`(?:docker|podman|nerdctl|buildah|skopeo|helm|oras|oc|az|cf)\b` + oneCommand + `\blogin)` + laterFlag + `-p(?:[ \t]+|=)?()[^\s=]`),
 	regexp.MustCompile(`\bredis-cli` + oneCommand + `[ \t](?:-a[ \t]*|--pass[ \t=]+)()[^\s]`),
+	regexp.MustCompile(`\bsecret[\s"',]+set\b` + laterFlag + `(?:--value|--body|-b)(?:[\s"',=]|\\\r?\n)*()[^\s=]`),
+	regexp.MustCompile(`\bsecret` + laterFlag + `--from-literal[\s"',=]+[^\s=]+=()\S`),
 }
+
+// A port map of a container is no password: docker run --name mysql -p 3306:3306.
+var (
+	containerRun = regexp.MustCompile(`\b(?:docker|podman|nerdctl)\b` + oneCommand + `\b(?:run|create)\b`)
+	portMap      = regexp.MustCompile(`(?m)[ \t]-p[ \t=](?:[\d.]+:)?\d+:\d+(?:/(?:tcp|udp))?(?:[ \t]|$)`)
+)
 
 var (
 	// A source file before its line or message (token.go:12:5). A data file counts only before a line number.
@@ -87,7 +104,10 @@ var (
 	dataFile   = regexp.MustCompile(`(?i)\.(?:json|ya?ml|toml|xml|lock|snap)$`)
 	lineNumber = regexp.MustCompile(`^\d+(?::|\b)`)
 	// A count or a result behind a name that holds a secret word: secrets: 0, unit-pass: 12, Check secrets: success.
-	countName   = regexp.MustCompile(`(?i)(?:secrets|tokens|(?:tests?|unit|integration|e2e|smoke|check|suite|qa)[-_.]pass)$`)
+	lastFile    = regexp.MustCompile(`\.(?:key|dockerconfigjson|dockercfg)$`)
+	credsName   = regexp.MustCompile(`cred(?:ential)?s?$`)
+	pathValue   = regexp.MustCompile(`^["']?(?:~|\.{1,2})?/\S*\.\w+["']?(?:$|[\s;&|)])`)
+	countName   = regexp.MustCompile(`(?i)(?:secrets|tokens|(?:tests?|unit|integration|e2e|smoke|check|suite|qa)[-_.]?pass)$`)
 	countValue  = regexp.MustCompile(`^\d{1,9}(?:$|[\s,;)\]}])`)
 	resultValue = regexp.MustCompile(`(?i)^(?:pass(?:ed)?|fail(?:ed)?|ok|success|succeeded|skipped|true|false|null|none|nil|required|missing|expired|invalid)[ \t]*(?:$|[,;)\]}\r])`)
 	goTestLine  = regexp.MustCompile(`^\s*(?:--- (?:PASS|FAIL|SKIP): |=== [A-Z]+ +)\S+(?: \(\d+\.\d+s\))?\s*$`)
@@ -164,6 +184,7 @@ func nextPair(s string, pos int) (p pair, ok bool) {
 			start--
 		}
 		name, rest := s[start:pos+g[0]], s[v:]
+		last := strings.ToLower(strings.TrimRight(name, `\"']`))
 		switch {
 		case p.op == ":" && strings.HasPrefix(rest, ":"):
 		case p.op == ":" && sourceFile.MatchString(name):
@@ -173,6 +194,9 @@ func nextPair(s string, pos int) (p pair, ok bool) {
 		case countName.MatchString(name) && countValue.MatchString(rest):
 		case p.op == ":" && resultValue.MatchString(rest):
 		case maskedValue.MatchString(rest):
+		case last == "pass" && (p.op != "=" || !p.adjacent && (rest == "" || rest[0] != '"' && rest[0] != '\'') || countValue.MatchString(rest) || resultValue.MatchString(rest) || strings.HasPrefix(rest, "$((")): // a test count
+		case lastFile.MatchString(last) && (p.op != ":" || countValue.MatchString(rest)): // --from-file=tls.key=x; tls.key: 1704 bytes
+		case credsName.MatchString(last) && pathValue.MatchString(rest): // GOOGLE_APPLICATION_CREDENTIALS=/a/key.json
 		default:
 			return p, true
 		}
@@ -288,9 +312,13 @@ func (st *lines) line(l string) string {
 
 // shortFlag replaces the value of a client's short password flag, to the end of the line.
 func shortFlag(s string) string {
+	seen := s
+	if containerRun.MatchString(s) {
+		seen = portMap.ReplaceAllStringFunc(s, func(m string) string { return strings.Repeat(" ", len(m)) })
+	}
 	for _, re := range logShortFlags {
-		if m := re.FindStringSubmatchIndex(s); m != nil {
-			s = s[:m[2]] + Mark
+		if m := re.FindStringSubmatchIndex(seen); m != nil {
+			seen, s = seen[:m[2]], s[:m[2]]+Mark
 		}
 	}
 	return s
@@ -363,6 +391,9 @@ func Log(s string) string {
 	return b.String()
 }
 
+// LeftOutNote is the note an over-long line ends on.
+var LeftOutNote = regexp.MustCompile(Mark + ` \(\d+ bytes of a line over \d+ bytes left out\)$`)
+
 // A line over maxLine bytes is redacted up to there and the rest of it is dropped with a note: what stands after the
 // cut cannot be judged. The last lineGuard bytes before the cut go too, as a secret may start there.
 const (
@@ -378,6 +409,7 @@ type Stream struct {
 	Line    func(line string) string // the rules
 	buf     []byte
 	dropped int64 // bytes of an over-long line left out so far
+	LeftOut int64 // bytes of over-long lines left out, less the notes that say so
 	err     error
 }
 
@@ -412,8 +444,11 @@ func (s *Stream) flush(nl string) {
 	}()
 	l := s.Line(string(s.buf))
 	if s.dropped > 0 {
-		cut := max(0, len(l)-lineGuard)
-		l = fmt.Sprintf("%s%s (%d bytes of a line over %d bytes left out)", strings.ToValidUTF8(l[:cut], ""), Mark, s.dropped+int64(len(l)-cut), maxLine)
+		kept := strings.ToValidUTF8(l[:max(0, len(l)-lineGuard)], "")
+		left := s.dropped + int64(len(l)-len(kept))
+		note := fmt.Sprintf("%s (%d bytes of a line over %d bytes left out)", Mark, left, maxLine)
+		l = kept + note
+		s.LeftOut += left - int64(len(note))
 	}
 	_, s.err = io.WriteString(s.W, l+nl)
 }
@@ -442,6 +477,8 @@ func Command(argv []string) string {
 		switch {
 		case flagArgRe.MatchString(prev) && !notSecretName.MatchString(prev) && !strings.HasPrefix(a, "--"):
 			out[i] = Mark
+		case opensslPass.MatchString(prev) && user == "pass" && pass != "":
+			out[i] = "pass:" + Mark
 		case (glued || userFlag.MatchString(prev) || curl && curlUser.MatchString(prev)) && colon && isPass(user, pass):
 			out[i] = user + ":" + Mark
 		default:
@@ -452,9 +489,10 @@ func Command(argv []string) string {
 }
 
 var (
-	scriptFlag = regexp.MustCompile(`^-[a-zA-Z]*c$`)
-	curlUser   = regexp.MustCompile(`^-[a-zA-Z]*[uU]$`)
-	curlGlued  = regexp.MustCompile(`^-[a-zA-Z]*?[uU][^:]*:.`)
+	opensslPass = regexp.MustCompile(`^-pass(?:in|out)?$`)
+	scriptFlag  = regexp.MustCompile(`^-[a-zA-Z]*c$`)
+	curlUser    = regexp.MustCompile(`^-[a-zA-Z]*[uU]$`)
+	curlGlued   = regexp.MustCompile(`^-[a-zA-Z]*?[uU][^:]*:.`)
 )
 
 // Script is Command for a command written as one shell line.

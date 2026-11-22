@@ -365,26 +365,31 @@ func Check(dir, project, ref, sha string, argv []string, limit time.Duration, ec
 	} else {
 		// The middle was never held. The head's last line and the tail's first may be parts of lines; they are kept
 		// as they are, so one long line (minified JSON) still shows its start and end. The note counts every byte the
-		// log does not show, those quote cuts from a long line too.
+		// log does not show, those quote cuts from a long line and those the
+		// stream left out of an over-long one too.
 		hl, hnl := pieces(string(out.head))
 		tl, tnl := pieces(string(out.tail))
 		hl, hnl = hl[:min(len(hl), headKeep)], hnl[:min(len(hnl), headKeep)]
 		tl, tnl = tl[max(0, len(tl)-tailKeep):], tnl[max(0, len(tnl)-tailKeep):]
 		shown := int64(0)
+		count := func(l string) int64 { // the bytes of the output in what is shown of l
+			c := cutLine(l)
+			return int64(len(c) - len(redact.LeftOutNote.FindString(c)))
+		}
 		for i, l := range hl {
-			shown += int64(len(cutLine(l)))
+			shown += count(l)
 			if hnl[i] {
 				shown++
 			}
 			b.WriteString(quote(l))
 		}
 		for i, l := range tl {
-			shown += int64(len(cutLine(l)))
+			shown += count(l)
 			if tnl[i] {
 				shown++
 			}
 		}
-		fmt.Fprintf(&b, "… %d bytes cut …\n", out.total-shown)
+		fmt.Fprintf(&b, "… %d bytes cut …\n", out.total+stream.LeftOut-shown)
 		for _, l := range tl {
 			b.WriteString(quote(l))
 		}

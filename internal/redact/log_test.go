@@ -189,3 +189,107 @@ func TestAStreamWhoseRulesFailWritesNothingMore(t *testing.T) {
 type failing struct{}
 
 func (failing) Write([]byte) (int, error) { return 0, errors.New("full") }
+
+// hides fails when s, given as a command's arguments, a sh -c text or an output line, keeps the secret.
+func hides(t *testing.T, argv ...string) {
+	t.Helper()
+	line := strings.Join(argv, " ")
+	for _, got := range []string{Command(argv), Command([]string{"sh", "-c", line}), Script("x && " + line), Log(line + "\n"), Log("+ " + line + "\nnext\n")} {
+		if strings.Contains(got, pw) || !strings.Contains(got, Mark) {
+			t.Errorf("%q: secret kept: %q", argv, got)
+		}
+	}
+}
+
+// The second review of 11-23: a password flag directly behind its client was kept.
+func TestAPasswordFlagRightBehindItsClient(t *testing.T) {
+	for _, client := range []string{"sshpass", "mysql", "mysqldump", "mysqladmin", "mariadb", "mongo", "mongosh", "mongodump", "/usr/local/bin/mysql",
+		"docker login", "podman login", "nerdctl login", "buildah login", "skopeo login", "helm registry login", "oras login", "oc login", "az login", "cf login"} {
+		c := strings.Fields(client)
+		hides(t, append(c[:len(c):len(c)], "-p", pw, "-u", "bob")...)
+		hides(t, append(c[:len(c):len(c)], "-p"+pw, "-uroot")...)
+		hides(t, append(c[:len(c):len(c)], "-u", "bob", "-p", pw)...)
+	}
+	hides(t, "redis-cli", "-a", pw, "ping")
+	hides(t, "redis-cli", "-a"+pw, "ping")
+	if got := Log(`["sshpass", "-p", "` + pw + `", "ssh"]` + "\n"); strings.Contains(got, pw) {
+		t.Errorf("list form: %q", got)
+	}
+	for _, s := range []string{"docker run --name mysql -p 3306:3306 mysql:8", "docker run --name mysql -p 127.0.0.1:3306:3306/tcp -d mysql:8"} {
+		if got := Script(s); got != s {
+			t.Errorf("a port map: %q", got)
+		}
+		if got := Log(s + "\n"); got != s+"\n" {
+			t.Errorf("a port map in output: %q", got)
+		}
+	}
+	hides(t, "docker", "run", "--name", "mysql", "-p", "3306:3306", "img", "mysql", "-p"+pw)
+}
+
+func TestOpensslPassArgumentsAreHidden(t *testing.T) {
+	for _, f := range []string{"-passin", "-passout", "-pass"} {
+		hides(t, "openssl", "x", f, "pass:"+pw, "-in", "k.pem")
+	}
+	if got, want := Command([]string{"openssl", "x", "-passin", "pass:" + pw + " x", "-in", "k.pem"}), "openssl x -passin pass:<redacted> -in k.pem"; got != want {
+		t.Errorf("got %q want %q", got, want)
+	}
+}
+
+func TestMoreSecretNamesAreHidden(t *testing.T) {
+	for _, name := range []string{"userPWD", "DbPwd", "DBPASS", "dbpass", "PASS", "Storage__Key", "Jwt__Signing__Key", "CREDS", "DB_CREDS", "CREDENTIALS"} {
+		hides(t, name+"="+pw, "x")
+	}
+	for _, name := range []string{"x-functions-key", "credentials", "userPWD", "Db__Key"} {
+		for _, form := range []string{name + ": " + pw, `"` + name + `": "` + pw + `"`} {
+			if got := Log(form + "\n"); strings.Contains(got, pw) || !strings.Contains(got, Mark) {
+				t.Errorf("%q kept: %q", form, got)
+			}
+			if got := Command([]string{"curl", "-H", form}); strings.Contains(got, pw) {
+				t.Errorf("%q kept: %q", form, got)
+			}
+		}
+	}
+}
+
+func TestIndexedNamesAreHidden(t *testing.T) {
+	for _, l := range []string{`config["Password"] = "` + pw + `"`, `os.environ["TOKEN"]="` + pw + `"`, `headers['Authorization'] = '` + pw + `'`, `cfg["pass"] = "` + pw + `"`} {
+		hides(t, l)
+	}
+}
+
+func TestKubernetesSecretOutputIsHidden(t *testing.T) {
+	for _, l := range []string{"  tls.key: " + pw, "  .dockerconfigjson: " + pw, `{"data":{"tls.key":"` + pw + `"}}`, `{"data":{".dockerconfigjson":"` + pw + `"}}`,
+		"  tls.key: |\n    " + pw} {
+		if got := Log(l + "\n"); strings.Contains(got, pw) || !strings.Contains(got, Mark) {
+			t.Errorf("%q kept: %q", l, got)
+		}
+	}
+}
+
+func TestSecretSetCommandsAreHidden(t *testing.T) {
+	hides(t, "az", "keyvault", "secret", "set", "--vault-name", "v", "-n", "n", "--value", pw)
+	hides(t, "az", "keyvault", "secret", "set", "--value="+pw, "-n", "n")
+	hides(t, "gh", "secret", "set", "NAME", "--body", pw)
+	hides(t, "gh", "secret", "set", "--body", pw, "NAME")
+	hides(t, "gh", "secret", "set", "NAME", "-b", pw)
+	hides(t, "gh", "secret", "set", "NAME", "-b"+pw)
+	hides(t, "kubectl", "create", "secret", "generic", "n", "--from-literal=k="+pw)
+	hides(t, "kubectl", "create", "secret", "generic", "n", "--from-literal", "k="+pw)
+	hides(t, "kubectl", "-n", "x", "create", "secret", "generic", "n", "--from-literal=a=1", "--from-literal=k="+pw)
+	hides(t, "curl", "--oauth2-bearer", pw, "https://h/x")
+}
+
+// What the rules above must leave alone.
+func TestWhatOnlyLooksLikeASecretIsKept(t *testing.T) {
+	for _, l := range []string{"PASS=7 FAIL=0", "pass: 12", "PASS: TestX", "--- PASS: TestX (0.01s)", "PASS=$((PASS+1))", "BYPASS=yes", "bypass: on", "OLDPWD=/tmp/x",
+		"GOOGLE_APPLICATION_CREDENTIALS=/a/b/key.json", "git -c credential.helper=osxkeychain push", "tls.key:  1704 bytes", "--from-file=tls.key=./tls.key",
+		"pass-rate: 99%", "pass = the number of checks", "kubectl create configmap n --from-literal=k=v", "gh pr create --body text", "mkdir -p a && mysql --version",
+		"credentials.go:12:5: x", "for k, v := range m[key] {", "RUNLOG /x sha=1e4d6df pass=1"} {
+		if got := Log(l + "\n"); got != l+"\n" {
+			t.Errorf("%q changed: %q", l, got)
+		}
+		if got := Script(l); got != l {
+			t.Errorf("%q changed as a command: %q", l, got)
+		}
+	}
+}
