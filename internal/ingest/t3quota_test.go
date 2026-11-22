@@ -239,8 +239,11 @@ func TestT3QuotaWaitsForTheAccountsFile(t *testing.T) {
 
 // T3 installed but its log folder gone (moved by a T3 update) is said, never read as "no T3 here".
 func TestT3QuotaLogFolderMissingIsLoud(t *testing.T) {
-	x := quotaCase(t)
-	if err := os.MkdirAll(os.Getenv("T3CODE_HOME"), 0o755); err != nil {
+	x, _, _, _, _ := t3Case(t)
+	if st := x.run(); st.T3Samples == 0 {
+		t.Fatal("the first run read no T3 sample")
+	}
+	if err := os.RemoveAll(t3Logs(t)); err != nil {
 		t.Fatal(err)
 	}
 	st := x.run()
@@ -248,10 +251,105 @@ func TestT3QuotaLogFolderMissingIsLoud(t *testing.T) {
 		t.Errorf("want the missing log folder said and a partial run, got status %s, %q", st.Status, st.Warnings)
 	}
 	// No T3 home at all: nothing to say.
-	if err := os.Remove(os.Getenv("T3CODE_HOME")); err != nil {
+	if err := os.RemoveAll(os.Getenv("T3CODE_HOME")); err != nil {
 		t.Fatal(err)
 	}
 	if st := x.run(); len(t3Said(st)) != 0 {
 		t.Errorf("no T3 home: want no T3 warning, got %q", t3Said(st))
+	}
+}
+
+// Landing review 11-22: a T3 sample was no account_seen row, so a role that runs on T3 alone still read "last statusline
+// line 15:25" in Stale and raised the blind guard NEED, and no role of it was placed on its login.
+func TestAT3SampleIsItsSessionsAccountLineToo(t *testing.T) {
+	x, _, l2, _, _ := t3Case(t)
+	x.session("personal", sid(2), "/work/demo", "", qNow.Add(-6*time.Minute))
+	x.session("personal", "statusline-s", "/work/demo", "", qNow.Add(-6*time.Hour))
+	x.run()
+	if rep := x.report(); len(rep.Stale) != 0 {
+		t.Errorf("Stale = %q, want none: max2's newest T3 sample is 5 min old", rep.Stale)
+	}
+	eq(t, x.q("select login, rl, count(*) from account_seen where session = ?", sid(2)), [][]string{{l2, "1", "2"}})
+	eq(t, x.q("select account from session where id = ?", sid(2)), [][]string{{"max"}})
+}
+
+// Landing review 11-22: headless sessions (an org line, no statusline line, no hook record) marked every idle login
+// "in use since, unmeasured", so an idle account with an older sample was never room. Their organization names the login.
+func TestAHeadlessSessionSpendsOnItsOrganizationsLoginOnly(t *testing.T) {
+	x, l1, l2, reset, _ := t3Case(t)
+	headless, seen := "e0000000-2222-3333-4444-555555555555", "a1000000-2222-3333-4444-555555555555"
+	old := qNow.Add(-3 * time.Hour)
+	x.session("personal", seen, "/work/demo", "", old)
+	x.org("personal", seen, "org-1", old.Add(-time.Minute))
+	for _, at := range []time.Time{old.Add(-2 * time.Minute), old} { // l1 before and after the org line
+		l := sampleAt(seen, at, 30, reset)
+		l.Login = l1
+		x.spool(l)
+	}
+	x.session("personal", headless, "/work/demo", "", qNow.Add(-time.Minute))
+	x.org("personal", headless, "org-1", qNow.Add(-2*time.Minute))
+	// l2's newest sample is 3 h old and nothing ran on it since: idle, so room. l1's is spent past.
+	logs := t3Logs(t)
+	if err := os.RemoveAll(logs); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(logs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	idle := sampleAt("statusline-2", old, 20, reset)
+	idle.Login = l2
+	x.spool(idle)
+	x.run()
+	rep := x.report()
+	if v, why := quota.Room(rep.Account(l2)); v != "room" {
+		t.Errorf("idle max2: %s, %s; want room: the headless request is org-1's, which is max1's", v, why)
+	}
+	if v, why := quota.Room(rep.Account(l1)); v != "unknown" || !strings.Contains(why, "in use since") {
+		t.Errorf("max1: %s, %s; want unknown, in use since: the headless request spent it", v, why)
+	}
+}
+
+// An organization seen between lines of two logins names neither: its headless request may be on any.
+func TestAnOrganizationOfTwoLoginsPlacesNothing(t *testing.T) {
+	x, l1, l2, reset, _ := t3Case(t)
+	if err := os.RemoveAll(t3Logs(t)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(t3Logs(t), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := qNow.Add(-3 * time.Hour)
+	for i, login := range []string{l1, l2} {
+		id := fmt.Sprintf("a%d000000-2222-3333-4444-555555555555", i+1)
+		x.session("personal", id, "/work/demo", "", old)
+		x.org("personal", id, "org-1", old.Add(-time.Minute))
+		for _, at := range []time.Time{old.Add(-2 * time.Minute), old} {
+			l := sampleAt(id, at, 30, reset)
+			l.Login = login
+			x.spool(l)
+		}
+	}
+	headless := "e0000000-2222-3333-4444-555555555555"
+	x.session("personal", headless, "/work/demo", "", qNow.Add(-time.Minute))
+	x.org("personal", headless, "org-1", qNow.Add(-2*time.Minute))
+	x.run()
+	for _, l := range []string{l1, l2} {
+		if v, why := quota.Room(x.report().Account(l)); v != "unknown" {
+			t.Errorf("%s: %s, %s; want unknown", l, v, why)
+		}
+	}
+}
+
+// Landing review 11-22: a T3 home with no provider logs yet (installed, no thread ever run) made every run partial, so
+// no heartbeat was written and the watchdog alarmed for ever. It is said, and the run is whole. Logs that were read once
+// and are gone are still a failed look.
+func TestT3QuotaLogsNeverWrittenAreSaidButNoFailedLook(t *testing.T) {
+	x := quotaCase(t)
+	if err := os.MkdirAll(os.Getenv("T3CODE_HOME"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	st := x.run()
+	if len(t3Said(st)) != 1 || st.Status != "complete" {
+		t.Errorf("want the missing log folder said on a complete run, got status %s, %q", st.Status, st.Warnings)
 	}
 }

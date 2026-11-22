@@ -71,8 +71,16 @@ func (r *runner) ingestT3Quota() {
 	}
 	dir := filepath.Join(t3, "userdata", "logs", "provider")
 	entries, err := os.ReadDir(dir)
-	if err != nil { // T3 is here but its logs are not where they were: say so, never "nothing found"
-		r.warn(true, "T3 quota logs: %v", err)
+	if err != nil { // T3 is here but not its logs: said, never "nothing found". Logs read before and now gone are a failed look
+		read := true
+		if errors.Is(err, fs.ErrNotExist) {
+			if qerr := r.inTx(func(tx *sql.Tx) error {
+				return tx.QueryRow("select exists (select 1 from coverage where source = 't3quota')").Scan(&read)
+			}); qerr != nil {
+				r.warn(true, "T3 quota logs: %v", qerr)
+			}
+		}
+		r.warn(read, "T3 quota logs: %v", err)
 		return
 	}
 	// Until both are read no sample can be placed: the cursors wait.
@@ -255,7 +263,12 @@ func (r *runner) t3QuotaFile(tx *sql.Tx, path string, pl *t3Placer, f *t3File) e
 			f.added++
 		}
 		// The event comes with a response: its values are new.
-		_, err = tx.Exec("insert or ignore into quota_response (source_key, responded) values (?,1)", key)
+		if _, err = tx.Exec("insert or ignore into quota_response (source_key, responded) values (?,1)", key); err != nil {
+			return err
+		}
+		// It is the session's account line too, as a statusline line is. T3 names no persona: the report takes the session's.
+		_, err = tx.Exec("insert or ignore into account_seen (source_key, session, persona, ts, rl, login) values (?,?,null,?,1,?)",
+			key, r.text(p.SessionID), at.UTC().Format(time.RFC3339), r.text(place.login))
 		return err
 	})
 	if err != nil {

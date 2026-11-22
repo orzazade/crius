@@ -40,7 +40,7 @@ type Report struct {
 	// StaleAt: the time of the newest line a Stale entry names, absent when it has none, so a guard can say its age.
 	StaleAt map[string]time.Time
 	// SpentAt: the newest request of the week that may have spent the login this view reads (Account), or any login in
-	// the whole report: one on that login, a Max one whose line names no login, or one on no known account. spentBy and
+	// the whole report: one on that login, or one whose login neither its line nor its organization names. spentBy and
 	// spentAny hold it per login and for every login, for Account.
 	SpentAt    time.Time
 	spentBy    map[string]time.Time
@@ -90,10 +90,10 @@ type obs struct {
 	rl    bool   // the line had rate limits
 }
 
-// orgLine is a transcript line naming the session's organization, with the account learned for it ("" when none).
+// orgLine is a transcript line naming the session's organization, with the account and the login learned for it ("" when none).
 type orgLine struct {
-	ts           time.Time
-	org, account string
+	ts                  time.Time
+	org, account, login string
 }
 
 type asg struct {
@@ -184,6 +184,30 @@ func (s *sess) line(t time.Time) *obs {
 // login at t: the login its statusline line then names, "" when none does.
 func (s *sess) login(t time.Time) string {
 	if o := s.line(t); o != nil {
+		return o.login
+	}
+	return ""
+}
+
+// around gives the Max login both the newest line before t, within Gap, and the first one from t on name; "" when they differ.
+func (s *sess) around(t time.Time) string {
+	i := sort.Search(len(s.obs), func(i int) bool { return !s.obs[i].ts.Before(t) })
+	if i == 0 || i == len(s.obs) {
+		return ""
+	}
+	a, b := s.obs[i-1], s.obs[i]
+	if !a.max || !b.max || a.login != b.login || t.Sub(a.ts) > Gap {
+		return ""
+	}
+	return a.login
+}
+
+// spender gives the login a request at t spent: its line's, else its organization's; "" when neither names one.
+func (s *sess) spender(t time.Time) string {
+	if l := s.login(t); l != "" {
+		return l
+	}
+	if o := s.org(t); o != nil {
 		return o.login
 	}
 	return ""
@@ -370,6 +394,9 @@ func sessions(db Querier, p Projects) (out map[string]*sess, lastLine map[string
 			if s.persona == "" {
 				s.persona = persona
 			}
+			if persona == "" { // a T3 sample names none: its session's
+				persona = s.persona
+			}
 			if t.After(lastLine[persona]) {
 				lastLine[persona] = t
 			}
@@ -471,8 +498,26 @@ func sessions(db Querier, p Projects) (out map[string]*sess, lastLine map[string
 		}
 	}
 	sort.Strings(both)
+	// An organization's login is the one its sessions' lines just before and just after its org lines both name; more
+	// than one login, and it names none. Newest by then alone is not enough: a resumed session can be on a new login.
+	logins := map[string]map[string]bool{}
+	for _, s := range out {
+		for _, l := range s.orgs {
+			if login := s.around(l.ts); login != "" {
+				if logins[l.org] == nil {
+					logins[l.org] = map[string]bool{}
+				}
+				logins[l.org][login] = true
+			}
+		}
+	}
 	for _, s := range out {
 		for i := range s.orgs {
+			if ls := logins[s.orgs[i].org]; len(ls) == 1 {
+				for login := range ls {
+					s.orgs[i].login = login
+				}
+			}
 			if rl := measured[s.orgs[i].org]; len(rl) == 1 {
 				s.orgs[i].account = "enterprise"
 				if rl[true] {
@@ -588,7 +633,7 @@ func reduce(samples []sample, now time.Time) ([]sample, AcctUse) {
 
 // Build makes the report as of now.
 func Build(db Querier, p Projects, now time.Time) (*Report, error) {
-	rep := &Report{Now: now}
+	rep := &Report{Now: now, spentBy: map[string]time.Time{}}
 	ss, lastLine, both, err := sessions(db, p)
 	if err != nil {
 		return nil, err
@@ -745,7 +790,13 @@ func Build(db Querier, p Projects, now time.Time) (*Report, error) {
 		default:
 			rep.UnknownUSD += usd
 			unknown[sid] = true
-			if t.After(rep.spentAny) { // on no known account: it may be on any Max login
+		}
+		if account != "enterprise" {
+			if l := s.spender(t); l != "" {
+				if t.After(rep.spentBy[l]) {
+					rep.spentBy[l] = t
+				}
+			} else if t.After(rep.spentAny) { // on no known login: it may be on any Max one
 				rep.spentAny = t
 			}
 		}
@@ -772,12 +823,8 @@ func Build(db Querier, p Projects, now time.Time) (*Report, error) {
 	}
 	rep.Shares, rep.EntWeek, rep.EntToday = sorted(shares), sorted(entWeek), sorted(entDay)
 	rep.UnknownSessions = len(unknown)
-	// A Max request whose line names no login may be on any login too.
-	if t := newestMax[""]; t.After(rep.spentAny) {
-		rep.spentAny = t
-	}
-	rep.spentBy, rep.SpentAt = newestMax, rep.spentAny
-	for _, t := range newestMax {
+	rep.SpentAt = rep.spentAny
+	for _, t := range rep.spentBy {
 		if t.After(rep.SpentAt) {
 			rep.SpentAt = t
 		}
