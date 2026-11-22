@@ -293,3 +293,32 @@ func TestWhatOnlyLooksLikeASecretIsKept(t *testing.T) {
 		}
 	}
 }
+
+// The third review of 11-23.
+func TestShortSecretNamesAreHidden(t *testing.T) {
+	for _, name := range []string{"pwd", "PAT", "PW", "DB_PW", "SA_PW", "JWT", "_auth"} {
+		hides(t, name+"="+pw, "x")
+		for _, form := range []string{name + ": " + pw, `"` + name + `": "` + pw + `"`} {
+			if got := Log(form + "\n"); strings.Contains(got, pw) || !strings.Contains(got, Mark) {
+				t.Errorf("%q kept: %q", form, got)
+			}
+		}
+	}
+	for _, l := range []string{"cd $(pwd)", "pattern: x", "path=/a/b", "compat: yes", "author: x"} {
+		if got := Log(l + "\n"); got != l+"\n" {
+			t.Errorf("%q changed: %q", l, got)
+		}
+	}
+}
+
+func TestAColouredLineIsJudgedWithoutItsColours(t *testing.T) {
+	for _, l := range []string{"\x1b[34;1m\"password\"\x1b[0m \x1b[1;39m: \x1b[0;32m\"" + pw + "\"\x1b[0m", "\x1b[1mTOKEN\x1b[0m=" + pw,
+		"\x1b[1m-----BEGIN PRIVATE KEY-----\x1b[0m\n" + pw + "\n-----END PRIVATE KEY-----"} {
+		if got := Log(l + "\n"); strings.Contains(got, pw) || !strings.Contains(got, Mark) {
+			t.Errorf("%q kept: %q", l, got)
+		}
+	}
+	if l := "\x1b[32mok\x1b[0m 12 pass\n"; Log(l) != l {
+		t.Errorf("a coloured line with no secret changed: %q", Log(l))
+	}
+}

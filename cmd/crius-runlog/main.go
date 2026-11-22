@@ -19,7 +19,8 @@
 // is one bus-post takes. The sha is 7 to 40 lower-case hex. It never replaces a file that is there. It prints the
 // path to name in the VERIFIED line.
 //
-// No secret reaches the log or what crius-runlog prints: a token, password or key in the command, the notes or the output
+// A secret of a known form does not reach the log or what crius-runlog prints (not every client has a rule: keep secrets in the
+// environment, never on the command line): a token, password or key in the command, the notes or the output
 // is written as <redacted> (internal/redact); the command itself runs with its real arguments. When redaction fails nothing
 // is written.
 //

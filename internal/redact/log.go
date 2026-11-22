@@ -26,7 +26,7 @@ const logKey = `(?:` + secretKey + `|(?-i:TOKENS?(?:_[A-Z0-9_]*)?\b|_(?:PASS|PWD
 
 // lastKey are names that are a secret's only where the name ends with them: pass-rate and credential.helper are none. The
 // last two are what Kubernetes calls the value of a TLS and of a registry secret.
-const lastKey = `(?:\bpass|credentials?|creds|\b(?:tls|ca|server|client|ssl)\.key|\.docker(?:configjson|cfg))`
+const lastKey = `(?:\b(?:pass|(?-i:pwd)|pw|pat|jwt)|_(?:pw|auth)|credentials?|creds|\b(?:tls|ca|server|client|ssl)\.key|\.docker(?:configjson|cfg))`
 
 // logPairRe is a secret-named key and its operator; the last group marks where the value starts. A scheme
 // (Authorization: Bearer \u2026) is part of the value here: it goes with it. The name may be an index: x["TOKEN"] = .
@@ -228,6 +228,19 @@ var (
 // about a bad key, does not take the rest of the log.
 const maxBlock = 300
 
+// A colour code (or another CSI sequence) as a terminal reads it.
+var csiRe = regexp.MustCompile(`\x1b\[[0-9;:?]*[ -/]*[@-~]`)
+
+// colour judges a line without its colour codes, which would stand between a name and its value. A line that holds no
+// secret keeps them.
+func (st *lines) colour(l string) string {
+	plain := csiRe.ReplaceAllString(l, "")
+	if got := st.redact(plain); got != plain {
+		return got
+	}
+	return l
+}
+
 // redact gives line l (no newline in it) as a run log keeps it. A line that is all secret is a Mark: no line is lost.
 func (st *lines) redact(l string) string {
 	if st.block > 0 {
@@ -413,7 +426,7 @@ type Stream struct {
 	err     error
 }
 
-func NewStream(w io.Writer) *Stream { return &Stream{W: w, Line: (&lines{}).redact} }
+func NewStream(w io.Writer) *Stream { return &Stream{W: w, Line: (&lines{}).colour} }
 
 func (s *Stream) Write(p []byte) (int, error) {
 	n := len(p)
