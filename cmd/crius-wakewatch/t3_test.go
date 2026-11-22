@@ -230,6 +230,15 @@ func TestThreadReadsItsBackgroundJobs(t *testing.T) {
 	if err != nil || strings.Join(th.Background, "|") != strings.Join(want, "|") {
 		t.Fatalf("background jobs: %q %v", th.Background, err)
 	}
+	if len(th.Tasks) != 2 || th.Tasks[0] != (wakewatch.T3Task{ID: "bipblrp3r", Kind: "command", Description: "Re-arm qa-2 bus waiter with 2h limit"}) {
+		t.Fatalf("its jobs with their kind: %+v", th.Tasks)
+	}
+	// 11-23, axi api-split: a subagent names its own thread, and the thread its latest run
+	put(t, dir, "out", strings.NewReplacer(`"taskId":"b7x2","kind":"command"`, `"taskId":"b7x2","kind":"subagent","childThreadId":"thread:subagent:cae4"`,
+		`"activeRunId":null`, `"activeRunId":null,"latestRunId":"run:thread:x:ordinal:1065"`).Replace(backgroundJSON))
+	if th, err := thread("x"); err != nil || th.Tasks[1].Kind != "subagent" || th.Tasks[1].Child != "thread:subagent:cae4" || th.Run != "run:thread:x:ordinal:1065" {
+		t.Fatalf("a subagent and the run: %+v %v", th, err)
+	}
 	tasks := backgroundJSON[strings.Index(backgroundJSON, `,"pendingBackgroundTasks"`):strings.Index(backgroundJSON, `,"updatedAt"`)]
 	for _, none := range []string{`,"pendingBackgroundTasks":[]`, `,"pendingBackgroundTasks":null`, ``} {
 		put(t, dir, "out", strings.Replace(backgroundJSON, tasks, none, 1))

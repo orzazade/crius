@@ -182,6 +182,7 @@ type state struct {
 	Signin      map[string]string    // sign-in alert key (account and state) -> the day it was raised (signin.go)
 	SigninMiss  map[string]int       // read (status:<account>, login:<account>, spool:<host>) -> runs in a row it failed (signin.go)
 	LookMiss    map[string]int       // failed-look alert key -> runs in a row it was raised (looks.go)
+	T3Spells    map[string]t3Spell   // project:role of each T3 builder -> its idle stretch (t3builder.go)
 	Twins       map[string]int       // role and pids of a role with two live claudes -> runs in a row seen (twins.go)
 }
 
@@ -240,7 +241,8 @@ func Run(d Deps) error {
 	for k, at := range st.Typed {
 		// a dead role's line stays raised as long as the role is dead, so its key goes only when the alert does (review P2-1);
 		// so does a role's pair of live claudes
-		if d.Now.Sub(at) > window+resend && !strings.HasPrefix(k, "dead:") && !strings.HasPrefix(k, "twins:") {
+		// and a builder's idle stretch, whose key builderSpell ends
+		if d.Now.Sub(at) > window+resend && !strings.HasPrefix(k, "dead:") && !strings.HasPrefix(k, "twins:") && !strings.HasPrefix(k, builderKeys) {
 			delete(st.Typed, k)
 		}
 	}
@@ -268,7 +270,7 @@ func Run(d Deps) error {
 	alerts = append(alerts, deadRoles(d, &st, ss, sesErr, watch, park)...)
 	sp, prompted := stuckPrompts(d)
 	alerts = append(alerts, sp...)
-	alerts = append(alerts, t3Idle(d, ss, sesErr, watch, park, prompted)...)
+	alerts = append(alerts, t3Idle(d, &st, ss, sesErr, watch, park, prompted)...)
 	screens, scrErr := d.Screens()
 	alerts = append(alerts, rearm(d, &st, ss, sesErr, screens, scrErr, watch, park)...)
 	alerts = append(alerts, rigDown(d, &st, ss, sesErr, watch, park)...)
@@ -424,7 +426,8 @@ func (p projects) has(project string) bool { return p == nil || p[strings.ToLowe
 // watched reads home/wakewatch-projects: the project names (bus file names: quotes, crius), split by spaces, commas or
 // lines, with # starting a comment, in any case (owner 10-22: only Quotes and Crius are watched). With no file every
 // project is watched. A file that cannot be read or names no project would silence every team: it is an alert, and
-// every project stays watched. A name with no bus file would silence its team: it is an alert too.
+// every project stays watched. A name with no bus file would silence its team: it is an alert too. A name with a colon
+// (axi:api-split) is no project but a T3 builder (readBuilders).
 func watched(home string) (projects, [][2]string) {
 	path := filepath.Join(home, "wakewatch-projects")
 	b, err := os.ReadFile(path)
@@ -435,6 +438,7 @@ func watched(home string) (projects, [][2]string) {
 		return nil, [][2]string{{"projects-failed", "the watched project list could not be read, so every project is watched: " + err.Error()}}
 	}
 	p := projects(names(b))
+	maps.DeleteFunc(p, func(n string, _ bool) bool { return strings.Contains(n, ":") })
 	if len(p) == 0 {
 		return nil, [][2]string{{"projects-failed", path + " names no project, so every project is watched"}}
 	}

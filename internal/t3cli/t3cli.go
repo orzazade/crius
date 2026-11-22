@@ -84,8 +84,10 @@ type Show struct {
 		RelationshipToParent string `json:"relationshipToParent"`
 		// the thread's own background jobs still running (a command or a test run it started); T3 wakes it when one ends
 		Background []struct {
-			TaskID      string `json:"taskId"`
-			Description string `json:"description"`
+			TaskID        string `json:"taskId"`
+			Kind          string `json:"kind"` // "command", "subagent" (a native one or a delegate_task child)
+			Description   string `json:"description"`
+			ChildThreadID string `json:"childThreadId"` // a subagent's own thread
 		} `json:"pendingBackgroundTasks"`
 	} `json:"thread"`
 	Messages []struct {

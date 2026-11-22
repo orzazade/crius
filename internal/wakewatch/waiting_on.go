@@ -1,8 +1,10 @@
 package wakewatch
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -508,9 +510,10 @@ func waitingOn(d Deps, procs func() ([]Proc, error), ss []Session, sesErr error,
 	return h, why, false
 }
 
-// Waiting prints, for each role named (project:role) or, with none, each role in a T3 thread whose last reply ends on
-// ⏳ and that runs no turn, one line: WAITING ON <item> (<who>) with its waiter, or why the idle alert is not held. It
-// only reads (crius-wakewatch waiting). Idle counts from the thread's last update; the park, WAIT, closed and finished
+// Waiting prints, for each role named (project:role) or, with none, each T3 builder and each other role in a T3 thread whose
+// last reply ends on ⏳ and that runs no turn, one line: WAITING ON <item> (<who>) with its waiter, or why the idle alert is
+// not held; for a builder its verdict, and what Crius would be told (or was). It only reads, and sends nothing
+// (crius-wakewatch waiting). Idle counts from the thread's last update; the park, WAIT, closed and finished
 // checks of the alert are not applied. It returns 0, or 2 when a role or a check could not be read.
 func Waiting(d Deps, out io.Writer, roles []string) int {
 	dir := filepath.Join(d.Home, "roles")
@@ -537,6 +540,18 @@ func Waiting(d Deps, out io.Writer, roles []string) int {
 		}
 	}
 	crius, _ := CriusThread(d.Home)
+	builders := readBuilders(d.Home)
+	var st state // a copy: what this run would know of each builder's stretch, never saved
+	if b, err := os.ReadFile(filepath.Join(d.Home, "state", "wakewatch.json")); err == nil {
+		err = json.Unmarshal(b, &st)
+		if err != nil {
+			fmt.Fprintln(out, "FAILED: could not read wakewatch's state (a builder's stretch counts from its thread's update time):", err)
+			code = 2
+		}
+	} else if !os.IsNotExist(err) {
+		fmt.Fprintln(out, "FAILED:", err)
+		code = 2
+	}
 	var procs []Proc
 	var procErr error
 	read := false
@@ -571,6 +586,26 @@ func Waiting(d Deps, out io.Writer, roles []string) int {
 		}
 		mark := statusMark(th.LastReply)
 		running := (th.Status == "running" || th.Active) && th.Pending == 0
+		if builders[who] && !running && !th.Settled && !finishedChild(th) {
+			since, key := st.builderSpell(who, id, th, time.Time{})
+			idle := d.Now.Sub(since)
+			v, what := builderVerdict(threadPids(ss, states, d.Home, id, r), sesErr, readProcs, d.Thread, d.Now, th)
+			says := builderSays(who, th, idle, v, what, t3Reply(th))
+			switch _, said := st.Typed[key]; {
+			case says == "":
+				says = "nothing to say now"
+			case said:
+				says = "already said in this stretch"
+			default:
+				says = "would say: " + says
+			}
+			fmt.Fprintf(out, "%s builder %s %d min (T3 thread %s, status %s): %s; %s\n", who, strings.ToUpper(v), int(idle.Minutes()), id, th.Status, what, says)
+			continue
+		}
+		if all && builders[who] {
+			fmt.Fprintf(out, "%s builder: runs a turn, or is settled or done (T3 thread %s, status %s)\n", who, id, th.Status)
+			continue
+		}
 		if all && (running || mark != "⏳" || th.Settled) {
 			continue
 		}
