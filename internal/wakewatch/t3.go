@@ -158,8 +158,9 @@ func newestThread(home, project, role string, r sessionstate.State, states []ses
 // read, or a thread t3 cannot show, is a loud "failed to look" alert of its own, said every 20 min while it lasts.
 // A thread in prompted waits on a permission prompt stuckPrompts watches: its open requests are left to that check.
 //
-// A role wakewatch-projects names as a builder (readBuilders) is judged by what runs alone (builderVerdict), whatever its
-// reply says, once per stretch (builderSpell): the marks, the 45 min and the holds above are for the other roles.
+// A role wakewatch-projects names as a builder (readBuilders) is judged, once its run has ended, by what runs
+// (builderLook.verdict), whatever its reply or a WAIT line says, once per stretch (builderSpell). Parked, closed and settled
+// ones and one on an open request are treated as above; the marks, the 45 min, the WAIT and the other holds are not for it.
 func t3Idle(d Deps, st *state, ss []Session, sesErr error, watch projects, park parked, prompted map[string]bool) [][2]string {
 	if d.Thread == nil {
 		return nil
@@ -192,20 +193,30 @@ func t3Idle(d Deps, st *state, ss []Session, sesErr error, watch projects, park 
 	var states []sessionstate.State
 	statesRead := false
 	stop := "" // why no more threads are read on this run
-	builders, seen := readBuilders(d.Home), map[string]bool{}
-	st.dropBuilders(builders)
+	builders, gone := st.knownBuilders(d.Home)
+	out = append(out, gone...)
+	seen := map[string]bool{} // the builders found
+	child := func(id string) (T3Thread, error) {
+		if stop != "" {
+			return T3Thread{}, errors.New(stop)
+		}
+		c, err := d.Thread(id)
+		stop = t3Stop(err)
+		return c, err
+	}
 	for _, f := range files {
 		project, role, _ := strings.Cut(strings.TrimSuffix(filepath.Base(f), ".json"), ".")
 		who := project + ":" + role
 		if !watch.has(project) || park.has(who, project) {
 			continue
 		}
+		builder := builders[strings.ToLower(who)]
 		failed := func(why string) {
 			out = append(out, [2]string{"t3-failed:" + who, fmt.Sprintf("the T3 thread idle check failed to look at %s · %s: %s", project, role, why)})
 		}
 		r, err := sessionstate.ReadRole(dir, project, role)
 		if err != nil {
-			seen[who] = true
+			seen[strings.ToLower(who)] = true
 			failed(err.Error())
 			continue
 		}
@@ -217,7 +228,7 @@ func t3Idle(d Deps, st *state, ss []Session, sesErr error, watch projects, park 
 		}
 		closed, closedErr := sessionstate.IsClosed(dir, project, role, r.SessionID)
 		id := newestThread(d.Home, project, role, r, states)
-		seen[who] = id != "" && id != crius || closed || closedErr != nil
+		seen[strings.ToLower(who)] = id != "" && id != crius || closed
 		if id == "" || id == crius {
 			continue
 		}
@@ -238,7 +249,7 @@ func t3Idle(d Deps, st *state, ss []Session, sesErr error, watch projects, park 
 		if err != nil {
 			failed("its bus: " + err.Error())
 			continue
-		} else if w.silent {
+		} else if w.silent && !builder { // 11-15: ms-flow's WAIT on an event would have kept it quiet 12 h
 			continue
 		}
 		if stop != "" {
@@ -254,31 +265,30 @@ func t3Idle(d Deps, st *state, ss []Session, sesErr error, watch projects, park 
 			}
 			continue
 		}
-		if th.Settled || finishedChild(th) {
+		if th.Settled || finishedChild(th) && !builder {
 			continue
 		}
 		name := fmt.Sprintf("%s · %s (T3 thread %s)", project, role, id)
 		if (th.Status == "running" || th.Active) && th.Pending == 0 || th.Pending > 0 && prompted[id] {
 			continue
 		}
-		if builders[who] {
-			after := unparked
-			if w.from.After(after) {
-				after = w.from
-			}
-			since, key := st.builderSpell(who, id, th, after)
-			if d.Now.Sub(since) <= t3IdleAfter {
+		if builder && th.Pending == 0 {
+			if notStarted[th.Status] { // an open run has no idle stretch yet
+				if n := d.Now.Sub(th.Updated); n > t3UnknownAfter {
+					out = append(out, [2]string{"t3idle:" + who + ":" + id + ":" + th.Status + ":" + th.Run, fmt.Sprintf(
+						"%s has a run %s for %d min that has not started. %s", name, th.Status, int(n.Minutes()), t3Reply(th))})
+				}
 				continue
 			}
-			v, what := builderVerdict(threadPids(ss, states, d.Home, id, r), sesErr, readProcs, func(child string) (T3Thread, error) {
-				if stop != "" {
-					return T3Thread{}, errors.New(stop)
-				}
-				c, err := d.Thread(child)
-				stop = t3Stop(err)
-				return c, err
-			}, d.Now, th)
-			if says := builderSays(name, th, d.Now.Sub(since), v, what, t3Reply(th)); says != "" {
+			sp, key := st.builderSpell(strings.ToLower(who), id, th, unparked)
+			idle := d.Now.Sub(sp.Since)
+			if idle <= t3IdleAfter {
+				continue
+			}
+			look := builderLook{sesErr: sesErr, procs: readProcs, thread: child, now: d.Now, jobs: sp.Jobs,
+				pids: func(id string) map[int]bool { return threadPids(ss, states, d.Home, id, r) }}
+			v, what := look.verdict(id, th, 0)
+			if says := builderSays(name, th, idle, v, what, t3Reply(th)); says != "" {
 				out = append(out, [2]string{key, says})
 			}
 			continue

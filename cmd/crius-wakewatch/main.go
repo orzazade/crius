@@ -254,14 +254,14 @@ func restoreFolders(b []byte) ([]string, error) {
 // procs lists every process with its parent, start and command line.
 func procs() ([]wakewatch.Proc, error) {
 	now := time.Now()
-	out, err := exec.Command("ps", "-axww", "-o", "pid=,ppid=,etime=,command=").Output()
+	out, err := exec.Command("ps", "-axww", "-o", "pid=,ppid=,etime=,time=,command=").Output()
 	if err != nil {
-		return nil, fmt.Errorf("ps -axww -o pid=,ppid=,etime=,command=: %v", err)
+		return nil, fmt.Errorf("ps -axww -o pid=,ppid=,etime=,time=,command=: %v", err)
 	}
 	return parseProcs(string(out), now)
 }
 
-// parseProcs reads ps lines of "pid ppid etime command", etime counted back from now; a line that does not read is an
+// parseProcs reads ps lines of "pid ppid etime time command" (time: the CPU time used), etime counted back from now; a line that does not read is an
 // error, never a missing process.
 func parseProcs(ps string, now time.Time) ([]wakewatch.Proc, error) {
 	var out []wakewatch.Proc
@@ -281,15 +281,39 @@ func parseProcs(ps string, now time.Time) ([]wakewatch.Proc, error) {
 		if len(f) > 2 {
 			age, err3 = etime(f[2])
 		}
-		if err := errors.Join(err1, err2, err3); err != nil {
+		var cpu time.Duration
+		var err4 error = errors.New("no time")
+		if len(f) > 3 {
+			cpu, err4 = cpuTime(f[3])
+		}
+		if err := errors.Join(err1, err2, err3, err4); err != nil {
 			return nil, fmt.Errorf("ps line %q: %v", line, err)
 		}
-		out = append(out, wakewatch.Proc{PID: pid, PPID: ppid, Start: now.Add(-age).Truncate(time.Second), Command: strings.Join(f[3:], " ")})
+		out = append(out, wakewatch.Proc{PID: pid, PPID: ppid, Start: now.Add(-age).Truncate(time.Second), CPU: cpu, Command: strings.Join(f[4:], " ")})
 	}
 	if len(out) == 0 {
 		return nil, errors.New("ps listed no process")
 	}
 	return out, nil
+}
+
+// cpuTimeRe is ps's CPU time: macOS "mmm:ss.cc" (minutes without end), Linux "[dd-]hh:mm:ss".
+var cpuTimeRe = regexp.MustCompile(`^(?:(\d{1,5})-)?(?:(\d{1,2}):)?(\d{1,7}):(\d{2})(?:\.(\d{2}))?$`)
+
+// cpuTime reads ps's CPU time.
+func cpuTime(s string) (time.Duration, error) {
+	m := cpuTimeRe.FindStringSubmatch(s)
+	if m == nil {
+		return 0, fmt.Errorf("time %q", s)
+	}
+	n := [5]time.Duration{}
+	for i, v := range m[1:] {
+		if v != "" {
+			k, _ := strconv.Atoi(v) // digits only (cpuTimeRe)
+			n[i] = time.Duration(k)
+		}
+	}
+	return ((n[0]*24+n[1])*60+n[2])*time.Minute + n[3]*time.Second + n[4]*10*time.Millisecond, nil
 }
 
 // etimeRe is ps's elapsed time, "[[d-]hh:]mm:ss" (macOS and Linux procps); etime checks the ranges.

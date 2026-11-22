@@ -148,24 +148,30 @@ func TestABuilderThatAsksIsIdleToo(t *testing.T) {
 	has(t, wantWakes(t, home, f, 1, runs(0)...), "❓", "team-wait.sh (pid 111)")
 }
 
+// usingCPU makes every process of f use 2 s of CPU between two looks, as a job that gets on does.
+func usingCPU(f *fake) *fake {
+	f.cpuStep = 2 * time.Second
+	return f
+}
+
 func TestABuilderWithItsGateRunningIsBusy(t *testing.T) {
 	for name, reply := range map[string]string{"on an hourglass": mergeReply, "on a check mark": doneReply, "on a question": "May I? ❓"} {
 		t.Run(name, func(t *testing.T) {
 			f := builderFake(40*time.Minute, "waiting", reply, []T3Task{waiterTask, gateTask}, busWaiterShell, gateShell)
-			wantWakes(t, builderHome(t), f, 0, runs(0)...)
+			wantWakes(t, builderHome(t), usingCPU(f), 0, runs(0)...)
 		})
 	}
 	t.Run("a gate T3 does not list", func(t *testing.T) {
 		f := builderFake(40*time.Minute, "completed", doneReply, []T3Task{waiterTask}, busWaiterShell, gateShell)
-		wantWakes(t, builderHome(t), f, 0, runs(0)...)
+		wantWakes(t, builderHome(t), usingCPU(f), 0, runs(0)...)
 	})
 	t.Run("a run its waiter's script started", func(t *testing.T) {
 		f := builderFake(40*time.Minute, "waiting", mergeReply, []T3Task{waiterTask}, busWaiterShell, []Proc{{PID: 115, PPID: 111, Command: "go test ./..."}})
-		wantWakes(t, builderHome(t), f, 0, runs(0)...)
+		wantWakes(t, builderHome(t), usingCPU(f), 0, runs(0)...)
 	})
 	t.Run("past 2 h", func(t *testing.T) {
 		f := builderFake(119*time.Minute, "waiting", mergeReply, []T3Task{gateTask}, gateShell)
-		has(t, wantWakes(t, builderHome(t), f, 1, runs(0)...), "heavy.ts", "pid 121", "cannot tell", "over 2 h")
+		has(t, wantWakes(t, builderHome(t), usingCPU(f), 1, runs(0)...), "heavy.ts", "pid 121", "cannot tell", "over 2 h")
 	})
 }
 

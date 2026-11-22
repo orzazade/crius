@@ -49,7 +49,8 @@ type fake struct {
 	typedErr  error
 	procs     []Proc
 	procErr   error
-	claudes   []Claude // running claude processes (paid)
+	cpuStep   time.Duration // CPU each process uses between two reads of the list
+	claudes   []Claude      // running claude processes (paid)
 	claudeErr error
 	tabs      [][2]string // title, text typed into a tab other than Crius's
 	tabErr    error
@@ -87,7 +88,12 @@ func (f *fake) deps(home string, now time.Time) Deps {
 			}
 			return f.waiters, f.waitErr
 		},
-		Procs:   func() ([]Proc, error) { return f.procs, f.procErr },
+		Procs: func() ([]Proc, error) {
+			for i := range f.procs {
+				f.procs[i].CPU += f.cpuStep
+			}
+			return f.procs, f.procErr
+		},
 		Claudes: func() ([]Claude, error) { return f.claudes, f.claudeErr },
 		Boot:    func() (time.Time, error) { return f.boot, f.bootErr },
 		Thread: func(id string) (T3Thread, error) {

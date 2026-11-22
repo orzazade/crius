@@ -780,7 +780,7 @@ func TestWaiterLogsOfAWatchDirWaiterAreEveryLogThere(t *testing.T) {
 // ps lines read into processes; a line that does not read, or an empty list, is an error (never "no waiter").
 func TestParseProcs(t *testing.T) {
 	now := time.Date(2026, 11, 19, 20, 57, 54, 0, time.Local)
-	ps, err := parseProcs("  500     1 2-03:04:05 claude --resume\n16713 16710    47:24 /bin/bash /x/team-wait.sh --role qa-backend-2\n", now)
+	ps, err := parseProcs("  500     1 2-03:04:05 1-02:03:04 claude --resume\n16713 16710    47:24   0:01.25 /bin/bash /x/team-wait.sh --role qa-backend-2\n", now)
 	if err != nil || len(ps) != 2 || ps[1].PID != 16713 || ps[1].PPID != 16710 || ps[1].Command != "/bin/bash /x/team-wait.sh --role qa-backend-2" {
 		t.Fatalf("%+v %v", ps, err)
 	}
@@ -790,7 +790,13 @@ func TestParseProcs(t *testing.T) {
 	if want := now.Add(-(2*24+3)*time.Hour - 4*time.Minute - 5*time.Second); !ps[0].Start.Equal(want) {
 		t.Errorf("start %v, want %v", ps[0].Start, want)
 	}
-	for _, bad := range []string{"", "x 1 00:01 cmd\n", "12\n", "12 1 cmd\n", "12 1 1:60 cmd\n", "12 1 2-05:06 cmd\n", "12 1 +5:00 cmd\n", "12 1 99:00 cmd\n"} {
+	if want := 26*time.Hour + 3*time.Minute + 4*time.Second; ps[0].CPU != want || ps[1].CPU != 1250*time.Millisecond {
+		t.Errorf("CPU %v and %v, want %v (Linux) and 1.25s (macOS)", ps[0].CPU, ps[1].CPU, want)
+	}
+	if long, err := parseProcs("9 1 00:01 1234:05.50 x\n", now); err != nil || long[0].CPU != 1234*time.Minute+5500*time.Millisecond {
+		t.Errorf("macOS minutes without end: %v %v", long, err)
+	}
+	for _, bad := range []string{"", "x 1 00:01 0:00.00 cmd\n", "12\n", "12 1 00:01 cmd\n", "12 1 00:01 5 cmd\n", "12 1 cmd\n", "12 1 1:60 0:00.00 cmd\n", "12 1 2-05:06 0:00.00 cmd\n", "12 1 +5:00 0:00.00 cmd\n", "12 1 99:00 0:00.00 cmd\n"} {
 		if _, err := parseProcs(bad, now); err == nil {
 			t.Errorf("%q: no error", bad)
 		}

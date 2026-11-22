@@ -540,7 +540,11 @@ func Waiting(d Deps, out io.Writer, roles []string) int {
 		}
 	}
 	crius, _ := CriusThread(d.Home)
-	builders := readBuilders(d.Home)
+	builders, err := readBuilders(d.Home)
+	if err != nil && !os.IsNotExist(err) {
+		fmt.Fprintln(out, "FAILED: could not read which roles are builders:", err)
+		code = 2
+	}
 	var st state // a copy: what this run would know of each builder's stretch, never saved
 	if b, err := os.ReadFile(filepath.Join(d.Home, "state", "wakewatch.json")); err == nil {
 		err = json.Unmarshal(b, &st)
@@ -586,10 +590,12 @@ func Waiting(d Deps, out io.Writer, roles []string) int {
 		}
 		mark := statusMark(th.LastReply)
 		running := (th.Status == "running" || th.Active) && th.Pending == 0
-		if builders[who] && !running && !th.Settled && !finishedChild(th) {
-			since, key := st.builderSpell(who, id, th, time.Time{})
-			idle := d.Now.Sub(since)
-			v, what := builderVerdict(threadPids(ss, states, d.Home, id, r), sesErr, readProcs, d.Thread, d.Now, th)
+		if builders[who] && !running && !th.Settled && th.Pending == 0 && !notStarted[th.Status] {
+			sp, key := st.builderSpell(who, id, th, time.Time{})
+			idle := d.Now.Sub(sp.Since)
+			look := builderLook{sesErr: sesErr, procs: readProcs, thread: d.Thread, now: d.Now, jobs: sp.Jobs,
+				pids: func(id string) map[int]bool { return threadPids(ss, states, d.Home, id, r) }}
+			v, what := look.verdict(id, th, 0)
 			says := builderSays(who, th, idle, v, what, t3Reply(th))
 			switch _, said := st.Typed[key]; {
 			case says == "":
@@ -603,7 +609,7 @@ func Waiting(d Deps, out io.Writer, roles []string) int {
 			continue
 		}
 		if all && builders[who] {
-			fmt.Fprintf(out, "%s builder: runs a turn, or is settled or done (T3 thread %s, status %s)\n", who, id, th.Status)
+			fmt.Fprintf(out, "%s builder: runs a turn, waits on a request, or is settled (T3 thread %s, status %s, %d open requests)\n", who, id, th.Status, th.Pending)
 			continue
 		}
 		if all && (running || mark != "⏳" || th.Settled) {

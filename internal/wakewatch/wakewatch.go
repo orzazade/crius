@@ -139,6 +139,7 @@ type Proc struct {
 	PID, PPID int
 	Command   string
 	Start     time.Time // when it started, to the second; zero when not known
+	CPU       time.Duration
 }
 
 // Workspace is one cmux workspace: Named is false while it shows a default title, and Color is "" when none is set.
@@ -182,7 +183,9 @@ type state struct {
 	Signin      map[string]string    // sign-in alert key (account and state) -> the day it was raised (signin.go)
 	SigninMiss  map[string]int       // read (status:<account>, login:<account>, spool:<host>) -> runs in a row it failed (signin.go)
 	LookMiss    map[string]int       // failed-look alert key -> runs in a row it was raised (looks.go)
-	T3Spells    map[string]t3Spell   // project:role of each T3 builder -> its idle stretch (t3builder.go)
+	T3Spells    map[string]t3Spell   // "<project:role> <thread>" of each T3 builder -> its idle stretch (t3builder.go)
+	T3Builders  []string             // the builders last named (knownBuilders)
+	T3NoNames   int                  // runs in a row the list named none though it did before
 	Twins       map[string]int       // role and pids of a role with two live claudes -> runs in a row seen (twins.go)
 }
 
@@ -241,7 +244,7 @@ func Run(d Deps) error {
 	for k, at := range st.Typed {
 		// a dead role's line stays raised as long as the role is dead, so its key goes only when the alert does (review P2-1);
 		// so does a role's pair of live claudes
-		// and a builder's idle stretch, whose key builderSpell ends
+		// and a builder's idle stretch, whose key builderSpell and knownBuilders end
 		if d.Now.Sub(at) > window+resend && !strings.HasPrefix(k, "dead:") && !strings.HasPrefix(k, "twins:") && !strings.HasPrefix(k, builderKeys) {
 			delete(st.Typed, k)
 		}
@@ -335,6 +338,9 @@ func Run(d Deps) error {
 		if err != nil {
 			if err := watchdog.Post(d.Home, d.Now, text); err != nil {
 				return err
+			}
+			if strings.HasPrefix(a[0], builderKeys) { // the bus line said it: a stretch is said once
+				st.Typed[a[0]] = d.Now
 			}
 		}
 		st.Alerted[a[0]] = d.Now
