@@ -100,17 +100,15 @@ print(hashlib.sha256(u.encode()).hexdigest()[:12] if u else '')" ` + dir
 // Account is one Max config dir: Host "" is the Mac, else a machine of Remotes ("legion", "thinkpad"); Dir is written as that machine's shell reads it.
 type Account struct{ Name, Host, Dir string }
 
-// Accounts are the Max config dirs. Never ~/.claude-work: the enterprise account is never run (owner 11-07).
+// Accounts are the Max config dirs. max2 is gone for good (owner 11-23). Never ~/.claude-work: the enterprise account is never run (owner 11-07).
 var Accounts = []Account{
 	{"personal", "", "~/.claude"},
-	{"max2", "", "~/.claude-max2-personal"},
 	{"work-max", "", "~/.claude-work-max"},
 	{"work-max3", "", "~/.claude-work-max3"},
 	{"legion-max1", "legion", "~/.claude-work-max1"},
-	{"legion-max2", "legion", "~/.claude-work-max2"},
 	{"legion-max3", "legion", "~/.claude-work-max3"},
 	{"thinkpad-claude", "thinkpad", "~/.claude"},
-	{"thinkpad-claude-max2", "thinkpad", "~/.claude-max2"},
+	{"thinkpad-claude-max3", "thinkpad", "~/.claude-max3"},
 }
 
 // Shell gives the command line that runs `claude auth <sub>` for the account on its machine, as a shell on that machine

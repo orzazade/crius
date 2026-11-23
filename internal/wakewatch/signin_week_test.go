@@ -13,12 +13,22 @@ import (
 	"github.com/orzazade/crius/internal/quota"
 )
 
-// fixtureLogins are the logins each config dir holds as of 11-16: ThinkPad ~/.claude is max1's login (d94b…) and
-// ThinkPad ~/.claude-max2 is max3's (c07a…), whatever its folder name says.
+// fixtureLogins are the logins each config dir holds: ThinkPad ~/.claude is max1's login (d94b…) and ThinkPad
+// ~/.claude-max3 is max3's (c07a…). "third" and "legion-third" are test-only rows of a third login (0f3b…), added by
+// withThirdLogin, for the cases that need a login with no fresh week sample.
 var fixtureLogins = map[string]string{
-	"personal": "d94b4cce88d8", "work-max": "d94b4cce88d8", "max2": "0f3b07b4c7f2", "work-max3": "c07a2a080f26",
-	"legion-max1": "d94b4cce88d8", "legion-max2": "0f3b07b4c7f2", "legion-max3": "c07a2a080f26",
-	"thinkpad-claude": "d94b4cce88d8", "thinkpad-claude-max2": "c07a2a080f26",
+	"personal": "d94b4cce88d8", "work-max": "d94b4cce88d8", "work-max3": "c07a2a080f26",
+	"legion-max1": "d94b4cce88d8", "legion-max3": "c07a2a080f26",
+	"thinkpad-claude": "d94b4cce88d8", "thinkpad-claude-max3": "c07a2a080f26",
+	"third": "0f3b07b4c7f2", "legion-third": "0f3b07b4c7f2",
+}
+
+// withThirdLogin watches two more config dirs, a Mac one and a Legion one, that hold a third login, until the test ends.
+func withThirdLogin(t *testing.T) {
+	t.Helper()
+	old := Accounts
+	Accounts = append(append([]Account{}, old...), Account{"third", "", "~/.claude-third"}, Account{"legion-third", "legion", "~/.claude-third"})
+	t.Cleanup(func() { Accounts = old })
 }
 
 func logins(by map[string]string) func(Account) (string, error) {
@@ -67,6 +77,7 @@ func rowOf(t *testing.T, w SigninWatch, name string) SigninRow {
 }
 
 func TestWeekOfEachLoginIsReadFromEveryMachinesSpool(t *testing.T) {
+	withThirdLogin(t)
 	w := weekWatch(t, t.TempDir(), nil, nil)
 	reset := time.Date(2026, 11, 18, 22, 0, 0, 0, time.UTC)
 	for _, name := range []string{"personal", "work-max", "legion-max1", "thinkpad-claude"} {
@@ -75,12 +86,14 @@ func TestWeekOfEachLoginIsReadFromEveryMachinesSpool(t *testing.T) {
 			t.Fatalf("%s: week %s %v%% reset %v (%s)", name, r.Week, r.WeekPct, r.WeekReset, r.WeekWhy)
 		}
 	}
-	if r := rowOf(t, w, "thinkpad-claude-max2"); r.Week != WeekOK || r.WeekPct != 34 {
-		t.Fatalf("thinkpad-claude-max2: %s %v%% (%s)", r.Week, r.WeekPct, r.WeekWhy)
+	if r := rowOf(t, w, "thinkpad-claude-max3"); r.Week != WeekOK || r.WeekPct != 34 {
+		t.Fatalf("thinkpad-claude-max3: %s %v%% (%s)", r.Week, r.WeekPct, r.WeekWhy)
 	}
-	// max2 was last measured 12 h ago at 40%; its heartbeats since repeat that reading: not known, never OK
-	if r := rowOf(t, w, "max2"); r.Week != WeekUnknown || !strings.Contains(r.WeekWhy, "last measured 12h ago at 40%") {
-		t.Fatalf("max2: %s (%s)", r.Week, r.WeekWhy)
+	// the third login was last measured 12 h ago at 40%; its heartbeats since repeat that reading: not known, never OK
+	for _, name := range []string{"third", "legion-third"} {
+		if r := rowOf(t, w, name); r.Week != WeekUnknown || !strings.Contains(r.WeekWhy, "last measured 12h ago at 40%") {
+			t.Fatalf("%s: %s (%s)", name, r.Week, r.WeekWhy)
+		}
 	}
 }
 
@@ -100,12 +113,13 @@ func runWeek(t *testing.T, home string, now time.Time, f *fake) []string {
 }
 
 func TestWeekLimitWakesCriusOncePerLoginStateAndDayWithTheReset(t *testing.T) {
+	withThirdLogin(t)
 	home := setup(t, nil)
 	f := &fake{login: logins(nil), spool: spools(t, nil)}
 	got := runWeek(t, home, signinNow, f)
 	all := strings.Join(got, "\n")
 	if len(got) != 2 || strings.Count(all, "week LIMIT") != 1 || strings.Count(all, "week UNKNOWN") != 1 {
-		t.Fatalf("want one LIMIT (max1) and one UNKNOWN (max2): %q", got)
+		t.Fatalf("want one LIMIT (max1) and one UNKNOWN (the third login): %q", got)
 	}
 	for _, w := range []string{"login d94b4cce88d8", "100%", "until 2026-11-18 22:00", "Mac ~/.claude", "thinkpad ~/.claude", "legion ~/.claude-work-max1"} {
 		if !strings.Contains(all, w) {
@@ -191,11 +205,12 @@ func TestWeekSpoolThatCannotBeReadIsLoud(t *testing.T) {
 }
 
 func TestWeekLoginThatCannotBeReadIsUnknown(t *testing.T) {
-	w := weekWatch(t, t.TempDir(), map[string]string{"legion-max1": "err:no answer in 20s", "legion-max2": "not-a-hash"}, nil)
+	withThirdLogin(t)
+	w := weekWatch(t, t.TempDir(), map[string]string{"legion-max1": "err:no answer in 20s", "legion-third": "not-a-hash"}, nil)
 	if r := rowOf(t, w, "legion-max1"); r.Week != WeekUnknown || !strings.Contains(r.WeekWhy, "no answer in 20s") {
 		t.Fatalf("%s (%s)", r.Week, r.WeekWhy)
 	}
-	if r := rowOf(t, w, "legion-max2"); r.Week != WeekUnknown || !strings.Contains(r.WeekWhy, "not a login") {
+	if r := rowOf(t, w, "legion-third"); r.Week != WeekUnknown || !strings.Contains(r.WeekWhy, "not a login") {
 		t.Fatalf("%s (%s)", r.Week, r.WeekWhy)
 	}
 	if r := rowOf(t, w, "legion-max3"); r.Week != WeekOK {
@@ -228,8 +243,9 @@ func TestSigninCoversTheThinkPad(t *testing.T) {
 }
 
 func TestSigninTableShowsTheWeekAndTheThinkPad(t *testing.T) {
+	withThirdLogin(t)
 	out := SigninTable(weekWatch(t, t.TempDir(), nil, nil), time.UTC)
-	for _, w := range []string{"LOGIN", "WEEK", "RESETS", "100% LIMIT", "2026-11-18 22:00", "34% OK", "UNKNOWN", "thinkpad-claude-max2", "thinkpad ~/.claude-max2", "login c07a2a080f26"} {
+	for _, w := range []string{"LOGIN", "WEEK", "RESETS", "100% LIMIT", "2026-11-18 22:00", "34% OK", "UNKNOWN", "thinkpad-claude-max3", "thinkpad ~/.claude-max3", "login c07a2a080f26"} {
 		if !strings.Contains(out, w) {
 			t.Fatalf("no %q in\n%s", w, out)
 		}
@@ -306,7 +322,7 @@ func thinkpadDown(t *testing.T, down bool) *fake {
 		return &fake{login: logins(nil), spool: spools(t, nil)}
 	}
 	const blip = "err:ssh: connect to host 100.117.3.61 port 22: Operation timed out"
-	by := map[string]string{"thinkpad-claude": blip, "thinkpad-claude-max2": blip}
+	by := map[string]string{"thinkpad-claude": blip, "thinkpad-claude-max3": blip}
 	return &fake{signin: reads(t, by), login: logins(by), spool: spools(t, map[string]string{"thinkpad": blip})}
 }
 
@@ -327,9 +343,10 @@ func runAll(t *testing.T, home string, now time.Time, f *fake) []string {
 // review 11-17: one ssh blip to a machine fails its spool and login reads too; it must wake nobody, like a failed status
 // read. Two failed runs in a row wake for each.
 func TestSigninReadBlipOnAMachineWakesNobodyTwoInARowWake(t *testing.T) {
+	withThirdLogin(t)
 	home := setup(t, nil)
 	if got := runAll(t, home, signinNow, thinkpadDown(t, false)); len(got) != 2 {
-		t.Fatalf("baseline, want max1's LIMIT and max2's UNKNOWN: %q", got)
+		t.Fatalf("baseline, want max1's LIMIT and the third login's UNKNOWN: %q", got)
 	}
 	for i, down := range []bool{true, false, true} {
 		if got := runAll(t, home, signinNow.Add(time.Duration(i+1)*5*time.Minute), thinkpadDown(t, down)); len(got) != 0 {
@@ -337,8 +354,8 @@ func TestSigninReadBlipOnAMachineWakesNobodyTwoInARowWake(t *testing.T) {
 		}
 	}
 	all := strings.Join(runAll(t, home, signinNow.Add(20*time.Minute), thinkpadDown(t, true)), "\n")
-	for _, w := range []string{"sign-in UNREAD thinkpad-claude ", "sign-in UNREAD thinkpad-claude-max2", "week samples UNREAD thinkpad",
-		"week UNKNOWN thinkpad-claude ", "week UNKNOWN thinkpad-claude-max2", "(2 reads in a row)"} {
+	for _, w := range []string{"sign-in UNREAD thinkpad-claude ", "sign-in UNREAD thinkpad-claude-max3", "week samples UNREAD thinkpad",
+		"week UNKNOWN thinkpad-claude ", "week UNKNOWN thinkpad-claude-max3", "(2 reads in a row)"} {
 		if !strings.Contains(all, w) {
 			t.Fatalf("second failed run in a row, no %q in %q", w, all)
 		}

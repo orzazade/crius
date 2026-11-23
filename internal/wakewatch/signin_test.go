@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/orzazade/crius/internal/quota"
 )
 
 // signinNow is the fake clock of the sign-in tests: the fixtures' end dates are set against it.
@@ -48,17 +50,17 @@ func TestSigninStateOfEachStatus(t *testing.T) {
 		{"not-json.txt", SigninUnread, "not JSON"},
 		{"err:ssh: connect to host 100.109.19.101 port 22: Operation timed out", SigninUnread, "timed out"},
 	} {
-		rows := Signins(SigninReads{Status: reads(t, map[string]string{"max2": c.file}), Login: logins(nil), Spool: spools(t, nil)}, t.TempDir(), signinNow).Rows
+		rows := Signins(SigninReads{Status: reads(t, map[string]string{"work-max3": c.file}), Login: logins(nil), Spool: spools(t, nil)}, t.TempDir(), signinNow).Rows
 		var got *SigninRow
 		for i := range rows {
-			if rows[i].Name == "max2" {
+			if rows[i].Name == "work-max3" {
 				got = &rows[i]
 			} else if rows[i].State != SigninOK {
 				t.Fatalf("%s: %s is %s, want OK", c.file, rows[i].Name, rows[i].State)
 			}
 		}
 		if got == nil {
-			t.Fatal("no max2 row")
+			t.Fatal("no work-max3 row")
 		}
 		if got.State != c.state || !strings.Contains(got.Why, c.why) {
 			t.Fatalf("%s: state %s why %q, want %s with %q", c.file, got.State, got.Why, c.state, c.why)
@@ -68,9 +70,9 @@ func TestSigninStateOfEachStatus(t *testing.T) {
 
 func TestSigninAccountsAreTheMaxDirsNeverTheEnterpriseOne(t *testing.T) {
 	want := map[string]bool{
-		":~/.claude": true, ":~/.claude-max2-personal": true, ":~/.claude-work-max": true, ":~/.claude-work-max3": true,
-		"legion:~/.claude-work-max1": true, "legion:~/.claude-work-max2": true, "legion:~/.claude-work-max3": true,
-		"thinkpad:~/.claude": true, "thinkpad:~/.claude-max2": true,
+		":~/.claude": true, ":~/.claude-work-max": true, ":~/.claude-work-max3": true,
+		"legion:~/.claude-work-max1": true, "legion:~/.claude-work-max3": true,
+		"thinkpad:~/.claude": true, "thinkpad:~/.claude-max3": true,
 	}
 	names := map[string]bool{}
 	for _, a := range Accounts {
@@ -95,9 +97,9 @@ func TestSigninRenewCommandIsExact(t *testing.T) {
 	seen := 0
 	for _, a := range Accounts {
 		switch a.Name {
-		case "max2":
+		case "work-max3":
 			seen++
-			if got := a.Renew(); got != "CLAUDE_CONFIG_DIR=~/.claude-max2-personal ~/.local/bin/claude auth login" {
+			if got := a.Renew(); got != "CLAUDE_CONFIG_DIR=~/.claude-work-max3 ~/.local/bin/claude auth login" {
 				t.Fatal(got)
 			}
 		case "legion-max1":
@@ -132,11 +134,11 @@ func runSignin(t *testing.T, home string, now time.Time, by map[string]string) [
 
 func TestSigninWarnsOncePerAccountPerDayWithTheRenewCommand(t *testing.T) {
 	home := setup(t, nil)
-	soon := map[string]string{"max2": "ends-soon.json"}
+	soon := map[string]string{"work-max3": "ends-soon.json"}
 	got := runSignin(t, home, signinNow, soon)
-	if len(got) != 1 || !strings.Contains(got[0], "WARN") || !strings.Contains(got[0], "max2") ||
+	if len(got) != 1 || !strings.Contains(got[0], "WARN") || !strings.Contains(got[0], "work-max3") ||
 		!strings.Contains(got[0], "2026-11-19") ||
-		!strings.Contains(got[0], "CLAUDE_CONFIG_DIR=~/.claude-max2-personal ~/.local/bin/claude auth login") {
+		!strings.Contains(got[0], "CLAUDE_CONFIG_DIR=~/.claude-work-max3 ~/.local/bin/claude auth login") {
 		t.Fatalf("first run: %q", got)
 	}
 	// the 5 min runs after it, past the 20 min resend, say nothing more that day
@@ -152,18 +154,19 @@ func TestSigninWarnsOncePerAccountPerDayWithTheRenewCommand(t *testing.T) {
 
 func TestSigninEndedSameDayAsAWarnAlertsAgain(t *testing.T) {
 	home := setup(t, nil)
-	if got := runSignin(t, home, signinNow, map[string]string{"max2": "ends-soon.json"}); len(got) != 1 {
+	if got := runSignin(t, home, signinNow, map[string]string{"work-max3": "ends-soon.json"}); len(got) != 1 {
 		t.Fatal(got)
 	}
-	got := runSignin(t, home, signinNow.Add(time.Hour), map[string]string{"max2": "signed-out.json"})
+	got := runSignin(t, home, signinNow.Add(time.Hour), map[string]string{"work-max3": "signed-out.json"})
 	if len(got) != 1 || !strings.Contains(got[0], "EXPIRED") || !strings.Contains(got[0], "auth login") {
 		t.Fatal(got)
 	}
 }
 
 func TestSigninCouldNotReadIsLoudAndOncePerDay(t *testing.T) {
+	withThirdLogin(t)
 	home := setup(t, nil)
-	down := map[string]string{"legion-max1": "err:ssh: connect timed out", "legion-max2": "not-json.txt", "legion-max3": "no-end.json"}
+	down := map[string]string{"legion-max1": "err:ssh: connect timed out", "legion-third": "not-json.txt", "legion-max3": "no-end.json"}
 	// UNKNOWN wakes at once; a failed read wakes on the second run in a row
 	first := runSignin(t, home, signinNow, down)
 	if len(first) != 1 || !strings.Contains(first[0], "UNKNOWN legion-max3") {
@@ -174,7 +177,7 @@ func TestSigninCouldNotReadIsLoudAndOncePerDay(t *testing.T) {
 		t.Fatalf("want 3 alerts: %q", got)
 	}
 	all := strings.Join(got, "\n")
-	for _, w := range []string{"UNREAD legion-max1", "could not read", "connect timed out", "(2 reads in a row)", "UNREAD legion-max2", "UNKNOWN legion-max3", "no loginExpiresAt"} {
+	for _, w := range []string{"UNREAD legion-max1", "could not read", "connect timed out", "(2 reads in a row)", "UNREAD legion-third", "UNKNOWN legion-max3", "no loginExpiresAt"} {
 		if !strings.Contains(all, w) {
 			t.Fatalf("no %q in %q", w, all)
 		}
@@ -192,8 +195,8 @@ func TestSigninAllFineSaysNothing(t *testing.T) {
 }
 
 func TestSigninTableShowsEachAccount(t *testing.T) {
-	out := SigninTable(Signins(SigninReads{Status: reads(t, map[string]string{"max2": "ends-soon.json", "legion-max3": "err:no route"}), Login: logins(nil), Spool: spools(t, nil)}, t.TempDir(), signinNow), time.UTC)
-	for _, w := range []string{"max2", "2026-11-19 23:00", "WARN", "personal", "2026-12-11 11:03", "OK", "legion-max3", "UNREAD", "no route", "25d 11h left; WARN from 2026-12-07 11:03"} {
+	out := SigninTable(Signins(SigninReads{Status: reads(t, map[string]string{"work-max3": "ends-soon.json", "legion-max3": "err:no route"}), Login: logins(nil), Spool: spools(t, nil)}, t.TempDir(), signinNow), time.UTC)
+	for _, w := range []string{"work-max3", "2026-11-19 23:00", "WARN", "personal", "2026-12-11 11:03", "OK", "legion-max3", "UNREAD", "no route", "25d 11h left; WARN from 2026-12-07 11:03"} {
 		if !strings.Contains(out, w) {
 			t.Fatalf("no %q in\n%s", w, out)
 		}
@@ -310,5 +313,47 @@ func TestRemoteClaudeDanglingLinkSaysWhereItLooked(t *testing.T) {
 	}
 	if _, stderr, code := runRemote(t, remoteAccount(t), home); code != ClaudeMissing || !strings.Contains(stderr, "claude not found at") {
 		t.Fatalf("exit %d, stderr %q", code, stderr)
+	}
+}
+
+// 11-24: max2 left ~/.crius/accounts.toml on 11-23 but stayed in Accounts, so its dead folder woke Crius every night.
+// The Mac rows of Accounts must be exactly the folders of the Max rows of this machine's accounts.toml. Skipped where there is none (CI).
+func TestSigninMacAccountsAreTheFoldersOfAccountsToml(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	crius := filepath.Join(home, ".crius")
+	if _, err := os.Stat(filepath.Join(crius, "accounts.toml")); errors.Is(err, os.ErrNotExist) {
+		t.Skip("no ~/.crius/accounts.toml on this machine")
+	}
+	as, err := quota.LoadAccounts(crius)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inToml := map[string]bool{}
+	for _, a := range as.Rows {
+		if a.Plan != "max" { // the enterprise account is never watched (owner 11-07)
+			continue
+		}
+		for _, d := range a.Dirs {
+			inToml[filepath.Clean(d)] = true
+		}
+	}
+	watched := map[string]bool{}
+	for _, a := range Accounts {
+		if a.Host != "" {
+			continue
+		}
+		d := filepath.Join(home, strings.TrimPrefix(a.Dir, "~/"))
+		watched[d] = true
+		if !inToml[d] {
+			t.Errorf("Accounts watches %s (%s), which no row of accounts.toml names", a.Dir, a.Name)
+		}
+	}
+	for d := range inToml {
+		if !watched[d] {
+			t.Errorf("accounts.toml names %s, which Accounts does not watch on the Mac", d)
+		}
 	}
 }
