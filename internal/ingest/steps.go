@@ -182,6 +182,7 @@ var (
 	reEnv     = regexp.MustCompile(`^env(?:\s+|$)`)
 	reAssign  = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_.]*=\S*(?:\s+|$)`) // VAR=value: a value may be a credential
 	reSha     = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
+	reScratch = regexp.MustCompile(`^.*/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/scratchpad/(.+)$`)
 )
 
 // unwrap takes off the wrappers that run a command: sh -c, timeout, the perl alarm, cd X &&, export X;, env and VAR=v.
@@ -205,9 +206,10 @@ func unwrap(s string) string {
 
 // stepKind is a command less what changes from run to run of one step: shell wrappers, cd into a worktree, timeouts,
 // variable settings (a value may be a credential), output redirection and pipes, quiet and build flags, shas and the
-// folders of absolute paths. A chain (a && b; c) keeps every command but cd, export and echo: a step that adds a command
-// is another step. A --filter stays with its expression (unquoted): each test set is its own step, and the whole project
-// another (one kind for every filter flagged 7 false changes on the Legion log of 11-21). "" is no step (only settings).
+// folders of absolute paths (a scratchpad script keeps its folders below scratchpad/, see pathKey). A chain (a && b; c)
+// keeps every command but cd, export and echo: a step that adds a command is another step. A --filter stays with its
+// expression (unquoted): each test set is its own step, and the whole project another (one kind for every filter flagged
+// 7 false changes on the Legion log of 11-21). "" is no step (only settings).
 func stepKind(cmd string) string {
 	f := strings.Fields(unwrap(cmd))
 	var segs [][]string
@@ -266,7 +268,7 @@ func normCmd(f []string) string {
 		case w == "--nologo" || strings.HasPrefix(w, "-p:") || strings.HasPrefix(w, "-clp:") || strings.HasPrefix(w, "-v:") ||
 			strings.HasPrefix(w, "--verbosity"):
 			continue
-		case w == "-v" && i+1 < len(f):
+		case w == "-v" && i+1 < len(f) && !isScript(out): // an interpreter's -v (bash -v) takes no value
 			i++
 			continue
 		case reAssign.MatchString(w):
@@ -274,7 +276,7 @@ func normCmd(f []string) string {
 		case reSha.MatchString(w) && strings.ContainsAny(w, "0123456789") && strings.ContainsAny(w, "abcdef"):
 			continue
 		case strings.HasPrefix(w, "/") || strings.HasPrefix(w, "~/") || strings.HasPrefix(w, "$HOME/"):
-			w = filepath.Base(w)
+			w = pathKey(w, isScript(out))
 		case strings.HasSuffix(w, ".csproj") && strings.Contains(w, "/"):
 			// tests/X/X.csproj is the project folder tests/X
 			if d := filepath.Dir(w); strings.TrimSuffix(filepath.Base(w), ".csproj") == filepath.Base(d) {
@@ -284,6 +286,43 @@ func normCmd(f []string) string {
 		out = append(out, w)
 	}
 	return strings.Join(out, " ")
+}
+
+// pathKey is an absolute path as a step sees it. The script a command runs (script: see isScript), when it lies in a
+// Claude session's scratchpad (<uuid>/scratchpad/), is its path below scratchpad/: a session writes its scripts by hand,
+// one folder per task, so the name alone made nine run.sh scripts one step (11-23: "bash run.sh" 7 -> 19 min, a false
+// NEED); the session id changes each session. Any other path is its name: its folders are a worktree, a job (the AXI gate
+// writes one suite script into each job's folder, 142 folders for one suite) or a copy of the repo (scratchpad/<x>.noindex).
+func pathKey(p string, script bool) string {
+	if m := reScratch.FindStringSubmatch(p); script && m != nil {
+		return "scratchpad/" + m[1]
+	}
+	return filepath.Base(p)
+}
+
+// interpreters run the script named after them (and their dash flags; bun and deno also after run or test).
+var interpreters = map[string]bool{"bash": true, "sh": true, "zsh": true, "bun": true, "node": true, "deno": true,
+	"python": true, "python3": true, "perl": true, "ruby": true}
+
+// isScript is whether the next word of a command whose words so far are out is the script it runs: its first word, or the
+// first after an interpreter and its dash flags (not a flag's value: bash -o pipefail x.sh is not seen as running x.sh).
+func isScript(out []string) bool {
+	if len(out) == 0 {
+		return true
+	}
+	if !interpreters[out[0]] {
+		return false
+	}
+	rest := out[1:]
+	if (out[0] == "bun" || out[0] == "deno") && len(rest) > 0 && (rest[0] == "run" || rest[0] == "test") {
+		rest = rest[1:]
+	}
+	for _, w := range rest {
+		if !strings.HasPrefix(w, "-") {
+			return false
+		}
+	}
+	return true
 }
 
 func median(xs []int) float64 {

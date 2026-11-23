@@ -275,6 +275,53 @@ func TestStepKind(t *testing.T) {
 	}
 }
 
+// Two scratchpad scripts with one name in different folders are two steps (11-23: nine scratchpad run.sh scripts read as
+// one step "bash run.sh", 7 -> 19 min, a false NEED to AXI api-split). A scratchpad script is its path below scratchpad/,
+// whatever the session id before it. A script outside a scratchpad stays its name: the AXI gate writes one suite script
+// into each job's folder (qa/jobs/<job>/s-all-X.sh, 142 folders for one suite), and a worktree's folder changes per run.
+func TestAScratchpadScriptStepKeepsItsFolder(t *testing.T) {
+	const pad = "/private/tmp/claude-501/-Users-o-Projects-Appxite-AXI-first-order/"
+	poll := stepKind("bash " + pad + "0082c3a7-7da6-4908-a3c5-32f00f4b01ee/scratchpad/pollstress/run.sh")
+	cancel := stepKind("bash " + pad + "0082c3a7-7da6-4908-a3c5-32f00f4b01ee/scratchpad/cancelstress/run.sh")
+	if poll == cancel {
+		t.Errorf("pollstress/run.sh and cancelstress/run.sh are one step %q", poll)
+	}
+	for _, same := range [][2]string{
+		{"bash " + pad + "0082c3a7-7da6-4908-a3c5-32f00f4b01ee/scratchpad/pollstress/run.sh",
+			"timeout 900 bash " + pad + "bf1c14bd-c38c-4271-a5e8-42581da0d905/scratchpad/pollstress/run.sh"},
+		{"bash " + pad + "0082c3a7-7da6-4908-a3c5-32f00f4b01ee/scratchpad/full-run.sh build",
+			"bash /tmp/claude-1000/-Users-o-Projects-Appxite-AXI-first-order/bf1c14bd-c38c-4271-a5e8-42581da0d905/scratchpad/full-run.sh build"},
+		{"bash /Users/o/Projects/Appxite/AXI/first-order/docs/build/qa/jobs/g144/s-all-Axi.Architecture.Tests.sh",
+			"bash /Users/o/Projects/Appxite/AXI/first-order/docs/build/qa/jobs/q2-gaps2/s-all-Axi.Architecture.Tests.sh"},
+		{"bash /Users/o/Projects/x/wt/b2-b155/run.sh", "bash /Users/o/Projects/x/wt/b2-b160/run.sh"},
+		// a scratchpad path that is not the script run is a copy of the repo: its name, as before (review P2)
+		{"dotnet build " + pad + "0082c3a7-7da6-4908-a3c5-32f00f4b01ee/scratchpad/o15m5.noindex/Axi.FlowKit.slnx",
+			"dotnet build " + pad + "bf1c14bd-c38c-4271-a5e8-42581da0d905/scratchpad/f5f.noindex/Axi.FlowKit.slnx"},
+		{"bash /x/gate.sh " + pad + "0082c3a7-7da6-4908-a3c5-32f00f4b01ee/scratchpad/a/in.json",
+			"bash /x/gate.sh " + pad + "0082c3a7-7da6-4908-a3c5-32f00f4b01ee/scratchpad/b/in.json"},
+	} {
+		if a, b := stepKind(same[0]), stepKind(same[1]); a != b {
+			t.Errorf("one script read as two steps: %q and %q", a, b)
+		}
+	}
+	for in, want := range map[string]string{
+		"bash " + pad + "0082c3a7-7da6-4908-a3c5-32f00f4b01ee/scratchpad/pollstress/run.sh":         "bash scratchpad/pollstress/run.sh",
+		"bash " + pad + "0082c3a7-7da6-4908-a3c5-32f00f4b01ee/scratchpad/full-run.sh build":         "bash scratchpad/full-run.sh build",
+		"bash /Users/o/Projects/Appxite/AXI/first-order/docs/build/merge.noindex/full-run.sh build": "bash full-run.sh build",
+		"bash /x/scratchpad/run.sh": "bash run.sh",
+		"bash -v " + pad + "0082c3a7-7da6-4908-a3c5-32f00f4b01ee/scratchpad/pollstress/run.sh":      "bash -v scratchpad/pollstress/run.sh",
+		"bun run " + pad + "0082c3a7-7da6-4908-a3c5-32f00f4b01ee/scratchpad/a/index.ts":             "bun run scratchpad/a/index.ts",
+		"deno test -A " + pad + "0082c3a7-7da6-4908-a3c5-32f00f4b01ee/scratchpad/a/x.test.ts":       "deno test -A scratchpad/a/x.test.ts",
+		"docker run -v /x:/y " + pad + "0082c3a7-7da6-4908-a3c5-32f00f4b01ee/scratchpad/a/run.sh":   "docker run run.sh",
+		"/bin/bash -e " + pad + "0082c3a7-7da6-4908-a3c5-32f00f4b01ee/scratchpad/pollstress/run.sh": "bash -e scratchpad/pollstress/run.sh",
+		pad + "0082c3a7-7da6-4908-a3c5-32f00f4b01ee/scratchpad/pollstress/run.sh x":                 "scratchpad/pollstress/run.sh x",
+	} {
+		if got := stepKind(in); got != want {
+			t.Errorf("stepKind(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 // Two filtered runs with different test sets are two steps: a long filter after many short ones is no change (one kind
 // for every filter flagged 7 false changes on the Legion log of 11-21).
 func TestDifferentFiltersAreDifferentSteps(t *testing.T) {
