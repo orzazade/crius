@@ -335,7 +335,7 @@ func TestClaudeStartsThroughAitchWithTheRoleModelAndName(t *testing.T) {
 		}
 		ns := f.called("new-surface")[0]
 		want := "--command aitch launch claude -- --model " + model +
-			` --permission-mode bypassPermissions --settings '{"autoCompactWindow":300000}' -n 'quotes · ` + role + `'`
+			` --permission-mode bypassPermissions --settings '{"autoCompactWindow":500000}' -n 'quotes · ` + role + `'`
 		if !strings.HasSuffix(ns, want+exitLine) {
 			t.Fatalf("%s:\n got %s\nwant suffix %s", role, ns, want)
 		}
@@ -645,7 +645,7 @@ func TestResumeTypesTheResumeCommandIntoACrashedTab(t *testing.T) {
 		t.Errorf("got %s %s, want the lead's tab workspace:2 surface:22", ws, surface)
 	}
 	want := "send --workspace workspace:2 --surface surface:22 -- clear && cd '/Users/o/Projects/quotes/src' && aitch launch claude -- " +
-		`--model claude-opus-5-5 --permission-mode bypassPermissions --settings '{"autoCompactWindow":300000}' -n 'quotes · lead' --resume ` + resumeID
+		`--model claude-opus-5-5 --permission-mode bypassPermissions --settings '{"autoCompactWindow":500000}' -n 'quotes · lead' --resume ` + resumeID
 	if got := f.called("send "); len(got) != 1 || got[0] != want {
 		t.Errorf("typed %q,\nwant %q", got, want)
 	}
@@ -917,7 +917,7 @@ func TestAPickedAccountStartsInItsFolderAndIsNotInTheTitle(t *testing.T) {
 		t.Errorf("picker asked %q, want once for quotes on max", asked)
 	}
 	want := "--command aitch launch claude --primary '/Users/o/.claude-max2' -- --model claude-opus-5-5" +
-		` --permission-mode bypassPermissions --settings '{"autoCompactWindow":300000}' -n 'quotes · lead'`
+		` --permission-mode bypassPermissions --settings '{"autoCompactWindow":500000}' -n 'quotes · lead'`
 	if ns := f.called("new-surface")[0]; !strings.HasSuffix(ns, want+exitLine) {
 		t.Errorf("new-surface\n got %s\nwant suffix %s", ns, want)
 	}
@@ -1013,7 +1013,7 @@ func TestResumeStartsInTheSessionsAccountFolder(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := "send --workspace workspace:2 --surface surface:22 -- clear && cd '/Users/o/Projects/quotes/src' && aitch launch claude --primary '/Users/o/.claude-max2' -- " +
-		`--model claude-opus-5-5 --permission-mode bypassPermissions --settings '{"autoCompactWindow":300000}' -n 'quotes · lead' --resume ` + resumeID
+		`--model claude-opus-5-5 --permission-mode bypassPermissions --settings '{"autoCompactWindow":500000}' -n 'quotes · lead' --resume ` + resumeID
 	if got := f.called("send "); len(got) != 1 || got[0] != want {
 		t.Errorf("typed %q,\nwant %q", got, want)
 	}

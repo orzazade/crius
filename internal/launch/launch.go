@@ -184,7 +184,7 @@ func command(project, role, acct, dir string) (name, model, cmd string) {
 		cmd = "aitch launch claude --primary '" + dir + "' -- --model "
 	}
 	cmd += model +
-		` --permission-mode bypassPermissions --settings '{"autoCompactWindow":300000}' -n '` + name + `'`
+		` --permission-mode bypassPermissions --settings '{"autoCompactWindow":500000}' -n '` + name + `'`
 	return name, model, cmd
 }
 
