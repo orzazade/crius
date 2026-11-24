@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -14,17 +15,19 @@ const Limit = 95
 
 // Pick is the Max account a new session starts on, the config folder to start it in, and why (owner 10-28 23:5x): of
 // the rows with plan max (want "max"), the one whose week resets soonest, as quota left at a reset is lost, until its
-// 7d share reaches Limit (or the project's pause_at, when lower); or the row named want. A folder counts only when it
-// is signed in and its projects/ is root, the persona's transcript folder (an aitch link of the persona's folder), so
-// crius files the session. A row whose newest reading is from a week that has since reset is unknown, like a row no line
-// measured: the reading says nothing about this week, which another machine may have spent (11-21: the Mac read max3 as
+// 7d share reaches Limit (or the project's pause_at, when lower); or the row named want. A folder counts when it is
+// signed in and its projects/ is root, the persona's transcript folder (an aitch link of the persona's folder); one of
+// another persona only as below, while max1 is held. A row whose newest reading is from a week that has since reset is
+// unknown, like a row no line measured: the reading says nothing about this week, which another machine may have
+// spent (11-21: the Mac read max3 as
 // "a new week, 0%" while the Legion saw it at 96%). An unknown row is picked only when no measured row has room, and why
 // says so. One full (Room) or at the limit is passed over, and when every row is, Pick says which and at what
 // share. With no row that has such a folder and want "max", Pick returns "", and the launch is refused (launch.Run).
 //
 // Reserve, max1, comes last (owner 11-19): nothing starts or moves onto it until every other Max row of accounts.toml is
-// at its limit, a row with no folder in this persona included. Until then a pick leaves it out and says so, and a
-// launch that only it could take, or that names it, is refused with the rows that still have room.
+// at its limit, a row with no folder in this persona included. Until then a pick leaves it out and says so; a row with
+// room takes the session in a folder of another persona when no row but max1 has one of this persona with room (11-24),
+// and a launch that names max1 is refused with the rows that still have room.
 func Pick(r *Report, as *Accounts, root, want string, pauseAt int) (name, dir, why string, err error) {
 	if as == nil {
 		as = &Accounts{}
@@ -51,22 +54,38 @@ func Pick(r *Report, as *Accounts, root, want string, pauseAt int) (name, dir, w
 			reserve = a
 		}
 	}
+	heldNote := "; " + Reserve + " held back (owner 11-19) until every other Max account is at its limit"
 	name, dir, why, err = pick(r, rest, root, want, pauseAt)
-	switch {
-	case err != nil: // every other row with a folder in this persona is full
-		return "", "", "", fmt.Errorf("%s; %s", held, strings.Replace(err.Error(), "every Max account is at its limit", "every other one with a folder here is at its limit", 1))
-	case name != "":
-		return name, dir, why + "; " + Reserve + " held back (owner 11-19) until every other Max account is at its limit", nil
+	if name != "" {
+		return name, dir, why + heldNote, nil
 	}
-	// No other row has a folder in this persona: refused while max1 has one; with none, no pick as before (launch.Run
-	// refuses it).
-	if d, err := linked(reserve, root); err != nil {
-		return "", "", "", err
-	} else if d != "" {
+	// No other row has a folder in this persona with room. held says one of them has room, so it takes the session in a
+	// folder of another persona (11-24: max2 took the only other personal folder with it, and every crius pick was
+	// refused while max3 sat at 44%). With no folder of this persona on any row, no pick as before (launch.Run refuses it).
+	if err == nil {
+		if d, err := linked(reserve, root); err != nil {
+			return "", "", "", err
+		} else if d == "" {
+			return "", "", "", nil
+		}
+	}
+	name, dir, why, err = pick(r, rest, anyPersona, want, pauseAt)
+	switch {
+	case err != nil:
+		return "", "", "", fmt.Errorf("%s; %s", held, strings.Replace(err.Error(), "every Max account is at its limit", "every other one is at its limit", 1))
+	case name == "":
 		return "", "", "", errors.New(held)
 	}
-	return "", "", "", nil
+	return name, dir, why + "; no other Max account has a folder under " + root + " with room, so its transcript goes under " +
+		samePath(filepath.Join(dir, "projects")) + heldNote, nil
 }
+
+// Sees says whether a session in the config folder dir writes its transcripts under root: dir's projects/ is root, links
+// resolved. claude --resume finds a session only from a folder that sees its transcript (crius-spawn -move, 11-24).
+func Sees(dir, root string) bool { return samePath(filepath.Join(dir, "projects")) == samePath(root) }
+
+// anyPersona as pick's root takes a row's first signed-in folder that has a projects/ folder, of whatever persona.
+const anyPersona = "\x00any persona"
 
 // Standing is how one login's week reads against limit (a 7d share): "room"; "full", when Room says full (a 5h window at
 // 100% too) or the 7d share is at limit; or "unsure", when no line measured it, its newest reading is from a week that
@@ -262,7 +281,12 @@ func linked(a Acct, root string) (string, error) {
 		return "", nil
 	}
 	for _, d := range a.Dirs {
-		if samePath(filepath.Join(d, "projects")) != samePath(root) {
+		p := filepath.Join(d, "projects")
+		if root == anyPersona {
+			if fi, err := os.Stat(p); err != nil || !fi.IsDir() { // not set up for any persona
+				continue
+			}
+		} else if !Sees(d, root) {
 			continue
 		}
 		l, err := LoginOf(d)

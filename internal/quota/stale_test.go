@@ -80,9 +80,11 @@ func TestPickTreatsAReadingFromAnEarlierWeekAsUnknown(t *testing.T) {
 		not        []string // none in why or err
 		err        string
 	}{
-		{"tonight, personal: max3 unknown holds max1, no 0% room", personal, tonight, "", "",
-			[]string{"max3 quota unknown (no reading since its week reset Sat 11-14 14:00)", "max2 7d 95%"},
-			[]string{"7d 0%", "new week"}, "max1 is held back"},
+		// 11-24: max1 stays held, and max3 takes the session in its work folder, tried as unknown, with no 0% room.
+		{"tonight, personal: max3 unknown holds max1, tried as unknown in its work folder", personal, tonight, "max3", m3,
+			[]string{"quota unsure (no reading since its week reset Sat 11-14 14:00)", "picked as no measured account has room",
+				"max2 7d 95%", "max1 held back", "no other Max account has a folder under " + personal},
+			[]string{"7d 0%", "new week"}, ""},
 		{"tonight, work: max3 is the only one not full, tried as unknown", work, tonight, "max3", m3,
 			[]string{"quota unsure", "no reading since its week reset Sat 11-14 14:00", "picked as no measured account has room",
 				"max2 7d 95%", "max1 held back"},

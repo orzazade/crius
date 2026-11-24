@@ -142,7 +142,13 @@ func main() {
 			os.Exit(2)
 		}
 		m := mover{home: store.Home(), want: *account, tries: 60, wait: time.Second, procs: psProcs, cmux: runCmux,
-			pick: d.Pick,
+			pick: func(project, want, config string) (string, string, error) {
+				name, dir, why, err := ingest.PickMove(store.Home(), project, want, config)
+				if why != "" {
+					fmt.Println(why)
+				}
+				return name, dir, err
+			},
 			state: func(id string) (sessionstate.State, error) {
 				return sessionstate.Read(filepath.Join(store.Home(), "sessions"), id)
 			},

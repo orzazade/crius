@@ -33,6 +33,12 @@ func newMoveRig(t *testing.T) *moveRig {
 	x.resumeIn = x.m2
 	testutil.Write(t, filepath.Join(x.m1, ".claude.json"), `{"oauthAccount":{"accountUuid":"acct-1"}}`)
 	testutil.Write(t, filepath.Join(x.m2, ".claude.json"), `{"oauthAccount":{"accountUuid":"acct-2"}}`)
+	if err := os.MkdirAll(filepath.Join(x.m1, "projects"), 0o755); err != nil { // one persona: m2's projects/ links m1's
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(x.m1, "projects"), filepath.Join(x.m2, "projects")); err != nil {
+		t.Fatal(err)
+	}
 	testutil.Write(t, filepath.Join(x.home, "accounts.toml"), "[[account]]\nname = \"max1\"\nplan = \"max\"\ndirs = [\""+x.m1+
 		"\"]\n[[account]]\nname = \"max2\"\nplan = \"max\"\ndirs = [\""+x.m2+"\"]\n")
 	s := sessionstate.State{SessionID: x.id, Cwd: "/w/team/wt", Project: "team", Role: "dev", Config: x.m1, Workspace: "WS-1", Surface: "SF-1"}
@@ -46,7 +52,7 @@ func newMoveRig(t *testing.T) *moveRig {
 	run(x.m1)
 	x.m = mover{
 		home: x.home,
-		pick: func(project, want string) (string, string, error) { return "max2", x.m2, nil },
+		pick: func(project, want, config string) (string, string, error) { return "max2", x.m2, nil },
 		state: func(id string) (sessionstate.State, error) {
 			return sessionstate.State{State: x.state, PromptTime: x.prompt}, nil
 		},
@@ -128,7 +134,7 @@ func TestAMoveThatLandsElsewhereFails(t *testing.T) {
 		t.Errorf("landed on max1: %v", err)
 	}
 	x = newMoveRig(t)
-	x.m.pick = func(project, want string) (string, string, error) { return "max1", x.m1, nil }
+	x.m.pick = func(project, want, config string) (string, string, error) { return "max1", x.m1, nil }
 	if _, err := x.m.move("team", "dev"); err == nil || !strings.Contains(err.Error(), "already on max1") {
 		t.Errorf("pick is its own account: %v", err)
 	}
@@ -413,5 +419,43 @@ func TestAMoveWaitsOnAStateThatDoesNotReadAfterExit(t *testing.T) {
 	}
 	if _, err := x.m.move("team", "dev"); err != nil || len(x.resumed) != 1 {
 		t.Fatalf("a state unread after /exit: %v, resumed %q", err, x.resumed)
+	}
+}
+
+// 11-24: with max2 gone, a personal session's pick may be max3's work folder, whose projects/ is another persona's.
+// Resumed there, claude finds no conversation after the old one has exited; the move is refused before it stops anything.
+func TestAMoveRefusesAFolderThatCannotSeeTheTranscript(t *testing.T) {
+	x := newMoveRig(t)
+	testutil.Write(t, filepath.Join(x.m1, "projects", "-w-team-wt", x.id+".jsonl"), "{}\n")
+	if err := os.Remove(filepath.Join(x.m2, "projects")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(x.m2, "projects"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := x.m.move("team", "dev"); err == nil || !strings.Contains(err.Error(), "cannot see its transcript") ||
+		!strings.Contains(err.Error(), "nothing moved") || len(x.typed) != 0 || len(x.resumed) != 0 {
+		t.Errorf("picked folder of another persona: %v, typed %q, resumed %q", err, x.typed, x.resumed)
+	}
+	// Review: no transcript on file yet is no pass; the folders decide.
+	x = newMoveRig(t)
+	if err := os.Remove(filepath.Join(x.m2, "projects")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := x.m.move("team", "dev"); err == nil || !strings.Contains(err.Error(), "cannot see its transcript") || len(x.typed) != 0 {
+		t.Errorf("no transcript, other folder: %v, typed %q", err, x.typed)
+	}
+	// Review P2-1: the pick is asked for the session's own folder, so it can offer one that sees the transcript.
+	x = newMoveRig(t)
+	var asked string
+	x.m.pick = func(project, want, config string) (string, string, error) { asked = config; return "max2", x.m2, nil }
+	if _, err := x.m.move("team", "dev"); err != nil || asked != x.m1 {
+		t.Errorf("pick asked for %q (%v), want the session's folder %q", asked, err, x.m1)
+	}
+	// The same transcript folder (both link one persona's projects/): the move goes on.
+	x = newMoveRig(t)
+	testutil.Write(t, filepath.Join(x.m1, "projects", "-w-team-wt", x.id+".jsonl"), "{}\n")
+	if _, err := x.m.move("team", "dev"); err != nil || len(x.resumed) != 1 {
+		t.Errorf("same transcript folder: %v, resumed %q", err, x.resumed)
 	}
 }

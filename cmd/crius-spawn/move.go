@@ -28,8 +28,8 @@ type proc struct {
 // session, never a fresh one; crius:lead 11-08: at a turn boundary, never cutting a running background build).
 type mover struct {
 	home   string
-	pick   func(project, want string) (name, dir string, err error) // the account by the rule (quota.Pick)
-	state  func(id string) (sessionstate.State, error)              // crius-hook's state of a session
+	pick   func(project, want, config string) (name, dir string, err error) // the account by the rule for a session in config (ingest.PickMove)
+	state  func(id string) (sessionstate.State, error)                      // crius-hook's state of a session
 	procs  func() ([]proc, error)
 	cmux   func(args ...string) (string, error)
 	resume func(project, role, id, cwd, acct, dir string) (ws, surface string, err error) // launch.Resume
@@ -74,7 +74,7 @@ func (m mover) move(project, role string) (string, error) {
 	if want == "" {
 		want = "max"
 	}
-	acct, dir, err := m.pick(project, want)
+	acct, dir, err := m.pick(project, want, r.Config)
 	if err != nil {
 		return "", err
 	}
@@ -83,6 +83,11 @@ func (m mover) move(project, role string) (string, error) {
 	}
 	if acct == from {
 		return "", fmt.Errorf("%s %s: already on %s, the account the rule picks: nothing moved", project, role, acct)
+	}
+	// A pick may be a folder of another persona (quota.Pick, 11-24), where claude --resume finds no conversation.
+	if !quota.Sees(dir, filepath.Join(r.Config, "projects")) {
+		return "", fmt.Errorf("%s %s: %s (%s) cannot see its transcript, which is under %s, so session %s would not resume there: nothing moved",
+			project, role, dir, acct, filepath.Join(r.Config, "projects"), r.SessionID)
 	}
 	pid, _, err := sessionstate.Process(r.Config, r.SessionID)
 	if err != nil {

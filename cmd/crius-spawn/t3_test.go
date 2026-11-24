@@ -62,7 +62,7 @@ func TestResumeOfAT3RoleSendsItsThreadTheResumePrompt(t *testing.T) {
 func TestAMoveOfAT3RoleIsRefused(t *testing.T) {
 	x := newMoveRig(t)
 	picked := false
-	x.m.pick = func(project, want string) (string, string, error) { picked = true; return "max2", x.m2, nil }
+	x.m.pick = func(project, want, config string) (string, string, error) { picked = true; return "max2", x.m2, nil }
 	s := sessionstate.State{SessionID: x.id, Cwd: "/w/team/wt", Project: "team", Role: "dev", Config: x.m1, Thread: "mcp:th-1"}
 	if err := sessionstate.WriteRole(filepath.Join(x.home, "roles"), s, true); err != nil {
 		t.Fatal(err)

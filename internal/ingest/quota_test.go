@@ -2400,3 +2400,46 @@ func TestQuotaATaggedSessionWithNoLineMakesEveryOldSampleUnknown(t *testing.T) {
 		t.Fatalf("a tagged session with no line ran 3 min ago: want unsure, spent since, got %s %q", st, why)
 	}
 }
+
+const persProject = `
+[projects.pers]
+persona = "personal"
+accounts = ["max"]
+cwd = ["/pers"]
+repos = []
+team_logs = []
+artifact_dirs = []
+`
+
+// 11-24 review P2-2: a personal session on max1's personal folder at the limit, with max1 held for max3, which has only
+// a work folder. Pick would start a new one there, but -move cannot resume this session in it (its transcript is under
+// the personal folder): the move NEED says no move, not "pers to max3".
+func TestQuotaLimitNeedNamesNoMoveToAFolderThatCannotSeeTheTranscript(t *testing.T) {
+	clock = func() time.Time { return qNow }
+	t.Cleanup(func() { clock = time.Now })
+	x := newIC(t, cfg{extra: persProject})
+	d1, d1w, d3 := filepath.Join(x.home, "cfg1"), filepath.Join(x.home, "cfg1w"), filepath.Join(x.home, "cfg3")
+	l1, _, l3 := x.signIn(d1, "u-1"), x.signIn(d1w, "u-1"), x.signIn(d3, "u-3")
+	for d, root := range map[string]string{d1: x.personal, d1w: x.work, d3: x.work} {
+		if err := os.Symlink(root, filepath.Join(d, "projects")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	testutil.Write(t, filepath.Join(x.home, "accounts.toml"), "[[account]]\nname = \"max1\"\nplan = \"max\"\ndirs = [\""+
+		d1+"\", \""+d1w+"\"]\n[[account]]\nname = \"max3\"\nplan = \"max\"\ndirs = [\""+d3+"\"]\n")
+	s1, s3 := "aaaaaaaa-0000-0000-0000-000000000001", "bbbbbbbb-0000-0000-0000-000000000002"
+	x.session("personal", s1, "/pers", "[crius account=max project=pers role=lead]", qNow.Add(-2*time.Minute))
+	x.session("work", s3, "/pers", "[crius account=max project=pers role=p2]", qNow.Add(-3*time.Minute))
+	writeHooks(t, x.home,
+		sessionstate.State{SessionID: s1, State: sessionstate.Running, Event: "PostToolUse", Time: qNow.Add(-time.Minute), Config: d1},
+		sessionstate.State{SessionID: s3, State: sessionstate.Running, Event: "PostToolUse", Time: qNow.Add(-time.Minute), Config: d3})
+	x.spool(answered(s1, qNow.Add(-2*time.Minute), 96, l1, d1), answered(s3, qNow.Add(-3*time.Minute), 40, l3, d3))
+	x.run()
+	need := grepAlerts(x.alerts(), " NEED crius:ingest -> crius:lead — quota: account max1")
+	if len(need) != 1 {
+		t.Fatalf("want one move NEED for max1, got %q", x.alerts())
+	}
+	if text := needText(need[0]); !strings.Contains(text, "pers to none (no folder of max3 sees its transcript)") {
+		t.Errorf("NEED %q: want no move to max3's work folder", text)
+	}
+}

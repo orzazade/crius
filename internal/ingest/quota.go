@@ -28,9 +28,24 @@ import (
 // machine's copy and its age, loudly when it is missing, old or its last read failed. crius-spawn and the playbook's
 // claude -p calls use it.
 func PickAccount(home, project, want string) (name, dir, why string, err error) {
-	root, pauseAt, err := ForSpawn(home, project)
+	return pickAccount(home, project, want, "")
+}
+
+// PickMove is PickAccount for a session of project that runs in the config folder config (crius-spawn -move): it
+// picks among the folders that see its transcript, config's projects/, not its persona's (11-24: a personal session
+// started on max3's work folder must move to max1's work folder, as the personal one cannot resume it).
+func PickMove(home, project, want, config string) (name, dir, why string, err error) {
+	return pickAccount(home, project, want, filepath.Join(config, "projects"))
+}
+
+// pickAccount is PickAccount with the transcript folder root in place of the persona's, when root is set.
+func pickAccount(home, project, want, root string) (name, dir, why string, err error) {
+	own, pauseAt, err := ForSpawn(home, project)
 	if err != nil {
 		return "", "", "", err
+	}
+	if root == "" {
+		root = own
 	}
 	projects, err := QuotaProjects(home)
 	if err != nil {
@@ -645,9 +660,14 @@ func (r *runner) limitChecks(tx *sql.Tx, rep *quota.Report, as *quota.Accounts, 
 			}
 			to := "none (no Max room)" // short: the line is one bus line
 			root, pauseAt, err := ForSpawn(r.home, s.project)
+			if h := hooks[s.id]; h.Config != "" {
+				root = filepath.Join(h.Config, "projects") // as -move picks (PickMove): a folder that sees its transcript
+			}
 			if err == nil {
-				var name, why string
-				if name, _, why, err = quota.Pick(rep, as, root, "max", pauseAt); err == nil && name != "" {
+				var name, dir, why string
+				if name, dir, why, err = quota.Pick(rep, as, root, "max", pauseAt); err == nil && name != "" && !quota.Sees(dir, root) {
+					to = "none (no folder of " + name + " sees its transcript)" // -move would refuse it (11-24)
+				} else if err == nil && name != "" {
 					to = name
 					if strings.Contains(why, quota.PickedBlind) {
 						to += " (quota unsure)" // a guess, not the rule's pick
