@@ -1837,6 +1837,11 @@ func hookCase(t *testing.T) (x *ic, d1, d2, other, l1 string) {
 	x = newIC(t, cfg{extra: limitProject})
 	d1, d2, other = filepath.Join(x.home, "cfg1"), filepath.Join(x.home, "cfg2"), filepath.Join(x.home, "cfg-ent")
 	l1, _, _ = x.signIn(d1, "u-1"), x.signIn(d2, "u-2"), x.signIn(other, "u-9")
+	for _, d := range []string{d1, d2, other} { // each a work folder, as on the Mac, so a session in any picks as lab's own
+		if err := os.Symlink(x.work, filepath.Join(d, "projects")); err != nil {
+			t.Fatal(err)
+		}
+	}
 	testutil.Write(t, filepath.Join(x.home, "accounts.toml"), "[[account]]\nname = \"max1\"\nplan = \"max\"\ndirs = [\""+
 		d1+"\"]\n[[account]]\nname = \"max2\"\nplan = \"max\"\ndirs = [\""+d2+"\"]\n")
 	return x, d1, d2, other, l1
@@ -2441,5 +2446,70 @@ func TestQuotaLimitNeedNamesNoMoveToAFolderThatCannotSeeTheTranscript(t *testing
 	}
 	if text := needText(need[0]); !strings.Contains(text, "pers to none (no folder of max3 sees its transcript)") {
 		t.Errorf("NEED %q: want no move to max3's work folder", text)
+	}
+}
+
+// 11-24 review: one project with two sessions on max1 at the limit, A in max1's work folder and B in its personal one,
+// max1 held for max3, which has only a work folder. The target was worked out once per project, from the first session,
+// so the NEED said "pers to max3" for both and -move refused B ("cannot see its transcript"). Each folder gets its own.
+func TestQuotaLimitNeedNamesAMovePerTranscriptFolder(t *testing.T) {
+	clock = func() time.Time { return qNow }
+	t.Cleanup(func() { clock = time.Now })
+	x := newIC(t, cfg{extra: persProject})
+	d1, d1w, d3 := filepath.Join(x.home, "cfg1"), filepath.Join(x.home, "cfg1w"), filepath.Join(x.home, "cfg3")
+	l1, _, l3 := x.signIn(d1, "u-1"), x.signIn(d1w, "u-1"), x.signIn(d3, "u-3")
+	for d, root := range map[string]string{d1: x.personal, d1w: x.work, d3: x.work} {
+		if err := os.Symlink(root, filepath.Join(d, "projects")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	testutil.Write(t, filepath.Join(x.home, "accounts.toml"), "[[account]]\nname = \"max1\"\nplan = \"max\"\ndirs = [\""+
+		d1+"\", \""+d1w+"\"]\n[[account]]\nname = \"max3\"\nplan = \"max\"\ndirs = [\""+d3+"\"]\n")
+	sa, sb, s3 := "aaaaaaaa-0000-0000-0000-000000000001", "cccccccc-0000-0000-0000-000000000003", "bbbbbbbb-0000-0000-0000-000000000002"
+	x.session("work", sa, "/pers", "[crius account=max project=pers role=a]", qNow.Add(-2*time.Minute))
+	x.session("personal", sb, "/pers", "[crius account=max project=pers role=b]", qNow.Add(-2*time.Minute))
+	x.session("work", s3, "/pers", "[crius account=max project=pers role=c]", qNow.Add(-3*time.Minute))
+	writeHooks(t, x.home,
+		sessionstate.State{SessionID: sa, State: sessionstate.Running, Event: "PostToolUse", Time: qNow.Add(-time.Minute), Config: d1w},
+		sessionstate.State{SessionID: sb, State: sessionstate.Running, Event: "PostToolUse", Time: qNow.Add(-time.Minute), Config: d1},
+		sessionstate.State{SessionID: s3, State: sessionstate.Running, Event: "PostToolUse", Time: qNow.Add(-time.Minute), Config: d3})
+	x.spool(answered(sa, qNow.Add(-2*time.Minute), 96, l1, d1w), answered(sb, qNow.Add(-2*time.Minute), 96, l1, d1),
+		answered(s3, qNow.Add(-3*time.Minute), 40, l3, d3))
+	x.run()
+	need := grepAlerts(x.alerts(), " NEED crius:ingest -> crius:lead — quota: account max1")
+	if len(need) != 1 {
+		t.Fatalf("want one move NEED for max1, got %q", x.alerts())
+	}
+	text := needText(need[0])
+	for _, w := range []string{"pers (cfg1w) to max3", "pers (cfg1) to none (no folder of max3 sees its transcript)"} {
+		if !strings.Contains(text, w) {
+			t.Errorf("NEED %q: want %q", text, w)
+		}
+	}
+}
+
+// PickMove picks by the session's own transcript folder: a personal-project session that runs in max3's work folder,
+// with max3 at its limit, moves back to max1's work folder (the one that sees its transcript), not max1's personal one.
+func TestPickMoveTakesAFolderThatSeesTheSessionsTranscript(t *testing.T) {
+	clock = func() time.Time { return qNow }
+	t.Cleanup(func() { clock = time.Now })
+	x := newIC(t, cfg{extra: persProject})
+	d1, d1w, d3 := filepath.Join(x.home, "cfg1"), filepath.Join(x.home, "cfg1w"), filepath.Join(x.home, "cfg3")
+	l1, _, l3 := x.signIn(d1, "u-1"), x.signIn(d1w, "u-1"), x.signIn(d3, "u-3")
+	for d, root := range map[string]string{d1: x.personal, d1w: x.work, d3: x.work} {
+		if err := os.Symlink(root, filepath.Join(d, "projects")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	testutil.Write(t, filepath.Join(x.home, "accounts.toml"), "[[account]]\nname = \"max1\"\nplan = \"max\"\ndirs = [\""+
+		d1+"\", \""+d1w+"\"]\n[[account]]\nname = \"max3\"\nplan = \"max\"\ndirs = [\""+d3+"\"]\n")
+	s1, s3 := "aaaaaaaa-0000-0000-0000-000000000001", "bbbbbbbb-0000-0000-0000-000000000002"
+	x.session("personal", s1, "/pers", "[crius account=max project=pers role=lead]", qNow.Add(-2*time.Minute))
+	x.session("work", s3, "/pers", "[crius account=max project=pers role=p2]", qNow.Add(-3*time.Minute))
+	x.spool(answered(s1, qNow.Add(-2*time.Minute), 10, l1, d1), answered(s3, qNow.Add(-3*time.Minute), 96, l3, d3))
+	x.run()
+	name, dir, why, err := PickMove(x.home, "pers", "max", d3)
+	if err != nil || name != "max1" || dir != d1w {
+		t.Fatalf("session in max3's work folder, max3 at 96%%: picked %q %q (%s), err %v; want max1 %s", name, dir, why, err, d1w)
 	}
 }

@@ -642,7 +642,11 @@ func (r *runner) limitChecks(tx *sql.Tx, rep *quota.Report, as *quota.Accounts, 
 			return err
 		}
 		var names, news []string // news: full ids, as two sessions may share 8 characters
-		next := map[string]string{}
+		// One target per project and transcript folder: -move picks by the session's own folder (PickMove), so two
+		// sessions of one project in folders of two personas may move to different rows, or one of them nowhere (11-24).
+		type move struct{ project, root string }
+		next, from := map[move]string{}, map[move]string{}
+		roots := map[string]int{} // folders per project
 		for _, s := range open[a.Login] {
 			names = append(names, s.project+":"+s.role+" "+s.id[:min(8, len(s.id))])
 			res, err := tx.Exec("insert or ignore into alert (key, ts, text, sent) values (?,?,?,?)", key+":"+s.id,
@@ -655,14 +659,21 @@ func (r *runner) limitChecks(tx *sql.Tx, rep *quota.Report, as *quota.Accounts, 
 			} else if n > 0 {
 				news = append(news, s.id)
 			}
-			if _, ok := next[s.project]; ok {
-				continue
-			}
 			to := "none (no Max room)" // short: the line is one bus line
 			root, pauseAt, err := ForSpawn(r.home, s.project)
+			cfg := ""
 			if h := hooks[s.id]; h.Config != "" {
-				root = filepath.Join(h.Config, "projects") // as -move picks (PickMove): a folder that sees its transcript
+				root, cfg = filepath.Join(h.Config, "projects"), h.Config // as -move picks (PickMove): a folder that sees its transcript
 			}
+			k := move{s.project, root}
+			if real, err := filepath.EvalSymlinks(root); err == nil {
+				k.root = real // two folders linked to one transcript folder pick alike
+			}
+			if _, ok := next[k]; ok {
+				continue
+			}
+			roots[s.project]++
+			from[k] = cfg
 			if err == nil {
 				var name, dir, why string
 				if name, dir, why, err = quota.Pick(rep, as, root, "max", pauseAt); err == nil && name != "" && !quota.Sees(dir, root) {
@@ -677,7 +688,7 @@ func (r *runner) limitChecks(tx *sql.Tx, rep *quota.Report, as *quota.Accounts, 
 			if err != nil {
 				to = "none (" + truncate(err.Error(), 40) + ")"
 			}
-			next[s.project] = to
+			next[k] = to
 		}
 		need := key + ":need:" + strings.Join(news, ",")
 		switch {
@@ -687,9 +698,16 @@ func (r *runner) limitChecks(tx *sql.Tx, rep *quota.Report, as *quota.Accounts, 
 			continue
 		}
 		var moves []string
-		for _, project := range slices.Sorted(maps.Keys(next)) {
-			moves = append(moves, project+" to "+next[project])
+		for k, to := range next {
+			label := k.project
+			if roots[k.project] > 1 { // say which folder's sessions go where
+				if label += " (" + filepath.Base(from[k]) + ")"; from[k] == "" {
+					label = k.project + " (no known folder)"
+				}
+			}
+			moves = append(moves, label+" to "+to)
 		}
+		slices.Sort(moves)
 		if err := r.queueLine(tx, need, "NEED", "crius", "crius:lead", limitLine(a, moves, names, len(unknown), unlisted, blind)); err != nil {
 			return err
 		}

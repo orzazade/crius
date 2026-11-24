@@ -56,8 +56,11 @@ func Pick(r *Report, as *Accounts, root, want string, pauseAt int) (name, dir, w
 	}
 	heldNote := "; " + Reserve + " held back (owner 11-19) until every other Max account is at its limit"
 	name, dir, why, err = pick(r, rest, root, want, pauseAt)
-	if name != "" {
+	switch {
+	case name != "":
 		return name, dir, why + heldNote, nil
+	case err != nil && !errors.Is(err, errAllFull):
+		return "", "", "", err // a folder that cannot be read is not "no room" (review 11-24)
 	}
 	// No other row has a folder in this persona with room. held says one of them has room, so it takes the session in a
 	// folder of another persona (11-24: max2 took the only other personal folder with it, and every crius pick was
@@ -83,6 +86,10 @@ func Pick(r *Report, as *Accounts, root, want string, pauseAt int) (name, dir, w
 // Sees says whether a session in the config folder dir writes its transcripts under root: dir's projects/ is root, links
 // resolved. claude --resume finds a session only from a folder that sees its transcript (crius-spawn -move, 11-24).
 func Sees(dir, root string) bool { return samePath(filepath.Join(dir, "projects")) == samePath(root) }
+
+// errAllFull is pick's error when every Max row with a folder under root is at its limit; Pick tries another persona's
+// folder only on it.
+var errAllFull = errors.New("every Max account is at its limit")
 
 // anyPersona as pick's root takes a row's first signed-in folder that has a projects/ folder, of whatever persona.
 const anyPersona = "\x00any persona"
@@ -269,7 +276,7 @@ func pick(r *Report, as *Accounts, root, want string, pauseAt int) (name, dir, w
 	case want != "max":
 		return "", "", "", fmt.Errorf("%s has no folder linked to %s and signed in", want, root)
 	case full != nil:
-		return "", "", "", fmt.Errorf("every Max account is at its limit: %s", strings.Join(full, ", "))
+		return "", "", "", fmt.Errorf("%w: %s", errAllFull, strings.Join(full, ", "))
 	}
 	return "", "", "", nil
 }

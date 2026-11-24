@@ -178,4 +178,21 @@ func TestPickTakesAnotherPersonasFolderBeforeTheReserve(t *testing.T) {
 	if name, dir, _, err := Pick(r(10, 44), as, filepath.Join(root, "none", "projects"), "max", 0); name != "" || dir != "" || err != nil {
 		t.Errorf("no folder here: %q %q %v", name, dir, err)
 	}
+	// Review 11-24: max3 lists a personal folder whose .claude.json cannot be read, and its good work folder first. The
+	// read error must come back as it is; it is not "no folder had room", so no quiet move to the work folder.
+	bad := filepath.Join(root, ".claude-max3-personal")
+	if err := os.MkdirAll(bad, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bad, ".claude.json"), []byte(`{broken`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(personal, filepath.Join(bad, "projects")); err != nil {
+		t.Fatal(err)
+	}
+	broken := &Accounts{Rows: []Acct{as.Rows[0], as.Rows[1], {Name: "max3", Plan: "max", Login: l3, Dirs: []string{m3, bad}}}}
+	name, dir, why, err = Pick(r(10, 44), broken, personal, "max", 0)
+	if err == nil || !strings.Contains(err.Error(), filepath.Join(bad, ".claude.json")) || name != "" || dir != "" {
+		t.Errorf("broken personal folder on max3: picked %q %q (%s), err %v; want the read error of %s", name, dir, why, err, bad)
+	}
 }
