@@ -79,3 +79,43 @@ func TestABillingFailureIsOneAccountDownLinePerAccount(t *testing.T) {
 		t.Fatalf("said again 5 min later: %q", d)
 	}
 }
+
+// review 11-26 P2-3: a role whose own reply quotes the billing text (a lead reporting it) is not an account down: its
+// reply ends on a status mark, and it is checked as any thread.
+func TestAReplyThatQuotesTheBillingTextIsNoAccountDown(t *testing.T) {
+	home := threadHome(t, "lead")
+	onConfig(t, home, map[string]string{"rep": "/Users/x/.claude-work-max"})
+	f := &fake{threads: map[string]T3Thread{
+		"th-lead": {Status: "completed", Updated: t0.Add(-time.Hour), LastReply: "done ✅"},
+		"th-rep":  {Status: "completed", Updated: t0.Add(-20 * time.Minute), LastReply: "max3 said its payment is past due; I moved qa to max1. ✅"},
+	}}
+	runOnce(t, home, f, t0)
+	if d := accountDown(f.sent); len(d) != 0 {
+		t.Fatalf("a quoting reply gave ACCOUNT-DOWN: %q", d)
+	}
+	if w := t3Wakes(f, "quotes · rep (T3 thread th-rep) is idle"); len(w) != 1 {
+		t.Fatalf("the quoting thread lost its idle alert: %q", f.sent)
+	}
+}
+
+// review 11-26 P3-4: the line is keyed by the account alone: closing the thread that failed first leaves one line.
+func TestAccountDownKeyHoldsWhenItsFirstThreadCloses(t *testing.T) {
+	home := threadHome(t, "lead")
+	m3 := "/Users/x/.claude-work-max3"
+	onConfig(t, home, map[string]string{"a1": m3, "a2": m3})
+	f := &fake{threads: map[string]T3Thread{
+		"th-lead": {Status: "completed", Updated: t0.Add(-time.Hour), LastReply: "done ✅"},
+		"th-a1":   {Status: "error", Updated: t0.Add(-30 * time.Minute), LastReply: billingReply},
+		"th-a2":   {Status: "error", Updated: t0.Add(-20 * time.Minute), LastReply: billingReply},
+	}}
+	runOnce(t, home, f, t0)
+	if d := accountDown(f.sent); len(d) != 1 {
+		t.Fatalf("first run: %q", d)
+	}
+	f.sent = nil
+	testutil.Write(t, filepath.Join(home, "roles", "quotes.a1.closed"), "s-a1\n")
+	runOnce(t, home, f, t0.Add(5*time.Minute))
+	if d := accountDown(f.sent); len(d) != 0 {
+		t.Fatalf("closing a1 gave a second line: %q", d)
+	}
+}

@@ -82,3 +82,25 @@ func TestSigninAlertsDryRunSkipsTheOffListLogin(t *testing.T) {
 		t.Fatalf("%s", got)
 	}
 }
+
+// review 11-26 P2-1: a row whose Mac folders read no login (signed out) leaves its login unknown; its remote folders
+// (still signed in) must keep their alerts, so no login counts as off the list.
+func TestARowWithNoLoginMarksNothingOffList(t *testing.T) {
+	home := setup(t, nil)
+	dir := t.TempDir() // no .claude.json: the row's login is ""
+	testutil.Write(t, filepath.Join(home, "accounts.toml"), "[[account]]\nname = \"max1\"\nplan = \"max\"\ndirs = ["+`"`+dir+`"`+"]\n")
+	f := &fake{login: logins(nil), signin: reads(t, map[string]string{"legion-max1": "ended.json"}), spool: spools(t, nil)}
+	if all := strings.Join(runAll(t, home, signinNow, f), "\n"); !strings.Contains(all, "sign-in EXPIRED legion-max1") {
+		t.Fatalf("legion-max1's ended sign-in is silent while max1's row has no login:\n%s", all)
+	}
+}
+
+// review 11-26 P2-2: the dry run says a read that keeps failing, as two live runs would; it never hides it as 0 alerts.
+func TestSigninAlertsDryRunSaysAFailedRead(t *testing.T) {
+	home := setup(t, nil)
+	got := strings.Join(SigninAlerts(Deps{Home: home, Now: signinNow, Login: logins(nil),
+		Signin: reads(t, map[string]string{"legion-max1": "err:ssh: no route to host"}), Spool: spools(t, nil)}), "\n")
+	if !strings.Contains(got, "legion-max1") || !strings.Contains(got, "no route to host") {
+		t.Fatalf("the failed read is not said: %q", got)
+	}
+}

@@ -276,7 +276,7 @@ func t3Idle(d Deps, st *state, ss []Session, sesErr error, watch projects, park 
 		if (th.Status == "running" || th.Active) && th.Pending == 0 || th.Pending > 0 && prompted[id] {
 			continue
 		}
-		if billingRe.MatchString(th.LastReply) { // the account's failure, not the thread's: one line per account below
+		if billingStop(th.LastReply) { // the account's failure, not the thread's: one line per account below
 			down.add(r.Config, name, th)
 			continue
 		}
@@ -379,6 +379,12 @@ func t3Idle(d Deps, st *state, ss []Session, sesErr error, watch projects, park 
 // billingRe is the reply of a thread whose account cannot run: its subscription is unpaid (11-25: max3, payment past due).
 var billingRe = regexp.MustCompile(`(?i)payment (is )?past due|can.?t use your Claude subscription`)
 
+// billingStop says a reply is the billing failure itself, not a reply of the role that quotes it: a role's own reply
+// ends on a status mark (RULES §3.5); the CLI's error has none.
+func billingStop(reply string) bool {
+	return billingRe.MatchString(reply) && statusMark(reply) == ""
+}
+
 // billingWords quotes the reply from its billing words on, at most 160 characters, white space folded.
 func billingWords(reply string) string {
 	r := []rune(strings.Join(strings.Fields(reply[billingRe.FindStringIndex(reply)[0]:]), " "))
@@ -391,7 +397,6 @@ type accountsDown map[string]*downAccount
 
 type downAccount struct {
 	names []string
-	since time.Time
 	reply string
 }
 
@@ -401,17 +406,14 @@ func (a *accountsDown) add(config, name string, th T3Thread) {
 	}
 	x := (*a)[config]
 	if x == nil {
-		x = &downAccount{since: th.Updated, reply: th.LastReply}
+		x = &downAccount{reply: th.LastReply}
 		(*a)[config] = x
 	}
 	x.names = append(x.names, name)
-	if th.Updated.Before(x.since) {
-		x.since = th.Updated
-	}
 }
 
-// alerts gives one ACCOUNT-DOWN line per account, keyed by its folder and its first failure: a thread that joins later
-// adds no line; the account failing again after it ran gives a new one.
+// alerts gives one ACCOUNT-DOWN line per account, keyed by its folder alone: a thread that joins, moves or closes adds no
+// line; Run says it again after window+resend while it lasts.
 func (a accountsDown) alerts(home string) [][2]string {
 	as, _ := quota.LoadAccounts(home) // the name is only a label: with no file the folder names the account
 	var out [][2]string
@@ -424,7 +426,7 @@ func (a accountsDown) alerts(home string) [][2]string {
 			acct = row.Name + " (" + config + ")"
 		}
 		slices.Sort(x.names)
-		out = append(out, [2]string{"t3idle:account-down:" + config + ":" + x.since.UTC().Format(time.RFC3339Nano), fmt.Sprintf(
+		out = append(out, [2]string{"t3idle:account-down:" + config, fmt.Sprintf(
 			"ACCOUNT-DOWN %s: %d T3 thread(s) on it stopped on a billing failure (%q): %s. Its subscription cannot run: move its roles to an "+
 				"account that can (crius-spawn -move <project> <role>) or close them, and take its row out of accounts.toml until it is paid. %s",
 			acct, len(x.names), billingWords(x.reply), strings.Join(x.names, "; "), t3Reply(T3Thread{LastReply: x.reply}))})

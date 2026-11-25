@@ -4,6 +4,23 @@ Updated 2026-10-19 19:10 by session 9f01299b (P6b FINDINGS ingest shipped and pr
 Last owner message seen: 2026-10-19 ~17:25 (child roll-up answer, via Crius).
 main = origin/main = this RESUME commit (P6b). Local main ref is behind: it is checked out in Crius's worktree main-rules. History: docs/notes/RESUME-HISTORY.md.
 
+## NIGHT 2026-11-26: wakewatch account alerts (branch night/wakewatch-accounts, NOT installed)
+
+- Fixes: (1) a config dir whose login is in no accounts.toml row (max3 now) raises no sign-in or week alert; the
+  `signin` table marks it "not in accounts.toml". (2) T3 threads stopped on a billing reply = one ACCOUNT-DOWN line per
+  config folder (FU-WAKEWATCH-BILLING), not one idle alert each. (3) New dry run: `crius-wakewatch signin --alerts`.
+- Tests: TestALoginOutOfAccountsTomlRaisesNoAlert, TestWithNoAccountsTomlEveryLoginStillAlerts,
+  TestARowWithNoLoginMarksNothingOffList, TestSigninAlertsDryRunSkipsTheOffListLogin, TestSigninAlertsDryRunSaysAFailedRead,
+  TestABillingFailureIsOneAccountDownLinePerAccount, TestAReplyThatQuotesTheBillingTextIsNoAccountDown,
+  TestAccountDownKeyHoldsWhenItsFirstThreadCloses. `go test ./...` rc=0, 52 packages ok. Deep review: P1 0, P2s fixed.
+- Demo: `cd ~/Projects/scifi/crius-wt-wakewatch && go run ./cmd/crius-wakewatch signin --alerts` (11-26: 0 alerts) and
+  `go run ./cmd/crius-wakewatch signin` (max3 rows say "not in accounts.toml: not watched").
+- Install (after a look): `git -C ~/Projects/scifi/crius-wt-wakewatch push origin night/wakewatch-accounts:main &&
+  cd ~/Projects/scifi/crius-live && git pull --ff-only && bin/crius-install-launchd`. Then remove the worktree:
+  `git -C ~/Projects/scifi/crius worktree remove ~/Projects/scifi/crius-wt-wakewatch`.
+- Changed on purpose: TestSigninMacAccountsAreTheFoldersOfAccountsToml became ...CoverTheFoldersOfAccountsToml (the
+  "watches a folder no row names" half is now handled at run time; it was red on this Mac since max3 left the toml).
+
 ## OWNER DECISIONS (append-only, verbatim, dated)
 
 - 2026-10-16 design §10 D1-D4 (docs/MEMORY-AND-MEASUREMENT.md §10): one Max account = one weekly quota; everything
