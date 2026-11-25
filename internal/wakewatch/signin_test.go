@@ -316,9 +316,10 @@ func TestRemoteClaudeDanglingLinkSaysWhereItLooked(t *testing.T) {
 	}
 }
 
-// 11-24: max2 left ~/.crius/accounts.toml on 11-23 but stayed in Accounts, so its dead folder woke Crius every night.
-// The Mac rows of Accounts must be exactly the folders of the Max rows of this machine's accounts.toml. Skipped where there is none (CI).
-func TestSigninMacAccountsAreTheFoldersOfAccountsToml(t *testing.T) {
+// Every Mac folder of a Max row of this machine's accounts.toml is in Accounts, so its sign-in and week are watched.
+// Skipped where there is none (CI). A folder in Accounts that no row names is fine: its login is off the list and raises
+// no alert (SigninRow.OffList; 11-24 max2 and 11-26 max3 woke Crius each night for a row taken out of accounts.toml).
+func TestSigninMacAccountsCoverTheFoldersOfAccountsToml(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Fatal(err)
@@ -347,9 +348,6 @@ func TestSigninMacAccountsAreTheFoldersOfAccountsToml(t *testing.T) {
 		}
 		d := filepath.Join(home, strings.TrimPrefix(a.Dir, "~/"))
 		watched[d] = true
-		if !inToml[d] {
-			t.Errorf("Accounts watches %s (%s), which no row of accounts.toml names", a.Dir, a.Name)
-		}
 	}
 	for d := range inToml {
 		if !watched[d] {

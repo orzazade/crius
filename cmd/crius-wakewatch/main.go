@@ -82,6 +82,15 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) == 3 && os.Args[1] == "signin" && os.Args[2] == "--alerts" {
+		// dry run: the sign-in and week alerts one run would raise now, sent nowhere (wakewatch.SigninAlerts)
+		a := wakewatch.SigninAlerts(wakewatch.Deps{Home: store.Home(), Now: time.Now(), Signin: signinStatus, Login: loginOf, Spool: spool})
+		for _, l := range a {
+			fmt.Println(l)
+		}
+		fmt.Printf("%d alert(s); nothing sent\n", len(a))
+		return
+	}
 	if len(os.Args) == 2 && os.Args[1] == "signin" {
 		// the sign-in watch on its own: each Max account, its end and state, and its login's week, read now (wakewatch.Signins)
 		fmt.Print(wakewatch.SigninTable(wakewatch.Signins(wakewatch.SigninReads{Status: signinStatus, Login: loginOf, Spool: spool},

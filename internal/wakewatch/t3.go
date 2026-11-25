@@ -4,13 +4,16 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	"github.com/orzazade/crius/internal/quota"
 	"github.com/orzazade/crius/internal/sessionstate"
 )
 
@@ -175,6 +178,7 @@ func t3Idle(d Deps, st *state, ss []Session, sesErr error, watch projects, park 
 	if err != nil {
 		out = append(out, [2]string{"t3-failed", "the T3 thread idle check failed to look: " + err.Error()})
 	}
+	var down accountsDown
 	var done map[string]bool // read once a thread is idle
 	var procs []Proc         // read once a role on ⏳ is quiet too long (waitingOn)
 	var procErr error
@@ -272,6 +276,10 @@ func t3Idle(d Deps, st *state, ss []Session, sesErr error, watch projects, park 
 		if (th.Status == "running" || th.Active) && th.Pending == 0 || th.Pending > 0 && prompted[id] {
 			continue
 		}
+		if billingRe.MatchString(th.LastReply) { // the account's failure, not the thread's: one line per account below
+			down.add(r.Config, name, th)
+			continue
+		}
 		if builder && th.Pending == 0 {
 			if notStarted[th.Status] { // an open run has no idle stretch yet
 				if n := d.Now.Sub(th.Updated); n > t3UnknownAfter {
@@ -364,7 +372,64 @@ func t3Idle(d Deps, st *state, ss []Session, sesErr error, watch projects, park 
 			out = append(out, [2]string{key, fmt.Sprintf("%s is idle %d min: not running, and its last reply ends on %s, not ⏳ or ❓. %s", name, idle, markName(mark), tail)})
 		}
 	}
+	out = append(out, down.alerts(d.Home)...)
 	return append(out, missingBuilders(builders, seen, watch, park)...)
+}
+
+// billingRe is the reply of a thread whose account cannot run: its subscription is unpaid (11-25: max3, payment past due).
+var billingRe = regexp.MustCompile(`(?i)payment (is )?past due|can.?t use your Claude subscription`)
+
+// billingWords quotes the reply from its billing words on, at most 160 characters, white space folded.
+func billingWords(reply string) string {
+	r := []rune(strings.Join(strings.Fields(reply[billingRe.FindStringIndex(reply)[0]:]), " "))
+	return string(r[:min(len(r), 160)])
+}
+
+// accountsDown gathers the threads that stopped on a billing failure, by the config folder their role runs under.
+// FU-WAKEWATCH-BILLING (11-25 02:0x): 4 AXI threads on max3 woke Crius 4 times for one unpaid account.
+type accountsDown map[string]*downAccount
+
+type downAccount struct {
+	names []string
+	since time.Time
+	reply string
+}
+
+func (a *accountsDown) add(config, name string, th T3Thread) {
+	if *a == nil {
+		*a = accountsDown{}
+	}
+	x := (*a)[config]
+	if x == nil {
+		x = &downAccount{since: th.Updated, reply: th.LastReply}
+		(*a)[config] = x
+	}
+	x.names = append(x.names, name)
+	if th.Updated.Before(x.since) {
+		x.since = th.Updated
+	}
+}
+
+// alerts gives one ACCOUNT-DOWN line per account, keyed by its folder and its first failure: a thread that joins later
+// adds no line; the account failing again after it ran gives a new one.
+func (a accountsDown) alerts(home string) [][2]string {
+	as, _ := quota.LoadAccounts(home) // the name is only a label: with no file the folder names the account
+	var out [][2]string
+	for _, config := range slices.Sorted(maps.Keys(a)) {
+		x := a[config]
+		acct := config
+		if config == "" {
+			acct = "an unknown config folder (its role file names none)"
+		} else if row := as.Dir(config); row != nil {
+			acct = row.Name + " (" + config + ")"
+		}
+		slices.Sort(x.names)
+		out = append(out, [2]string{"t3idle:account-down:" + config + ":" + x.since.UTC().Format(time.RFC3339Nano), fmt.Sprintf(
+			"ACCOUNT-DOWN %s: %d T3 thread(s) on it stopped on a billing failure (%q): %s. Its subscription cannot run: move its roles to an "+
+				"account that can (crius-spawn -move <project> <role>) or close them, and take its row out of accounts.toml until it is paid. %s",
+			acct, len(x.names), billingWords(x.reply), strings.Join(x.names, "; "), t3Reply(T3Thread{LastReply: x.reply}))})
+	}
+	return out
 }
 
 // t3Reply quotes the end of a thread's last reply for an alert.

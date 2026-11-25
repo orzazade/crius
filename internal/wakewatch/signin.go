@@ -28,6 +28,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -158,6 +160,11 @@ type SigninRow struct {
 	WeekReset        time.Time
 	WeekWhy          string
 	loginFailed      bool // the dir's login could not be read
+	// OffList: the dir's login is in no row of accounts.toml (a Mac dir also counts when a row names the dir itself), so it
+	// is not an account Crius runs on (11-26: max3's row came out, unpaid, and its week UNKNOWN woke Crius each night).
+	// Its sign-in and week raise no alert; the table says so. Only set when accounts.toml was read and has rows: with
+	// none, no login is known to be off the list, and every row alerts.
+	OffList bool
 }
 
 // SigninReads are what the watch reads on each machine; none runs a model.
@@ -234,6 +241,14 @@ func Signins(r SigninReads, home string, now time.Time) SigninWatch {
 	return w
 }
 
+// macDir is a Mac dir of Accounts ("~/..."), ~ expanded.
+func macDir(dir string) string {
+	if h, err := os.UserHomeDir(); err == nil && strings.HasPrefix(dir, "~/") {
+		return filepath.Join(h, dir[2:])
+	}
+	return dir
+}
+
 func hostName(h string) string {
 	if h == "" {
 		return "mac"
@@ -258,6 +273,7 @@ func (r *SigninRow) week(login string, err error, weeks map[string]quota.Week, a
 	r.Login, r.LoginName = login, "login "+login
 	if asErr == nil {
 		r.LoginName = as.Name(login)
+		r.OffList = len(as.Rows) > 0 && as.Of(login) == nil && (r.Host != "" || as.Dir(macDir(r.Dir)) == nil)
 	}
 	var blind string
 	if len(unread) > 0 {
@@ -385,6 +401,9 @@ func signins(d Deps, st *state) [][2]string {
 		return fmt.Sprintf(" (%d reads in a row)", n)
 	}
 	for _, r := range w.Rows {
+		if r.OffList {
+			continue
+		}
 		if r.State == SigninUnread {
 			n := failed("status:" + r.Name)
 			if n == "" {
@@ -409,6 +428,9 @@ func signins(d Deps, st *state) [][2]string {
 	}
 	st.SigninMiss = miss.counts()
 	for _, g := range weekGroups(w.Rows) {
+		if !slices.ContainsFunc(g, func(r SigninRow) bool { return !r.OffList }) {
+			continue
+		}
 		if g[0].Week == WeekUnknown && fresh {
 			continue
 		}
@@ -419,6 +441,17 @@ func signins(d Deps, st *state) [][2]string {
 			}
 			raise("week:"+id+":"+g[0].Week, weekAlert(g, loc))
 		}
+	}
+	return out
+}
+
+// SigninAlerts is a dry run of the sign-in and week alerts: what one run would raise now from a fresh state (nothing
+// said today yet), sent nowhere and saved nowhere. A read that failed shows as held, not as an alert: a run waits for
+// lookMisses failed reads in a row before it says one.
+func SigninAlerts(d Deps) []string {
+	var out []string
+	for _, a := range signins(d, &state{}) {
+		out = append(out, a[1])
 	}
 	return out
 }
@@ -507,6 +540,9 @@ func SigninTable(w SigninWatch, loc *time.Location) string {
 		if r.State == SigninOK {
 			note += "; WARN from " + r.End.Add(-signinAhead).In(loc).Format("2006-01-02 15:04")
 		}
+		if r.OffList {
+			note = "not in accounts.toml: not watched, no alert; " + note
+		}
 		login, week, reset := "-", r.Week, "-"
 		if r.LoginName != "" {
 			login = r.LoginName
@@ -530,6 +566,9 @@ func SigninTable(w SigninWatch, loc *time.Location) string {
 		fmt.Fprintf(&b, "spool %s: %d lines not JSON, skipped\n", h, w.Bad[h])
 	}
 	for _, r := range w.Rows {
+		if r.OffList {
+			continue
+		}
 		switch r.State {
 		case SigninWarn, SigninExpired:
 			fmt.Fprintf(&b, "renew %s: %s\n", r.Name, r.Renew())
