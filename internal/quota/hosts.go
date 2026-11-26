@@ -202,5 +202,38 @@ func (r *Report) WithLines(lines []Line, as *Accounts) *Report {
 		}
 		return a.Name < b.Name
 	})
+	v.restale()
 	return &v
+}
+
+// restale judges the logins' Stale entries again with every machine's samples (loginStale): a login measured on another
+// machine within the gap is not stale. Persona entries stay as Build found them (they are of the Mac's statusline).
+func (v *Report) restale() {
+	if v.personaStale {
+		return
+	}
+	var keep []string
+	for _, st := range v.Stale {
+		if _, login := v.StaleProjects[st]; !login {
+			keep = append(keep, st)
+		}
+	}
+	v.Stale, v.StaleAt, v.StaleProjects = keep, maps.Clone(v.StaleAt), nil
+	v.Reasons = slices.DeleteFunc(slices.Clone(v.Reasons), func(r string) bool { return strings.HasPrefix(r, staleReason) })
+	newest := map[string]time.Time{}
+	for login, ss := range v.byLogin {
+		ss = slices.Clone(ss)
+		slices.SortStableFunc(ss, func(a, b sample) int { return a.ts.Compare(b.ts) })
+		if cur, u := reduce(ss, v.Now); len(cur) > 0 && u.Ended.IsZero() {
+			newest[login] = cur[len(cur)-1].ts
+		}
+	}
+	v.loginStale(newest)
+	for _, st := range v.Stale {
+		v.Reasons = append(v.Reasons, staleReason+st)
+	}
+	v.Status = "complete" // as Build sets it
+	if len(v.Reasons) > 0 {
+		v.Status = "partial"
+	}
 }
