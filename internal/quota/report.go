@@ -46,7 +46,13 @@ type Report struct {
 	spentBy    map[string]time.Time
 	spentAny   time.Time
 	LastSample time.Time
-	LastKind   string
+	// newestMax and maxBy: each Max login's newest request, and per project; as names the logins; personaStale: a persona
+	// had no line (loginStale then judges no login). WithLines judges the logins again from them.
+	newestMax    map[string]time.Time
+	maxBy        map[string]map[string]time.Time
+	as           *Accounts
+	personaStale bool
+	LastKind     string
 	// SevenAt and FiveAt: the newest measurement showing SevenPct and FivePct. A share only rises within its window,
 	// so a lower reading is an older one; a measurement is a line that came with a response (one from before that
 	// mark: not a heartbeat, which repeats a session's last values).
@@ -847,66 +853,13 @@ func Build(db Querier, p Projects, now time.Time) (*Report, error) {
 	// (live 10-23: max1's later reset hid max2's samples). A session whose line names no login takes any sample. A
 	// login whose newest request came before its week began has no session open in that week: nothing to sample
 	// (live 10-29 00:06: max1 reset at 00:00 after its sessions had moved to max2 and max3).
-	began := map[string]time.Time{}
-	for _, a := range rep.Accounts {
-		if !a.Ended.IsZero() {
-			began[a.Login] = a.Ended
-		} else if !a.Reset.IsZero() {
-			began[a.Login] = a.Reset.Add(-week)
-		}
-	}
-	if len(rep.Stale) == 0 {
-		var logins []string
-		for l, t := range newestMax {
-			if now.Sub(t) <= Gap && !t.Before(began[l]) {
-				logins = append(logins, l)
-			}
-		}
-		sort.Strings(logins)
-		for _, l := range logins {
-			name, last := "max account", newest[l]
-			if l != "" {
-				name += " " + p.Accounts.Name(l)
-			} else {
-				last = time.Time{}
-				if rep.Ended.IsZero() {
-					last = rep.LastSample
-				}
-				for _, t := range newest {
-					if t.After(last) {
-						last = t
-					}
-				}
-			}
-			if newestMax[l].Sub(last) <= Gap { // no request of the login went unmeasured for longer than Gap
-				continue
-			}
-			at := "none"
-			if !last.IsZero() {
-				at = when(last)
-			}
-			rep.Stale = append(rep.Stale, name+": newest current-epoch sample "+at)
-			if !last.IsZero() {
-				rep.staleAt(rep.Stale[len(rep.Stale)-1], last)
-			}
-			var projects []string
-			for project, t := range maxBy[l] {
-				if now.Sub(t) <= Gap && !t.Before(began[l]) {
-					projects = append(projects, project)
-				}
-			}
-			sort.Strings(projects)
-			if rep.StaleProjects == nil {
-				rep.StaleProjects = map[string][]string{}
-			}
-			rep.StaleProjects[rep.Stale[len(rep.Stale)-1]] = projects
-		}
-	}
+	rep.newestMax, rep.maxBy, rep.as, rep.personaStale = newestMax, maxBy, p.Accounts, len(rep.Stale) > 0
+	rep.loginStale(newest)
 	if rep.LastSample.IsZero() {
 		rep.Reasons = append(rep.Reasons, "no quota sample yet")
 	}
 	for _, st := range rep.Stale {
-		rep.Reasons = append(rep.Reasons, "stale sampler, open sessions of "+st)
+		rep.Reasons = append(rep.Reasons, staleReason+st)
 	}
 	if !rep.Ended.IsZero() {
 		rep.Reasons = append(rep.Reasons, "epoch ended "+when(rep.Ended)+", no sample since")
@@ -1276,5 +1229,73 @@ func (r *Report) staleAt(entry string, t time.Time) {
 	r.StaleAt[entry] = t
 }
 
+// staleReason opens the Reasons line of each Stale entry.
+const staleReason = "stale sampler, open sessions of "
+
 // Ago is how long d is, as the quota lines say it: "46 min", "6 h".
 func Ago(d time.Duration) string { return ago(d) }
+
+// loginStale adds the Stale entries of the open Max logins whose requests went unmeasured for over Gap: newest is each
+// login's newest sample of its own current window. Build reads the store's samples; WithLines reads them again with the
+// other machines' lines (11-26 05:38 and 09:22: max1 ran on the Legion, the ThinkPad and in T3 threads while the Mac's
+// store had no max1 line for 45 min, and STALE woke Crius although those machines measured it every few minutes).
+// A persona entry means no line at all came: the logins are not judged then.
+func (rep *Report) loginStale(newest map[string]time.Time) {
+	if rep.personaStale {
+		return
+	}
+	began := map[string]time.Time{} // each login's week began then, as rep.Accounts (store or with hosts) reads it
+	for _, a := range rep.Accounts {
+		if !a.Ended.IsZero() {
+			began[a.Login] = a.Ended
+		} else if !a.Reset.IsZero() {
+			began[a.Login] = a.Reset.Add(-week)
+		}
+	}
+	now := rep.Now
+	var logins []string
+	for l, t := range rep.newestMax {
+		if now.Sub(t) <= Gap && !t.Before(began[l]) {
+			logins = append(logins, l)
+		}
+	}
+	sort.Strings(logins)
+	for _, l := range logins {
+		name, last := "max account", newest[l]
+		if l != "" {
+			name += " " + rep.as.Name(l)
+		} else {
+			last = time.Time{}
+			if rep.Ended.IsZero() {
+				last = rep.LastSample
+			}
+			for _, t := range newest {
+				if t.After(last) {
+					last = t
+				}
+			}
+		}
+		if rep.newestMax[l].Sub(last) <= Gap { // no request of the login went unmeasured for longer than Gap
+			continue
+		}
+		at := "none"
+		if !last.IsZero() {
+			at = when(last)
+		}
+		rep.Stale = append(rep.Stale, name+": newest current-epoch sample "+at)
+		if !last.IsZero() {
+			rep.staleAt(rep.Stale[len(rep.Stale)-1], last)
+		}
+		var projects []string
+		for project, t := range rep.maxBy[l] {
+			if now.Sub(t) <= Gap && !t.Before(began[l]) {
+				projects = append(projects, project)
+			}
+		}
+		sort.Strings(projects)
+		if rep.StaleProjects == nil {
+			rep.StaleProjects = map[string][]string{}
+		}
+		rep.StaleProjects[rep.Stale[len(rep.Stale)-1]] = projects
+	}
+}

@@ -257,15 +257,16 @@ func (r *runner) quotaChecks(tx *sql.Tx) error {
 			return err
 		}
 	}
-	for _, st := range rep.Stale {
+	// The stale check and the pause and limit guards read each login's week as PickAccount does, with the other machines'
+	// copies (quota.WithHosts): a login measured on another machine is measured (11-26: max1 STALE twice while the Legion
+	// and the ThinkPad measured it), an account at its limit there is at its limit here, and the move target is the one
+	// crius-spawn -move picks. Every other figure stays the store's.
+	hosts, _, blind := rep.WithHosts(r.home, p.Accounts)
+	for _, st := range hosts.Stale {
 		if err := r.queueAlert(tx, "quota:stale:"+st, quota.StaleText(st)); err != nil {
 			return err
 		}
 	}
-	// The pause and limit guards read each login's week as PickAccount does, with the other machines' copies
-	// (quota.WithHosts): an account at its limit on another machine is at its limit here, and the move target is the one
-	// crius-spawn -move picks. Every other figure stays the store's.
-	hosts, _, blind := rep.WithHosts(r.home, p.Accounts)
 	if err := r.pauseChecks(tx, hosts, p.Accounts); err != nil {
 		return err
 	}

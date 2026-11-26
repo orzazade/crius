@@ -440,10 +440,11 @@ func quotaCmd(home string, now time.Time, asJSON, room bool, stdout, stderr io.W
 		rep.Status = "partial"
 		rep.Reasons = append(rep.Reasons, "enterprise fallback: cannot read ("+ent.Reason+")")
 	}
+	// Read as Pick reads it, with the other machines' copies (11-21: max3 at 96% on the Legion read "room" here; 11-26:
+	// max1 read STALE here while the Legion measured it).
+	rep, notes, blind := rep.WithHosts(home, projects.Accounts)
 	if room {
-		// Read as Pick reads it, with the other machines' copies (11-21: max3 at 96% on the Legion read "room" here).
-		hosts, notes, blind := rep.WithHosts(home, projects.Accounts)
-		view, v, reason := roomFor(hosts, projects.Accounts, os.Getenv("AITCH_PRIMARY"))
+		view, v, reason := roomFor(rep, projects.Accounts, os.Getenv("AITCH_PRIMARY"))
 		if len(blind) > 0 {
 			reason += "; other machines: " + strings.Join(notes, "; ")
 		}
@@ -821,6 +822,9 @@ func digestCmd(home string, now time.Time, write, printPath bool, stdout, stderr
 	projects, err := ingest.QuotaProjects(home)
 	if err == nil {
 		in.Quota, err = quota.Build(db, projects, now)
+	}
+	if err == nil { // each login read with the other machines' copies, as Pick and the stale alert read it (11-26)
+		in.Quota, _, _ = in.Quota.WithHosts(home, projects.Accounts)
 	}
 	var exp recall.Expected
 	if err == nil {
